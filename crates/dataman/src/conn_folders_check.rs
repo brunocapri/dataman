@@ -9,11 +9,15 @@ use dataman_core::config::Engine;
 
 use crate::app::Workspace;
 use crate::check::*;
-use crate::tree::{ConnDrop, SchemaTree, fid};
+use crate::tree::{ConnDrop, MenuAnchor, SchemaTree, fid, pin_id};
 use crate::tree_menu::Act;
 
 pub fn is_stage(s: &str) -> bool {
     matches!(s, "explorer-folders-check" | "explorer-folders-shot" | "fav-scope-shot")
+}
+
+fn core_of(ws: &Entity<Workspace>, cx: &gpui::App) -> std::sync::Arc<dataman_core::Core> {
+    ws.read(cx).store.read(cx).core.clone()
 }
 
 fn tree(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<SchemaTree> {
@@ -292,6 +296,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{moved:?} {:?}", order(cx)),
     );
 
+    collapse_all(ws, &t, &pg, &dev, r, cx).await;
+
     for d in folders(ws, cx) {
         let _ = menu(&t, &fid(&d.id), Act::DeleteFolder, cx).await;
     }
@@ -304,6 +310,108 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     );
 
     fav_scope(ws, r, false, cx).await;
+}
+
+/// The header's Collapse all, by a click on its item.
+async fn click_collapse_all(t: &Entity<SchemaTree>, cx: &mut AsyncWindowContext) -> bool {
+    let _ = cx.update(|window, cx| t.update(cx, |t, cx| t.open_menu(None, MenuAnchor::Header(point(px(60.), px(60.))), window, cx)));
+    pause(cx, 200).await;
+    draw(cx);
+    let Some(p) = cx.update(|_, cx| t.read(cx).demo_menu_item_point(Act::CollapseAll)).ok().flatten() else { return false };
+    click(cx, p);
+    pause(cx, 50).await;
+    true
+}
+
+/// Collapse all shuts every level: what is opened after it is closed below, whatever was open
+/// before and whatever opens by itself otherwise. `pg` is in `dev`, and connected.
+async fn collapse_all(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, pg: &dataman_core::ConnectionProfile, dev: &dataman_core::ConnFolder, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let c = format!("c:{}", pg.id);
+    let db = format!("{c}/d:{}", pg.database);
+    let schema = format!("{db}/s:public");
+    let tables = format!("{schema}/tables");
+    let orders = format!("{schema}/r:orders");
+    let pinned_group = format!("{c}/pinned");
+    let pinned = pin_id(&pg.id, &pg.database, "public", "orders");
+    let cols = format!("{orders}/cols");
+    let open = |id: &str, cx: &mut AsyncWindowContext| {
+        let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.expand_id(id, cx)));
+    };
+    let shows = async |id: &str, cx: &mut AsyncWindowContext| until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).has_row(id)).unwrap_or(false)).await;
+    let open_under = |id: &str, cx: &mut AsyncWindowContext| cx.update(|_, cx| t.read(cx).demo_open_under(id)).unwrap_or_default();
+
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(true, cx)));
+    open(&c, cx);
+    let current = shows(&schema, cx).await;
+    open(&schema, cx);
+    let group = shows(&tables, cx).await;
+    open(&tables, cx);
+    let table = shows(&orders, cx).await;
+    open(&orders, cx);
+    let columns = shows(&format!("{cols}/id"), cx).await;
+    r.check("before Collapse all: a connection opens its current database, a table its columns", current && group && table && columns, format!("{current} {group} {table} {columns}"));
+    let was_pinned = menu(t, &orders, Act::Pin, cx).await && shows(&pinned, cx).await;
+    open(&pinned, cx);
+    r.check("a table pinned and opened, for what Collapse all has to shut", was_pinned && shows(&format!("{pinned}/cols"), cx).await, format!("{was_pinned}"));
+
+    let clicked = click_collapse_all(t, cx).await;
+    let top = rows(t, cx);
+    r.check(
+        "Collapse all: only the folders and the connections in none are left",
+        clicked && top == ["Live", "Dev", "Billing"],
+        format!("{clicked} {top:?}"),
+    );
+
+    let Some(p) = row_point(t, &fid(&dev.id), cx) else {
+        r.check("the folder's row is on screen", false, "");
+        return;
+    };
+    click(cx, p);
+    let in_folder = shows(&c, cx).await;
+    let Some(p) = row_point(t, &c, cx) else {
+        r.check("the connection's row is on screen", false, "");
+        return;
+    };
+    click(cx, p);
+    let dbs = shows(&db, cx).await;
+    let under = open_under(&c, cx);
+    r.check(
+        "the connection opened again: its database and its pinned group are listed, closed",
+        in_folder && dbs && under.is_empty() && cx.update(|_, cx| t.read(cx).has_row(&pinned_group)).unwrap_or(false) && !cx.update(|_, cx| t.read(cx).has_row(&pinned)).unwrap_or(true),
+        format!("{in_folder} {dbs} open {under:?}"),
+    );
+    open(&db, cx);
+    let down = shows(&schema, cx).await;
+    open(&schema, cx);
+    let down = down && shows(&tables, cx).await;
+    r.check("the database and the schema opened: nothing under them is open", down && open_under(&db, cx) == [schema.clone()], format!("{down} {:?}", open_under(&db, cx)));
+    open(&tables, cx);
+    let down = shows(&orders, cx).await;
+    open(&orders, cx);
+    let listed = shows(&cols, cx).await;
+    r.check("the table opened: its columns are listed, closed", down && listed && open_under(&orders, cx).is_empty(), format!("{down} {listed} {:?}", open_under(&orders, cx)));
+
+    let again = click_collapse_all(t, cx).await;
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.reveal_relation(&pg.id, &pg.database, "public", "orders", dataman_core::schema::RelKind::Table, Some("id"), cx)));
+    let want = format!("{cols}/id");
+    let revealed = until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).selected_id() == Some(want.as_str())).unwrap_or(false)).await;
+    r.check("a column revealed after Collapse all still opens the way to it", again && revealed, format!("{again} {:?}", cx.update(|_, cx| t.read(cx).selected_id().map(str::to_string)).ok().flatten()));
+
+    let again = click_collapse_all(t, cx).await;
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(false, cx)));
+    open(&fid(&dev.id), cx);
+    let in_folder = shows(&c, cx).await;
+    open(&c, cx);
+    let dbs = shows(&db, cx).await;
+    let under = open_under(&c, cx);
+    r.check("the simple view, after Collapse all: the database is listed, closed", again && in_folder && dbs && under.is_empty(), format!("{again} {in_folder} {dbs} {under:?}"));
+
+    let unpinned = cx.update(|_, cx| t.update(cx, |t, cx| {
+        let done = core_of(ws, cx).pins.unpin(&pg.id, &pg.database, "public", "orders");
+        t.rebuild(cx);
+        done
+    }));
+    r.check("the pin taken back", matches!(unpinned, Ok(Ok(_))), "");
 }
 
 /// The field a folder is named in, from a new folder until the focus leaves it.

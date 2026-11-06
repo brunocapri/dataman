@@ -397,6 +397,9 @@ pub struct SchemaTree {
     folder_drop: Option<Option<String>>,
     /// Folders the user shut (they start open).
     shut_folders: HashSet<String>,
+    /// Connections Collapse all shut: what opens in them stays closed below it, without the
+    /// current database or a table's columns opening by themselves.
+    collapsed: HashSet<String>,
     /// A folder being named in place.
     naming: Option<(String, Entity<TextInput>)>,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
@@ -527,6 +530,7 @@ impl SchemaTree {
             conn_drop: None,
             folder_drop: None,
             shut_folders: HashSet::new(),
+            collapsed: HashSet::new(),
             naming: None,
             conn_bounds: Default::default(),
             advanced,
@@ -559,6 +563,7 @@ impl SchemaTree {
         let target = match column {
             Some(c) => {
                 path.push((rel.clone(), Kind::Rel { conn: conn.into(), db: db.into(), schema: schema.into(), name: name.into(), kind }));
+                self.expanded.insert(format!("{rel}/cols"));
                 format!("{rel}/cols/{c}")
             }
             None => rel,
@@ -1653,6 +1658,13 @@ impl SchemaTree {
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
 
+    /// The rows open under `id`.
+    #[cfg(feature = "checks")]
+    pub fn demo_open_under(&self, id: &str) -> Vec<String> {
+        let prefix = format!("{id}/");
+        self.rows.iter().filter(|r| r.expanded && r.id.starts_with(&prefix)).map(|r| r.id.to_string()).collect()
+    }
+
     #[cfg(feature = "checks")]
     pub fn demo_row_ids(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
@@ -1692,9 +1704,11 @@ impl SchemaTree {
             Kind::Conn { id: c } if self.conn(c, cx).is_some_and(|x| !x.engine().is_sql()) => {
                 let conn = self.conn(c, cx).expect("connected");
                 let db = conn.database().to_string();
-                let d = did(c, &db);
-                self.expanded.insert(d.clone());
-                self.load(&d, &Kind::DocDb { conn: c.clone(), db: db.clone() }, cx);
+                if !self.collapsed.contains(c) {
+                    let d = did(c, &db);
+                    self.expanded.insert(d.clone());
+                    self.load(&d, &Kind::DocDb { conn: c.clone(), db: db.clone() }, cx);
+                }
                 Some(unit(conn.nosql_tree(None)))
             }
             Kind::DocDb { conn, db } => self.conn(conn, cx).map(|c| unit(c.nosql_tree(Some(db)))),
@@ -1703,7 +1717,9 @@ impl SchemaTree {
                 match self.conn(c, cx) {
                     Some(conn) => {
                         let db = conn.database().to_string();
-                        self.expanded.insert(did(c, &db));
+                        if !self.collapsed.contains(c) {
+                            self.expanded.insert(did(c, &db));
+                        }
                         let mut loads = vec![unit(conn.databases())];
                         if !self.advanced {
                             loads.extend((!db.is_empty()).then(|| simple_db(conn.clone(), db.clone())));
@@ -1741,8 +1757,9 @@ impl SchemaTree {
             Kind::Roles { conn } => self.conn(conn, cx).map(|c| unit(c.roles())),
             Kind::Extensions { conn, db } => self.conn(conn, cx).map(|c| unit(c.extensions(db))),
             Kind::Rel { conn, db, schema, name, .. } => {
-                let cols = format!("{id}/cols");
-                self.expanded.insert(cols);
+                if !self.collapsed.contains(conn) {
+                    self.expanded.insert(format!("{id}/cols"));
+                }
                 self.conn(conn, cx).map(|c| join_all(vec![unit(c.columns(db, schema, name)), unit(c.indexes(db, schema, name)), unit(c.table_extras(db, schema, name))]))
             }
             Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
@@ -1785,12 +1802,16 @@ impl SchemaTree {
         }
     }
 
-    /// Everything shut: the folders, and every node open under them.
+    /// Everything shut: the folders, and every node under them, at every level.
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.shut_folders = self.store.read(cx).folders.iter().map(|d| d.id.clone()).collect();
-        self.expanded.clear();
+        let store = self.store.read(cx);
+        self.shut_folders = store.folders.iter().map(|d| d.id.clone()).collect();
+        // A pinned group is the one node listed when it is shut.
+        self.expanded = store.profiles.iter().map(|p| pinned_id(&p.id)).collect();
+        self.collapsed = store.profiles.iter().map(|p| p.id.clone()).collect();
         self.unfold = None;
         self.shut_task = None;
+        self.reveal = None;
         self.rebuild(cx);
         if let Some(sel) = self.selected.clone()
             && !self.rows.iter().any(|r| r.id == sel)
