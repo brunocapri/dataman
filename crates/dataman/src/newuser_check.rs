@@ -504,7 +504,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
 
     let ids: Vec<String> = cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.iter().map(|p| p.id.clone()).collect()).unwrap_or_default();
     for i in &ids {
-        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connection(i.clone(), true, window, cx)));
+        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(vec![i.clone()], true, window, cx)));
         pause(cx, 50).await;
     }
     draw(cx);

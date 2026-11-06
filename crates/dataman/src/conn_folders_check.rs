@@ -9,11 +9,15 @@ use dataman_core::config::Engine;
 
 use crate::app::Workspace;
 use crate::check::*;
-use crate::tree::{ConnDrop, SchemaTree, fid};
+use crate::tree::{ConnDrop, MenuAnchor, SchemaTree, fid, pin_id};
 use crate::tree_menu::Act;
 
 pub fn is_stage(s: &str) -> bool {
     matches!(s, "explorer-folders-check" | "explorer-folders-shot" | "fav-scope-shot")
+}
+
+fn core_of(ws: &Entity<Workspace>, cx: &gpui::App) -> std::sync::Arc<dataman_core::Core> {
+    ws.read(cx).store.read(cx).core.clone()
 }
 
 fn tree(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<SchemaTree> {
@@ -292,6 +296,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{moved:?} {:?}", order(cx)),
     );
 
+    collapse_all(ws, &t, &pg, &dev, r, cx).await;
+
     for d in folders(ws, cx) {
         let _ = menu(&t, &fid(&d.id), Act::DeleteFolder, cx).await;
     }
@@ -303,7 +309,378 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{h:?}"),
     );
 
+    picked_rows(ws, &t, &pg, &pw, r, cx).await;
+
     fav_scope(ws, r, false, cx).await;
+}
+
+/// The header's Collapse all, by a click on its item.
+async fn click_collapse_all(t: &Entity<SchemaTree>, cx: &mut AsyncWindowContext) -> bool {
+    let _ = cx.update(|window, cx| t.update(cx, |t, cx| t.open_menu(None, MenuAnchor::Header(point(px(60.), px(60.))), window, cx)));
+    pause(cx, 200).await;
+    draw(cx);
+    let Some(p) = cx.update(|_, cx| t.read(cx).demo_menu_item_point(Act::CollapseAll)).ok().flatten() else { return false };
+    click(cx, p);
+    pause(cx, 50).await;
+    true
+}
+
+/// Collapse all shuts every level: what is opened after it is closed below, whatever was open
+/// before and whatever opens by itself otherwise. `pg` is in `dev`, and connected.
+async fn collapse_all(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, pg: &dataman_core::ConnectionProfile, dev: &dataman_core::ConnFolder, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let c = format!("c:{}", pg.id);
+    let db = format!("{c}/d:{}", pg.database);
+    let schema = format!("{db}/s:public");
+    let tables = format!("{schema}/tables");
+    let orders = format!("{schema}/r:orders");
+    let pinned_group = format!("{c}/pinned");
+    let pinned = pin_id(&pg.id, &pg.database, "public", "orders");
+    let cols = format!("{orders}/cols");
+    let open = |id: &str, cx: &mut AsyncWindowContext| {
+        let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.expand_id(id, cx)));
+    };
+    let shows = async |id: &str, cx: &mut AsyncWindowContext| until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).has_row(id)).unwrap_or(false)).await;
+    let open_under = |id: &str, cx: &mut AsyncWindowContext| cx.update(|_, cx| t.read(cx).demo_open_under(id)).unwrap_or_default();
+
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(true, cx)));
+    open(&c, cx);
+    let current = shows(&schema, cx).await;
+    open(&schema, cx);
+    let group = shows(&tables, cx).await;
+    open(&tables, cx);
+    let table = shows(&orders, cx).await;
+    open(&orders, cx);
+    let columns = shows(&format!("{cols}/id"), cx).await;
+    r.check("before Collapse all: a connection opens its current database, a table its columns", current && group && table && columns, format!("{current} {group} {table} {columns}"));
+    let was_pinned = menu(t, &orders, Act::Pin, cx).await && shows(&pinned, cx).await;
+    open(&pinned, cx);
+    r.check("a table pinned and opened, for what Collapse all has to shut", was_pinned && shows(&format!("{pinned}/cols"), cx).await, format!("{was_pinned}"));
+
+    let clicked = click_collapse_all(t, cx).await;
+    let top = rows(t, cx);
+    r.check(
+        "Collapse all: only the folders and the connections in none are left",
+        clicked && top == ["Live", "Dev", "Billing"],
+        format!("{clicked} {top:?}"),
+    );
+
+    let Some(p) = row_point(t, &fid(&dev.id), cx) else {
+        r.check("the folder's row is on screen", false, "");
+        return;
+    };
+    click(cx, p);
+    let in_folder = shows(&c, cx).await;
+    let Some(p) = row_point(t, &c, cx) else {
+        r.check("the connection's row is on screen", false, "");
+        return;
+    };
+    click(cx, p);
+    let dbs = shows(&db, cx).await;
+    let under = open_under(&c, cx);
+    r.check(
+        "the connection opened again: its database and its pinned group are listed, closed",
+        in_folder && dbs && under.is_empty() && cx.update(|_, cx| t.read(cx).has_row(&pinned_group)).unwrap_or(false) && !cx.update(|_, cx| t.read(cx).has_row(&pinned)).unwrap_or(true),
+        format!("{in_folder} {dbs} open {under:?}"),
+    );
+    open(&db, cx);
+    let down = shows(&schema, cx).await;
+    open(&schema, cx);
+    let down = down && shows(&tables, cx).await;
+    r.check("the database and the schema opened: nothing under them is open", down && open_under(&db, cx) == [schema.clone()], format!("{down} {:?}", open_under(&db, cx)));
+    open(&tables, cx);
+    let down = shows(&orders, cx).await;
+    open(&orders, cx);
+    let listed = shows(&cols, cx).await;
+    r.check("the table opened: its columns are listed, closed", down && listed && open_under(&orders, cx).is_empty(), format!("{down} {listed} {:?}", open_under(&orders, cx)));
+
+    let again = click_collapse_all(t, cx).await;
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.reveal_relation(&pg.id, &pg.database, "public", "orders", dataman_core::schema::RelKind::Table, Some("id"), cx)));
+    let want = format!("{cols}/id");
+    let revealed = until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).selected_id() == Some(want.as_str())).unwrap_or(false)).await;
+    r.check("a column revealed after Collapse all still opens the way to it", again && revealed, format!("{again} {:?}", cx.update(|_, cx| t.read(cx).selected_id().map(str::to_string)).ok().flatten()));
+
+    let again = click_collapse_all(t, cx).await;
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(false, cx)));
+    open(&fid(&dev.id), cx);
+    let in_folder = shows(&c, cx).await;
+    open(&c, cx);
+    let dbs = shows(&db, cx).await;
+    let under = open_under(&c, cx);
+    r.check("the simple view, after Collapse all: the database is listed, closed", again && in_folder && dbs && under.is_empty(), format!("{again} {in_folder} {dbs} {under:?}"));
+
+    let unpinned = cx.update(|_, cx| t.update(cx, |t, cx| {
+        let done = core_of(ws, cx).pins.unpin(&pg.id, &pg.database, "public", "orders");
+        t.rebuild(cx);
+        done
+    }));
+    r.check("the pin taken back", matches!(unpinned, Ok(Ok(_))), "");
+}
+
+/// A right click on the row; what its menu lists.
+async fn right_click(t: &Entity<SchemaTree>, row: &str, cx: &mut AsyncWindowContext) -> Vec<Act> {
+    let Some(p) = row_point(t, row, cx) else {
+        eprintln!("check: row {row} not on screen");
+        return vec![];
+    };
+    click_with(cx, p, MouseButton::Right, Modifiers::default(), 1);
+    pause(cx, 200).await;
+    draw(cx);
+    cx.update(|_, cx| t.read(cx).demo_menu_acts()).unwrap_or_default()
+}
+
+/// A click on an item of the menu that is open.
+async fn menu_click(t: &Entity<SchemaTree>, act: Act, cx: &mut AsyncWindowContext) -> bool {
+    let Some(p) = cx.update(|_, cx| t.read(cx).demo_menu_item_point(act)).ok().flatten() else { return false };
+    click(cx, p);
+    pause(cx, 50).await;
+    true
+}
+
+fn label(t: &Entity<SchemaTree>, act: Act, cx: &mut AsyncWindowContext) -> Option<String> {
+    cx.update(|_, cx| t.read(cx).demo_menu_label(act)).ok().flatten()
+}
+
+/// `first` picked, then `second` with a ⌘-click.
+fn pick_two(t: &Entity<SchemaTree>, first: &str, second: &str, cx: &mut AsyncWindowContext) -> bool {
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| {
+        t.demo_unpick();
+        t.select_id(first, cx);
+    }));
+    let Some(p) = row_point(t, second, cx) else { return false };
+    click_with(cx, p, MouseButton::Left, Modifiers { platform: true, ..Default::default() }, 1);
+    draw(cx);
+    true
+}
+
+/// Rows picked together, folders among them: the menu lists what applies to all that they stand
+/// for, and each item acts on all of it, as one undo step.
+async fn picked_rows(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, pg: &dataman_core::ConnectionProfile, pw: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let saved: Vec<String> = cx.update(|_, cx| {
+        let core = core_of(ws, cx);
+        let ids = ["Alpha", "Beta", "Gamma"].map(|n| {
+            let mut p = pg.clone();
+            p.id = dataman_core::ConnectionProfile::new(n).id;
+            p.name = n.to_string();
+            let id = p.id.clone();
+            core.save_connection(p, Some(pw), None).expect("saved");
+            id
+        });
+        ws.read(cx).store.clone().update(cx, |s, cx| s.reload(cx));
+        ids.to_vec()
+    }).unwrap_or_default();
+    let (alpha, beta, gamma) = (saved[0].clone(), saved[1].clone(), saved[2].clone());
+    let (team_id, side_id) = cx.update(|_, cx| {
+        let store = ws.read(cx).store.clone();
+        let mut made = (String::new(), String::new());
+        let done = store.update(cx, |s, cx| s.edit_folders(|f| {
+            let mut team = dataman_core::ConnFolder::new("Team", f);
+            team.connections = vec![alpha.clone(), beta.clone()];
+            made.0 = team.id.clone();
+            f.push(team);
+            let side = dataman_core::ConnFolder::new("Side", f);
+            made.1 = side.id.clone();
+            f.push(side);
+        }, cx));
+        done.expect("the folders saved");
+        made
+    }).unwrap();
+    let (team, side, pg_row, gamma_row) = (fid(&team_id), fid(&side_id), format!("c:{}", pg.id), format!("c:{gamma}"));
+    let up = |id: &str, cx: &mut AsyncWindowContext| is_connected(ws, id, cx);
+    let holds = |name: &str, conns: &[&String], cx: &mut AsyncWindowContext| folder_named(ws, name, cx).is_some_and(|d| d.connections.len() == conns.len() && conns.iter().all(|c| d.holds(c)));
+
+    // A shift range from a folder: the folder and the connection stand for three connections.
+    let Some(p) = row_point(t, &team, cx) else {
+        r.check("the folder's row is on screen", false, "");
+        return;
+    };
+    click(cx, p);
+    let alpha_row = format!("c:{alpha}");
+    let shut = until(cx, 5, |cx| !cx.update(|_, cx| t.read(cx).has_row(&alpha_row)).unwrap_or(true)).await;
+    let Some(p) = row_point(t, &pg_row, cx) else {
+        r.check("the connection's row is on screen", false, "");
+        return;
+    };
+    click_with(cx, p, MouseButton::Left, Modifiers { shift: true, ..Default::default() }, 1);
+    draw(cx);
+    let (rows_picked, conns) = cx.update(|_, cx| (t.read(cx).demo_picked().to_vec(), t.read(cx).demo_picked_conns(cx))).unwrap();
+    r.check(
+        "shift-click from a folder: the rows between are picked, the folder standing for its connections",
+        shut && rows_picked == [team.clone(), side.clone(), pg_row.clone()] && conns.len() == 3 && [&alpha, &beta, &pg.id].iter().all(|c| conns.contains(*c)),
+        format!("{rows_picked:?} {conns:?}"),
+    );
+
+    // One connected, two not.
+    let acts = right_click(t, &pg_row, cx).await;
+    let (connect, disconnect, delete) = (label(t, Act::Connect, cx), label(t, Act::Disconnect, cx), label(t, Act::DeleteConnection, cx));
+    r.check(
+        "the menu inside the selection: Connect and Disconnect say how many, nothing that needs one connection",
+        connect.as_deref() == Some("Connect 2 connections")
+            && disconnect.as_deref() == Some("Disconnect 1 connection")
+            && delete.as_deref() == Some("Delete 3 connections…")
+            && acts.contains(&Act::MoveToNewFolder)
+            && [Act::EditConnection, Act::DuplicateConnection, Act::NewTab, Act::History, Act::CopyUrl, Act::Reconnect, Act::Reload, Act::RenameFolder, Act::DeleteFolder].iter().all(|a| !acts.contains(a)),
+        format!("{connect:?} {disconnect:?} {delete:?} {acts:?}"),
+    );
+    let still = cx.update(|_, cx| t.read(cx).demo_picked().len()).unwrap_or(0);
+    r.check("a right click inside the selection keeps it", still == 3, format!("{still}"));
+    let clicked = menu_click(t, Act::Connect, cx).await;
+    let both = until(cx, 30, |cx| up(&alpha, cx) && up(&beta, cx)).await;
+    r.check("Connect connects those that were not", clicked && both && up(&pg.id, cx), format!("{clicked} {both}"));
+
+    // All connected; a transaction open on one of them asks first, once, for all.
+    let tab = cx.update(|_, cx| ws.read(cx).active_tab().cloned()).ok().flatten();
+    let Some(tab) = tab else {
+        r.check("a tab to hold a transaction", false, "");
+        return;
+    };
+    let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.run(vec!["BEGIN".to_string()], cx)));
+    let open = until(cx, 10, |cx| cx.update(|_, cx| tab.read(cx).tx_open()).unwrap_or(false)).await;
+    let acts = right_click(t, &pg_row, cx).await;
+    let disconnect = label(t, Act::Disconnect, cx);
+    r.check(
+        "all connected: Disconnect, Reconnect and Reload for all, and no Connect",
+        disconnect.as_deref() == Some("Disconnect 3 connections") && [Act::Reconnect, Act::Reload].iter().all(|a| acts.contains(a)) && !acts.contains(&Act::Connect),
+        format!("{disconnect:?} {acts:?}"),
+    );
+    let clicked = menu_click(t, Act::Disconnect, cx).await;
+    draw(cx);
+    let asked = cx.update(|_, cx| ws.read(cx).tx_prompt.as_ref().map(|p| (p.then.verb(), p.tabs.len()))).ok().flatten();
+    let held = up(&alpha, cx) && up(&beta, cx) && up(&pg.id, cx);
+    r.check("a transaction open: it asks before disconnecting any", open && clicked && asked == Some(("disconnect", 1)) && held, format!("{open} {clicked} {asked:?} {held}"));
+    pause(cx, 400).await;
+    key(cx, "cmd-backspace");
+    let all_off = until(cx, 10, |cx| !up(&alpha, cx) && !up(&beta, cx) && !up(&pg.id, cx)).await;
+    r.check("rolled back: all of them disconnect", all_off, "");
+
+    // All off: Connect for all.
+    let acts = right_click(t, &pg_row, cx).await;
+    let connect = label(t, Act::Connect, cx);
+    r.check("all off: Connect for all, no Disconnect", connect.as_deref() == Some("Connect 3 connections") && !acts.contains(&Act::Disconnect), format!("{connect:?} {acts:?}"));
+    let clicked = menu_click(t, Act::Connect, cx).await;
+    let all_up = until(cx, 30, |cx| up(&alpha, cx) && up(&beta, cx) && up(&pg.id, cx)).await;
+    r.check("Connect brings them all back", clicked && all_up, format!("{clicked} {all_up}"));
+
+    // Reconnected together: each tab goes back to its own, whichever comes up first.
+    let tabs: Vec<_> = [&alpha, &beta, &pg.id]
+        .into_iter()
+        .map(|id| (id.clone(), cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(id, None, "", false, window, cx))).ok().flatten()))
+        .collect();
+    let on_its_own = |cx: &mut AsyncWindowContext| {
+        tabs.iter().all(|(id, tab)| tab.as_ref().is_some_and(|tab| cx.update(|_, cx| tab.read(cx).connection().is_some_and(|c| c.profile.id == *id)).unwrap_or(false)))
+    };
+    let before_reconnect = on_its_own(cx);
+    let _ = right_click(t, &pg_row, cx).await;
+    let clicked = menu_click(t, Act::Reconnect, cx).await;
+    let back = until(cx, 30, |cx| up(&alpha, cx) && up(&beta, cx) && up(&pg.id, cx) && on_its_own(cx)).await;
+    let holding: Vec<_> = tabs.iter().map(|(_, tab)| tab.as_ref().and_then(|tab| cx.update(|_, cx| tab.read(cx).connection().map(|c| c.profile.name.clone())).ok().flatten())).collect();
+    r.check("Reconnect: all of them come back, each tab on its own connection", before_reconnect && clicked && back, format!("{before_reconnect} {clicked} {holding:?}"));
+
+    // Outside the selection: that row's own menu, and the selection is gone.
+    let acts = right_click(t, &gamma_row, cx).await;
+    let (own, left) = (label(t, Act::Connect, cx), cx.update(|_, cx| t.read(cx).demo_picked().len()).unwrap_or(9));
+    r.check("a right click outside the selection: that row's menu, nothing picked", acts.contains(&Act::EditConnection) && own.as_deref() == Some("Connect") && left == 0, format!("{own:?} {left} {acts:?}"));
+    key(cx, "escape");
+
+    // Folders alone: what they hold, and deleting the folders themselves.
+    let picked = pick_two(t, &side, &team, cx);
+    let acts = right_click(t, &team, cx).await;
+    let (folders_delete, conns_delete, disconnect) = (label(t, Act::DeleteFolder, cx), label(t, Act::DeleteConnection, cx), label(t, Act::Disconnect, cx));
+    r.check(
+        "two folders picked: their connections' actions, and Delete for the folders",
+        picked
+            && folders_delete.as_deref() == Some("Delete 2 folders only")
+            && conns_delete.as_deref() == Some("Delete 2 connections…")
+            && disconnect.as_deref() == Some("Disconnect 2 connections")
+            && !acts.contains(&Act::RenameFolder),
+        format!("{picked} {folders_delete:?} {conns_delete:?} {disconnect:?} {acts:?}"),
+    );
+    let total = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.len()).unwrap_or(0);
+    let before = total(cx);
+    let clicked = menu_click(t, Act::DeleteFolder, cx).await;
+    let gone = folder_named(ws, "Team", cx).is_none() && folder_named(ws, "Side", cx).is_none();
+    r.check("Delete 2 folders: gone, their connections kept", clicked && gone && total(cx) == before, format!("{clicked} {gone} {}", total(cx)));
+    focus_tree(t, cx);
+    key(cx, "cmd-z");
+    r.check("⌘Z brings both back, with what they held", holds("Team", &[&alpha, &beta], cx) && holds("Side", &[], cx), format!("{:?}", folders(ws, cx)));
+
+    // One folder, not picked: its own menu, with what its connections can do.
+    let acts = right_click(t, &team, cx).await;
+    let disconnect = label(t, Act::Disconnect, cx);
+    r.check(
+        "a folder's own menu: its connections' actions over its usual items",
+        disconnect.as_deref() == Some("Disconnect 2 connections") && [Act::Reconnect, Act::Reload, Act::RenameFolder, Act::DeleteFolder].iter().all(|a| acts.contains(a)) && !acts.contains(&Act::Connect),
+        format!("{disconnect:?} {acts:?}"),
+    );
+    let clicked = menu_click(t, Act::Disconnect, cx).await;
+    let off = until(cx, 10, |cx| !up(&alpha, cx) && !up(&beta, cx)).await;
+    r.check("Disconnect on the folder: those in it, not the others", clicked && off && up(&pg.id, cx), format!("{clicked} {off}"));
+
+    // Moved together: from the menu, and by a drag.
+    let index_of = |name: &str, cx: &mut AsyncWindowContext| folders(ws, cx).iter().position(|d| d.name == name).unwrap_or(usize::MAX);
+    let picked = pick_two(t, &team, &gamma_row, cx);
+    let acts = right_click(t, &gamma_row, cx).await;
+    let to = Act::MoveToFolder(index_of("Side", cx));
+    let listed = acts.contains(&to);
+    let _ = cx.update(|window, cx| t.update(cx, |t, cx| t.demo_menu_run(to, window, cx)));
+    draw(cx);
+    r.check("Move to folder: the folder's connections and the other, together", picked && listed && holds("Side", &[&alpha, &beta, &gamma], cx) && holds("Team", &[], cx), format!("{picked} {listed} {:?}", folders(ws, cx)));
+    focus_tree(t, cx);
+    key(cx, "cmd-z");
+    r.check("⌘Z moves them all back in one step", holds("Team", &[&alpha, &beta], cx) && holds("Side", &[], cx), format!("{:?}", folders(ws, cx)));
+
+    let picked = pick_two(t, &team, &gamma_row, cx);
+    let (from, to) = (row_point(t, &gamma_row, cx), row_point(t, &side, cx));
+    let mut during = None;
+    if let (Some(from), Some(to)) = (from, to) {
+        crate::history_check::drag(cx, from, to, |cx| during = cx.update(|_, cx| t.read(cx).demo_conn_drop()).ok().flatten()).await;
+    }
+    r.check("dragged onto a folder, all that is picked goes in it", picked && during == Some(ConnDrop::Into(side_id.clone())) && holds("Side", &[&alpha, &beta, &gamma], cx), format!("{picked} {during:?} {:?}", folders(ws, cx)));
+    focus_tree(t, cx);
+    key(cx, "cmd-z");
+
+    // Deleted together: asked first, as one connection is.
+    let picked = pick_two(t, &team, &gamma_row, cx);
+    let _ = right_click(t, &gamma_row, cx).await;
+    let clicked = menu_click(t, Act::DeleteConnection, cx).await;
+    draw(cx);
+    let asked = cx.update(|_, cx| ws.read(cx).confirm_delete.clone()).ok().flatten();
+    r.check(
+        "Delete asks first, for all three, and deletes nothing yet",
+        picked && clicked && asked.as_ref().is_some_and(|a| a.len() == 3) && total(cx) == before,
+        format!("{picked} {clicked} {asked:?} {}", total(cx)),
+    );
+    key(cx, "escape");
+    draw(cx);
+    let kept = total(cx) == before && cx.update(|_, cx| ws.read(cx).confirm_delete.is_none()).unwrap_or(false);
+    r.check("esc: nothing deleted", kept, format!("{}", total(cx)));
+    let _ = right_click(t, &gamma_row, cx).await;
+    let _ = menu_click(t, Act::DeleteConnection, cx).await;
+    draw(cx);
+    let confirmed = click_probe("dc-delete", cx);
+    draw(cx);
+    let store_has = |id: &str, cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).profile(id).is_some()).unwrap_or(false);
+    let deleted = !store_has(&alpha, cx) && !store_has(&beta, cx) && !store_has(&gamma, cx);
+    r.check(
+        "confirmed: the three are gone, the folder stays, the others stay",
+        confirmed && deleted && total(cx) == before - 3 && holds("Team", &[], cx) && store_has(&pg.id, cx) && up(&pg.id, cx),
+        format!("{confirmed} {deleted} {} {:?}", total(cx), folders(ws, cx)),
+    );
+    let picked_after = cx.update(|_, cx| t.read(cx).demo_picked().len()).unwrap_or(9);
+    r.check("nothing deleted stays picked", picked_after <= 1, format!("{picked_after}"));
+    focus_tree(t, cx);
+    key(cx, "cmd-z");
+    draw(cx);
+    r.check(
+        "⌘Z brings all three back in one step, in their folder",
+        store_has(&alpha, cx) && store_has(&beta, cx) && store_has(&gamma, cx) && holds("Team", &[&alpha, &beta], cx),
+        format!("{} {:?}", total(cx), folders(ws, cx)),
+    );
+
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(saved.clone(), true, window, cx)));
+    let _ = cx.update(|_, cx| {
+        ws.read(cx).store.clone().update(cx, |s, cx| s.edit_folders(|f| f.clear(), cx))
+    });
+    draw(cx);
 }
 
 /// The field a folder is named in, from a new folder until the focus leaves it.

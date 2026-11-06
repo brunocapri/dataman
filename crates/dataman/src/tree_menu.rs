@@ -15,6 +15,10 @@ pub enum Target {
     Header,
     /// An explorer folder: `color` is its swatch's index; `first`/`last` its place among them.
     Folder { id: String, name: String, color: Option<usize>, count: usize, first: bool, last: bool },
+    /// Rows picked together: `conns` is every connection they stand for (a folder, those in it),
+    /// `folders` the folders among them, `only_folders` that no connection was picked on its own,
+    /// `foldered` that one of `conns` is in a folder.
+    Picked { conns: Vec<(String, ConnPhase)>, folders: Vec<String>, only_folders: bool, foldered: bool },
     Conn { id: String, name: String, state: ConnPhase },
     Db { conn: String, db: String, current: bool, ro: bool },
     Schema { conn: String, db: String, schema: String, ro: bool },
@@ -217,6 +221,18 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             Sep,
             I(it(Act::DeleteFolder, if *count == 0 { "Delete folder" } else { "Delete folder (keeps its connections)" }, Icon::Trash).danger()),
         ],
+        Target::Picked { conns, folders, only_folders, .. } => {
+            let mut v = conn_entries(conns);
+            v.push(Sep);
+            if !conns.is_empty() {
+                v.push(I(Item::new(Act::DeleteConnection, format!("Delete {}…", connections(conns.len())), Icon::Trash).danger()));
+            }
+            if *only_folders {
+                let label = if conns.is_empty() { format!("Delete {} folders", folders.len()) } else { format!("Delete {} folders only", folders.len()) };
+                v.push(I(Item::new(Act::DeleteFolder, label, Icon::Trash).danger()));
+            }
+            v
+        }
         Target::Conn { state, .. } => {
             let connected = *state == ConnPhase::Connected;
             let offline = (!connected).then_some(NOT_CONNECTED);
@@ -331,6 +347,41 @@ pub fn entries(t: &Target) -> Vec<Entry> {
         Target::Error => vec![I(it(Act::Retry, "Retry", Icon::Reload))],
         Target::Object { what, .. } => object_entries(what),
     }
+}
+
+fn connections(n: usize) -> String {
+    format!("{n} connection{}", if n == 1 { "" } else { "s" })
+}
+
+/// What several connections can do together. Connect and Disconnect leave all of them in that
+/// state, so they show when they would change one, and say how many. The others need every one
+/// connected.
+fn conn_entries(conns: &[(String, ConnPhase)]) -> Vec<Entry> {
+    let off = conns.iter().filter(|(_, s)| matches!(s, ConnPhase::Off | ConnPhase::Failed)).count();
+    let on = conns.iter().filter(|(_, s)| *s == ConnPhase::Connected).count();
+    let mut v = Vec::new();
+    if off > 0 {
+        v.push(Entry::Item(Item::new(Act::Connect, format!("Connect {}", connections(off)), Icon::Plug)));
+    }
+    if on > 0 {
+        v.push(Entry::Item(Item::new(Act::Disconnect, format!("Disconnect {}", connections(on)), Icon::Plug)));
+    }
+    if on > 0 && on == conns.len() {
+        v.push(Entry::Item(Item::new(Act::Reconnect, format!("Reconnect {}", connections(on)), Icon::Reload)));
+        v.push(Entry::Item(Item::new(Act::Reload, "Reload schemas", Icon::Reload)));
+    }
+    v
+}
+
+/// A folder's menu with what its connections can do together on top.
+pub fn with_conns(mut es: Vec<Entry>, conns: &[(String, ConnPhase)]) -> Vec<Entry> {
+    let mut v = conn_entries(conns);
+    if !v.is_empty() {
+        v.push(Entry::Sep);
+        v.append(&mut es);
+        return v;
+    }
+    es
 }
 
 fn object_entries(what: &Obj) -> Vec<Entry> {
@@ -450,18 +501,27 @@ fn color_items(current: Option<usize>) -> Vec<Item> {
 }
 
 /// A connection's "Move to folder": each folder (`current` is the one holding it), a new one,
-/// and out of its folder; before Delete.
+/// and out of its folder; before Delete. Picked rows list only what can apply to them.
 pub fn with_folders(mut es: Vec<Entry>, t: &Target, folders: &[(SharedString, Option<Hsla>)], current: Option<usize>) -> Vec<Entry> {
-    if !matches!(t, Target::Conn { .. }) {
-        return es;
-    }
+    let top_level = match t {
+        Target::Conn { .. } => current.is_none(),
+        Target::Picked { foldered, .. } => !foldered,
+        _ => return es,
+    };
     let mut items: Vec<Item> = folders
         .iter()
         .enumerate()
         .map(|(i, (name, color))| Item::new(Act::MoveToFolder(i), name.clone(), Icon::Schema).dot(*color).checked(current == Some(i)).off((current == Some(i)).then_some("here")))
         .collect();
     items.push(Item::new(Act::MoveToNewFolder, "New folder…", Icon::Plus));
-    items.push(Item::new(Act::RemoveFromFolder, "Remove from folder", Icon::Close).off(current.is_none().then_some("top level")));
+    items.push(Item::new(Act::RemoveFromFolder, "Remove from folder", Icon::Close).off(top_level.then_some("top level")));
+    if matches!(t, Target::Picked { .. }) {
+        items.retain(Item::enabled);
+        let Some(at) = es.iter().position(|e| matches!(e, Entry::Item(i) if i.act == Act::DeleteConnection)) else { return es };
+        es.insert(at, Entry::Sep);
+        es.insert(at, Entry::Sub { label: "Move to folder", icon: Icon::Schema, items });
+        return es;
+    }
     let sub = Entry::Sub { label: "Move to folder", icon: Icon::Schema, items };
     match es.iter().rposition(|e| matches!(e, Entry::Sep)) {
         Some(i) => es.insert(i, sub),
@@ -803,6 +863,79 @@ mod tests {
         assert_eq!(items.iter().map(|it| (it.act, it.enabled())).collect::<Vec<_>>(), [(Act::MoveToNewFolder, true), (Act::RemoveFromFolder, false)]);
         let r = rel(RelKind::Table);
         assert_eq!(with_folders(entries_for(&r, &pg), &r, &folders, None), entries_for(&r, &pg));
+    }
+
+    fn picked(phases: &[ConnPhase], folders: &[&str], only_folders: bool, foldered: bool) -> Target {
+        Target::Picked {
+            conns: phases.iter().enumerate().map(|(i, s)| (format!("c{i}"), *s)).collect(),
+            folders: folders.iter().map(|f| f.to_string()).collect(),
+            only_folders,
+            foldered,
+        }
+    }
+
+    fn picked_acts(t: &Target) -> Vec<Act> {
+        let folders = [("Work".into(), None), ("Clients".into(), None)];
+        let current = matches!(t, Target::Picked { foldered: true, .. }).then_some(1);
+        let es = with_folders(entries_for(t, &Caps::of(dataman_core::config::Engine::Postgres)), t, &folders, current);
+        es.into_iter()
+            .flat_map(|e| match e {
+                Entry::Item(i) => vec![i.act],
+                Entry::Sub { items, .. } => items.iter().map(|i| i.act).collect(),
+                Entry::Sep => vec![],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn picked_rows_list_only_what_applies_to_them_all() {
+        use ConnPhase::{Connected, Connecting, Failed, Off};
+        let moves = [Act::MoveToFolder(0), Act::MoveToFolder(1), Act::MoveToNewFolder];
+
+        let on = picked(&[Connected, Connected], &[], false, false);
+        assert_eq!(picked_acts(&on), [&[Act::Disconnect, Act::Reconnect, Act::Reload][..], &moves, &[Act::DeleteConnection]].concat());
+        assert_eq!(item(&on, Act::Disconnect).label.as_ref(), "Disconnect 2 connections");
+        assert_eq!(item(&on, Act::DeleteConnection).label.as_ref(), "Delete 2 connections…");
+        assert!(item(&on, Act::DeleteConnection).danger);
+
+        let off = picked(&[Off, Failed], &[], false, false);
+        assert_eq!(picked_acts(&off), [&[Act::Connect][..], &moves, &[Act::DeleteConnection]].concat());
+
+        let mixed = picked(&[Connected, Off, Failed, Connecting], &[], false, false);
+        assert_eq!(picked_acts(&mixed), [&[Act::Connect, Act::Disconnect][..], &moves, &[Act::DeleteConnection]].concat(), "nothing that needs them all connected");
+        assert_eq!(item(&mixed, Act::Connect).label.as_ref(), "Connect 2 connections");
+        assert_eq!(item(&mixed, Act::Disconnect).label.as_ref(), "Disconnect 1 connection");
+
+        let waiting = picked(&[Connecting, Connecting], &[], false, false);
+        assert_eq!(picked_acts(&waiting), [&moves[..], &[Act::DeleteConnection]].concat());
+
+        for a in [Act::NewTab, Act::History, Act::Activity, Act::EditConnection, Act::DuplicateConnection, Act::CopyUrl, Act::RevealFile, Act::RenameFolder] {
+            assert!(!picked_acts(&mixed).contains(&a), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn folders_among_picked_rows() {
+        use ConnPhase::Off;
+        let only = picked(&[Off, Off], &["a", "b"], true, true);
+        let a = picked_acts(&only);
+        assert_eq!(item(&only, Act::DeleteFolder).label.as_ref(), "Delete 2 folders only");
+        assert!(a.contains(&Act::DeleteConnection) && a.contains(&Act::RemoveFromFolder));
+        assert!(!a.contains(&Act::MoveToFolder(1)), "where they all are already");
+
+        let with_conn = picked(&[Off, Off], &["a"], false, true);
+        assert!(!picked_acts(&with_conn).contains(&Act::DeleteFolder), "a connection is no folder");
+
+        let empty = picked(&[], &["a", "b"], true, false);
+        assert_eq!(picked_acts(&empty), [Act::DeleteFolder]);
+        assert_eq!(item(&empty, Act::DeleteFolder).label.as_ref(), "Delete 2 folders");
+
+        let d = Target::Folder { id: "f1".into(), name: "Work".into(), color: None, count: 2, first: true, last: true };
+        let plain = entries(&d);
+        assert_eq!(with_conns(plain.clone(), &[]), plain, "an empty folder's menu is as it was");
+        let es = with_conns(plain.clone(), &[("a".into(), ConnPhase::Connected), ("b".into(), Off)]);
+        assert!(matches!(&es[0], Entry::Item(i) if i.act == Act::Connect) && matches!(&es[1], Entry::Item(i) if i.act == Act::Disconnect) && matches!(es[2], Entry::Sep));
+        assert_eq!(es[3..], plain[..]);
     }
 
     #[test]

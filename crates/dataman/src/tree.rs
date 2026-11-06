@@ -160,6 +160,8 @@ pub enum TreeEvent {
     Disconnect(String),
     FocusEditor,
     RowAction { act: Act, target: Target, alt: bool },
+    /// Disconnect, Reconnect or Delete on several connections together.
+    ConnsAction { act: Act, conns: Vec<String> },
     Notice(String),
     Did(crate::undo::Entry),
 }
@@ -375,8 +377,9 @@ pub struct SchemaTree {
     errors: HashMap<String, String>,
     hovered: Option<SharedString>,
     selected: Option<SharedString>,
-    /// Connections picked together (shift-click a range, ⌘-click one more): dragged and moved
-    /// into a folder as one.
+    /// The rows picked together (shift-click a range, ⌘-click one more), by id: connections and
+    /// folders, a folder standing for the connections in it. Dragged, moved into a folder and
+    /// acted on from the menu as one.
     picked: Vec<String>,
     pick_anchor: Option<String>,
     scroll: UniformListScrollHandle,
@@ -399,6 +402,9 @@ pub struct SchemaTree {
     folder_drop: Option<Option<String>>,
     /// Folders the user shut (they start open).
     shut_folders: HashSet<String>,
+    /// Connections Collapse all shut: what opens in them stays closed below it, without the
+    /// current database or a table's columns opening by themselves.
+    collapsed: HashSet<String>,
     /// A folder being named in place.
     naming: Option<(String, Entity<TextInput>)>,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
@@ -462,6 +468,11 @@ pub fn pin_id(c: &str, db: &str, s: &str, n: &str) -> String {
 impl SchemaTree {
     pub fn new(store: Entity<ConnStore>, cx: &mut Context<Self>) -> Self {
         cx.observe(&store, |t, _, cx| {
+            let s = t.store.read(cx);
+            t.picked.retain(|p| match p.strip_prefix("f:") {
+                Some(f) => s.folders.iter().any(|d| d.id == f),
+                None => p.strip_prefix("c:").is_some_and(|c| s.profile(c).is_some()),
+            });
             t.load_connected(cx);
             t.rebuild(cx);
             cx.notify();
@@ -529,6 +540,7 @@ impl SchemaTree {
             conn_drop: None,
             folder_drop: None,
             shut_folders: HashSet::new(),
+            collapsed: HashSet::new(),
             naming: None,
             conn_bounds: Default::default(),
             advanced,
@@ -561,6 +573,7 @@ impl SchemaTree {
         let target = match column {
             Some(c) => {
                 path.push((rel.clone(), Kind::Rel { conn: conn.into(), db: db.into(), schema: schema.into(), name: name.into(), kind }));
+                self.expanded.insert(format!("{rel}/cols"));
                 format!("{rel}/cols/{c}")
             }
             None => rel,
@@ -579,6 +592,9 @@ impl SchemaTree {
     fn open_schema(&mut self, conn: &str, db: &str, schema: &str, cx: &mut Context<Self>) -> Vec<(String, Kind)> {
         if !self.filter.read(cx).text().is_empty() {
             self.filter.update(cx, |f, cx| f.set_text("", cx));
+        }
+        if let Some(d) = self.store.read(cx).folder_of(conn) {
+            self.shut_folders.remove(&d.id);
         }
         vec![
             (cid(conn), Kind::Conn { id: conn.into() }),
@@ -1655,6 +1671,13 @@ impl SchemaTree {
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
 
+    /// The rows open under `id`.
+    #[cfg(feature = "checks")]
+    pub fn demo_open_under(&self, id: &str) -> Vec<String> {
+        let prefix = format!("{id}/");
+        self.rows.iter().filter(|r| r.expanded && r.id.starts_with(&prefix)).map(|r| r.id.to_string()).collect()
+    }
+
     #[cfg(feature = "checks")]
     pub fn demo_row_ids(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
@@ -1694,9 +1717,11 @@ impl SchemaTree {
             Kind::Conn { id: c } if self.conn(c, cx).is_some_and(|x| !x.engine().is_sql()) => {
                 let conn = self.conn(c, cx).expect("connected");
                 let db = conn.database().to_string();
-                let d = did(c, &db);
-                self.expanded.insert(d.clone());
-                self.load(&d, &Kind::DocDb { conn: c.clone(), db: db.clone() }, cx);
+                if !self.collapsed.contains(c) {
+                    let d = did(c, &db);
+                    self.expanded.insert(d.clone());
+                    self.load(&d, &Kind::DocDb { conn: c.clone(), db: db.clone() }, cx);
+                }
                 Some(unit(conn.nosql_tree(None)))
             }
             Kind::DocDb { conn, db } => self.conn(conn, cx).map(|c| unit(c.nosql_tree(Some(db)))),
@@ -1705,7 +1730,9 @@ impl SchemaTree {
                 match self.conn(c, cx) {
                     Some(conn) => {
                         let db = conn.database().to_string();
-                        self.expanded.insert(did(c, &db));
+                        if !self.collapsed.contains(c) {
+                            self.expanded.insert(did(c, &db));
+                        }
                         let mut loads = vec![unit(conn.databases())];
                         if !self.advanced {
                             loads.extend((!db.is_empty()).then(|| simple_db(conn.clone(), db.clone())));
@@ -1743,8 +1770,9 @@ impl SchemaTree {
             Kind::Roles { conn } => self.conn(conn, cx).map(|c| unit(c.roles())),
             Kind::Extensions { conn, db } => self.conn(conn, cx).map(|c| unit(c.extensions(db))),
             Kind::Rel { conn, db, schema, name, .. } => {
-                let cols = format!("{id}/cols");
-                self.expanded.insert(cols);
+                if !self.collapsed.contains(conn) {
+                    self.expanded.insert(format!("{id}/cols"));
+                }
                 self.conn(conn, cx).map(|c| join_all(vec![unit(c.columns(db, schema, name)), unit(c.indexes(db, schema, name)), unit(c.table_extras(db, schema, name))]))
             }
             Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
@@ -1787,12 +1815,17 @@ impl SchemaTree {
         }
     }
 
-    /// Everything shut: the folders, and every node open under them.
+    /// Everything shut: the folders, and every node under them, at every level.
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
-        self.shut_folders = self.store.read(cx).folders.iter().map(|d| d.id.clone()).collect();
-        self.expanded.clear();
+        let store = self.store.read(cx);
+        self.shut_folders = store.folders.iter().map(|d| d.id.clone()).collect();
+        // A pinned group is the one node listed when it is shut.
+        self.expanded = store.profiles.iter().map(|p| pinned_id(&p.id)).collect();
+        self.collapsed = store.profiles.iter().map(|p| p.id.clone()).collect();
         self.unfold = None;
         self.shut_task = None;
+        self.reveal = None;
+        self.picked.clear();
         self.rebuild(cx);
         if let Some(sel) = self.selected.clone()
             && !self.rows.iter().any(|r| r.id == sel)
@@ -1949,7 +1982,8 @@ impl SchemaTree {
         }
         window.focus(&self.focus, cx);
         let m = ev.modifiers();
-        if let Some(Kind::Conn { id }) = self.rows.get(ix).map(|r| r.kind.clone()) {
+        if let Some(r) = self.rows.get(ix).filter(|r| pickable(r)) {
+            let id = r.id.to_string();
             if m.shift || m.platform {
                 self.pick(ix, &id, &m);
                 return self.select(ix, cx);
@@ -1963,22 +1997,19 @@ impl SchemaTree {
         self.toggle(ix, cx);
     }
 
-    /// Shift picks the connections from the last plain click to row `ix`; ⌘ adds or drops one.
+    /// Shift picks the connections and folders from the last plain click to row `ix`; ⌘ adds or
+    /// drops one.
     fn pick(&mut self, ix: usize, id: &str, m: &gpui::Modifiers) {
-        let conn_at = |r: &Row| match &r.kind {
-            Kind::Conn { id } => Some(id.clone()),
-            _ => None,
-        };
         if m.shift {
-            let from = self.pick_anchor.as_deref().and_then(|a| self.rows.iter().position(|r| r.id.as_ref() == cid(a))).or(self.selected_ix()).unwrap_or(ix);
+            let from = self.pick_anchor.as_deref().and_then(|a| self.rows.iter().position(|r| r.id.as_ref() == a)).or(self.selected_ix()).unwrap_or(ix);
             let (lo, hi) = (from.min(ix), from.max(ix));
-            self.picked = self.rows[lo..=hi].iter().filter_map(conn_at).collect();
+            self.picked = self.rows[lo..=hi].iter().filter(|r| pickable(r)).map(|r| r.id.to_string()).collect();
             return;
         }
         if self.picked.is_empty()
-            && let Some(cur) = self.selected_ix().and_then(|s| conn_at(&self.rows[s]))
+            && let Some(cur) = self.selected_ix().map(|s| &self.rows[s]).filter(|r| pickable(r))
         {
-            self.picked.push(cur);
+            self.picked.push(cur.id.to_string());
         }
         match self.picked.iter().position(|p| p == id) {
             Some(at) => {
@@ -1989,13 +2020,59 @@ impl SchemaTree {
         self.pick_anchor = Some(id.to_string());
     }
 
-    /// The connections a drag or a move of `id` takes: every picked one when it is among them,
-    /// in the explorer's order.
+    /// The row is one of those picked, or a connection in a picked folder.
+    fn in_picked(&self, r: &Row) -> bool {
+        self.picked.len() > 1
+            && pickable(r)
+            && self.picked.iter().any(|p| **p == *r.id || r.in_folder.as_deref().is_some_and(|f| p.strip_prefix("f:") == Some(f)))
+    }
+
+    /// The connections the picked rows stand for, in the explorer's order.
+    fn picked_conns(&self, cx: &App) -> Vec<String> {
+        let store = self.store.read(cx);
+        let picked = |prefix: &str, id: &str| self.picked.iter().any(|p| p.strip_prefix(prefix) == Some(id));
+        store
+            .profiles
+            .iter()
+            .filter(|p| picked("c:", &p.id) || store.folder_of(&p.id).is_some_and(|d| picked("f:", &d.id)))
+            .map(|p| p.id.clone())
+            .collect()
+    }
+
+    /// The connections a drag of `id` takes: all that are picked when it is among them.
     fn picked_with(&self, id: &str, cx: &App) -> Vec<String> {
-        if self.picked.len() > 1 && self.picked.iter().any(|p| p == id) {
-            self.store.read(cx).profiles.iter().filter(|p| self.picked.contains(&p.id)).map(|p| p.id.clone()).collect()
-        } else {
-            vec![id.to_string()]
+        let conns = if self.picked.len() > 1 { self.picked_conns(cx) } else { vec![] };
+        if conns.iter().any(|c| c == id) { conns } else { vec![id.to_string()] }
+    }
+
+    fn picked_target(&self, cx: &App) -> Target {
+        let store = self.store.read(cx);
+        let conns = self.picked_conns(cx);
+        Target::Picked {
+            foldered: conns.iter().any(|c| store.folder_of(c).is_some()),
+            conns: conns.into_iter().map(|c| { let s = self.phase(&c, cx); (c, s) }).collect(),
+            folders: self.picked.iter().filter_map(|p| p.strip_prefix("f:")).map(str::to_string).collect(),
+            only_folders: self.picked.iter().all(|p| p.starts_with("f:")),
+        }
+    }
+
+    fn phase(&self, conn: &str, cx: &App) -> ConnPhase {
+        match self.store.read(cx).states.get(conn) {
+            None => ConnPhase::Off,
+            Some(ConnState::Connecting) => ConnPhase::Connecting,
+            Some(ConnState::Connected(_)) => ConnPhase::Connected,
+            Some(ConnState::Failed(_)) => ConnPhase::Failed,
+        }
+    }
+
+    /// The connections a menu on `t` acts on.
+    fn conns_of(&self, t: &Target, cx: &App) -> Vec<String> {
+        let store = self.store.read(cx);
+        match t {
+            Target::Conn { id, .. } => vec![id.clone()],
+            Target::Picked { conns, .. } => conns.iter().map(|(c, _)| c.clone()).collect(),
+            Target::Folder { id, .. } => store.folders.iter().find(|d| d.id == *id).map_or_else(Vec::new, |d| store.profiles.iter().filter(|p| d.holds(&p.id)).map(|p| p.id.clone()).collect()),
+            _ => vec![],
         }
     }
 
@@ -2033,12 +2110,7 @@ impl SchemaTree {
             Kind::Conn { id } => Target::Conn {
                 id: id.clone(),
                 name: store.profile(id).map(|p| p.name.clone()).unwrap_or_default(),
-                state: match store.states.get(id) {
-                    None => ConnPhase::Off,
-                    Some(ConnState::Connecting) => ConnPhase::Connecting,
-                    Some(ConnState::Connected(_)) => ConnPhase::Connected,
-                    Some(ConnState::Failed(_)) => ConnPhase::Failed,
-                },
+                state: self.phase(id, cx),
             },
             Kind::Db { conn, db } => Target::Db {
                 conn: conn.clone(),
@@ -2112,6 +2184,10 @@ impl SchemaTree {
     pub fn open_menu(&mut self, ix: Option<usize>, at: MenuAnchor, window: &mut Window, cx: &mut Context<Self>) {
         let ix = ix.filter(|_| !matches!(at, MenuAnchor::Header(_)));
         let (row, target) = match ix.and_then(|i| self.rows.get(i).cloned()) {
+            Some(r) if self.in_picked(&r) => {
+                let t = self.picked_target(cx);
+                (Some(r), t)
+            }
             Some(r) => match self.target_for(&r, cx) {
                 Some(t) => (Some(r), t),
                 None => return,
@@ -2120,7 +2196,7 @@ impl SchemaTree {
             None => (None, Target::Empty),
         };
         if let (Some(i), Some(r)) = (ix, &row) {
-            if !matches!(&r.kind, Kind::Conn { id } if self.picked.contains(id)) {
+            if !self.in_picked(r) {
                 self.picked.clear();
             }
             self.select(i, cx);
@@ -2136,9 +2212,14 @@ impl SchemaTree {
             let folders: Vec<(SharedString, Option<Hsla>)> = store.folders.iter().map(|d| (d.name.clone().into(), folder_color(d, &theme))).collect();
             let current = match &target {
                 Target::Conn { id, .. } => store.folders.iter().position(|d| d.holds(id)),
+                Target::Picked { conns, .. } if !conns.is_empty() => store.folders.iter().position(|d| conns.iter().all(|(c, _)| d.holds(c))),
                 _ => None,
             };
             let mut es = menu::with_folders(entries, &target, &folders, current);
+            if matches!(target, Target::Folder { .. }) {
+                let conns: Vec<_> = self.conns_of(&target, cx).into_iter().map(|c| { let s = self.phase(&c, cx); (c, s) }).collect();
+                es = menu::with_conns(es, &conns);
+            }
             for e in &mut es {
                 if let Entry::Sub { items, .. } = e {
                     for it in items.iter_mut() {
@@ -2298,13 +2379,13 @@ impl SchemaTree {
         };
         match (act, &m.target) {
             (Act::NewFolder, _) => self.new_folder(vec![], window, cx),
-            (Act::MoveToNewFolder, Target::Conn { id, .. }) => self.new_folder(self.picked_with(id, cx), window, cx),
-            (Act::MoveToFolder(i), Target::Conn { id, name, .. }) => {
+            (Act::MoveToNewFolder, Target::Conn { .. } | Target::Picked { .. }) => self.new_folder(self.conns_of(&m.target, cx), window, cx),
+            (Act::MoveToFolder(i), Target::Conn { .. } | Target::Picked { .. }) => {
                 if let Some(d) = self.store.read(cx).folders.get(i).cloned() {
-                    self.move_to_folder(id, name, Some(&d), cx);
+                    self.move_to_folder(self.conns_of(&m.target, cx), Some(&d), cx);
                 }
             }
-            (Act::RemoveFromFolder, Target::Conn { id, name, .. }) => self.move_to_folder(id, name, None, cx),
+            (Act::RemoveFromFolder, Target::Conn { .. } | Target::Picked { .. }) => self.move_to_folder(self.conns_of(&m.target, cx), None, cx),
             (Act::RenameFolder, Target::Folder { id, .. }) => self.start_naming(id.clone(), window, cx),
             (Act::MoveFolder(up), Target::Folder { id, .. }) => {
                 let folders = &self.store.read(cx).folders;
@@ -2320,6 +2401,10 @@ impl SchemaTree {
                 let id = id.clone();
                 self.change_folders(format!("Delete folder '{name}'"), |f| f.retain(|d| d.id != id), cx);
             }
+            (Act::DeleteFolder, Target::Picked { folders, .. }) => {
+                let gone = folders.clone();
+                self.change_folders(format!("Delete {} folders", gone.len()), |f| f.retain(|d| !gone.contains(&d.id)), cx);
+            }
             (Act::FolderColor(c), Target::Folder { id, name, .. }) => {
                 let id = id.clone();
                 let swatch = c.and_then(|i| crate::theme::SWATCHES.get(i)).map(|s| s.to_string());
@@ -2330,6 +2415,11 @@ impl SchemaTree {
                 }, cx);
             }
             (Act::Reload, Target::Header) => self.refresh_all(cx),
+            (Act::Reload, Target::Picked { .. }) => {
+                for id in self.conns_of(&m.target, cx) {
+                    self.refresh_conn(id, cx);
+                }
+            }
             (Act::Reload, _) => {
                 if let Some(i) = ix {
                     self.reload_row(i, cx);
@@ -2341,11 +2431,21 @@ impl SchemaTree {
                     self.retry(retry, cx);
                 }
             }
-            (Act::Connect, Target::Conn { id, .. }) => {
-                let id = id.clone();
-                self.expanded.insert(cid(&id));
-                self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+            (Act::Connect, Target::Conn { .. } | Target::Picked { .. } | Target::Folder { .. }) => {
+                for id in self.conns_of(&m.target, cx) {
+                    if matches!(self.phase(&id, cx), ConnPhase::Off | ConnPhase::Failed) {
+                        self.expanded.insert(cid(&id));
+                        self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+                    }
+                }
                 self.rebuild(cx);
+            }
+            (Act::Disconnect | Act::Reconnect | Act::DeleteConnection, Target::Picked { .. } | Target::Folder { .. }) => {
+                let mut conns = self.conns_of(&m.target, cx);
+                if act == Act::Disconnect {
+                    conns.retain(|c| self.phase(c, cx) == ConnPhase::Connected);
+                }
+                cx.emit(TreeEvent::ConnsAction { act, conns });
             }
             (Act::CopyName, t) => {
                 let name = match t {
@@ -2448,15 +2548,19 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// A connection into a folder (opened, so it is seen there), or out to the top level.
-    fn move_to_folder(&mut self, conn: &str, name: &str, to: Option<&dataman_core::ConnFolder>, cx: &mut Context<Self>) {
-        let conns = self.picked_with(conn, cx);
-        let label = match (to, conns.len()) {
-            (Some(d), 1) => format!("Move '{name}' to folder '{}'", d.name),
-            (None, 1) => format!("Move '{name}' out of its folder"),
-            (Some(d), n) => format!("Move {n} connections to folder '{}'", d.name),
-            (None, n) => format!("Move {n} connections out of their folders"),
+    /// Connections into a folder (opened, so they are seen there), or out to the top level. What
+    /// was picked goes on as those connections: a picked folder has handed them over.
+    fn move_to_folder(&mut self, conns: Vec<String>, to: Option<&dataman_core::ConnFolder>, cx: &mut Context<Self>) {
+        let name = |c: &String| self.store.read(cx).profile(c).map(|p| p.name.clone()).unwrap_or_default();
+        let label = match (to, conns.as_slice()) {
+            (Some(d), [c]) => format!("Move '{}' to folder '{}'", name(c), d.name),
+            (None, [c]) => format!("Move '{}' out of its folder", name(c)),
+            (Some(d), many) => format!("Move {} connections to folder '{}'", many.len(), d.name),
+            (None, many) => format!("Move {} connections out of their folders", many.len()),
         };
+        if self.picked.len() > 1 {
+            self.picked = conns.iter().map(|c| cid(c)).collect();
+        }
         let dest = to.map(|d| d.id.clone());
         if let Some(d) = &dest {
             self.shut_folders.remove(d);
@@ -2466,7 +2570,7 @@ impl SchemaTree {
                 set_folder(f, c, dest.as_deref());
             }
         }, cx);
-        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == cid(conn)) {
+        if let Some(ix) = self.selected_ix() {
             self.select(ix, cx);
         }
     }
@@ -2474,6 +2578,7 @@ impl SchemaTree {
     /// A new folder (with `conn` in it), open, selected and named in place.
     fn new_folder(&mut self, conns: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_naming(cx);
+        self.picked.clear();
         // A filter would hide the row it is named on.
         if self.filtering(cx) {
             self.clear_filter(cx);
@@ -2632,6 +2737,31 @@ impl SchemaTree {
             Entry::Item(i) if i.act == act => Some(i.checked),
             _ => None,
         })
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_menu_label(&self, act: Act) -> Option<String> {
+        let m = self.menu.as_ref()?;
+        m.entries.iter().find_map(|e| match e {
+            Entry::Item(i) if i.act == act => Some(i.label.to_string()),
+            _ => None,
+        })
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_picked_conns(&self, cx: &App) -> Vec<String> {
+        self.picked_conns(cx)
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_unpick(&mut self) {
+        self.picked.clear();
+        self.pick_anchor = None;
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_picked(&self) -> &[String] {
+        &self.picked
     }
 
     #[cfg(feature = "checks")]
@@ -3007,7 +3137,7 @@ impl SchemaTree {
             _ => None,
         };
         let is_naming = naming.is_some();
-        let picked = self.picked.len() > 1 && matches!(&r.kind, Kind::Conn { id } if self.picked.contains(id));
+        let picked = self.in_picked(r);
         let sel = self.selected.as_ref() == Some(&r.id) || picked;
         let (label_color, bold) = label_style(r.tone, sel, t);
         let hov = t.hov;
@@ -3123,7 +3253,7 @@ impl SchemaTree {
             // The row is the field's while it is named: the tree below would take the focus.
             .when(is_naming, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
             .when_some(drag_conn, |d, id| {
-                let n = if picked { self.picked.len() } else { 1 };
+                let n = if picked { self.picked_with(&id, cx).len() } else { 1 };
                 let label: SharedString = if n > 1 { format!("{n} connections").into() } else { r.label.clone() };
                 let chip = r.chip;
                 d.on_drag(DraggedConn(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
@@ -3398,6 +3528,11 @@ fn stats_meta(st: &RelStats) -> (String, Option<String>) {
         (None, Some(b)) => (b, None),
         (None, None) => (String::new(), None),
     }
+}
+
+/// A row that can be picked together with others.
+fn pickable(r: &Row) -> bool {
+    matches!(r.kind, Kind::Conn { .. } | Kind::Folder { .. })
 }
 
 fn group_row(id: &str, depth: usize, label: &'static str, n: usize, open: bool, kind: Kind) -> Row {

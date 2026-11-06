@@ -1222,9 +1222,6 @@ impl HistoryPanel {
                         h.picked.clear();
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
-                        if ev.click_count() >= 2 {
-                            return cx.notify();
-                        }
                         h.toggle_folder(&click_id, cx);
                     }))
                     // The row is the field's while it is named: the panel would take the focus.
