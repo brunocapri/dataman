@@ -638,7 +638,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     async fn settle(script: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
         for _ in 0..200 {
             pause(cx, 50).await;
-            if cx.update(|_, cx| !script.read(cx).is_running() && script.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true) {
+            if cx.update(|_, cx| !script.read(cx).is_running() && !script.read(cx).run_continues() && script.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true) {
                 break;
             }
         }

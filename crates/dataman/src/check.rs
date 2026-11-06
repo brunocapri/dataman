@@ -281,7 +281,7 @@ pub fn tab_conn(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Option<S
 }
 
 pub fn idle(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
-    cx.update(|_, cx| !tab.read(cx).is_running()).unwrap_or(true)
+    cx.update(|_, cx| !tab.read(cx).is_running() && !tab.read(cx).run_continues()).unwrap_or(true)
 }
 
 /// The text into the active tab's editor, focused, then `keys` (⌘↩ runs it).

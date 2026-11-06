@@ -954,10 +954,8 @@ mod tree_tests {
         let pid = dir.join("child.pid");
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
             let f = dir.join("cli");
-            std::fs::write(&f, format!("#!/bin/sh\nsleep 300 &\necho $! > '{}'\nwait\n", pid.display())).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::cloudauth::write_script(&f, &format!("sleep 300 &\necho $! > '{}'\nwait", pid.display()));
             f
         }
         #[cfg(windows)]
@@ -1027,6 +1025,22 @@ mod tree_tests {
         cmd.args(args).current_dir(dir.path());
         let out = run_tree(&mut cmd, Duration::from_secs(30)).await.unwrap().unwrap();
         assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("hello"));
+    }
+}
+
+/// A test's fake CLI. A fork elsewhere in the test process can hold the file's write descriptor for
+/// an instant, and exec then fails with ETXTBSY. Once one run gets through none is left.
+#[cfg(all(test, unix))]
+pub(crate) fn write_script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::write(path, format!("#!/bin/sh\n[ -z \"$DATAMAN_SCRIPT_PROBE\" ] || exit 0\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    loop {
+        match std::process::Command::new(path).env("DATAMAN_SCRIPT_PROBE", "1").status() {
+            Ok(_) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(Duration::from_millis(10)),
+            Err(e) => panic!("{}: {e}", path.display()),
+        }
     }
 }
 
@@ -1211,10 +1225,7 @@ mod tests {
     /// A fake CLI: a shell script in `dir`.
     #[cfg(unix)]
     fn fake(dir: &Path, name: &str, script: &str) {
-        use std::os::unix::fs::PermissionsExt as _;
-        let f = dir.join(name);
-        std::fs::write(&f, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&dir.join(name), script);
     }
 
     #[cfg(unix)]
@@ -1233,7 +1244,7 @@ mod tests {
         let src = TokenSource::in_dirs(vec![d.to_path_buf()]);
         let p = profile(Engine::Postgres, "srv.postgres.database.azure.com", Auth::EntraId { tenant: None });
         let all = futures_util::future::join_all((0..5).map(|_| src.token(&p))).await;
-        assert!(all.iter().all(|t| t.as_deref() == Ok(token.as_str())));
+        assert!(all.iter().all(|t| t.as_deref() == Ok(token.as_str())), "{all:?}");
         assert_eq!(runs(d), 1, "five tabs at once, one az");
         assert_eq!(std::fs::read_to_string(d.join("runs")).unwrap().trim(), "account get-access-token --output=json --resource-type=oss-rdbms");
         let signed = src.check(&p).await.unwrap();

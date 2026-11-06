@@ -44,7 +44,7 @@ async fn run(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, sql: &str, script: 
     });
     draw(cx);
     crate::editor::dispatch(cx, if script { Box::new(crate::editor::RunScript) } else { Box::new(crate::editor::RunStatement) });
-    wait(cx, |cx| cx.update(|_, cx| !tab.read(cx).is_running() && tab.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true)).await;
+    wait(cx, |cx| cx.update(|_, cx| !tab.read(cx).is_running() && !tab.read(cx).run_continues() && tab.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true)).await;
     draw(cx);
 }
 
