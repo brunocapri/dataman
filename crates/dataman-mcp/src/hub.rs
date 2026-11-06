@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -38,7 +38,7 @@ pub struct Approval {
 }
 
 /// Characters that draw as nothing, or reorder what is drawn around them.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(c,
         '\u{80}'..='\u{9F}' | '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
         | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}'
@@ -143,6 +143,22 @@ pub struct Drafted {
 
 pub const DRAFTS_NEED_APP: &str = "drafts need Dataman open; open the app and try again";
 
+pub const SHOW_NEEDS_APP: &str = "Dataman has to be open for this: ask the user to open it, then try again";
+
+/// Where `show_in_dataman` takes the user; a saved connection by the id the call resolved. Only
+/// the user's click saves anything from there.
+#[derive(Clone, Debug)]
+pub enum Place {
+    /// The new connection sheet, filled with what the agent knows (never a password).
+    NewConnection(Box<ConnectionProfile>),
+    Connection(String),
+    Protection(String),
+    AgentLogin(String),
+    AgentsGeneral,
+    SettingsMcp,
+    OutsideReview,
+}
+
 #[derive(Clone, Debug)]
 pub enum WriteShown {
     Ran { outcome: bounded::Outcome, note: Option<String> },
@@ -172,6 +188,9 @@ pub trait Front: Send + Sync {
         Box::pin(async { Vec::new() })
     }
     fn connections_changed(&self) {}
+    fn show(&self, _place: Place) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Err(SHOW_NEEDS_APP.to_string()) })
+    }
 }
 
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -182,6 +201,11 @@ pub const WAITING_PER_CLIENT: usize = 3;
 pub const WAITING: usize = 8;
 /// After a Deny, the same client's next question waits this long: no sheet right after "no".
 pub const AFTER_DENY: Duration = Duration::from_secs(5);
+
+/// `show_in_dataman` brings the window forward: this often at most, from all clients together
+/// (a client names itself), so that an agent in a loop cannot keep taking the screen.
+pub const SHOWS: usize = 4;
+pub const SHOWS_WITHIN: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Asks {
@@ -235,14 +259,24 @@ pub struct Hub {
     asks: Arc<Mutex<Asks>>,
     after_deny: Mutex<Duration>,
     types: Mutex<HashMap<String, Arc<Types>>>,
+    shows: Mutex<VecDeque<Instant>>,
+    show_limit: Mutex<(usize, Duration)>,
 }
 
 pub const SCHEMA_TTL: Duration = Duration::from_secs(30);
 
 impl Hub {
     pub fn new(dirs: Dirs, secrets: Arc<dyn SecretStore>) -> anyhow::Result<Arc<Hub>> {
-        let core = Core::new(dirs.clone(), secrets)?;
-        Ok(Arc::new(Hub {
+        Ok(Hub::of(Core::new(dirs.clone(), secrets)?, dirs))
+    }
+
+    /// With the approved rules the app keeps: what agents save through it never waits for review.
+    pub fn with_approved(dirs: Dirs, secrets: Arc<dyn SecretStore>, approved: Arc<dataman_core::approved::Approved>) -> anyhow::Result<Arc<Hub>> {
+        Ok(Hub::of(Core::with_approved(dirs.clone(), secrets, approved)?, dirs))
+    }
+
+    fn of(core: Core, dirs: Dirs) -> Arc<Hub> {
+        Arc::new(Hub {
             types: Mutex::new(HashMap::new()),
             audit: Audit::new(dirs.mcp_audit_file()),
             core,
@@ -259,7 +293,9 @@ impl Hub {
             refreshed: Mutex::new(HashMap::new()),
             asks: Arc::new(Mutex::new(Asks::default())),
             after_deny: Mutex::new(AFTER_DENY),
-        }))
+            shows: Mutex::new(VecDeque::new()),
+            show_limit: Mutex::new((SHOWS, SHOWS_WITHIN)),
+        })
     }
 
     pub fn fresh_schema(&self, id: &str, db: &str, conn: &Connection, now: bool) {
@@ -308,6 +344,32 @@ impl Hub {
 
     pub fn denied(&self, client: &str) {
         self.asks.lock().denied.insert(client.to_string(), Instant::now());
+    }
+
+    /// A place for the window to come forward now, or why not: no sooner than a question could be
+    /// asked (right after a Deny, or with questions already waiting), and within the limit.
+    pub fn show_slot(&self, client: &str) -> Result<(), String> {
+        drop(self.ask_slot(client)?);
+        let (most, within) = *self.show_limit.lock();
+        let mut g = self.shows.lock();
+        while g.front().is_some_and(|t| t.elapsed() >= within) {
+            g.pop_front();
+        }
+        if let Some(first) = g.front().filter(|_| g.len() >= most) {
+            let wait = within.saturating_sub(first.elapsed()).as_secs() + 1;
+            return Err(format!("Dataman came forward {most} times in the last {} s; tell the user where to go, or try again in {wait} s", within.as_secs()));
+        }
+        g.push_back(Instant::now());
+        Ok(())
+    }
+
+    /// The window did not come forward after all.
+    pub fn show_not_used(&self) {
+        self.shows.lock().pop_back();
+    }
+
+    pub fn set_show_limit(&self, most: usize, within: Duration) {
+        *self.show_limit.lock() = (most, within);
     }
 
     pub fn approval_timeout(&self) -> Duration {
@@ -613,6 +675,29 @@ mod tests {
         hub.denied("a");
         assert!(hub.ask_slot("a").err().unwrap().contains("just denied"));
         assert!(hub.ask_slot("b").is_ok(), "only the denied client waits");
+        std::mem::forget(hub);
+    }
+
+    #[test]
+    fn showing_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(Dirs::at(dir.path().join("d")), Arc::new(dataman_core::MemorySecrets::default())).unwrap();
+        for _ in 0..SHOWS {
+            hub.show_slot("a").unwrap();
+        }
+        assert!(hub.show_slot("a").unwrap_err().contains("came forward"));
+        assert!(hub.show_slot("another-name").unwrap_err().contains("came forward"), "renaming does not help");
+        hub.show_not_used();
+        hub.show_slot("a").expect("what did not show takes no place");
+        hub.set_show_limit(1, Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        hub.show_slot("a").expect("the window moves on");
+        hub.set_show_limit(SHOWS, SHOWS_WITHIN);
+        hub.denied("b");
+        assert!(hub.show_slot("b").unwrap_err().contains("just denied"), "no window right after a Deny");
+        let waiting: Vec<AskSlot> = (0..WAITING_PER_CLIENT).map(|_| hub.ask_slot("c").unwrap()).collect();
+        assert!(hub.show_slot("c").unwrap_err().contains("already wait"), "nor over questions waiting");
+        drop(waiting);
         std::mem::forget(hub);
     }
 

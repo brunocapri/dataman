@@ -125,7 +125,7 @@ fn stdio_session() {
     let init = m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "protocol-test", "version": "1"}}));
     let r = &init["result"];
     assert_eq!(r["serverInfo"]["name"], "dataman", "{init}");
-    assert!(r["capabilities"]["tools"].is_object() && r["capabilities"]["resources"].is_object(), "{init}");
+    assert!(r["capabilities"]["tools"].is_object() && r["capabilities"]["resources"].is_object() && r["capabilities"]["prompts"].is_object(), "{init}");
     assert!(r["instructions"].as_str().unwrap().contains("list_connections"));
     m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
     assert_eq!(m.call("ping", json!({}))["result"], json!({}));
@@ -148,6 +148,8 @@ fn stdio_session() {
     for n in ["add_favorite", "rename_favorite", "import_favorites"] {
         assert_eq!((hint(n, "readOnlyHint"), hint(n, "destructiveHint")), (json!(false), json!(false)), "{n}");
     }
+
+    assert_eq!((hint("show_in_dataman", "readOnlyHint"), hint("show_in_dataman", "destructiveHint")), (json!(true), json!(false)), "it only navigates");
 
     let (err, text) = m.tool("list_connections", json!({}));
     assert!(!err, "{text}");
@@ -229,6 +231,73 @@ fn stdio_session() {
     assert!(unavailable["approval"].get("by").is_none());
     let draft = lines.iter().find(|l| l["connection"] == "full" && l["tool"] == "open_query" && l["query"] == "DELETE FROM orders").unwrap();
     assert!(draft["outcome"] == "refused" && draft.get("draft").is_none() && draft.get("rows").is_none(), "{draft}");
+}
+
+#[test]
+fn stdio_quickstart_prompt() {
+    let cfg = config();
+    let mut m = Mcp::spawn(cfg.path());
+    let init = m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let list = m.call("prompts/list", json!({}));
+    assert_eq!(list["result"]["prompts"][0]["name"], "quickstart", "{list}");
+    let got = m.call("prompts/get", json!({"name": "quickstart"}));
+    let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap_or_else(|| panic!("{got}"));
+    assert_eq!(got["result"]["messages"][0]["role"], "user");
+    for said in ["Never read a password out of", "show_in_dataman", "create_connection", "agents_protection", "Never edit connections.toml or settings.toml by hand", "ask the user to open it"] {
+        assert!(text.contains(said), "{said}: {text}");
+    }
+    assert!(init["result"]["instructions"].as_str().unwrap().contains(text), "the instructions hold the same script");
+    let other = m.call("prompts/get", json!({"name": "nope"}));
+    assert!(other["error"]["message"].as_str().unwrap().contains("unknown prompt"), "{other}");
+}
+
+/// No app: every destination says Dataman has to be open, and what is judged before that is
+/// judged the same; what could change state does not even parse.
+#[test]
+fn stdio_show_in_dataman_needs_the_app() {
+    let cfg = config();
+    let file = cfg.path().join("dataman/connections.toml");
+    let before = std::fs::read_to_string(&file).unwrap();
+    let mut m = Mcp::spawn(cfg.path());
+    m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    for args in [
+        json!({"destination": "new_connection", "name": "shop", "host": "db.internal", "user": "app"}),
+        json!({"destination": "connection", "connection": "local pg"}),
+        json!({"destination": "agents_protection", "connection": "local pg"}),
+        json!({"destination": "agent_login", "connection": "local pg"}),
+        json!({"destination": "agents_general"}),
+        json!({"destination": "settings_mcp"}),
+        json!({"destination": "outside_review"}),
+    ] {
+        let (err, text) = m.tool("show_in_dataman", args.clone());
+        assert!(err && text.contains("Dataman has to be open") && text.contains("ask the user to open it"), "{args}: {text}");
+    }
+    let (err, text) = m.tool("show_in_dataman", json!({"destination": "connection", "connection": "prod"}));
+    assert!(err && text.contains("off") && !text.contains("10.255"), "{text}");
+    let (err, text) = m.tool("show_in_dataman", json!({"destination": "connection", "connection": "nope"}));
+    assert!(err && text.contains("no connection named"), "{text}");
+    let (err, text) = m.tool("show_in_dataman", json!({"destination": "connection"}));
+    assert!(err && text.contains("\"connection\" is required"), "{text}");
+    let (err, text) = m.tool("show_in_dataman", json!({"destination": "rm_rf"}));
+    assert!(err && text.contains("must be one of"), "{text}");
+    for k in ["password", "connection_string", "mcp", "env", "read_only", "sslmode", "tier", "sql", "ssh_host", "path"] {
+        let (err, text) = m.tool("show_in_dataman", json!({"destination": "new_connection", k: "x"}));
+        assert!(err && text.contains("unknown argument"), "{k}: {text}");
+    }
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "nothing saved");
+    let log = std::fs::read_to_string(cfg.path().join("dataman/mcp-audit.jsonl")).unwrap();
+    assert!(log.lines().any(|l| l.contains("show_in_dataman") && l.contains("\"local pg\"")), "{log}");
+
+    // MCP switched off in Settings: everything stays refused, the new tool and the prompt too.
+    std::fs::write(cfg.path().join("dataman/settings.toml"), "mcp_enabled = false\n").unwrap();
+    for args in [json!({"destination": "settings_mcp"}), json!({"destination": "agents_general"}), json!({"destination": "connection", "connection": "local pg"})] {
+        let (err, text) = m.tool("show_in_dataman", args.clone());
+        assert!(err && text.contains("turned off") && !text.contains("has to be open"), "{args}: {text}");
+    }
+    let got = m.call("prompts/get", json!({"name": "quickstart"}));
+    assert!(got["error"]["message"].as_str().unwrap().contains("turned off"), "{got}");
 }
 
 /// A favorite saved on a connection agents cannot reach (production: off by default) is not

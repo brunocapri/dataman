@@ -2,7 +2,7 @@
 //! through its socket: tools/list, then every tool on PostgreSQL, MySQL and SQL Server and the
 //! NoSQL tools on MongoDB, Elasticsearch, OpenSearch and Redis; the tiers set by clicking
 //! Settings › MCP; destructive writes answered with Deny and Allow on the sheet; drafts in the
-//! agent tab.
+//! agent tab; show_in_dataman to every destination.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -15,9 +15,9 @@ use dataman_core::config::{ConnectionProfile, Engine};
 use crate::app::Workspace;
 use crate::check::*;
 
-const TOOLS: [&str; 27] = [
+const TOOLS: [&str; 28] = [
     "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows",
-    "create_connection", "update_connection", "create_agent_login",
+    "create_connection", "update_connection", "create_agent_login", "show_in_dataman",
     "run_query", "open_query", "explain", "explain_analyze", "execute",
     "list_favorites", "run_favorite", "add_favorite", "remove_favorite", "rename_favorite", "import_favorites",
     "nosql_query", "nosql_execute",
@@ -25,12 +25,26 @@ const TOOLS: [&str; 27] = [
 ];
 
 /// One `dataman-mcp` process, as an MCP client starts it.
-struct Client {
+pub(crate) struct Client {
     child: Child,
     io: Mutex<(ChildStdin, BufReader<ChildStdout>, u64)>,
 }
 
 impl Client {
+    /// Started and introduced, as an MCP client does; what it answered to initialize.
+    pub(crate) async fn ready(config: &std::path::Path) -> Result<(Arc<Client>, Value), String> {
+        let c = Arc::new(Client::start(config)?);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let t = c.clone();
+        std::thread::spawn(move || {
+            let i = t.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}));
+            t.notify("notifications/initialized");
+            let _ = tx.send(i);
+        });
+        let init = rx.await.map_err(|e| e.to_string())??;
+        Ok((c, init))
+    }
+
     fn start(config: &std::path::Path) -> Result<Client, String> {
         let bin = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name(format!("dataman-mcp{}", std::env::consts::EXE_SUFFIX));
         // The binary finds the app under $XDG_CONFIG_HOME/dataman: there, a link to this run's
@@ -90,7 +104,7 @@ impl Drop for Client {
 }
 
 /// tools/call on a thread of its own (the app answers on this one): (is_error, text).
-async fn call(c: &Arc<Client>, tool: &str, args: Value, _: &mut AsyncWindowContext) -> (bool, String) {
+pub(crate) async fn call(c: &Arc<Client>, tool: &str, args: Value, _: &mut AsyncWindowContext) -> (bool, String) {
     let rx = start(c, tool, args);
     rx.await.unwrap_or((true, "the call thread went away".into()))
 }
@@ -134,6 +148,155 @@ async fn sheet_answer(ws: &Entity<Workspace>, allow: bool, cx: &mut AsyncWindowC
     Some(format!("{req:?}"))
 }
 
+/// Times show_in_dataman has brought the window forward.
+pub(crate) fn forward(cx: &mut AsyncWindowContext) -> usize {
+    cx.update(|_, cx| cx.try_global::<crate::mcp::McpHost>().map_or(0, |h| h.forward)).unwrap_or(0)
+}
+
+fn dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Entity<crate::conn_dialog::ConnDialog>> {
+    cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten()
+}
+
+async fn close_dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    key(cx, "escape");
+    until(cx, 5, |cx| dialog(ws, cx).is_none()).await
+}
+
+/// The Agents area as it stands: showing, on which page, about which connection.
+fn agents_at(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<(crate::agents::Page, Option<String>)> {
+    cx.update(|_, cx| (ws.read(cx).view == dataman_core::layout::NavView::Agents).then(|| ws.read(cx).agents.read(cx)).map(|a| (a.page, a.conn.clone()))).ok().flatten()
+}
+
+/// Each destination opens its place with the window brought forward, and the file of connections
+/// stays as it was until the user's click. What is closed to agents goes nowhere.
+async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &ConnectionProfile, my: &ConnectionProfile, r: &mut Report, cx: &mut AsyncWindowContext) {
+    use crate::agents::Page;
+    let core = core(ws, cx);
+    let Some(hub) = cx.update(|_, cx| crate::mcp::shared(&core, cx).hub().ok().map(|h| h.0)).ok().flatten() else {
+        r.check("the app's hub", false, "");
+        return;
+    };
+    hub.set_show_limit(100, std::time::Duration::from_secs(60));
+    let show = |dest: &str| json!({"destination": dest});
+    let on = |dest: &str, c: &str| json!({"destination": dest, "connection": c});
+    let file = || std::fs::read_to_string(core.dirs.connections_file()).unwrap_or_default();
+
+    let res = call(client, "create_connection", json!({"name": "e2e no password", "host": "127.0.0.1", "port": 5998, "user": "x"}), cx).await;
+    r.check("create_connection without a password", !res.0, short(&res));
+    until(cx, 5, |cx| cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.iter().any(|p| p.name == "e2e no password")).unwrap_or(false)).await;
+    let saved = file();
+
+    // A new connection's dialog, filled in.
+    let fronted = forward(cx);
+    let res = call(client, "show_in_dataman", json!({"destination": "new_connection", "name": "e2e filled", "engine": "mysql", "host": "db.example.internal", "port": 3307, "user": "app", "database": "orders"}), cx).await;
+    let open = until(cx, 5, |cx| dialog(ws, cx).is_some() && probed("dlg-agent-made", cx).is_some()).await;
+    let shown = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).current(cx)).ok());
+    let right = shown.as_ref().is_some_and(|(p, pw)| (p.name.as_str(), p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()) == ("e2e filled", Engine::MySql, "db.example.internal", 3307, "app", "orders") && pw.is_empty());
+    let step = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).step()).ok());
+    let string = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).demo_conn_str(cx)).ok()).unwrap_or_default();
+    r.check("…its connection string says the TLS its fields say", string.contains("db.example.internal:3307") && string.contains("ssl-mode=REQUIRED"), &string);
+    r.check("new_connection: the dialog filled in, no password, says an agent filled it, window forward", !res.0 && open && right && step == Some(crate::conn_dialog::Step::Connection) && forward(cx) == fronted + 1, format!("{} {open} {step:?} {:?}", short(&res), shown.map(|s| s.0.name)));
+    crate::outside_check::snap("agent-filled", cx);
+    // The user's sheet is theirs: no agent replaces it or moves them away.
+    let res = call(client, "show_in_dataman", show("agents_general"), cx).await;
+    let still = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).current(cx).0.name).ok());
+    r.check("…and another show_in_dataman while it is open is refused, the dialog as it was", res.0 && res.1.contains("sheet is open") && still.as_deref() == Some("e2e filled") && agents_at(ws, cx).is_none() && forward(cx) == fronted + 1, short(&res));
+    let closed = close_dialog(ws, cx).await;
+    r.check("…closed without saving, nothing is saved", closed && file() == saved && !core.config.connections().iter().any(|p| p.name == "e2e filled"), "");
+
+    // A saved connection's dialog: at its password where it has none.
+    let res = call(client, "show_in_dataman", on("connection", "e2e no password"), cx).await;
+    let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
+    let d = dialog(ws, cx);
+    let asks = d.as_ref().and_then(|d| cx.update(|window, cx| (d.read(cx).demo_asks_password(), d.read(cx).password_focus(cx).is_focused(window), d.read(cx).current(cx).0.name)).ok());
+    r.check("connection: its dialog at the password, for one with none saved, marked as an agent's", !res.0 && open && asks == Some((true, true, "e2e no password".into())) && probed("dlg-agent-made", cx).is_some() && forward(cx) == fronted + 2, format!("{} {asks:?}", short(&res)));
+    r.check("…closed, nothing saved", close_dialog(ws, cx).await && file() == saved, "");
+    let res = call(client, "show_in_dataman", on("connection", "e2e renamed by agent"), cx).await;
+    let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
+    let asks = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).demo_asks_password()).ok());
+    r.check("connection: with a password saved, the dialog as it is", !res.0 && open && asks == Some(false), format!("{} {asks:?}", short(&res)));
+    close_dialog(ws, cx).await;
+    let res = call(client, "show_in_dataman", on("connection", &pg.name), cx).await;
+    let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
+    r.check("…and one the user saved has no agent's mark", !res.0 && open && probed("dlg-agent-made", cx).is_none(), short(&res));
+    close_dialog(ws, cx).await;
+
+    let fronted = forward(cx);
+    let res = call(client, "show_in_dataman", on("agents_protection", &pg.name), cx).await;
+    let there = until(cx, 5, |cx| agents_at(ws, cx) == Some((Page::Protection, Some(pg.id.clone())))).await;
+    r.check("agents_protection: Protection, on that connection, window forward", !res.0 && there && forward(cx) == fronted + 1, format!("{} {:?}", short(&res), agents_at(ws, cx)));
+    let res = call(client, "show_in_dataman", on("agent_login", &my.name), cx).await;
+    let there = until(cx, 5, |cx| agents_at(ws, cx) == Some((Page::Protection, Some(my.id.clone()))) && probed("agents-login-section", cx).is_some()).await;
+    r.check("agent_login: Protection on that connection, at its agent login", !res.0 && there && forward(cx) == fronted + 2, format!("{} {:?}", short(&res), agents_at(ws, cx)));
+    let res = call(client, "show_in_dataman", show("agents_general"), cx).await;
+    let there = until(cx, 5, |cx| agents_at(ws, cx).is_some_and(|a| a.0 == Page::General)).await;
+    r.check("agents_general: Agents › General", !res.0 && there && forward(cx) == fronted + 3, short(&res));
+    let res = call(client, "show_in_dataman", show("settings_mcp"), cx).await;
+    let at = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.as_ref().map(|v| v.read(cx).demo_section())).ok().flatten();
+    let there = until(cx, 5, |cx| at(cx) == Some("MCP")).await;
+    r.check("settings_mcp: Settings › MCP", !res.0 && there && forward(cx) == fronted + 4, short(&res));
+    key(cx, "escape");
+    until(cx, 5, |cx| at(cx).is_none()).await;
+    let res = call(client, "show_in_dataman", show("outside_review"), cx).await;
+    let up = cx.update(|_, cx| ws.read(cx).outside_review.is_some()).unwrap_or(true);
+    r.check("outside_review with nothing waiting says so, and nothing comes forward", res.0 && res.1.contains("nothing edited") && !up && forward(cx) == fronted + 4, short(&res));
+    r.check("nothing any of these did saved anything", file() == saved, "");
+
+    // Closed to agents: nowhere to go, and nothing moves.
+    let res = call(client, "update_connection", json!({"connection": "e2e renamed by agent", "mcp": "off"}), cx).await;
+    let shut = core.config.connections().into_iter().find(|p| p.name == "e2e no password");
+    if let Some(mut p) = shut {
+        p.agents_refused = true;
+        let _ = core.config.upsert(p);
+    }
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.connections_on_disk(window, cx)));
+    r.check("a connection turned off", !res.0, short(&res));
+    let (fronted, at_before) = (forward(cx), agents_at(ws, cx));
+    let mut went = Vec::new();
+    for name in ["e2e renamed by agent", "e2e no password", "no such connection"] {
+        for dest in ["connection", "agents_protection", "agent_login"] {
+            let res = call(client, "show_in_dataman", on(dest, name), cx).await;
+            if !res.0 {
+                went.push(format!("{dest} {name}"));
+            }
+        }
+    }
+    r.check("MCP off, agents refused or no such name: refused everywhere, the app where it was", went.is_empty() && dialog(ws, cx).is_none() && agents_at(ws, cx) == at_before && forward(cx) == fronted, format!("{went:?}"));
+
+    // A twin of a closed connection: the same answer as any other, and it starts closed. Only the
+    // user's click saves it, and Skip keeps it closed.
+    let res = call(client, "show_in_dataman", json!({"destination": "new_connection", "name": "e2e twin", "host": "127.0.0.1", "port": 5999, "user": "x"}), cx).await;
+    let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
+    let d = dialog(ws, cx);
+    let tier = d.as_ref().and_then(|d| cx.update(|_, cx| d.read(cx).demo_tier()).ok());
+    r.check("the twin of a closed connection: answered like any other, MCP off in the dialog", !res.0 && open && tier == Some(dataman_core::McpAccess::Off), format!("{} {tier:?}", short(&res)));
+    let walked = match &d {
+        Some(d) => sheet_to_last_step(d, cx).await,
+        None => false,
+    };
+    let skipped = walked && click_probe("dlg-skip", cx);
+    let saved_twin = until(cx, 10, |_| core.config.connections().iter().any(|p| p.name == "e2e twin")).await;
+    let twin = core.config.connections().into_iter().find(|p| p.name == "e2e twin");
+    r.check("…the user's click saves it, Skip leaves agents out, and it is the user's now", skipped && saved_twin && twin.as_ref().is_some_and(|p| p.mcp_access() == dataman_core::McpAccess::Off && !p.agent_made), format!("{walked} {skipped} {:?}", twin.map(|p| (p.mcp, p.agent_made))));
+    until(cx, 5, |cx| dialog(ws, cx).is_none()).await;
+
+    let fronted = forward(cx);
+    let _ = core.settings.update(|s| s.mcp_enabled = false);
+    let res = call(client, "show_in_dataman", show("settings_mcp"), cx).await;
+    let up = cx.update(|_, cx| ws.read(cx).settings_view.is_some()).unwrap_or(true);
+    r.check("MCP switched off in Settings: refused too", res.0 && res.1.contains("turned off") && !up && forward(cx) == fronted, short(&res));
+    let _ = core.settings.update(|s| s.mcp_enabled = true);
+
+    // A looping agent: past the limit it stops taking the screen.
+    let at_before = agents_at(ws, cx);
+    hub.set_show_limit(1, std::time::Duration::from_secs(60));
+    let res = call(client, "show_in_dataman", show("settings_mcp"), cx).await;
+    let up = cx.update(|_, cx| ws.read(cx).settings_view.is_some()).unwrap_or(true);
+    r.check("past the limit: refused, nothing comes forward, nothing moves", res.0 && res.1.contains("came forward") && !up && agents_at(ws, cx) == at_before && forward(cx) == fronted, short(&res));
+    hub.set_show_limit(dataman_mcp::hub::SHOWS, dataman_mcp::hub::SHOWS_WITHIN);
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::Explorer, window, cx)));
+}
+
 pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let mut profiles: Vec<(Engine, ConnectionProfile, String)> = Vec::new();
     for e in [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis] {
@@ -174,33 +337,34 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     }
     r.check("Settings › MCP turns agent access on; each connection's sheet sets its tier to Write", enabled && tiers, format!("{enabled} {tiers}"));
 
-    let client = match Client::start(&core.dirs.config) {
-        Ok(c) => Arc::new(c),
+    let (client, i) = match Client::ready(&core.dirs.config).await {
+        Ok(c) => c,
         Err(e) => {
             r.check("dataman-mcp starts", false, e);
             return;
         }
     };
-    let init = {
+    let (tools, prompt) = {
         let c = client.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         std::thread::spawn(move || {
-            let i = c.request("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "1"}}));
-            c.notify("notifications/initialized");
-            let t = c.request("tools/list", json!({}));
-            let _ = tx.send((i, t));
+            let _ = tx.send((c.request("tools/list", json!({})), c.request("prompts/get", json!({"name": "quickstart"}))));
         });
-        rx.await
+        match rx.await {
+            Ok(got) => got,
+            Err(e) => (Err(e.to_string()), Err(String::new())),
+        }
     };
-    let Ok((Ok(i), Ok(t))) = init else {
-        r.check("dataman-mcp answers initialize and tools/list", false, format!("{init:?}"));
+    let Ok(t) = tools else {
+        r.check("dataman-mcp answers tools/list", false, format!("{tools:?}"));
         return;
     };
+    r.check("the quickstart prompt, also in the instructions", prompt.as_ref().is_ok_and(|p| p["messages"][0]["content"]["text"].as_str().is_some_and(|q| q.contains("show_in_dataman") && i["instructions"].as_str().is_some_and(|s| s.contains(q)))), format!("{prompt:?}"));
     let mut names: Vec<String> = t["tools"].as_array().map(|a| a.iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect()).unwrap_or_default();
     names.sort();
     let mut want: Vec<String> = TOOLS.iter().map(|s| s.to_string()).collect();
     want.sort();
-    r.check("dataman-mcp over stdio: initialize, and tools/list has all 27 tools", i["serverInfo"]["name"].is_string() && names == want, format!("{names:?}"));
+    r.check("dataman-mcp over stdio: initialize, and tools/list has all 28 tools", i["serverInfo"]["name"].is_string() && names == want, format!("{names:?}"));
 
     let listed = call(&client, "list_connections", json!({}), cx).await;
     r.check("list_connections (through the app) lists the app's connections", profiles.iter().all(|(_, p, _)| listed.1.contains(&p.name)), short(&listed));
@@ -386,6 +550,8 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         }
         r.check("…removed again after", gone.is_ok(), format!("{gone:?}"));
     }
+
+    show_destinations(ws, &client, &pg, &profiles[1].1, r, cx).await;
 
     let _ = sql(&core, &pg, &pgpw, "DROP SCHEMA IF EXISTS e2e_mcp CASCADE", cx).await;
     drop(client);
