@@ -23,28 +23,39 @@ fn pending(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> usize {
     cx.update(|_, cx| tab.read(cx).edit.read(cx).pending_count()).unwrap_or(0)
 }
 
-/// Clicks the cell, ↩ opens its editor, the text replaces the value, ↩ keeps it.
+/// Clicks the cell, ↩ opens its editor, the text replaces the value, ↩ keeps it. Until the edit is
+/// pending: a commit's re-run can start after the commit looks finished, ↩ only says "Still running"
+/// until it has, and its arrival closes an editor already open.
 async fn edit_cell(tab: &Entity<QueryTab>, id: &str, col: usize, text: Option<&str>, cx: &mut AsyncWindowContext) -> bool {
-    let Some(row) = row_of(tab, id, cx) else { return false };
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-    draw(cx);
-    let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
-    click(cx, p);
-    key(cx, "enter");
-    // A commit re-runs the query, and ↩ only queues the edit while the target resolves again.
+    let before = pending(tab, cx);
     let editing = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).demo_editing()).unwrap_or(false);
-    if !until(cx, 10, editing).await {
-        return false;
-    }
-    match text {
-        Some(t) => {
-            key(cx, "cmd-a");
-            typ(cx, t);
+    for _ in 0..15 {
+        let Some(row) = row_of(tab, id, cx) else {
+            pause(cx, 200).await;
+            continue;
+        };
+        draw(cx);
+        let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
+        click(cx, p);
+        key(cx, "enter");
+        if !until(cx, 1, editing).await {
+            continue;
         }
-        None => key(cx, "cmd-shift-n"),
+        match text {
+            Some(t) => {
+                key(cx, "cmd-a");
+                typ(cx, t);
+            }
+            None => key(cx, "cmd-shift-n"),
+        }
+        key(cx, "enter");
+        until(cx, 1, |cx| !editing(cx)).await;
+        if pending(tab, cx) > before {
+            return true;
+        }
     }
-    key(cx, "enter");
-    until(cx, 10, |cx| !editing(cx)).await
+    false
 }
 
 /// The review opens in the side panel as it slides in: its Commit button, clicked once there.
