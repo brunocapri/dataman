@@ -269,7 +269,9 @@ struct Row {
     hl: Option<Range<usize>>,
     tone: Tone,
     icon: Option<(Icon, Option<Hsla>)>,
-    blank_icon: bool,
+    /// In the chevron's place, on rows that never expand: the labels next to it stay aligned
+    /// with those of the rows without one.
+    gutter_icon: Option<(Icon, Hsla)>,
     chip: Option<Hsla>,
     chip_dim: bool,
     tip: Option<SharedString>,
@@ -295,7 +297,7 @@ impl Row {
             hl: None,
             tone: Tone::Normal,
             icon: None,
-            blank_icon: false,
+            gutter_icon: None,
             chip: None,
             chip_dim: false,
             tip: None,
@@ -319,8 +321,8 @@ impl Row {
         self.icon = Some((i, Some(c)));
         self
     }
-    fn blank_icon(mut self) -> Row {
-        self.blank_icon = true;
+    fn gutter_icon(mut self, i: Icon, c: Hsla) -> Row {
+        self.gutter_icon = Some((i, c));
         self
     }
     fn meta(mut self, m: impl Into<SharedString>, k: Meta) -> Row {
@@ -2786,8 +2788,9 @@ impl SchemaTree {
             return r.meta.clone();
         }
         let extra = if r.chip.is_some() || r.tunnel || r.lock { 40. } else { 0. };
-        let em = crate::theme::advance();
-        let room = w - 65. - extra - r.depth as f32 * 12. - r.label.chars().count() as f32 * 12. * em;
+        let em = crate::theme::ADVANCE;
+        let icon_slot = if matches!(r.kind, Kind::Column { .. }) { 0. } else { 14. + 5. };
+        let room = w - 46. - icon_slot - extra - r.depth as f32 * 12. - r.label.chars().count() as f32 * 12. * em;
         match fit_meta_text(&r.meta, r.meta_short.as_ref().map(|s| s.as_ref()), (room / (11. * em)).floor() as i64) {
             Some(s) => s.into(),
             None => r.meta.clone(),
@@ -3185,7 +3188,15 @@ impl SchemaTree {
                     }
                 }))
             })
-            .child(div().w(px(10.)).flex_none().flex().justify_center().children(chevron))
+            .child(
+                div()
+                    .w(px(10.))
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .children(chevron)
+                    .children(r.gutter_icon.map(|(i, c)| icon(i).flex_none().size(px(14.)).text_color(c))),
+            )
             .when_some(r.tip.clone(), |d, tip| d.tip(ui::text_tooltip(tip)))
             .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
             .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
@@ -3197,7 +3208,6 @@ impl SchemaTree {
                 let fill = self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
                 ui::folder_icon(open, fill, 14., if dropping { t.acc_t } else { c })
             }))
-            .when(r.blank_icon, |d| d.child(div().flex_none().size(px(14.))))
             .child(
                 div()
                     .flex_1()
@@ -3327,7 +3337,7 @@ fn column_row(cols_id: &str, depth: usize, col: &dataman_core::schema::Column, p
         meta.push_str(" !");
     }
     let row = Row::new(format!("{cols_id}/{}", col.name), depth, col.name.clone(), Kind::Column { name: col.name.clone() }).meta(meta, Meta::Plain);
-    if col.primary_key { row.icon_colored(Icon::Key, t.num) } else { row.blank_icon() }
+    if col.primary_key { row.gutter_icon(Icon::Key, t.num) } else { row }
 }
 
 /// The server's own databases, which the simple view leaves out (unless the connection opens
@@ -3938,7 +3948,18 @@ impl Render for SchemaTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataman_core::schema::{Function, Relation, Trigger, UserType};
+    use dataman_core::schema::{Column, Function, Relation, Trigger, UserType};
+
+    #[test]
+    fn column_names_line_up_with_or_without_a_key() {
+        let t = Theme::dark();
+        let col = |primary_key| Column { name: "id".into(), type_name: "int4".into(), nullable: None, primary_key, default: None };
+        let (key, plain) = (column_row("c", 3, &col(true), true, &t), column_row("c", 3, &col(false), true, &t));
+        assert!(key.icon.is_none() && plain.icon.is_none(), "an icon before the label would push it right");
+        assert_eq!(key.gutter_icon.map(|(i, _)| i), Some(Icon::Key));
+        assert!(plain.gutter_icon.is_none());
+        assert!(key.meta.ends_with(" PK"));
+    }
 
     #[test]
     fn a_connection_moved_slides_past_the_ones_it_passes() {

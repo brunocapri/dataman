@@ -36,8 +36,8 @@ impl ThemePref {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Translucency {
-    Off,
     #[default]
+    Off,
     #[serde(alias = "high", alias = "medium", alias = "low")]
     On,
 }
@@ -52,21 +52,17 @@ impl Translucency {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum UiFont {
     #[default]
-    GeistMono,
     Lilex,
-    ZedMono,
-    JetBrainsMono,
+    GeistMono,
 }
 
 impl UiFont {
-    pub const ALL: [UiFont; 4] = [UiFont::GeistMono, UiFont::Lilex, UiFont::ZedMono, UiFont::JetBrainsMono];
+    pub const ALL: [UiFont; 2] = [UiFont::Lilex, UiFont::GeistMono];
 
     pub fn family(self) -> &'static str {
         match self {
-            UiFont::GeistMono => "Geist Mono",
             UiFont::Lilex => "Lilex",
-            UiFont::ZedMono => "Zed Mono",
-            UiFont::JetBrainsMono => "JetBrains Mono",
+            UiFont::GeistMono => "Geist Mono",
         }
     }
 
@@ -374,9 +370,9 @@ fn load(path: &Path, approved: &Approved) -> State {
                 log::warn!("ignoring {}: {e}", path.display());
                 Settings::default()
             });
-            // The oldest files: `transparency = false` meant an opaque window.
-            if s.transparency.take() == Some(false) && !text.contains("translucency") {
-                s.translucency = Translucency::Off;
+            // The oldest files: `transparency` was the switch, whichever way it was set.
+            if let Some(on) = s.transparency.take().filter(|_| !text.contains("translucency")) {
+                s.translucency = if on { Translucency::On } else { Translucency::Off };
             }
             s
         }
@@ -463,7 +459,7 @@ mod tests {
         let dirs = Dirs::at(dir.path().join("dataman"));
         let s = SettingsStore::open(&dirs);
         assert_eq!(s.get().theme, ThemePref::Dark);
-        assert_eq!(s.get().translucency, Translucency::On);
+        assert_eq!(s.get().translucency, Translucency::Off);
         s.update(|s| s.theme = ThemePref::System).unwrap();
         assert_eq!(SettingsStore::open(&dirs).get().theme, ThemePref::System);
         std::fs::write(dirs.settings_file(), "theme = \"light\"\nfuture = 3\n").unwrap();
@@ -521,10 +517,10 @@ mod tests {
     fn font_defaults_roundtrips_and_ignores_unknown_names() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
-        assert_eq!(SettingsStore::open(&dirs).get().font, UiFont::GeistMono);
+        assert_eq!(SettingsStore::open(&dirs).get().font, UiFont::Lilex);
         std::fs::create_dir_all(&dirs.config).unwrap();
         std::fs::write(dirs.settings_file(), "theme = \"light\"\n").unwrap();
-        assert_eq!(SettingsStore::open(&dirs).get().font, UiFont::GeistMono);
+        assert_eq!(SettingsStore::open(&dirs).get().font, UiFont::Lilex);
         for f in UiFont::ALL {
             SettingsStore::open(&dirs).update(|s| s.font = f).unwrap();
             let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
@@ -532,14 +528,15 @@ mod tests {
             let s = SettingsStore::open(&dirs).get();
             assert_eq!((s.font, s.theme), (f, ThemePref::Light));
         }
-        for (v, want) in [("jetbrains-mono", UiFont::JetBrainsMono), ("ZedMono", UiFont::ZedMono), ("LILEX", UiFont::Lilex), ("geist_mono", UiFont::GeistMono)] {
+        for (v, want) in [("LILEX", UiFont::Lilex), ("geist_mono", UiFont::GeistMono)] {
             std::fs::write(dirs.settings_file(), format!("font = \"{v}\"\n")).unwrap();
             assert_eq!(SettingsStore::open(&dirs).get().font, want, "{v}");
         }
-        for v in ["\"Comic Mono\"", "12", "[\"Lilex\"]"] {
+        // The last two were offered once: a file that saved one of them opens on the default.
+        for v in ["\"Comic Mono\"", "12", "[\"Geist Mono\"]", "\"Zed Mono\"", "\"JetBrains Mono\""] {
             std::fs::write(dirs.settings_file(), format!("theme = \"light\"\nfont = {v}\npage_size = 200\n")).unwrap();
             let s = SettingsStore::open(&dirs).get();
-            assert_eq!((s.font, s.theme, s.page_size), (UiFont::GeistMono, ThemePref::Light, 200), "{v}");
+            assert_eq!((s.font, s.theme, s.page_size), (UiFont::Lilex, ThemePref::Light, 200), "{v}");
         }
     }
 
@@ -549,13 +546,13 @@ mod tests {
         let dirs = Dirs::at(dir.path().join("dataman"));
         assert_eq!(SettingsStore::open(&dirs).get().system_font, None);
         std::fs::create_dir_all(&dirs.config).unwrap();
-        std::fs::write(dirs.settings_file(), "font = \"Lilex\"\n").unwrap();
+        std::fs::write(dirs.settings_file(), "font = \"Geist Mono\"\n").unwrap();
         assert_eq!(SettingsStore::open(&dirs).get().system_font, None);
         SettingsStore::open(&dirs).update(|s| s.system_font = Some("Menlo".into())).unwrap();
         let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
         assert!(text.contains("system_font = \"Menlo\""), "{text}");
         let s = SettingsStore::open(&dirs).get();
-        assert_eq!((s.system_font.as_deref(), s.font), (Some("Menlo"), UiFont::Lilex));
+        assert_eq!((s.system_font.as_deref(), s.font), (Some("Menlo"), UiFont::GeistMono));
         SettingsStore::open(&dirs).update(|s| s.system_font = None).unwrap();
         assert_eq!(SettingsStore::open(&dirs).get().system_font, None);
     }

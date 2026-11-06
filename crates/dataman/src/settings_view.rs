@@ -101,7 +101,7 @@ enum Row {
 
 const ROWS: [(Row, Section, &str, &str); 25] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
-    (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
+    (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
     (Row::FontSize, Section::Appearance, "Code font size", "editor text"),
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),

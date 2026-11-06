@@ -583,7 +583,7 @@ impl PlanView {
                                     t.acc,
                                     gpui::BorderStyle::Solid,
                                 ));
-                                let fits = ((bw - 8.) / (11. * crate::theme::advance())) as usize;
+                                let fits = ((bw - 8.) / (11. * crate::theme::ADVANCE)) as usize;
                                 if fits >= 4 {
                                     let v = if p2.analyzed { fmt_ms(n.excl_ms) } else { fmt_cost(n.excl_cost) };
                                     let mut s = format!("{} · {v}", n.title);

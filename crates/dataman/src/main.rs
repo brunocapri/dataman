@@ -358,10 +358,8 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Actual Size", ZoomReset),
             MenuItem::separator(),
             MenuItem::submenu(Menu::new("Font").items([
-                MenuItem::action("Geist Mono", FontGeistMono),
                 MenuItem::action("Lilex", FontLilex),
-                MenuItem::action("Zed Mono", FontZedMono),
-                MenuItem::action("JetBrains Mono", FontJetBrainsMono),
+                MenuItem::action("Geist Mono", FontGeistMono),
             ])),
             ]),
         ),

@@ -85,20 +85,13 @@ pub fn mono() -> SharedString {
     system_font().unwrap_or_else(|| ui_font().family().into())
 }
 
-pub fn advance() -> f32 {
-    if ui_font() == UiFont::ZedMono { 0.5 } else { 0.6 }
-}
+/// Of the embedded families, in ems. Where a system font differs, the width of the text is
+/// only an estimate; the grid measures its own.
+pub const ADVANCE: f32 = 0.6;
 
 /// All OFL; the licenses are next to them in `assets/fonts`.
 fn faces(f: UiFont) -> [&'static [u8]; 5] {
     match f {
-        UiFont::GeistMono => [
-            include_bytes!("../assets/fonts/GeistMono-Regular.ttf"),
-            include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
-            include_bytes!("../assets/fonts/GeistMono-SemiBold.ttf"),
-            include_bytes!("../assets/fonts/GeistMono-Bold.ttf"),
-            include_bytes!("../assets/fonts/GeistMono-Italic.ttf"),
-        ],
         UiFont::Lilex => [
             include_bytes!("../assets/fonts/Lilex-Regular.ttf"),
             include_bytes!("../assets/fonts/Lilex-Medium.ttf"),
@@ -106,19 +99,12 @@ fn faces(f: UiFont) -> [&'static [u8]; 5] {
             include_bytes!("../assets/fonts/Lilex-Bold.ttf"),
             include_bytes!("../assets/fonts/Lilex-Italic.ttf"),
         ],
-        UiFont::ZedMono => [
-            include_bytes!("../assets/fonts/ZedMono-Regular.ttf"),
-            include_bytes!("../assets/fonts/ZedMono-Medium.ttf"),
-            include_bytes!("../assets/fonts/ZedMono-SemiBold.ttf"),
-            include_bytes!("../assets/fonts/ZedMono-Bold.ttf"),
-            include_bytes!("../assets/fonts/ZedMono-Italic.ttf"),
-        ],
-        UiFont::JetBrainsMono => [
-            include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
-            include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf"),
-            include_bytes!("../assets/fonts/JetBrainsMono-SemiBold.ttf"),
-            include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
-            include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
+        UiFont::GeistMono => [
+            include_bytes!("../assets/fonts/GeistMono-Regular.ttf"),
+            include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
+            include_bytes!("../assets/fonts/GeistMono-SemiBold.ttf"),
+            include_bytes!("../assets/fonts/GeistMono-Bold.ttf"),
+            include_bytes!("../assets/fonts/GeistMono-Italic.ttf"),
         ],
     }
 }
@@ -397,19 +383,19 @@ impl Theme {
         const W: u32 = 0xffffff;
         Theme {
             mode: Mode::Dark,
-            glass: ca(0x0d0d0d, GLASS_ALPHA),
-            bg: c(0x060606),
-            panel: ca(0x060606, PANEL_ALPHA),
-            card: ca(0x0d0d0d, CARD_ALPHA),
-            pop: c(0x161616),
-            field: c(0x0e0e0e),
+            glass: ca(0x181818, GLASS_ALPHA),
+            bg: c(0x111111),
+            panel: ca(0x111111, PANEL_ALPHA),
+            card: ca(0x181818, CARD_ALPHA),
+            pop: c(0x212121),
+            field: c(0x191919),
             field_b: c(0x5e5e5e),
             hov: ca(W, 0.045),
             prs: ca(W, 0.08),
             cur_line: ca(W, 0.035),
-            line: c(0x262626),
-            line2: c(0x363636),
-            grid_line: c(0x1d1d1d),
+            line: c(0x303030),
+            line2: c(0x404040),
+            grid_line: c(0x272727),
             edge: ca(W, 0.14),
             edge_acc: ca(0x4c7dff, 0.2),
             tx: c(0xe8eaf4),
@@ -646,7 +632,7 @@ fn theme_for(mode: Mode, cx: &App) -> Theme {
 }
 
 pub fn glass_level(cx: &App) -> Translucency {
-    cx.try_global::<WindowGlass>().map_or(Translucency::On, |g| g.level)
+    cx.try_global::<WindowGlass>().map_or(Translucency::default(), |g| g.level)
 }
 
 pub fn effective_level(level: Translucency) -> Translucency {
@@ -855,7 +841,7 @@ mod tests {
         assert_eq!((GLASS_ALPHA, PANEL_ALPHA), (0.86, 0.07));
         for t in [Theme::dark(), Theme::light()] {
             let on = t.clone().at(Translucency::On);
-            assert_eq!((on.glass.a, on.panel.a, on.alt.a), (t.glass.a, t.panel.a, t.alt.a), "{:?} on is the default", t.mode);
+            assert_eq!((on.glass.a, on.panel.a, on.alt.a), (t.glass.a, t.panel.a, t.alt.a), "{:?} on keeps the glass", t.mode);
             let (_, alpha) = gpui_stack(&[on.glass, on.panel]);
             let want = if t.mode == Mode::Dark { 0.93 } else { 1. };
             assert!((alpha - want).abs() < 1e-4, "{:?}: surface alpha {alpha}", t.mode);

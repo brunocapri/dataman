@@ -77,8 +77,6 @@ actions!(
         TranslucencyOff,
         FontGeistMono,
         FontLilex,
-        FontZedMono,
-        FontJetBrainsMono,
         ZoomIn,
         ZoomOut,
         ZoomReset,
@@ -3028,8 +3026,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &TranslucencyOff, w, cx| theme::set_translucency(Translucency::Off, w, cx)))
             .on_action(cx.listener(|_, _: &FontGeistMono, _, cx| theme::set_font(dataman_core::UiFont::GeistMono, cx)))
             .on_action(cx.listener(|_, _: &FontLilex, _, cx| theme::set_font(dataman_core::UiFont::Lilex, cx)))
-            .on_action(cx.listener(|_, _: &FontZedMono, _, cx| theme::set_font(dataman_core::UiFont::ZedMono, cx)))
-            .on_action(cx.listener(|_, _: &FontJetBrainsMono, _, cx| theme::set_font(dataman_core::UiFont::JetBrainsMono, cx)))
             .on_action(cx.listener(|_, _: &ZoomIn, w, cx| theme::set_zoom(theme::zoom_step(theme::zoom(), 1), w, cx)))
             .on_action(cx.listener(|_, _: &ZoomOut, w, cx| theme::set_zoom(theme::zoom_step(theme::zoom(), -1), w, cx)))
             .on_action(cx.listener(|_, _: &ZoomReset, w, cx| theme::set_zoom(1.0, w, cx)))
