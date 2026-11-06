@@ -1144,7 +1144,7 @@ impl HistoryPanel {
                                 d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3))
                             })
                             .child(div().flex_1())
-                            .child(div().flex_none().text_color(rcolor).child(result)),
+                            .child(div().id(("hist-result", ix)).flex_none().text_color(rcolor).when_some(e.error.clone().filter(|_| e.outcome == Outcome::Error), |d, full| d.tip(ui::error_tip(full))).child(result)),
                     )
                     .child(
                         div()

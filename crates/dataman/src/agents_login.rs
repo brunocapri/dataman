@@ -769,7 +769,7 @@ impl AgentsPage {
                     .text_size(px(crate::theme::text::UI))
                     .line_height(px(18.))
                     .child(div().flex_1().min_w_0().text_color(if *ok { t.tx2 } else { t.err }).child(text.clone()))
-                    .when(!*ok, |d| d.child(copy_btn(t, "agents-login-note-copy", copy, cx)))
+                    .when(!*ok, |d| d.child(ui::copy_error(t, "agents-login-note-copy", copy)))
                     .into_any_element(),
             );
         }
@@ -819,13 +819,8 @@ impl AgentsPage {
                     .flex_row()
                     .items_start()
                     .gap(px(12.))
-                    .px(px(12.))
-                    .py(px(10.))
-                    .border_1()
-                    .when(!*ok, |d| d.border_color(t.err).bg(t.err_s))
-                    .when(*ok, |d| d.border_color(t.line))
                     .child(div().flex_1().min_w_0().text_color(if *ok { t.tx2 } else { t.err }).child(text.clone()))
-                    .child(copy_btn(t, "agents-login-checks-error-copy", text.clone(), cx))
+                    .child(ui::copy_error(t, "agents-login-checks-error-copy", text.clone()))
                     .into_any_element(),
                 (None, false) => wait("No checks yet: Verify runs them.".into()).into_any_element(),
             });
@@ -871,11 +866,8 @@ impl AgentsPage {
                             .gap(px(10.))
                             .px(px(10.))
                             .py(px(8.))
-                            .bg(t.err_s)
-                            .border_1()
-                            .border_color(t.err.opacity(0.4))
                             .child(div().flex_1().min_w_0().text_color(t.err).child(c.detail.clone()))
-                            .child(copy_btn(t, SharedString::from(format!("agents-login-check-copy-{k}")), c.detail.clone(), cx)),
+                            .child(ui::copy_error(t, format!("agents-login-check-copy-{k}"), c.detail.clone())),
                     );
                 }
                 sec = sec.child(row);
@@ -989,7 +981,7 @@ impl AgentsPage {
             None => col.child(div().text_color(t.tx3).child("Reading what the login has now…")),
             Some(Err(e)) => {
                 let pid = p.clone();
-                col.child(div().text_color(t.err).child(e.clone())).child(div().flex().flex_row().child(ui::button(t, "agents-login-drift-retry", ui::Btn::Secondary).h(px(28.)).child("Try again").on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_drift(&pid, cx)))))
+                col.child(ui::error_block(t, "agents-login-drift-error", e.clone())).child(div().flex().flex_row().child(ui::button(t, "agents-login-drift-retry", ui::Btn::Secondary).h(px(28.)).child("Try again").on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_drift(&pid, cx)))))
             }
             Some(Ok(d)) => {
                 let n = d.changes.len();
@@ -1060,7 +1052,7 @@ impl AgentsPage {
         let title = format!("Create {user} on {}", p.name);
         let rv = match review {
             None => return (title, div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("Checking your login and what the rules allow…").into_any_element(), ui::modal_footer(t).into_any_element()),
-            Some(Err(e)) => return (title, div().flex_1().p(px(20.)).text_color(t.err).child(e.clone()).into_any_element(), ui::modal_footer(t).into_any_element()),
+            Some(Err(e)) => return (title, ui::error_block(t, "agents-login-review-error", e.clone()).flex_1().p(px(20.)).into_any_element(), ui::modal_footer(t).into_any_element()),
             Some(Ok(rv)) => rv,
         };
         let plan = &rv.plan;
@@ -1102,13 +1094,8 @@ impl AgentsPage {
                     .flex_row()
                     .items_start()
                     .gap(px(12.))
-                    .border_1()
-                    .border_color(t.err)
-                    .bg(t.err_s)
-                    .px(px(12.))
-                    .py(px(10.))
                     .child(div().flex_1().min_w_0().text_color(t.err).child(copy.clone()))
-                    .child(ui::button(t, "agents-login-error-copy", ui::Btn::Secondary).flex_none().h(px(26.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+                    .child(ui::copy_error(t, "agents-login-error-copy", copy)),
             );
         }
         for (i, l) in plan.lacks.iter().enumerate() {
@@ -1120,13 +1107,8 @@ impl AgentsPage {
                     .flex_row()
                     .items_start()
                     .gap(px(12.))
-                    .border_1()
-                    .border_color(t.err)
-                    .bg(t.err_s)
-                    .px(px(12.))
-                    .py(px(10.))
                     .child(div().flex_1().min_w_0().text_color(t.err).child(l.clone()))
-                    .child(copy_btn(t, SharedString::from(format!("agents-login-lacks-copy-{i}")), l.clone(), cx)),
+                    .child(ui::copy_error(t, format!("agents-login-lacks-copy-{i}"), l.clone())),
             );
         }
         let opt_row = |id: &'static str, on: bool, text: String, sub: Option<&str>| {
@@ -1265,10 +1247,10 @@ impl AgentsPage {
         let lead = "Drops the login and only what Dataman made for it (views, their schema or database, its role), revokes what it holds, and forgets its password. Nothing Dataman didn't make is touched. Agents are then refused here until you create a new login or let them use yours.";
         let mut head = div().flex_none().px(px(20.)).py(px(14.)).border_b_1().border_color(t.line).flex().flex_col().gap(px(10.)).line_height(px(18.)).child(div().text_color(t.tx2).child(lead));
         if let Some(Err(e)) = plan {
-            head = head.child(div().text_color(t.err).child(e.clone()));
+            head = head.child(ui::error_block(t, "agents-login-plan-error", e.clone()));
         }
         if let Some(e) = error {
-            head = head.child(div().text_color(t.err).child(e.to_string()));
+            head = head.child(ui::error_block(t, "agents-login-remove-error", e.to_string()));
         }
         if unreachable {
             head = head
@@ -1480,10 +1462,6 @@ fn check_mark(t: &Theme, c: &live::Check) -> gpui::Div {
 }
 
 /// A Copy button for `text`.
-fn copy_btn(t: &Theme, id: impl Into<SharedString>, text: String, cx: &mut Context<AgentsPage>) -> gpui::Stateful<gpui::Div> {
-    ui::button(t, id.into(), ui::Btn::Secondary).flex_none().h(px(26.)).px(px(10.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()))))
-}
-
 fn prod_tag(t: &Theme) -> gpui::Div {
     div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn).bg(t.warn_s).child("PRODUCTION")
 }

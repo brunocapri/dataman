@@ -887,7 +887,7 @@ impl SettingsView {
                             .text_ellipsis()
                             .text_size(px(crate::theme::text::UI))
                             .text_color(color)
-                            .when(err, |d| d.tip(ui::text_tooltip(s.clone())))
+                            .when(err, |d| d.tip(ui::error_tip(s.clone())))
                             .child(s)
                     }))
                     .when(enabled && offered, |d| {
@@ -978,7 +978,7 @@ impl SettingsView {
                                     }))
                             }),
                     )
-                    .children(problem.map(|p| div().max_w(px(420.)).text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(p)))
+                    .children(problem.map(|p| ui::error_block(t, "project-problem", p).max_w(px(520.)).text_size(px(crate::theme::text::SMALL))))
                     .children(review.map(|n| {
                         div()
                             .flex()

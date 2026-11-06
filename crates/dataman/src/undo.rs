@@ -186,7 +186,7 @@ impl Workspace {
                     self.undo.done.push_back(e);
                 }
             }
-            Err(why) => self.notice(format!("Cannot {} {}: {why}", if back { "undo" } else { "redo" }, e.label), cx),
+            Err(why) => self.notice_err(format!("Cannot {} {}: {why}", if back { "undo" } else { "redo" }, e.label), cx),
         }
         cx.notify();
     }

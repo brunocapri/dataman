@@ -15,7 +15,7 @@ use crate::assets::{Icon, icon};
 use crate::grid::ui_count;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, Theme, metrics};
-use crate::ui::{self, Btn};
+use crate::ui::{self, Btn, Tipped};
 
 actions!(export_dialog, [CloseExport, StartExport, StopExport]);
 
@@ -33,7 +33,7 @@ pub fn bind_keys(cx: &mut App) {
 pub enum ExportEvent {
     Close,
     Run,
-    Finished(String),
+    Finished { line: String, failed: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -442,7 +442,7 @@ impl ExportView {
                     Err(e) => JobState::Failed(format!("{e:#}")),
                 };
                 if !v.visible {
-                    cx.emit(ExportEvent::Finished(finished_line(&job.state)));
+                    cx.emit(ExportEvent::Finished { line: finished_line(&job.state), failed: matches!(job.state, JobState::Failed(_)) });
                 }
                 cx.notify();
             });
@@ -784,14 +784,17 @@ impl Render for ExportView {
             Some(JobState::Done(s)) if !s.cancelled => Some(s.path.clone()),
             _ => None,
         };
+        let failed = self.job.as_ref().and_then(|j| if let JobState::Failed(e) = &j.state { Some(e.clone()) } else { None });
         let mut footer = ui::modal_footer(&t).child(
             div()
+                .id("ex-status")
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .text_size(px(crate::theme::text::UI))
+                .when_some(failed, |d, e| d.tip(ui::error_tip(e)))
                 .when_some(status, |d, (s, c)| d.text_color(c).child(s)),
         );
         if running {
@@ -888,9 +891,13 @@ impl Workspace {
                 w.export = None;
                 w.run_active(window, cx);
             }
-            ExportEvent::Finished(line) => {
+            ExportEvent::Finished { line, failed } => {
                 w.export = None;
-                w.notice(line.clone(), cx);
+                if *failed {
+                    w.notice_err(line.clone(), cx);
+                } else {
+                    w.notice(line.clone(), cx);
+                }
             }
         })
         .detach();

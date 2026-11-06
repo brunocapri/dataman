@@ -1320,7 +1320,7 @@ impl Render for ReviewPanel {
         let table = e.table_name();
         let pill = match (&report, applying) {
             (_, true) => Some(("committing…", t.acc, t.acc_s)),
-            (Some(r), _) if !r.committed => Some(("rolled back", t.err, t.err_s)),
+            (Some(r), _) if !r.committed => Some(("rolled back", t.err, gpui::transparent_black())),
             _ => None,
         };
         let header = div()
@@ -1392,16 +1392,24 @@ impl Render for ReviewPanel {
                 Outcome::Conflict { kind: ConflictKind::Changed, .. } => Some(()),
                 _ => None,
             });
+            let copied = report_errors(r);
             div()
                 .mx(px(14.))
                 .p(px(12.))
-                .bg(if conflicts > 0 { t.warn_s } else { t.err_s })
                 .border_1()
-                .border_color(if conflicts > 0 { t.warn } else { t.err })
+                .border_color(t.line)
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(div().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
+                        .when(!copied.is_empty(), |d| d.child(ui::copy_error(&t, "rv-error-copy", copied))),
+                )
                 .children(r.error.clone().filter(|e| !r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))).map(|e| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx).child(e)))
                 .children(r.outcomes.iter().map(|o| {
                     let (g, c, what): (&str, Hsla, String) = match &o.outcome {
@@ -1673,4 +1681,13 @@ mod tests {
         assert_eq!(typed_value("", false, false), Some(t("")), "empty text is not NULL");
         assert_eq!(typed_value("42", false, true), Some(t("42")));
     }
+}
+
+/// What a failed apply said, whole: its error and every change's, as Copy error takes them.
+fn report_errors(r: &ApplyReport) -> String {
+    let each = r.outcomes.iter().filter_map(|o| match &o.outcome {
+        Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } => Some(format!("{}: {message}", o.index + 1)),
+        _ => None,
+    });
+    r.error.iter().cloned().chain(each).collect::<Vec<_>>().join("\n")
 }

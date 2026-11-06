@@ -104,6 +104,7 @@ pub enum ActivityEvent {
     OpenSql { sql: String, explain: bool },
     Confirm(Pending),
     Notice(String),
+    Failed(String),
     Details { toggle: bool },
 }
 
@@ -638,9 +639,9 @@ impl ActivityView {
                 self.then_notice(
                     async move {
                         match task.await {
-                            Ok(true) => format!("{verb} pid {pid}"),
-                            Ok(false) => format!("pid {pid} is gone"),
-                            Err(e) => format!("{e:#}"),
+                            Ok(true) => Ok(format!("{verb} pid {pid}")),
+                            Ok(false) => Ok(format!("pid {pid} is gone")),
+                            Err(e) => Err(format!("{e:#}")),
                         }
                     },
                     cx,
@@ -651,8 +652,8 @@ impl ActivityView {
                 self.then_notice(
                     async move {
                         match task.await {
-                            Ok(()) => "pg_stat_statements reset".to_string(),
-                            Err(e) => format!("{e:#}"),
+                            Ok(()) => Ok("pg_stat_statements reset".to_string()),
+                            Err(e) => Err(format!("{e:#}")),
                         }
                     },
                     cx,
@@ -661,11 +662,11 @@ impl ActivityView {
         }
     }
 
-    fn then_notice(&mut self, f: impl std::future::Future<Output = String> + 'static, cx: &mut Context<Self>) {
+    fn then_notice(&mut self, f: impl std::future::Future<Output = Result<String, String>> + 'static, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let msg = f.await;
             let _ = this.update(cx, |m, cx| {
-                cx.emit(ActivityEvent::Notice(msg));
+                cx.emit(msg.map_or_else(ActivityEvent::Failed, ActivityEvent::Notice));
                 m.refresh_now(cx);
             });
         })
@@ -1244,11 +1245,11 @@ impl ActivityView {
     }
 
     fn render_statements_state(&self, t: &Theme, st: &Statements, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let (label, color) = match st {
-            Statements::NotInstalled => ("not installed".to_string(), t.tx3),
-            Statements::NotLoaded => ("not loaded".to_string(), t.warn),
-            Statements::Failed(e) => (e.lines().next().unwrap_or("").to_string(), t.err),
-            Statements::Rows(_) => (String::new(), t.tx3),
+        let label = match st {
+            Statements::NotInstalled => div().text_color(t.tx3).child("not installed").into_any_element(),
+            Statements::NotLoaded => div().text_color(t.warn).child("not loaded").into_any_element(),
+            Statements::Failed(e) => ui::error_line(t, "act-statements-error", e.clone()).max_w(px(480.)).into_any_element(),
+            Statements::Rows(_) => div().into_any_element(),
         };
         div()
             .size_full()
@@ -1262,7 +1263,7 @@ impl ActivityView {
                     .items_center()
                     .gap(px(10.))
                     .child(div().text_color(t.tx2).child("pg_stat_statements"))
-                    .child(div().text_color(color).child(label))
+                    .child(label)
                     .child(
                         ui::button(t, "act-create-pgss", Btn::Secondary)
                             .h(px(26.))
@@ -1614,6 +1615,7 @@ impl crate::app::Workspace {
                 }
             }
             ActivityEvent::Notice(msg) => w.notice(msg.clone(), cx),
+            ActivityEvent::Failed(msg) => w.notice_err(msg.clone(), cx),
             ActivityEvent::Details { toggle } => {
                 let open = matches!(&w.side, Some(crate::app::Side::Feature("activity", _, crate::app::Bound::Tab(id))) if *id == tab_id);
                 if open && *toggle {

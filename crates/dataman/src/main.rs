@@ -55,6 +55,8 @@ mod fades;
 mod find;
 mod fmt;
 #[cfg(feature = "checks")]
+mod errors_check;
+#[cfg(feature = "checks")]
 mod find_check;
 #[cfg(feature = "checks")]
 mod fk_check;

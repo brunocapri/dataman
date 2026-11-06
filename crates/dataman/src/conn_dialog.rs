@@ -2181,7 +2181,7 @@ impl ConnDialog {
         let label = method_label(kind, self.user.read(cx).text(), self.password_there(cx));
         let status = self.sign_in[k].line(cli).map(|(glyph, text)| {
             let signed_in = matches!(self.sign_in[k], SignIn::Ok { .. });
-            let why = if let SignIn::Failed { title, body, .. } = &self.sign_in[k] { (!body.is_empty()).then(|| format!("{title}. {body}")) } else { None };
+            let failed = if let SignIn::Failed { title, body, .. } = &self.sign_in[k] { Some(if body.is_empty() { title.clone() } else { format!("{title}\n{body}") }) } else { None };
             div()
                 .id(("auth-status", k))
                 .flex_1()
@@ -2194,7 +2194,10 @@ impl ConnDialog {
                 .text_size(px(crate::theme::text::UI))
                 .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(if signed_in { t.ok } else { t.tx3 }).child(glyph))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if signed_in { t.tx } else { t.tx3 }).child(text.clone()))
-                .tip(ui::text_tooltip(why.unwrap_or(text)))
+                .map(|d| match failed {
+                    Some(full) => d.tip(ui::error_tip(full)),
+                    None => d.tip(ui::text_tooltip(text)),
+                })
         });
         let row = ui::selectable(div().id(("auth-row", k)).h(px(38.)).px(px(8.)).flex().flex_row().items_center().gap(px(12.)).cursor_pointer(), t, on, true)
             .when(!on, |d| d.opacity(0.5).hover(move |s| s.opacity(1.).bg(hov)))
@@ -2315,7 +2318,7 @@ impl ConnDialog {
                     .text_size(px(crate::theme::text::UI))
                     .child(div().text_size(px(crate::theme::text::TINY)).text_color(gc).child(glyph))
                     .child(div().text_color(tc).child(text))
-                    .tip(ui::text_tooltip(tip))
+                    .map(|d| if matches!(state, AgentAdd::Failed(_)) { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
             });
             let add = (r.installed && *state != AgentAdd::Done).then(|| {
                 let id = format!("agent-add-{}", a.id);
@@ -2377,6 +2380,7 @@ impl ConnDialog {
         let shown = |s: String, c: Hsla, lines: usize| div().overflow_hidden().line_clamp(lines).text_ellipsis().text_color(c).child(s);
         let tip = if body.is_empty() { title.clone() } else { format!("{title}\n{body}") };
         let first = body.lines().next().unwrap_or("").to_string();
+        let failed = matches!(self.test, Test::Failed { .. } | Test::Invalid(_));
         Some(
             ui::probe(
                 "dlg-status",
@@ -2390,7 +2394,7 @@ impl ConnDialog {
                     .line_height(px(17.))
                     .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(color).child(glyph))
                     .child(div().flex_1().min_w_0().flex().flex_col().child(shown(title, t.tx, 2)).when(!first.is_empty(), |d| d.child(shown(first, t.tx3, 3))))
-                    .tip(ui::text_tooltip(tip)),
+                    .map(|d| if failed { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) }),
             ),
         )
     }
@@ -2634,8 +2638,9 @@ pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
         }
         None => {
             let msg = format!("{e:#}");
-            let title = msg.lines().next().unwrap_or(&msg).to_string();
-            (title, hint.unwrap_or_default().to_string(), hint.is_none() && dataman_core::needs_password(e))
+            let (title, rest) = msg.split_once('\n').unwrap_or((&msg, ""));
+            let body = [rest, hint.unwrap_or_default()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+            (title.to_string(), body, hint.is_none() && dataman_core::needs_password(e))
         }
     }
 }
