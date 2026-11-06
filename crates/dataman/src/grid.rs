@@ -713,6 +713,12 @@ impl ResultGrid {
         }
     }
 
+    /// What a new row's cells say, and whether each is a grey placeholder.
+    #[cfg(feature = "checks")]
+    pub fn demo_new_row(&self, i: usize) -> Vec<(Option<String>, bool)> {
+        self.decor.as_ref().and_then(|d| d.virtual_rows.get(i)).map_or(Vec::new(), |r| r.cells.iter().map(|c| (c.text.clone().flatten(), c.ghost)).collect())
+    }
+
     #[cfg(feature = "checks")]
     pub fn demo_editing(&self) -> bool {
         self.overlay.is_some()

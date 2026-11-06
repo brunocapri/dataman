@@ -98,6 +98,13 @@ pub struct Caps {
     pub server_parse_check: bool,
     /// One process holds the file at a time (DuckDB): another app's lock is said so.
     pub exclusive_lock: bool,
+    /// Its names for a UUID column, in lower case. SQLite takes any type name: `UUID` as declared;
+    /// MySQL has none of its own, MariaDB's is `uuid`.
+    pub uuid_types: &'static [&'static str],
+    /// It shows a UUID in upper case.
+    pub uuid_upper: bool,
+    /// An `INTEGER PRIMARY KEY` left out of an INSERT takes the next rowid.
+    pub rowid_key: bool,
 }
 
 impl Caps {
@@ -122,6 +129,9 @@ impl Caps {
         file: false,
         server_parse_check: false,
         exclusive_lock: false,
+        uuid_types: &["uuid"],
+        uuid_upper: false,
+        rowid_key: false,
     };
 
     pub(crate) const BASIC: Caps = Caps {
@@ -145,15 +155,18 @@ impl Caps {
         file: false,
         server_parse_check: false,
         exclusive_lock: false,
+        uuid_types: &[],
+        uuid_upper: false,
+        rowid_key: false,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
 
-    pub const MYSQL: Caps = Caps { schemas: false, functions: true, triggers: true, ..Caps::BASIC };
+    pub const MYSQL: Caps = Caps { schemas: false, functions: true, triggers: true, uuid_types: &["uuid"], ..Caps::BASIC };
     pub const SQL_SERVER: Caps =
-        Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, ..Caps::BASIC };
-    pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, ..Caps::BASIC };
-    pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, ..Caps::BASIC };
+        Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, uuid_types: &["uniqueidentifier"], uuid_upper: true, ..Caps::BASIC };
+    pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, ..Caps::BASIC };
+    pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], ..Caps::BASIC };
 
     /// The engine's, from its `EngineSpec`.
     pub fn of(engine: Engine) -> Caps {
