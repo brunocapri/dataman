@@ -1432,7 +1432,7 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| {
             w.store.update(cx, |s, cx| s.reload(cx));
-            w.ask_delete_connection(other.id.clone(), window, cx);
+            w.ask_delete_connections(vec![other.id.clone()], window, cx);
         })
     });
     let asked = until(cx, 5, |cx| probed("dc-drop-agent", cx).is_some()).await;

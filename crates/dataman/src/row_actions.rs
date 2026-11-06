@@ -28,6 +28,8 @@ actions!(
 );
 
 const CONFIRM: &str = "ConfirmDeleteConnection";
+/// How many names the sheet deleting several lists before "and n more".
+const NAMES_LISTED: usize = 6;
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONFIRM);
@@ -242,8 +244,7 @@ impl Workspace {
 
     fn conn_action(&mut self, act: Act, id: String, window: &mut Window, cx: &mut Context<Self>) {
         match act {
-            Act::Disconnect => self.request_disconnect(id, false, window, cx),
-            Act::Reconnect => self.request_disconnect(id, true, window, cx),
+            Act::Disconnect | Act::Reconnect | Act::DeleteConnection => self.conns_action(act, vec![id], window, cx),
             Act::NewTab => {
                 self.open_sql_tab(&id, None, "", false, window, cx);
             }
@@ -251,7 +252,16 @@ impl Workspace {
             Act::Activity => self.open_activity(&id, window, cx),
             Act::EditConnection => self.open_dialog(Some(id), window, cx),
             Act::DuplicateConnection => self.duplicate_connection(&id, window, cx),
-            Act::DeleteConnection => self.request_delete_connection(id, false, window, cx),
+            _ => {}
+        }
+    }
+
+    /// What a connection and several together do the same way.
+    pub(crate) fn conns_action(&mut self, act: Act, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        match act {
+            Act::Disconnect => self.request_disconnect(ids, false, window, cx),
+            Act::Reconnect => self.request_disconnect(ids, true, window, cx),
+            Act::DeleteConnection => self.request_delete_connections(ids, false, window, cx),
             _ => {}
         }
     }
@@ -462,50 +472,72 @@ impl Workspace {
         self.notice(format!("Copied {url}"), cx);
     }
 
-    pub(crate) fn ask_delete_connection(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn ask_delete_connections(&mut self, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open(cx) {
             return;
         }
         self.hold_focus(crate::app::Modal::Sheet, window, cx);
-        self.confirm_delete = Some(id);
+        self.confirm_delete = Some(ids);
         self.drop_agent_login = true;
         window.focus(&self.confirm_delete_focus, cx);
         cx.notify();
     }
 
     fn resolve_delete(&mut self, delete: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.confirm_delete.take() else { return };
+        let Some(ids) = self.confirm_delete.take() else { return };
         self.drop_focus(crate::app::Modal::Sheet, cx);
         if delete {
-            self.delete_connection(&id, cx);
+            self.delete_connections(&ids, cx);
         }
         let f = self.tree.focus_handle(cx);
         window.focus(&f, cx);
         cx.notify();
     }
 
-    pub(crate) fn delete_connection(&mut self, id: &str, cx: &mut Context<Self>) {
-        let name = self.store.read(cx).profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string());
-        let profile = self.store.read(cx).profile(id).cloned();
-        let dropping = profile.as_ref().filter(|p| self.drop_agent_login && p.agent_login.is_some()).cloned();
-        // The agent login goes from the server first, on the user's login (its password read
-        // before the connection's own goes from the Keychain).
-        if let Some(p) = dropping.clone() {
-            self.drop_agent_login_of(p, cx);
-        }
-        match self.remove_connection(id, cx) {
-            Ok((mut d, kept)) => {
-                if dropping.is_some() {
-                    // Undo brings the connection back without the login it no longer has.
-                    (d.profile.agent_login, d.profile.agents_refused, d.agent_password) = (None, true, None);
-                }
-                match kept {
-                    Some(k) => self.notice(format!("Deleted the connection {name}, but {k}"), cx),
-                    None => self.notice(format!("Deleted the connection {name}"), cx),
-                }
-                self.did(format!("Delete connection '{name}'"), crate::undo::Op::ConnDeleted(Box::new(d)));
+    /// One undo step, however many go.
+    pub(crate) fn delete_connections(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let mut ops = Vec::with_capacity(ids.len());
+        let mut last = String::new();
+        let (mut stayed, mut failed) = (Vec::new(), Vec::new());
+        for id in ids {
+            let name = self.store.read(cx).profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string());
+            let profile = self.store.read(cx).profile(id).cloned();
+            let dropping = profile.as_ref().filter(|p| self.drop_agent_login && p.agent_login.is_some()).cloned();
+            // The agent login goes from the server first, on the user's login (its password read
+            // before the connection's own goes from the Keychain).
+            if let Some(p) = dropping.clone() {
+                self.drop_agent_login_of(p, cx);
             }
-            Err(e) => self.notice(format!("Could not delete {name}: {e:#}"), cx),
+            match self.remove_connection(id, cx) {
+                Ok((mut d, kept)) => {
+                    if dropping.is_some() {
+                        // Undo brings the connection back without the login it no longer has.
+                        (d.profile.agent_login, d.profile.agents_refused, d.agent_password) = (None, true, None);
+                    }
+                    stayed.extend(kept.map(|k| if ids.len() == 1 { k } else { format!("{name}: {k}") }));
+                    ops.push(crate::undo::Op::ConnDeleted(Box::new(d)));
+                    last = name;
+                }
+                Err(e) => failed.push(format!("Could not delete {name}: {e:#}")),
+            }
+        }
+        let mut said = match ops.len() {
+            0 => String::new(),
+            1 => format!("Deleted the connection {last}"),
+            n => format!("Deleted {n} connections"),
+        };
+        if !stayed.is_empty() {
+            said.push_str(&format!(", but {}", stayed.join("; ")));
+        }
+        if !failed.is_empty() {
+            let sep = if said.is_empty() { "" } else { ". " };
+            said.push_str(&format!("{sep}{}", failed.join("; ")));
+        }
+        self.notice(said, cx);
+        match ops.len() {
+            0 => {}
+            1 => self.did(format!("Delete connection '{last}'"), ops.remove(0)),
+            n => self.did(format!("Delete {n} connections"), crate::undo::Op::Many(ops)),
         }
     }
 
@@ -541,14 +573,28 @@ impl Workspace {
     }
 
     pub(crate) fn render_confirm_delete(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let id = self.confirm_delete.as_ref()?;
+        let ids = self.confirm_delete.as_ref()?;
         let t = cx.theme();
         let store = self.store.read(cx);
-        let name = store.profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone());
-        let summary = store.profile(id).map(|p| p.summary()).unwrap_or_default();
-        let agent = store.profile(id).and_then(|p| p.agent_login.as_ref()).map(|l| l.user.clone());
-        let tabs = self.tabs.iter().filter(|tab| tab.read(cx).connection().is_some_and(|c| c.profile.id == *id)).count();
-        let mut body = summary;
+        let profiles: Vec<_> = ids.iter().filter_map(|id| store.profile(id)).collect();
+        let (title, mut body) = match profiles.as_slice() {
+            [p] => (format!("Delete the connection \u{201c}{}\u{201d}?", p.name), p.summary()),
+            many => {
+                let names: Vec<&str> = many.iter().take(NAMES_LISTED).map(|p| p.name.as_str()).collect();
+                let rest = many.len().saturating_sub(NAMES_LISTED);
+                let body = if rest > 0 { format!("{} and {rest} more", names.join(", ")) } else { names.join(", ") };
+                (format!("Delete {} connections?", many.len()), body)
+            }
+        };
+        let keep_one = profiles.len() == 1;
+        let logins: Vec<&str> = profiles.iter().filter_map(|p| p.agent_login.as_ref()).map(|l| l.user.as_str()).collect();
+        let agent = match (profiles.len(), logins.as_slice()) {
+            (_, []) => None,
+            (1, [user]) => Some(format!("Also drop its agent login {user} on the server")),
+            (_, [user]) => Some(format!("Also drop the agent login {user} on the server")),
+            (_, many) => Some(format!("Also drop their {} agent logins on the server", many.len())),
+        };
+        let tabs = self.tabs.iter().filter(|tab| tab.read(cx).connection().is_some_and(|c| ids.contains(&c.profile.id))).count();
         if tabs > 0 {
             body.push_str(&format!(" · {tabs} open tab{}", if tabs == 1 { "" } else { "s" }));
         }
@@ -574,11 +620,11 @@ impl Workspace {
                         .child(ui::modal_header(
                             &t,
                             None,
-                            format!("Delete the connection \u{201c}{name}\u{201d}?"),
+                            title,
                             ui::modal_close(&t, "dc-close").on_click(cx.listener(|w, _, window, cx| w.resolve_delete(false, window, cx))),
                         ))
                         .child(div().px(px(20.)).py(px(16.)).line_height(px(18.)).text_color(t.tx2).child(body))
-                        .children(agent.map(|user| {
+                        .children(agent.map(|label| {
                             let on = self.drop_agent_login;
                             div()
                                 .children(ui::here(&"dc-drop-agent".into()))
@@ -591,7 +637,7 @@ impl Workspace {
                                 .gap(px(10.))
                                 .cursor_pointer()
                                 .child(ui::checkbox(&t, on))
-                                .child(div().flex_1().min_w_0().text_color(t.tx).line_height(px(18.)).child(format!("Also drop its agent login {user} on the server")))
+                                .child(div().flex_1().min_w_0().text_color(t.tx).line_height(px(18.)).child(label))
                                 .on_click(cx.listener(|w, _, _, cx| {
                                     w.drop_agent_login = !w.drop_agent_login;
                                     cx.notify();
@@ -603,7 +649,7 @@ impl Workspace {
                                 .child(
                                     ui::button(&t, "dc-cancel", Btn::Secondary)
                                         .h(px(28.))
-                                        .child("Keep it")
+                                        .child(if keep_one { "Keep it" } else { "Keep them" })
                                         .child(ui::key_hint("esc"))
                                         .on_click(cx.listener(|w, _, window, cx| w.resolve_delete(false, window, cx))),
                                 )

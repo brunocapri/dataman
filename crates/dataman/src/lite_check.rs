@@ -198,7 +198,7 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     r.check(&format!("Explain shows {label}'s plan"), explained.starts_with(case.explain) && plan_shown, format!("{explained} {plan_shown}"));
 
     // Disconnected, the file is free again.
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_disconnect(id.clone(), false, window, cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_disconnect(vec![id.clone()], false, window, cx)));
     let off = until(cx, 5, |cx| state(ws, &id, cx).is_none()).await;
     r.check("Disconnect closes the file", off, format!("{:?}", state(ws, &id, cx).is_some()));
     let _ = std::fs::remove_dir_all(&dir);

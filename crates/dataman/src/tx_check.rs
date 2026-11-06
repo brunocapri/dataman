@@ -334,12 +334,12 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
             type_run(&t, "BEGIN", false, cx).await;
             type_run(&t, "SELECT 1", false, cx).await;
             let _idle_tab = new_tab(cx);
-            let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connection(id.clone(), false, window, cx)));
+            let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(vec![id.clone()], false, window, cx)));
             report("deleting it asks, listing the tab with the transaction", prompt(cx) == Some(("delete", 1)), format!("{:?}", prompt(cx)));
             key(cx, "escape");
             let kept = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&id).is_some()).unwrap_or(false);
             report("esc deletes nothing", kept && tx(&t, cx).0 == TxStatus::Open, format!("{kept}"));
-            let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connection(id.clone(), false, window, cx)));
+            let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(vec![id.clone()], false, window, cx)));
             pause(cx, 400).await;
             key(cx, "cmd-backspace");
             pause(cx, 300).await;
