@@ -525,6 +525,15 @@ The MCP server also runs without the app.
 - **Projects:** agents leave the connections and favorites of an open project alone. What agents create never syncs into the project file.
 - **`run_favorite`:** runs a favorite by name. Names are compared without accents, punctuation or look-alike letters (Cyrillic `а` against Latin `a`). If two favorites come close, nothing runs and the agent gets the candidates.
 
+
+### Setting Dataman up through an agent
+
+The server carries a quickstart (in its instructions, and as the `quickstart` prompt, a slash command in Claude Code): the agent finds the project's databases and saves them, without passwords, and takes you to Dataman only where it needs you.
+
+- **`show_in_dataman`:** opens one place and brings the window forward: a new connection's dialog filled in (no password), a saved connection's dialog, Agents › Protection or its agent login on a connection, Agents › General, Settings › MCP, or the edits made outside Dataman. The dialog says an agent filled it in.
+  - It only navigates and fills in. Nothing is saved until you click, and an agent can't change a setting through it.
+  - Refused on a connection with MCP off or agents refused, while a sheet is open, with MCP switched off, and after a few times a minute. With Dataman closed it asks you to open it.
+  - What an agent saves through MCP never shows up as an edit made outside Dataman.
 ### Edits made outside Dataman
 
 The rules you approved are also kept in the system Keychain, where only Dataman reads them.

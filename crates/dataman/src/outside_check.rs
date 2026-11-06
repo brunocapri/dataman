@@ -2,15 +2,18 @@
 //! while Dataman runs. What the edit loosens waits for review and the approved rules apply
 //! meanwhile; Not now keeps it held, the palette shows it again, ⌘↩ applies it and logs it; a
 //! connection added that way stays out of the explorer until then. The approved rules live in
-//! this run's memory store, as they would in the Keychain.
+//! this run's memory store, as they would in the Keychain. A quickstart's connections, saved
+//! through MCP with this app open or by the tool alone, wait for nothing.
 
 use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::{ConfigStore, ConnectionProfile, Engine, McpAccess};
 
 use crate::app::Workspace;
 use crate::check::{Report, click_probe, core, key, pause, probed, typ, until};
+use crate::mcp_tools_check::{Client, call, forward};
+use serde_json::{Value, json};
 
-fn snap(name: &str, cx: &mut AsyncWindowContext) {
+pub(crate) fn snap(name: &str, cx: &mut AsyncWindowContext) {
     let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
     let path = format!("{dir}/outside-{name}.png");
     let _ = cx.update(|window, cx| {
@@ -28,9 +31,60 @@ fn shown(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     cx.update(|_, cx| ws.read(cx).outside_review.is_some()).unwrap_or(false)
 }
 
+/// create_connection as the tool process runs it with no app: its own hub, with no front, and the
+/// keyring the app reads.
+async fn saved_alone(core: &std::sync::Arc<dataman_core::Core>, args: Value, cx: &mut AsyncWindowContext) -> Value {
+    let (dirs, secrets, approved) = (core.dirs.clone(), core.secrets.clone(), core.approved.clone());
+    cx.background_executor()
+        .spawn(async move {
+            let hub = dataman_mcp::Hub::with_approved(dirs, secrets, approved).map_err(|e| e.to_string()).unwrap();
+            let reg = dataman_mcp::registry(&hub.dirs);
+            let server = dataman_mcp::Server::new(hub.clone(), reg.clone(), "stdio");
+            let tool = reg.find("create_connection").unwrap();
+            let r = hub.handle().block_on(server.run_tool(tool, args.as_object().unwrap().clone(), "agent".into(), Default::default()));
+            // Its runtime must not end from here.
+            std::mem::forget(hub);
+            serde_json::to_value(r).unwrap()
+        })
+        .await
+}
+
 pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let core = core(ws, cx);
     r.check("the approved rules are kept", core.approved.is_on(), "");
+
+    let _ = cx.update(|_, cx| crate::mcp::apply(&core, cx));
+    let up = until(cx, 10, |cx| cx.update(|_, cx| crate::mcp::listening(cx)).unwrap_or(false)).await;
+    let client = match Client::ready(&core.dirs.config).await {
+        Ok((c, _)) if up => c,
+        other => {
+            r.check("dataman-mcp reaches this app", false, format!("socket {up}; {:?}", other.err()));
+            return;
+        }
+    };
+    let quick = |i: usize| {
+        let env = ["dev", "staging", "production"][i % 3];
+        json!({"name": format!("quick {i}"), "host": format!("db{i}.example.internal"), "user": "app", "database": "shop", "env": env})
+    };
+    let mut made = true;
+    for i in 0..3 {
+        let res = call(&client, "create_connection", quick(i), cx).await;
+        made &= !res.0;
+    }
+    let listed = until(cx, 5, |cx| (0..3).all(|i| names(ws, cx).contains(&format!("quick {i}")))).await;
+    // Long enough for the file watcher to have seen every write.
+    pause(cx, 1500).await;
+    core.config.refresh();
+    r.check("a quickstart through MCP, the app open: every connection there, no sheet about edits outside", made && listed && !shown(ws, cx) && core.config.held().is_empty(), format!("{made} {listed} {:?}", core.config.held()));
+    let mut made = true;
+    for i in 3..6 {
+        made &= saved_alone(&core, quick(i), cx).await["isError"] != json!(true);
+    }
+    let listed = until(cx, 5, |cx| (3..6).all(|i| names(ws, cx).contains(&format!("quick {i}")))).await;
+    pause(cx, 1500).await;
+    core.config.refresh();
+    r.check("…and written by the tool alone, as with the app closed: none either", made && listed && !shown(ws, cx) && core.config.held().is_empty(), format!("{made} {listed} {:?}", core.config.held()));
+
     let dir = std::env::temp_dir().join(format!("dataman-outside-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -66,6 +120,18 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let esc = until(cx, 2, |cx| !shown(ws, cx)).await;
     r.check("the palette shows it again; esc keeps it held", again && esc, "");
 
+    let fronted = forward(cx);
+    let res = call(&client, "show_in_dataman", json!({"destination": "outside_review"}), cx).await;
+    let there = until(cx, 2, |cx| probed("outside-review-apply", cx).is_some()).await;
+    let p = core.config.get("shop");
+    r.check(
+        "show_in_dataman outside_review opens the sheet, window forward, and applies nothing",
+        !res.0 && there && forward(cx) == fronted + 1 && p.as_ref().is_some_and(|p| p.mcp_access() == McpAccess::Read && !p.mcp_yolo),
+        format!("{res:?} {there} {:?}", p.map(|p| p.mcp)),
+    );
+    key(cx, "escape");
+    until(cx, 2, |cx| !shown(ws, cx)).await;
+
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_outside_review(window, cx)));
     until(cx, 2, |cx| probed("outside-review-apply", cx).is_some()).await;
     key(cx, "cmd-enter");
@@ -89,5 +155,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     outside().upsert(ConnectionProfile { mcp: Some(McpAccess::Off), mcp_yolo: false, ..core.config.get("shop").unwrap() }).unwrap();
     let tight = until(cx, 5, |_| core.config.get("shop").is_some_and(|p| p.mcp_access() == McpAccess::Off)).await;
     r.check("an edit that only tightens applies at once", tight && !shown(ws, cx), "");
+    drop(client);
     let _ = std::fs::remove_dir_all(&dir);
 }

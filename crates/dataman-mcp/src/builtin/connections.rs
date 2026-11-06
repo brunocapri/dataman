@@ -165,7 +165,7 @@ fn env_rank(e: Environment) -> u8 {
     }
 }
 
-fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, ToolError> {
+pub(super) fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, ToolError> {
     let mut password = None;
     if let Some(cs) = a.opt_str("connection_string") {
         let (p, pw) = dataman_core::connstr::parse_profile(cs).ok_or_else(|| ToolError::Invalid("could not parse connection_string".into()))?;
@@ -363,6 +363,17 @@ fn ssh_text(p: &ConnectionProfile) -> String {
 /// file needs no password and a server may let the user in without one (~/.pgpass, peer or trust
 /// authentication), so the twin is refused: the agent uses the saved connection.
 fn no_twin(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
+    if let Some(q) = guarded_twin(&cx.hub.profiles(), p) {
+        return Err(ToolError::Refused(format!(
+            "{} already reaches this {} with protections a new connection would not have (MCP access, Privacy, read-only, production or its agent login): use that connection, or ask the user to add another in Dataman",
+            q.name,
+            if p.engine.is_file() { "file" } else { "server as this user" }
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn guarded_twin<'a>(profiles: &'a [ConnectionProfile], p: &ConnectionProfile) -> Option<&'a ConnectionProfile> {
     let canonical = |q: &ConnectionProfile| dataman_core::os::canonical(q.file_path()).ok();
     let same = |q: &ConnectionProfile| {
         if p.engine.is_file() || q.engine.is_file() {
@@ -383,14 +394,7 @@ fn no_twin(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
             || q.agent_login.is_some()
             || q.agents_refused
     };
-    if let Some(q) = cx.hub.profiles().iter().find(|q| q.id != p.id && same(q) && guarded(q)) {
-        return Err(ToolError::Refused(format!(
-            "{} already reaches this {} with protections a new connection would not have (MCP access, Privacy, read-only, production or its agent login): use that connection, or ask the user to add another in Dataman",
-            q.name,
-            if p.engine.is_file() { "file" } else { "server as this user" }
-        )));
-    }
-    Ok(())
+    profiles.iter().find(|q| q.id != p.id && same(q) && guarded(q))
 }
 
 /// The user types this connection's password into Dataman: sending it to another server is

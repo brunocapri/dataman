@@ -584,6 +584,10 @@ impl ConnDialog {
             copied: Default::default(),
         };
         d.name_follows_host(cx);
+        // Filled in: the string says what the fields say, with the TLS the host decided above.
+        if is_new && !blank {
+            d.rewrite_string(cx);
+        }
         d
     }
 
@@ -628,6 +632,11 @@ impl ConnDialog {
             let _ = this.update(cx, |d, cx| d.set_file(&p, true, cx));
         })
         .detach();
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_asks_password(&self) -> bool {
+        self.password_needed
     }
 
     #[cfg(feature = "checks")]
@@ -1468,7 +1477,8 @@ impl ConnDialog {
     /// Saves with no tier chosen, so the environment's default applies. One that can't save keeps
     /// the tier picked.
     fn skip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = self.mcp.take();
+        // Skip goes back to what the sheet came with: an agent's may start with MCP off.
+        let picked = std::mem::replace(&mut self.mcp, self.profile.mcp.filter(|_| self.profile.agent_made));
         if !self.save(window, cx) {
             self.mcp = picked;
         }
@@ -2454,7 +2464,13 @@ impl ConnDialog {
             let title: SharedString = if self.password_needed { format!("Password needed · {}", self.profile.name).into() } else { "Edit connection".into() };
             div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).font_weight(FontWeight::MEDIUM).child(title)
         };
-        ui::modal_header_bar(t).child(logo).child(middle).child(ui::modal_close(t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))))
+        ui::modal_header_bar(t)
+            .child(logo)
+            .child(middle)
+            .when(self.profile.agent_made, |d| {
+                d.child(ui::probe("dlg-agent-made", div().flex_none().mx(px(12.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Filled in by an agent")))
+            })
+            .child(ui::modal_close(t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))))
     }
 }
 

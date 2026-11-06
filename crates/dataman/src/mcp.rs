@@ -62,6 +62,7 @@ pub(crate) enum FrontMsg {
     Tab(crate::agent::TabMsg),
     OpenTx { connection_id: String, reply: oneshot::Sender<Vec<String>> },
     ConnectionsChanged,
+    Show { place: dataman_mcp::Place, reply: oneshot::Sender<Result<(), String>> },
 }
 
 pub(crate) struct AppFront {
@@ -141,12 +142,19 @@ impl Front for AppFront {
     fn connections_changed(&self) {
         let _ = self.tx.send(FrontMsg::ConnectionsChanged);
     }
+
+    fn show(&self, place: dataman_mcp::Place) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
+        let (reply, rx) = oneshot::channel();
+        let sent = self.tx.send(FrontMsg::Show { place, reply }).is_ok();
+        Box::pin(async move { if sent { rx.await.unwrap_or_else(|_| Err(dataman_mcp::SHOW_NEEDS_APP.to_string())) } else { Err(dataman_mcp::SHOW_NEEDS_APP.to_string()) } })
+    }
 }
 
 /// The hub is never dropped: its runtime must not end from one of its own tasks.
 pub(crate) struct Shared {
     dirs: Dirs,
     secrets: Arc<dyn SecretStore>,
+    approved: Arc<dataman_core::approved::Approved>,
     pub(crate) front: Arc<AppFront>,
     hub: Mutex<Option<(Arc<Hub>, Arc<Registry>)>>,
 }
@@ -157,7 +165,7 @@ impl Shared {
         if let Some(x) = &*g {
             return Ok(x.clone());
         }
-        let hub = Hub::new(self.dirs.clone(), self.secrets.clone())?;
+        let hub = Hub::with_approved(self.dirs.clone(), self.secrets.clone(), self.approved.clone())?;
         std::mem::forget(hub.clone());
         hub.set_front(Some(self.front.clone()));
         let reg = dataman_mcp::registry(&hub.dirs);
@@ -172,6 +180,9 @@ pub struct McpHost {
     ipc_starting: bool,
     pub pending: VecDeque<Pending>,
     workspace: Option<(WeakEntity<Workspace>, AnyWindowHandle)>,
+    /// Times `show_in_dataman` brought the window forward (under Xvfb no window is ever active).
+    #[cfg(feature = "checks")]
+    pub(crate) forward: usize,
 }
 
 impl Global for McpHost {}
@@ -184,6 +195,8 @@ impl Default for McpHost {
             ipc_starting: false,
             pending: VecDeque::new(),
             workspace: None,
+            #[cfg(feature = "checks")]
+            forward: 0,
         }
     }
 }
@@ -196,6 +209,12 @@ pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App
         async {}
     })
     .detach();
+}
+
+/// The socket agents reach this app through is up.
+#[cfg(feature = "checks")]
+pub(crate) fn listening(cx: &App) -> bool {
+    cx.try_global::<McpHost>().is_some_and(|h| h.ipc.is_some())
 }
 
 pub(crate) fn workspace(cx: &App) -> Option<(WeakEntity<Workspace>, AnyWindowHandle)> {
@@ -216,6 +235,7 @@ pub(crate) fn shared(core: &Arc<Core>, cx: &mut App) -> Arc<Shared> {
     let s = Arc::new(Shared {
         dirs: core.dirs.clone(),
         secrets: core.secrets.clone(),
+        approved: core.approved.clone(),
         front: Arc::new(AppFront { tx, next: AtomicU64::new(0) }),
         hub: Mutex::new(None),
     });
@@ -327,6 +347,10 @@ fn arrived(m: FrontMsg, cx: &mut App) {
                 });
             }
         }
+        FrontMsg::Show { place, reply } => {
+            let shown = workspace(cx).and_then(|(ws, window)| window.update(cx, |_, window, cx| ws.update(cx, |w, cx| w.show_place(place, window, cx)).ok()).ok().flatten());
+            let _ = reply.send(shown.unwrap_or_else(|| Err(dataman_mcp::SHOW_NEEDS_APP.to_string())));
+        }
     }
 }
 
@@ -350,6 +374,55 @@ fn reason_color(t: &Theme, req: &Approval, r: &str) -> gpui::Hsla {
 }
 
 impl Workspace {
+    /// The user taken where an agent asked (`show_in_dataman`), the window brought forward. It
+    /// only navigates and fills a sheet: the user's click saves. Never over a sheet already open
+    /// (what is typed in it stays).
+    pub(crate) fn show_place(&mut self, place: dataman_mcp::Place, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        use crate::agents::Page;
+        use dataman_mcp::Place;
+        if self.modal_open(cx) {
+            return Err("a sheet is open in Dataman: ask the user to finish it, then try again".into());
+        }
+        // The app's list is what the agent's call was judged against, or just behind it.
+        let saved = |w: &Self, id: &str, cx: &App| w.store.read(cx).profile(id).cloned().ok_or_else(|| "that connection is not in Dataman's list".to_string());
+        match place {
+            Place::NewConnection(p) => self.open_dialog_with(Some(*p), true, None, window, cx),
+            Place::Connection(id) => {
+                let p = saved(self, &id, cx)?;
+                if p.save_password || p.auth.is_token() || p.engine.is_file() {
+                    self.open_dialog(Some(id), window, cx);
+                } else {
+                    self.open_dialog_for_password(id, window, cx);
+                }
+            }
+            Place::Protection(id) => {
+                saved(self, &id, cx)?;
+                self.agents.update(cx, |a, _| a.conn = Some(id));
+                self.show_agents(Page::Protection, window, cx);
+            }
+            Place::AgentLogin(id) => {
+                saved(self, &id, cx)?;
+                self.agents.update(cx, |a, cx| a.show_login(&id, cx));
+                self.show_nav(dataman_core::layout::NavView::Agents, window, cx);
+            }
+            Place::AgentsGeneral => self.show_agents(Page::General, window, cx),
+            Place::SettingsMcp => self.open_settings_at("MCP", window, cx),
+            Place::OutsideReview => {
+                if crate::outside_ui::Outside::of(&self.store.read(cx).core).is_none() {
+                    return Err("nothing edited outside Dataman waits for review".into());
+                }
+                self.show_outside_review(window, cx);
+            }
+        }
+        cx.activate(true);
+        window.activate_window();
+        #[cfg(feature = "checks")]
+        {
+            cx.default_global::<McpHost>().forward += 1;
+        }
+        Ok(())
+    }
+
     pub(crate) fn mcp_sheet_opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.mcp_focus.is_focused(window) {
             if !self.modal_focus.holds(crate::app::Modal::Mcp) {

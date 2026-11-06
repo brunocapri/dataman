@@ -7,7 +7,7 @@ mod sql_corpus;
 use dataman_core::guard::{self, WriteClass};
 use dataman_core::sql::Dialect;
 use dataman_core::{Environment, McpAccess};
-use dataman_mcp::policy::{By, Target, Verdict, judge};
+use dataman_mcp::policy::{By, Effect, Target, Verdict, judge};
 use sql_corpus::*;
 
 fn targets(d: Dialect) -> Vec<Target> {
@@ -43,6 +43,25 @@ fn texts_of(d: Dialect) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// show_in_dataman navigates: announced so, and nothing it takes could change a setting or carry a
+/// password, nor a statement.
+#[test]
+fn show_in_dataman_takes_nothing_that_changes_state() {
+    let meta = dataman_mcp::builtin::META.iter().find(|m| m.0 == "show_in_dataman").expect("in META");
+    assert!(matches!((meta.1, meta.2), (Effect::Local, None)), "{:?}", (meta.1, meta.2));
+    let reg = dataman_mcp::Registry::standard(None);
+    let tool = reg.find("show_in_dataman").expect("registered");
+    assert_eq!(tool.schema().required(), ["destination"]);
+    let mut props: Vec<&str> = tool.schema().properties().keys().map(String::as_str).collect();
+    props.sort();
+    assert_eq!(props, ["connection", "database", "destination", "engine", "host", "name", "port", "user"]);
+    let destinations = &tool.schema().properties()["destination"]["enum"];
+    assert_eq!(*destinations, serde_json::json!(["new_connection", "connection", "agents_protection", "agent_login", "agents_general", "settings_mcp", "outside_review"]));
+    let engines: Vec<&str> = tool.schema().properties()["engine"]["enum"].as_array().unwrap().iter().filter_map(|e| e.as_str()).collect();
+    assert!(engines.contains(&"postgres") && !engines.contains(&"sqlite") && !engines.contains(&"duckdb"), "a file has no password: {engines:?}");
+    assert_eq!(tool.effect().hints(), (true, false, true));
 }
 
 #[test]

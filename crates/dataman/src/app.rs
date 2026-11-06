@@ -1546,6 +1546,16 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A saved connection's dialog, at its password.
+    pub(crate) fn open_dialog_for_password(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_dialog(Some(id), window, cx);
+        if let Some(d) = self.dialog.clone() {
+            d.update(cx, |d, cx| d.set_password_needed(cx));
+            let f = d.read(cx).password_focus(cx);
+            window.focus(&f, cx);
+        }
+    }
+
     pub(crate) fn new_connection_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
         match dataman_core::connstr::parse_profile(&text) {
@@ -1849,12 +1859,7 @@ impl Workspace {
             }
             ConnEvent::Failed { id, needs_password, .. } => {
                 if *needs_password && self.dialog.is_none() {
-                    self.open_dialog(Some(id.clone()), window, cx);
-                    if let Some(d) = self.dialog.clone() {
-                        d.update(cx, |d, cx| d.set_password_needed(cx));
-                        let f = d.read(cx).password_focus(cx);
-                        window.focus(&f, cx);
-                    }
+                    self.open_dialog_for_password(id.clone(), window, cx);
                 }
             }
         }
