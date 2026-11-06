@@ -878,6 +878,11 @@ pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -
         .children(msg.map(|m| div().text_color(t.tx2).line_height(px(18.)).child(m)))
 }
 
+/// A filtered list left with nothing to show: the banner, and the one action that brings it back.
+pub fn no_match(t: &Theme, id: impl Into<ElementId>, reset: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static) -> Div {
+    empty_state(t, "[ NO MATCH ]", 20., None).child(button(t, id, Btn::Secondary).child("Reset filters").on_click(reset))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

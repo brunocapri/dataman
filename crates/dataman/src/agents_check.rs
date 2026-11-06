@@ -581,9 +581,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("agents-field-search", cx);
     typ(cx, "nothing-like-this");
     pause(cx, 50).await;
-    click_probe("agents-clear-filters", cx);
+    click_probe("agents-reset-filters", cx);
     pause(cx, 50).await;
-    r.check("Nothing matches offers Clear filters, which brings every call back", shown(cx) == all, shown(cx));
+    r.check("Nothing matches offers Reset filters, which brings every call back", shown(cx) == all, shown(cx));
     // The lists answer the keys as the explorer and history do.
     click_probe("agents-audit-row-0", cx);
     pause(cx, 50).await;
