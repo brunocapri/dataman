@@ -869,7 +869,7 @@ fn personal_settings_never_reach_the_file() {
     m.settings
         .update(|s| {
             s.theme = ThemePref::Light;
-            s.font = UiFont::Lilex;
+            s.font = UiFont::GeistMono;
             s.system_font = Some("Comic-Xyz".into());
             s.zoom = 1.5;
             s.editor_font_size = 19;
@@ -899,7 +899,7 @@ fn personal_settings_never_reach_the_file() {
     let base = std::fs::read_to_string(m.dirs.project_base_file(&root)).unwrap();
     for (what, t) in [("project.toml", &file), ("project-base.toml", &base)] {
         for never in [
-            "theme", "Lilex", "Comic-Xyz", "zoom", "editor_font_size", "cmd-shift-zz", "exports-xyz", "mcp_enabled", "feed.example", "crash.example",
+            "theme", "Geist", "Comic-Xyz", "zoom", "editor_font_size", "cmd-shift-zz", "exports-xyz", "mcp_enabled", "feed.example", "crash.example",
             "save_password", "agent_made", "hunter2", "tok-123", "BEGIN", "cs-456", "project_enabled",
         ] {
             assert!(!t.contains(never), "{never} in {what}:\n{t}");

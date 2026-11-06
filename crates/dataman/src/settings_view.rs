@@ -100,8 +100,8 @@ enum Row {
 }
 
 const ROWS: [(Row, Section, &str, &str); 25] = [
-    (Row::Theme, Section::Appearance, "Theme", "dark light system"),
-    (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
+    (Row::Theme, Section::Appearance, "Theme", "dark black light solarized system"),
+    (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
     (Row::FontSize, Section::Appearance, "Code font size", "editor text"),
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),
@@ -1025,17 +1025,14 @@ impl SettingsView {
 
     fn render_themes(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let cur = theme::pref(cx);
-        let card = |id: &'static str, label: &'static str, pref: ThemePref, dark: bool, split: bool| {
+        let card = |id: &'static str, label: &'static str, pref: ThemePref| {
             let on = cur == pref;
-            let c = |hex: u32| -> gpui::Hsla { gpui::rgb(hex).into() };
-            let (side, main, l1, l2, l3) = if dark {
-                (c(0x11131d), c(0x0b0c13), c(0x7aa2ff), c(0x4b5066), c(0x9be37b))
-            } else {
-                (c(0xe9ecf3), c(0xffffff), c(0x2f5bff), c(0xc9cdd9), c(0x2c7a2e))
-            };
+            let split = pref == ThemePref::System;
+            let p = Theme::of(pref, theme::Mode::Dark).opaque();
+            let lower = Theme::of(pref, theme::Mode::Light).opaque();
             let bar = |w: f32, color: gpui::Hsla| div().h(px(4.)).w(gpui::relative(w)).bg(color);
             let preview = div()
-                .w(px(150.))
+                .w_full()
                 .h(px(92.))
                 .overflow_hidden()
                 .flex()
@@ -1043,14 +1040,14 @@ impl SettingsView {
                 .border_1()
                 .border_color(if on { t.acc } else { t.line2 })
                 .when(on, |d| d.shadow(t.halo()))
-                .child(div().w(px(40.)).h_full().bg(side).when(split, |d| d.child(div().mt(px(46.)).h(px(46.)).bg(c(0xe9ecf3)))))
+                .child(div().w(px(40.)).h_full().bg(p.glass).when(split, |d| d.child(div().mt(px(46.)).h(px(46.)).bg(lower.glass))))
                 .child(
                     div()
                         .flex_1()
                         .h_full()
                         .relative()
-                        .bg(main)
-                        .when(split, |d| d.child(div().absolute().left_0().right_0().bottom_0().h(px(46.)).bg(c(0xffffff))))
+                        .bg(p.bg)
+                        .when(split, |d| d.child(div().absolute().left_0().right_0().bottom_0().h(px(46.)).bg(lower.bg)))
                         .child(
                             div()
                                 .absolute()
@@ -1060,15 +1057,17 @@ impl SettingsView {
                                 .flex()
                                 .flex_col()
                                 .gap(px(5.))
-                                .child(bar(0.7, l1))
-                                .child(bar(0.5, l2))
-                                .child(bar(0.8, l2))
-                                .child(bar(0.4, l3)),
+                                .child(bar(0.7, p.kw))
+                                .child(bar(0.5, p.tx4))
+                                .child(bar(0.8, p.tx4))
+                                .child(bar(0.4, p.str)),
                         ),
                 );
             div()
                 .children(ui::here(&id.into()))
                 .id(id)
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .items_center()
@@ -1091,9 +1090,11 @@ impl SettingsView {
                     .flex()
                     .flex_row()
                     .gap(px(12.))
-                    .child(card("th-dark", "Dark", ThemePref::Dark, true, false))
-                    .child(card("th-light", "Light", ThemePref::Light, false, false))
-                    .child(card("th-system", "Match system", ThemePref::System, true, true)),
+                    .child(card("th-dark", "Dark", ThemePref::Dark))
+                    .child(card("th-black", "Black", ThemePref::Black))
+                    .child(card("th-light", "Light", ThemePref::Light))
+                    .child(card("th-solarized", "Solarized", ThemePref::Solarized))
+                    .child(card("th-system", "Match system", ThemePref::System)),
             )
     }
 

@@ -309,7 +309,7 @@ impl Workspace {
         extra(&mut els, &mut is_tab, m.ghosts(pane, None, t, now).collect());
         for (gi, &i) in tabs.iter().enumerate() {
             extra(&mut els, &mut is_tab, m.gap(pane, gi, t, now).into_iter().collect());
-            els.push(m.tab(ids[gi], self.render_tab(i, t, cx).into_any_element(), now));
+            els.push(m.tab(ids[gi], self.render_tab(i, gi + 1 == n, t, cx).into_any_element(), now));
             is_tab.push(true);
             extra(&mut els, &mut is_tab, m.ghosts(pane, Some(ids[gi]), t, now).collect());
         }
@@ -485,7 +485,7 @@ impl Workspace {
         self.tab_motion.follow_drop(id, width, at, cx);
     }
 
-    fn render_tab(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_tab(&self, i: usize, last: bool, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let focused_front = i == self.active;
         let other_front = self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
         let active = focused_front || other_front;
@@ -618,6 +618,8 @@ impl Workspace {
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
             .when(show_tx, |d| d.child(tx_chip(t, &tx, true)))
             .child(end)
+            // The tab's edge: gone wherever the tab has a fill, which is translucent and would show it.
+            .when(!active && !last, |d| d.child(ui::tab_divider(t).group_hover(group.clone(), |s| s.invisible())))
     }
 
     fn render_tab_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
@@ -839,6 +841,8 @@ impl Workspace {
             let split_tab = tab.entity_id();
             let splitting = matches!(self.drag, Some(Drag::Split(_)));
             let grip = t.line2;
+            // The editor's line runs on through the divider, down to the divider's own.
+            let gutter_line = (!covered && zoom == 0.).then(|| tab.read(cx).editor.read(cx).gutter_line()).flatten();
             main = main.child(
                 div()
                     .h(px(metrics::DIVIDER))
@@ -848,10 +852,10 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .border_t_1()
                     .border_b_1()
-                    .border_color(t.line)
+                    .border_color(t.pane_line)
                     .group("splitter")
+                    .children(gutter_line.map(|x| div().absolute().left(x).top_0().bottom_0().w(px(1.)).bg(t.pane_line)))
                     // The grip shows under the pointer and while dragged.
                     .child(div().w(px(32.)).h(px(3.)).when(splitting, |d| d.bg(t.line2)).group_hover("splitter", move |s| s.bg(grip)))
                     .child(
@@ -998,7 +1002,7 @@ impl Workspace {
             .items_center()
             .gap(px(6.))
             .border_b_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .text_color(t.tx2)
             .child(run)
             .child(picker)
@@ -1319,7 +1323,7 @@ impl Workspace {
             .items_center()
             .gap(px(10.))
             .border_b_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .text_color(t.tx2)
             .whitespace_nowrap()
             .child(div().flex_1().min_w_0().overflow_hidden().flex().flex_row().items_center().gap(px(10.))
@@ -1607,7 +1611,7 @@ impl Workspace {
             .items_center()
             .gap(px(2.))
             .border_b_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .overflow_x_scroll()
             .whitespace_nowrap()
             .text_size(px(crate::theme::text::UI))
@@ -1758,7 +1762,7 @@ impl Workspace {
             .h(px(metrics::STATUS_H))
             .flex_none()
             .border_t_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .pl(px(14.))
             .pr(px(12.))
             .flex()
@@ -1969,7 +1973,7 @@ impl Workspace {
                 .flex_col()
                 .gap(px(12.))
                 .border_l_1()
-                .border_color(t.line)
+                .border_color(t.pane_line)
                 .child(ui::caps(t, "BATCH"))
                 .child(div().flex().flex_col().gap(px(2.)).children(batch.iter().enumerate().map(|(i, b)| {
                     let (g, gc) = match b.state {

@@ -547,7 +547,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         })
         .unwrap_or_default();
     let distinct = ids.iter().collect::<std::collections::HashSet<_>>().len();
-    report("each family resolves its Regular, Medium, SemiBold, Bold and Italic faces", ids.len() == 20 && distinct == 20, format!("{distinct} of {}", ids.len()));
+    report("each family resolves its Regular, Medium, SemiBold, Bold and Italic faces", ids.len() == 10 && distinct == 10, format!("{distinct} of {}", ids.len()));
     new_tab(ws, cx);
     let tab = run_sql(ws, "SELECT 42 AS n, 'café naïve ≠ ≤ → 東京 😀' AS sample, now() AS at", cx).await;
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
@@ -561,25 +561,14 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = cx.update(|window, cx| window.dispatch_action(a, cx));
         draw(cx);
     };
-    switch(cx, Box::new(crate::app::FontZedMono));
-    let (w1, cw1) = widths(cx);
-    let k = cw1 / cw0;
-    let scaled = w0.len() == w1.len() && w0.iter().zip(&w1).all(|(a, b)| (a * k - b).abs() <= 1.);
-    report(
-        "Zed Mono live: the grid measures its 0.5 em advance and scales every column to it",
-        crate::theme::mono() == "Zed Mono" && (cw1 - 6.).abs() < 0.05 && (cw0 - 7.2).abs() < 0.05 && scaled && w1 != w0,
-        format!("advance {cw0:.2} → {cw1:.2}, widths {w0:?} → {w1:?}"),
-    );
-    switch(cx, Box::new(crate::app::FontJetBrainsMono));
-    let (w2, cw2) = widths(cx);
-    let back = w0.len() == w2.len() && w0.iter().zip(&w2).all(|(a, b)| (a - b).abs() <= 1.5);
-    report("JetBrains Mono live: back to 0.6 em and the first widths", crate::theme::mono() == "JetBrains Mono" && (cw2 - 7.2).abs() < 0.05 && back, format!("advance {cw2:.2}, widths {w2:?}"));
-    switch(cx, Box::new(crate::app::FontLilex));
-    let (_, cw3) = widths(cx);
-    report("Lilex live", crate::theme::mono() == "Lilex" && (cw3 - 7.2).abs() < 0.05, format!("advance {cw3:.2}"));
+    report("Lilex by default, 0.6 em", crate::theme::mono() == "Lilex" && (cw0 - crate::theme::ADVANCE * 12.).abs() < 0.05, format!("advance {cw0:.2}"));
+    let same_widths = |w: &[f32]| w.len() == w0.len() && w0.iter().zip(w).all(|(a, b)| (a - b).abs() <= 1.5);
     switch(cx, Box::new(crate::app::FontGeistMono));
-    let (w4, _) = widths(cx);
-    report("Geist Mono again: the widths it started with", crate::theme::mono() == "Geist Mono" && w4.len() == w0.len() && w0.iter().zip(&w4).all(|(a, b)| (a - b).abs() <= 1.5), format!("{w4:?}"));
+    let (w1, cw1) = widths(cx);
+    report("Geist Mono live: 0.6 em and the same widths", crate::theme::mono() == "Geist Mono" && (cw1 - crate::theme::ADVANCE * 12.).abs() < 0.05 && same_widths(&w1), format!("advance {cw1:.2}, widths {w0:?} → {w1:?}"));
+    switch(cx, Box::new(crate::app::FontLilex));
+    let (w2, _) = widths(cx);
+    report("Lilex again: the widths it started with", crate::theme::mono() == "Lilex" && same_widths(&w2), format!("{w2:?}"));
 
     let n0 = tabs(ws, cx).len();
     let doomed = new_tab(ws, cx);
@@ -790,7 +779,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
 
     use crate::glass::{Blur, blur, own_view_installed, own_view_layout};
     let own = blur() == Blur::Own;
-    let level_on = crate::theme::effective_level(dataman_core::Translucency::On).is_on();
+    let can_blur = crate::theme::effective_level(dataman_core::Translucency::On).is_on();
     let fits = |cx: &mut AsyncWindowContext| {
         draw(cx);
         let _ = cx;
@@ -799,18 +788,28 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             None => false,
         }
     };
-    report(&format!("blur {blur:?}: Dataman's view only where it is the blur", blur = blur()), own_view_installed() == (own && level_on), format!("installed {}", own_view_installed()));
-    if own && level_on {
-        report("Dataman's view is under GPUI's and fills the window", fits(cx), format!("{:?}", own_view_layout()));
-        let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOff), cx));
-        draw(cx);
-        report("Transparency off removes it", !own_view_installed(), String::new());
+    report("opaque by default: no blur view of Dataman's", !own_view_installed(), format!("blur {:?}, installed {}", blur(), own_view_installed()));
+    if can_blur {
         let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOn), cx));
         draw(cx);
-        report("Transparency on puts it back", own_view_installed() && fits(cx), format!("{:?}", own_view_layout()));
-        let _ = cx.update(|window, _| window.resize(gpui::size(px(1180.), px(760.))));
-        pause(cx, 300).await;
-        report("it follows a resize", fits(cx), format!("{:?}", own_view_layout()));
+        report(&format!("blur {blur:?}: Dataman's view only where it is the blur", blur = blur()), own_view_installed() == own, format!("installed {}", own_view_installed()));
+        if own {
+            report("Dataman's view is under GPUI's and fills the window", fits(cx), format!("{:?}", own_view_layout()));
+            let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOff), cx));
+            draw(cx);
+            report("Transparency off removes it", !own_view_installed(), String::new());
+            let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOn), cx));
+            draw(cx);
+            report("Transparency on puts it back", own_view_installed() && fits(cx), format!("{:?}", own_view_layout()));
+            let size = cx.update(|window, _| window.viewport_size()).unwrap();
+            let _ = cx.update(|window, _| window.resize(gpui::size(px(1180.), px(760.))));
+            pause(cx, 300).await;
+            report("it follows a resize", fits(cx), format!("{:?}", own_view_layout()));
+            let _ = cx.update(|window, _| window.resize(size));
+            pause(cx, 300).await;
+        }
+        let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOff), cx));
+        draw(cx);
     }
 
     new_tab(ws, cx);

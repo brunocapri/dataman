@@ -72,11 +72,12 @@ pub(crate) fn fav_name(sql: &str) -> String {
     if flat.chars().count() > 60 { format!("{}…", flat.chars().take(60).collect::<String>()) } else { flat }
 }
 
-const FAV_ROW_H: f32 = 56.;
+const FAV_ROW_H: f32 = 56. + ROW_GAP;
 
 const UNFOLD_STAGGERED: usize = 8;
 
 const NEST: f32 = 15.;
+const ROW_GAP: f32 = 2.;
 const MENU_W: f32 = 220.;
 const SUB_W: f32 = 200.;
 const DELETE_ASK: Duration = Duration::from_secs(3);
@@ -1091,6 +1092,7 @@ impl HistoryPanel {
         let q = self.query.clone();
         div()
             .px(px(6.))
+            .pb(px(ROW_GAP))
             .child(
                 div()
                     .id(("hist", ix))
@@ -1195,6 +1197,7 @@ impl HistoryPanel {
         let (click_id, menu_id, ctrl_id, ghost, id_for_icon) = (id.clone(), id.clone(), id.clone(), d.name.clone(), id.clone());
         div()
             .px(px(6.))
+            .pb(px(ROW_GAP))
             .child(
                 div()
                     .id(("fav-folder", ix))
@@ -1278,7 +1281,8 @@ impl HistoryPanel {
             .relative()
             .pl(px(if nested { 6. + NEST } else { 6. }))
             .pr(px(6.))
-            .when(nested, |d| d.child(div().absolute().top_0().bottom_0().left(px(18.5)).w(gpui::px(1.)).bg(t.line)))
+            .pb(px(ROW_GAP))
+            .when(nested, |d| d.child(div().absolute().top_0().bottom_0().left(px(18.5)).w(gpui::px(1.)).bg(t.pane_line)))
             .child(
                 div()
                     .id(("fav", ix))

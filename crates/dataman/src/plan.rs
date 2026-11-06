@@ -479,7 +479,7 @@ impl PlanView {
             .text_size(px(crate::theme::text::HINT))
             .text_color(t.tx3)
             .border_b_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .child(div().flex_1().pl(px(14.)).child(format!("{} nodes", p.nodes.len())));
         if p.analyzed {
             d = d
@@ -505,7 +505,7 @@ impl PlanView {
                 .flex_none()
                 .py(px(4.))
                 .border_b_1()
-                .border_color(t.line)
+                .border_color(t.pane_line)
                 .flex()
                 .flex_col()
                 .children(p.hints.iter().take(HINTS_SHOWN).enumerate().map(|(k, h)| {
@@ -583,7 +583,7 @@ impl PlanView {
                                     t.acc,
                                     gpui::BorderStyle::Solid,
                                 ));
-                                let fits = ((bw - 8.) / (11. * crate::theme::advance())) as usize;
+                                let fits = ((bw - 8.) / (11. * crate::theme::ADVANCE)) as usize;
                                 if fits >= 4 {
                                     let v = if p2.analyzed { fmt_ms(n.excl_ms) } else { fmt_cost(n.excl_cost) };
                                     let mut s = format!("{} · {v}", n.title);
@@ -605,7 +605,7 @@ impl PlanView {
     fn render_details(&self, p: &Plan, t: &Theme) -> impl IntoElement + use<> {
         let body = div().flex().flex_col().gap(px(2.)).p(px(12.));
         let Some(i) = self.selected.filter(|&i| i < p.nodes.len()) else {
-            return div().id("plan-details").w(px(DETAILS_W)).flex_none().h_full().border_l_1().border_color(t.line).child(body);
+            return div().id("plan-details").w(px(DETAILS_W)).flex_none().h_full().border_l_1().border_color(t.pane_line).child(body);
         };
         let n = &p.nodes[i];
         let kv = |k: String, v: String, c: Hsla| {
@@ -678,7 +678,7 @@ impl PlanView {
             .flex_none()
             .h_full()
             .border_l_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .overflow_y_scroll()
             .child(
                 body.child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).line_height(px(18.)).child(n.title.clone()))
@@ -686,7 +686,7 @@ impl PlanView {
                     .child(div().h(px(6.)))
                     .children(hints.into_iter().map(|h| h.mb(px(6.))))
                     .children(sum.into_iter().map(|(k, v, c)| kv(k, v, c)))
-                    .child(div().my(px(8.)).h(px(1.)).bg(t.line))
+                    .child(div().my(px(8.)).h(px(1.)).bg(t.pane_line))
                     .children(props.into_iter().map(|(k, v)| kv(k, v, t.tx2))),
             )
     }
@@ -842,7 +842,7 @@ impl crate::app::Workspace {
             .items_center()
             .gap(px(10.))
             .border_b_1()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .text_color(t.tx2)
             .whitespace_nowrap()
             .child(

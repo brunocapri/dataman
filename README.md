@@ -77,7 +77,7 @@ SQLite and DuckDB need nothing installed: SQLite is built in, and DuckDB is its 
 - **Data in and out**: export to CSV, TSV, JSON, NDJSON, SQL `INSERT` or Parquet. On PostgreSQL you can also import those formats, with types inferred.
 - **Keyboard first**: a command palette (`⌘K`) for commands, tables, tabs, favorites and connections, and every binding can be changed.
 - **History and favorites** per connection, folders for saved queries, `.sql` files and SQLite/DuckDB files opened straight from Finder or the terminal.
-- **Dark, light or follow the system**, a translucent window, four mono fonts and zoom from 80 to 200%.
+- **Dark, light or follow the system**, a translucent window, two mono fonts and zoom from 80 to 200%.
 
 ## AI agents (MCP)
 

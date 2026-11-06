@@ -2175,6 +2175,11 @@ impl CodeEditor {
         self.geo.map(|g| (g.bounds.left() + g.gutter_w - px(1.)).as_f32())
     }
 
+    /// Where the line between the numbers and the text was painted, from the editor's left.
+    pub fn gutter_line(&self) -> Option<Pixels> {
+        self.geo.map(|g| g.gutter_w - px(1.))
+    }
+
     pub fn selection_ends(&self) -> (usize, usize) {
         if self.reversed { (self.sel.end, self.sel.start) } else { (self.sel.start, self.sel.end) }
     }
@@ -2964,7 +2969,7 @@ impl CodeEditor {
 
         let lines = lines.into_iter().map(|(l, s)| (point(origin_x - self.scroll.x, y_of(l)), s)).collect();
         let gutter = Bounds::new(bounds.origin, size(gutter_w, bounds.size.height));
-        let gutter_line = fill(Bounds::new(point(bounds.left() + gutter_w - px(1.), bounds.top()), size(px(1.), bounds.size.height)), t.line);
+        let gutter_line = fill(Bounds::new(point(bounds.left() + gutter_w - px(1.), bounds.top()), size(px(1.), bounds.size.height)), t.pane_line);
         self.bars = self.layout_bars(text_bounds.left());
         let (vbar, hbar) = self.bars;
         let bars = [vbar, hbar]
