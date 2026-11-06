@@ -1138,9 +1138,16 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     let tab = run_sql(ws, "SELECT n, n * 2 AS twice FROM generate_series(1, 40) n", cx).await;
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
-    pause(cx, 350).await;
-    draw(cx);
     let bounds = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
+    // Until the side panel has landed: a slow renderer's frames come late, past any fixed pause.
+    let mut last = None;
+    crate::check::until(cx, 3, |cx| {
+        let now = bounds(cx);
+        let landed = now.is_some() && now == last;
+        last = now;
+        landed
+    })
+    .await;
     let zoom = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).zoom_now(&tab, cx)).unwrap_or(-1.);
     let Some(before) = bounds(cx) else {
         report("the result panel is painted", false, String::new());
