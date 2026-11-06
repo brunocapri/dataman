@@ -251,6 +251,9 @@ fn snakeoil_certificate() {
 #[test]
 fn clickhouse_through_the_tunnel() {
     let Some(((h, p), keys)) = setup().ssh.clone() else { return };
+    if answers("127.0.0.1:18123").is_none() {
+        return;
+    }
     let db = std::env::var("DATAMAN_SSH_CLICKHOUSE").unwrap_or_else(|_| "host.docker.internal:18123".into());
     let (dh, dp) = db.rsplit_once(':').unwrap();
     let ssh = SshSettings { host: h, port: Some(p), user: "dataman".into(), auth: SshAuth::Key, key_file: keys.join("k_ed").display().to_string() };

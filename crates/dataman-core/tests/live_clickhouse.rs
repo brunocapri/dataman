@@ -121,6 +121,76 @@ fn cells_are_never_replaced_or_invented() {
 }
 
 #[test]
+fn nested_values_stay_the_literals_the_server_wrote() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let rs = ok(&e, &s, "SELECT ['a'',''b'] AS one, ['a', 'b'] AS two, ('it''s', 1) AS t");
+    assert_eq!(shown(&rs, 0, 0).as_deref(), Some(r"['a\',\'b']"), "one element");
+    assert_eq!(shown(&rs, 0, 1).as_deref(), Some("['a','b']"), "two elements");
+    assert_eq!(shown(&rs, 0, 2).as_deref(), Some(r"('it\'s',1)"));
+}
+
+#[test]
+fn a_row_longer_than_the_reader_s_room_arrives_whole() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let rs = ok(&e, &s, "SELECT length(x) AS n, x FROM (SELECT arrayStringConcat(arrayWithConstant(70, repeat('x', 1000000))) AS x)");
+    assert_eq!(rs.rows(), 1);
+    assert_eq!(shown(&rs, 0, 0).as_deref(), Some("70000000"));
+    assert_eq!(shown(&rs, 0, 1).map(|t| t.len()), Some(70_000_000));
+}
+
+#[test]
+fn empty_cells_are_rows_in_what_the_catalog_reads() {
+    let e = env();
+    let Some(c) = seeded(&e, "dataman_ch_empty") else { return };
+    let s = c.session(None);
+    ok(&e, &s, "CREATE TABLE t (v String) ENGINE = MergeTree ORDER BY v");
+    ok(&e, &s, "INSERT INTO t VALUES ('a'), (''), ('b')");
+    let got = e.core.block_on(c.sample_column_values("dataman_ch_empty", "dataman_ch_empty", "t", "v", 10)).unwrap();
+    assert_eq!(got.len(), 3, "{got:?}");
+    ok(&e, &s, "DROP DATABASE dataman_ch_empty");
+}
+
+#[test]
+fn a_failure_is_a_failure_in_every_format() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    for format in ["JSONEachRow", "JSON", "CSV"] {
+        let rs = run(&e, &s, &format!("SELECT number, throwIf(number = 2000000, 'boom') AS t FROM numbers(3000000) SETTINGS max_threads = 1, max_block_size = 1000 FORMAT {format}"));
+        assert_eq!(rs.phase(), Phase::Failed, "{format}");
+        assert!(rs.status().error.unwrap().message.contains("boom"), "{format}");
+    }
+}
+
+#[test]
+fn a_statement_s_own_format_is_not_cut_inside_a_character() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let rs = ok(&e, &s, "SELECT arrayStringConcat(arrayWithConstant(3, repeat('é', 1000000))) FORMAT CSV");
+    assert!(rs.rows() > 1, "past the cap");
+    for r in 0..rs.rows() {
+        assert!(!shown(&rs, r, 0).unwrap().starts_with("\\x"), "row {r} turned to hex");
+    }
+}
+
+#[test]
+fn line_ends_the_server_was_told_to_change_are_still_line_ends() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let rs = ok(&e, &s, "SELECT 1 AS a, CAST(NULL, 'Nullable(String)') AS b SETTINGS output_format_tsv_crlf_end_of_line = 1");
+    assert_eq!(rs.columns().unwrap()[1].name, "b");
+    assert_eq!(rs.snapshot().source_cell(0, 1), Cell::Null);
+    let rs = ok(&e, &s, "SELECT '__exception__' AS a SETTINGS output_format_tsv_crlf_end_of_line = 1");
+    assert_eq!(shown(&rs, 0, 0).as_deref(), Some("__exception__"), "a value, not a failure");
+}
+
+#[test]
 fn a_statement_with_its_own_format_is_shown_by_lines() {
     let e = env();
     let Some(c) = open(&e, profile(""), &password()) else { return };

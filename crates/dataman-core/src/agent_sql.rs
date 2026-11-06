@@ -306,7 +306,9 @@ fn statement(
                 _ => continue,
             };
             let lower = name.to_lowercase();
-            if schema.is_some_and(|x| CATALOG_SCHEMAS.contains(&x.to_lowercase().as_str()))
+            // ClickHouse's `system` holds every table's columns and definition; elsewhere a schema
+            // may just be named so.
+            if schema.is_some_and(|x| CATALOG_SCHEMAS.contains(&x.to_lowercase().as_str()) || (cx.dialect == Dialect::ClickHouse && x.eq_ignore_ascii_case("system")))
                 || (schema.is_none() && (lower.starts_with("pg_") || matches!(lower.as_str(), "sqlite_master" | "sqlite_schema" | "sysobjects" | "syscolumns")))
             {
                 return Err(format!("{name} is a system catalog: on {conn} agents list and describe through list_tables, describe_table and search_objects"));
@@ -804,6 +806,19 @@ mod tests {
         assert!(run(&r, "INSERT INTO users VALUES (1, 'a', 'b', 'c', now())", true).unwrap_err().contains("name the columns"));
         assert!(!run(&r, "INSERT INTO users (name, email) VALUES ('a', 'b')", true).unwrap().rewritten);
         assert!(run(&r, "UPDATE users SET name = 'x' WHERE id = 1 RETURNING id, name", true).is_ok());
+    }
+
+    #[test]
+    fn clickhouse_keeps_its_catalog_from_agents_too() {
+        let r = rules();
+        let routines = HashSet::new();
+        let cx = |dialect| Context { rules: &r, connection: "ch", dialect, tables: &tables, routines: &routines, views: &[] };
+        for sql in ["SELECT * FROM system.columns", "SELECT query FROM SYSTEM.query_log"] {
+            assert!(check(sql, false, &cx(Dialect::ClickHouse)).unwrap_err().contains("system catalog"), "{sql}");
+        }
+        assert!(check("DESCRIBE TABLE payments", false, &cx(Dialect::ClickHouse)).is_err());
+        assert!(check("SELECT id FROM orders", false, &cx(Dialect::ClickHouse)).is_ok());
+        assert!(!check("SELECT id FROM system.orders", false, &cx(Dialect::Postgres)).is_err_and(|e| e.contains("system catalog")), "elsewhere a schema may be named so");
     }
 
     #[test]

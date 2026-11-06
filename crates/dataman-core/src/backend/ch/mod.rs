@@ -3,6 +3,7 @@
 //!
 //! - A failure after the first rows has status 200 already: the body ends with `__exception__`,
 //!   a raw `\r` and the error. A cell's `\r` is always escaped, so no row can read as that.
+//!   Formats that can say it themselves (`FORMAT JSON`) end cleanly instead, unless told not to.
 //! - The server closes a result nobody reads for `http_send_timeout` (30 s, the server's own: a
 //!   URL parameter does not change it), so a reader drains the response into [`IN_FLIGHT_BYTES`]
 //!   while the grid is paused: what fits there finishes however long the user looks at it.
@@ -110,6 +111,8 @@ pub(crate) struct Client {
     database: Mutex<Option<String>>,
     session: Option<String>,
     read_only: bool,
+    /// The login is read-only already: it may set nothing, not even for one request.
+    locked: bool,
     current: Mutex<Option<String>>,
     pub(crate) tls_active: bool,
 }
@@ -174,9 +177,10 @@ async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&s
     let mut auth = HeaderValue::from_str(&format!("Basic {}", data_encoding::BASE64.encode(raw.as_bytes()))).map_err(|e| ChError::Transport(e.to_string()))?;
     auth.set_sensitive(true);
     let database = database.filter(|d| !d.is_empty()).or(Some(p.database.as_str()).filter(|d| !d.is_empty())).map(str::to_string);
-    let mut c = Client { http, base, auth, database: Mutex::new(database), session: None, read_only: false, current: Mutex::new(None), tls_active: tls };
+    let mut c = Client { http, base, auth, database: Mutex::new(database), session: None, read_only: false, locked: true, current: Mutex::new(None), tls_active: tls };
     // A login that is read-only already refuses to have the setting named: it is asked first.
     let locked = c.text_rows("SELECT getSetting('readonly')").await?.first().and_then(|r| r.first().cloned().flatten()).is_some_and(|v| v != "0");
+    c.locked = locked;
     c.read_only = p.read_only && !locked;
     if session {
         c.session = Some(uuid::Uuid::new_v4().simple().to_string());
@@ -198,6 +202,9 @@ impl Client {
         if let Some(s) = &self.session {
             q.push(("session_id", s));
             q.push(("session_timeout", SESSION_SECONDS));
+        }
+        if !self.locked {
+            q.push(("http_write_exception_in_output_format", "0"));
         }
         if self.read_only {
             // 2, not 1: a statement's own harmless settings stay allowed; the server refuses
@@ -273,12 +280,17 @@ impl Client {
         if let Some(at) = exception_at(&body) {
             return Err(server_error(None, &body[at..]));
         }
+        let Some(lines) = body.strip_suffix(b"\n") else {
+            return if body.is_empty() { Ok(Vec::new()) } else { Err(ChError::Cut("the last row has no end".into())) };
+        };
         let mut out = Vec::new();
         let mut scratch = String::new();
-        // The names and the types come first.
-        for line in body.split(|&c| c == b'\n').skip(2).filter(|l| !l.is_empty()) {
+        // The names and the types come first. A line is a row even when empty: one empty cell.
+        for line in lines.split(|&c| c == b'\n').skip(2) {
             out.push(
-                line.split(|&c| c == b'\t')
+                line.strip_suffix(b"\r")
+                    .unwrap_or(line)
+                    .split(|&c| c == b'\t')
                     .map(|cell| {
                         (cell != b"\\N").then(|| {
                             unescape_into(cell, &mut scratch);
@@ -434,8 +446,8 @@ pub(crate) struct ChRows {
     scratch: Vec<u8>,
     affected: Option<u64>,
     done: bool,
-    /// Holds each piece's room until its bytes are parsed.
-    permits: Vec<OwnedSemaphorePermit>,
+    /// `output_format_tsv_crlf_end_of_line`: every line ends in `\r\n`, so that mark is no mark.
+    crlf: bool,
 }
 
 impl ChRows {
@@ -454,7 +466,7 @@ impl ChRows {
             scratch: Vec::new(),
             affected,
             done: false,
-            permits: Vec::new(),
+            crlf: false,
         }
     }
 
@@ -469,14 +481,14 @@ impl ChRows {
             return Ok(false);
         }
         match self.rx.recv().await {
-            Some(Ok((b, permit))) => {
+            // Its room goes back here, not when it is parsed: a row longer than the room has to
+            // be read to its end. The buffer holds one unfinished line and one piece.
+            Some(Ok((b, _room))) => {
                 if self.pos > 0 {
                     self.buf.drain(..self.pos);
                     self.pos = 0;
-                    self.permits.clear();
                 }
                 self.buf.extend_from_slice(&b);
-                self.permits.push(permit);
                 Ok(true)
             }
             Some(Err(e)) => {
@@ -508,16 +520,22 @@ impl ChRows {
         loop {
             let rest = &self.buf[self.pos..];
             if let Some(n) = rest[searched..].iter().position(|&c| c == b'\n') {
-                let line = self.pos..self.pos + searched + n;
-                if self.buf[line.clone()].starts_with(EXCEPTION_MARK) && self.buf[line.clone()].last() == Some(&b'\r') {
+                let mut line = self.pos..self.pos + searched + n;
+                let cr = self.buf[line.clone()].last() == Some(&b'\r');
+                // In a format of the statement's own it may follow what was written on that line.
+                let text = &self.buf[line.clone()];
+                if cr && !self.crlf && (text.starts_with(EXCEPTION_MARK) || (self.raw && text[..text.len() - 1].ends_with(EXCEPTION_MARK))) {
                     return self.server_failure().await;
                 }
                 self.pos = line.end + 1;
+                if cr && self.crlf {
+                    line.end -= 1;
+                }
                 return Ok(Some(line));
             }
             searched = rest.len();
             if self.raw && rest.len() >= RAW_LINE_CAP {
-                let line = self.pos..self.pos + rest.len();
+                let line = self.pos..self.pos + whole_chars(rest);
                 self.pos = line.end;
                 return Ok(Some(line));
             }
@@ -528,6 +546,10 @@ impl ChRows {
                 }
                 if let Some(at) = exception_at(&self.buf[self.pos..]) {
                     return Err(server_error(None, &self.buf[self.pos + at..]));
+                }
+                // The server ends every row: this one was cut, whatever closed the stream.
+                if !self.raw {
+                    return Err(ChError::Cut("the last row has no end".into()));
                 }
                 let line = self.pos..self.buf.len();
                 self.pos = line.end;
@@ -551,7 +573,11 @@ impl ChRows {
             self.kinds = vec![Kind::Text];
             return Ok(());
         }
-        let Some(names) = self.next_line().await? else { return Ok(()) };
+        let Some(mut names) = self.next_line().await? else { return Ok(()) };
+        if self.buf[names.clone()].last() == Some(&b'\r') {
+            self.crlf = true;
+            names.end -= 1;
+        }
         // A range survives only until the next piece: the names are taken first.
         let names = self.cells_text(names);
         let Some(types) = self.next_line().await? else {
@@ -639,6 +665,20 @@ impl RowSource for ChRows {
     }
 }
 
+/// How much of `b` ends on a character's end: a line cut at a cap must not split one.
+fn whole_chars(b: &[u8]) -> usize {
+    for i in 1..=b.len().min(4) {
+        let c = b[b.len() - i];
+        if c & 0xc0 == 0xc0 {
+            return b.len() - i;
+        }
+        if c & 0x80 == 0 {
+            break;
+        }
+    }
+    b.len()
+}
+
 fn cell_str(cell: &[u8]) -> Option<&str> {
     std::str::from_utf8(cell).ok()
 }
@@ -672,6 +712,9 @@ fn push_cell(b: &mut ChunkBuilder, i: usize, kind: Kind, cell: &[u8], scratch: &
             Some(v) => b.push_i64(i, v),
             None => return false,
         },
+        // An array's, tuple's or map's text is a literal with its own quoting, as the server wrote
+        // it: undoing escapes would make `['a\',\'b']` read as two elements.
+        Kind::Other => push_text_cell(b, i, cell, scratch, false),
         _ => push_text_cell(b, i, cell, scratch, true),
     }
     true
@@ -884,5 +927,13 @@ mod tests {
         assert_eq!(used_database("/* x */ use `a b` ;").as_deref(), Some("a b"));
         assert_eq!(used_database("USE DATABASE d").as_deref(), Some("d"));
         assert_eq!(used_database("SELECT 1"), None);
+    }
+
+    #[test]
+    fn a_cut_never_splits_a_character() {
+        assert_eq!(whole_chars(b"abc"), 3);
+        assert_eq!(whole_chars("aé".as_bytes()), 1, "a whole one at the end waits too: harmless");
+        assert_eq!(whole_chars(&"é".as_bytes()[..1]), 0);
+        assert_eq!(whole_chars(&"a€".as_bytes()[..3]), 1);
     }
 }
