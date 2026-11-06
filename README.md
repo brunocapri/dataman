@@ -146,7 +146,7 @@ Any other MCP client works the same way: give it the command above as a stdio se
 | `off` | Nothing. This is the default on production connections. |
 | `read` | Read and explore. This is the default everywhere else. |
 | `write` | `INSERT`, and `UPDATE` / `DELETE` with a real `WHERE`, up to a row limit. |
-| `full` | Destructive statements too, each one waiting for your **Allow** in the app. |
+| `full` | New tables, indexes, views and schemas too. Destructive statements wait for your **Allow** in the app. |
 
 On a production connection, every write waits for your Allow. A read-only database refuses writes no matter what.
 
@@ -202,7 +202,7 @@ Every call goes through these checks in order. The first one that refuses wins, 
 4. **The database is read-only.** No write runs, whatever the tier.
 5. **Privacy.** Hidden objects are refused, and queries are narrowed and masked before any tier decision.
 6. **Production.** Every write waits for your Allow.
-7. **The tier.** Read refuses writes, write runs safe writes within the row limit, and full asks before destructive ones. What you allow runs on your login, never the agent's.
+7. **The tier.** Read refuses writes, write runs safe writes within the row limit, and full also runs new tables, indexes, views and schemas and asks before destructive ones. What you allow runs on your login, never the agent's.
 
 Nothing the agent sends can change this. There is no argument an agent can pass to skip a check, nor one that picks the login it runs as.
 
@@ -230,6 +230,7 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 | Explore schemas, run reads | | ✓ | ✓ | ✓ |
 | `INSERT`, and `UPDATE` / `DELETE` / `MERGE` with a real `WHERE`, within the row limit | | | ✓ | ✓ |
 | Writes over the row limit | | | asks | asks |
+| `CREATE` of a new table, index, view or schema | | | | ✓ |
 | Destructive statements | | | | asks |
 
 **Default:** read. On a connection tagged production it is off, unless you chose a tier yourself.
@@ -251,16 +252,21 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 - **A real `WHERE`.** `UPDATE` and `DELETE` need a `WHERE` that can be false. `WHERE 1=1`, `WHERE true`, `'a'='a'`, `col = col` and any condition with an always-true `OR` branch count as no `WHERE`, which makes the statement destructive. `MERGE` is destructive when it has no `ON`, an always-true `ON`, or `WHEN NOT MATCHED BY SOURCE`. Any other condition that names a column counts as real, even `id > 0`, so the row limit is the backstop for those.
 - **Row limit** (default 100 rows). The limit counts every row changed by the whole call, not per statement. The write runs in a transaction, and if it changed more rows than the limit, it is rolled back and you are asked. Your Allow shows the count and up to 5 of the changed rows. When it runs again, it commits only if it changes no more rows than you saw.
 - **Scripts.** All the statements of one call run in one transaction, committed only if every one succeeds. A statement that cannot run inside a transaction (`VACUUM`, `CREATE INDEX CONCURRENTLY`) must come alone.
-- **Destructive statements are refused** on this tier, with a message saying they need full.
+- **`CREATE` and destructive statements are refused** on this tier, with a message saying they need full.
 
-**Full.** Destructive statements can run too, but each one waits for your **Allow**. Destructive means:
+**Full.** Adds `CREATE` of new objects, which runs without asking: plain `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW` and `CREATE SCHEMA`. The row limit still counts the whole call, so a `CREATE TABLE` with a large `INSERT` waits for your Allow.
 
-- any DDL (`CREATE`, `ALTER`, `DROP`, `COMMENT`), and `GRANT` / `REVOKE`;
+- **It still asks** on production, on a connection with an agent login (that login can't create anything, so what you allow runs on yours), and on MySQL when other writes share the call (MySQL commits DDL at once, so the row limit could not undo them).
+
+Destructive statements can run too, but each one waits for your **Allow**, and a call that holds one waits as a whole. Destructive means:
+
+- any other DDL: `ALTER`, `DROP`, `COMMENT`, and `GRANT` / `REVOKE`;
+- `CREATE` that replaces something or does more than make an empty object: `CREATE OR REPLACE`, `CREATE OR ALTER`, `CREATE TABLE … AS SELECT`, `SELECT … INTO`, `CREATE INDEX CONCURRENTLY`, materialized views, functions, procedures, triggers, users, roles and logins, and every `CREATE` with options Dataman does not recognize;
 - `TRUNCATE`, `CALL`, `DO`, `EXEC`, `COPY`, `LOAD DATA`, `BULK INSERT`, `VACUUM` and side-effect functions such as `pg_terminate_backend()`;
 - `UPDATE` / `DELETE` without a real `WHERE`, and an unbounded `MERGE`;
 - anything Dataman cannot classify.
 
-Statements that only change rows are run first, counted and rolled back, and then you are asked. Everything else is asked before it runs at all.
+Statements that only change rows are run first, counted and rolled back, and then you are asked. Everything else that needs your Allow is asked before it runs at all.
 
 **The Allow sheet** shows the connection, database, environment (in red on production), which agent is asking, the SQL, why it is asking, and for counted writes, how many rows and a preview of them.
 

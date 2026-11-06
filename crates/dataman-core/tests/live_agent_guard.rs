@@ -18,7 +18,7 @@ fn count(e: &Env, c: &Arc<Connection>, table: &str) -> i64 {
 fn agent_run(e: &Env, c: &Arc<Connection>, db: &str, sql: &str) -> Option<String> {
     let mode = match agent_write_class(sql, c.dialect()) {
         WriteClass::Read => Mode::Read,
-        WriteClass::SafeWrite => Mode::Write,
+        WriteClass::SafeWrite | WriteClass::Create { .. } => Mode::Write,
         WriteClass::Destructive { .. } => return None,
     };
     let r = e.core.block_on(c.bounded(Some(db), sql, vec![], mode, Limits::default(), std::future::pending()));

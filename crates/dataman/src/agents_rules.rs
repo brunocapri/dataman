@@ -38,7 +38,7 @@ pub(crate) fn tier_tip() -> Tip {
         .item("Off", "Agents can't use it.")
         .item("Read", "Reads only.")
         .item("Write", "Also inserts, and updates or deletes with a real WHERE, up to Rows per write.")
-        .item("Full", "Also destructive statements (DROP, TRUNCATE, a DELETE without WHERE…). Each one waits for your Allow.")
+        .item("Full", "Also new tables, indexes, views and schemas. Destructive statements (DROP, ALTER, TRUNCATE, a DELETE without WHERE…) wait for your Allow.")
         .note("On production, every write waits for your Allow.")
 }
 

@@ -726,10 +726,14 @@ mod tests {
             "ALTER TABLE public.payments RENAME TO pays",
             "DROP TABLE payments",
             "CREATE INDEX i ON users (password_hash)",
+            "CREATE INDEX i ON payments (id)",
+            "CREATE VIEW v AS SELECT id FROM payments",
+            "CREATE VIEW v AS SELECT password_hash FROM users",
         ] {
             let e = run(&r, sql, true).unwrap_err();
-            assert!(e.contains("kept from agents") || e.contains("not visible"), "{sql}: {e}");
+            assert!(e.contains("kept from agents") || e.contains("not visible") || e.contains("hidden"), "{sql}: {e}");
         }
+        assert!(run(&r, "CREATE VIEW v AS SELECT * FROM users", true).unwrap_err().contains("name the columns"));
         for sql in ["ALTER TABLE users ADD COLUMN nickname text", "CREATE INDEX i ON users (email)", "ALTER TABLE orders RENAME COLUMN notes TO memo"] {
             assert!(run(&r, sql, true).is_ok(), "{sql}");
         }

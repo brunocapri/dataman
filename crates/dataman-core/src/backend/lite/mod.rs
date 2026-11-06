@@ -391,9 +391,11 @@ fn stream_on(c: &mut Conn, sql: &str, params: &[Val], kinds: Option<Vec<Kind>>, 
                 bind(&mut stmt, params)?;
             }
             if stmt.column_count() == 0 {
+                // DDL leaves `changes()` at the last INSERT's count, which a row limit would add up.
+                let before = c.db.total_changes();
                 stmt.raw_execute()?;
                 if !shown {
-                    affected = Some(c.db.changes());
+                    affected = Some(if c.db.total_changes() == before { 0 } else { c.db.changes() });
                 }
                 continue;
             }

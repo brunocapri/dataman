@@ -1354,6 +1354,8 @@ fn effect_call(t: &Toks, write: bool) -> Option<String> {
 pub enum WriteClass {
     Read,
     SafeWrite,
+    /// New objects and nothing else (`plain_create`), with any safe writes beside them.
+    Create { what: Vec<String> },
     Destructive { reasons: Vec<String> },
 }
 
@@ -1366,9 +1368,14 @@ impl WriteClass {
         matches!(self, WriteClass::Destructive { .. })
     }
 
+    /// An agent login holds no DDL rights: what the user allows runs on the user's own.
+    pub fn needs_user_login(&self) -> bool {
+        matches!(self, WriteClass::Create { .. } | WriteClass::Destructive { .. })
+    }
+
     pub fn reasons(&self) -> &[String] {
         match self {
-            WriteClass::Destructive { reasons } => reasons,
+            WriteClass::Create { what: reasons } | WriteClass::Destructive { reasons } => reasons,
             _ => &[],
         }
     }
@@ -1409,6 +1416,7 @@ enum Piece {
     Neutral,
     Read,
     Safe,
+    Create(String),
     Destructive(String),
 }
 
@@ -1471,8 +1479,160 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
             "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" => Piece::Safe,
             other => Piece::Destructive(other.to_string()),
         },
+        Effect::Ddl if plain_create(&t, &f) => Piece::Create(f.verb.clone()),
         _ => Piece::Destructive(if f.verb.is_empty() { "an unknown statement".into() } else { f.verb.clone() }),
     }
+}
+
+/// `CREATE` of a new table, index, view or schema, recognized token by token: every other form
+/// stays destructive, because it replaces something (`OR REPLACE`, `OR ALTER`, T-SQL's
+/// `DROP_EXISTING`), copies rows no row limit counts (`AS SELECT`, `MATERIALIZED`), runs code,
+/// changes who may do what (`AUTHORIZATION`, `DEFINER`) or reaches outside the database.
+fn plain_create(t: &Toks, f: &Facts) -> bool {
+    if f.outside_tx || !t.is(0, "CREATE") || statements(t).iter().filter(|r| !r.is_empty()).count() != 1 {
+        return false;
+    }
+    let end = (0..t.t.len()).rev().find(|&i| !t.punct(i, ";")).map_or(0, |i| i + 1);
+    let t = t.sub(0..end);
+    let i = 1 + usize::from(t.is(1, "TEMP") || t.is(1, "TEMPORARY"));
+    if t.is(i, "VIEW") {
+        return plain_view(&t, i + 1);
+    }
+    if (0..end).any(|i| t.is(i, "SELECT")) {
+        return false;
+    }
+    if t.is(i, "TABLE") {
+        plain_table(&t, i + 1)
+    } else if t.is(1, "UNLOGGED") && t.is(2, "TABLE") {
+        plain_table(&t, 3)
+    } else if i > 1 {
+        false
+    } else if t.is(1, "SCHEMA") {
+        t.name(if_not_exists(&t, 2)).is_some_and(|(_, next)| next == end)
+    } else {
+        plain_index(&t)
+    }
+}
+
+fn if_not_exists(t: &Toks, i: usize) -> usize {
+    if t.is(i, "IF") && t.is(i + 1, "NOT") && t.is(i + 2, "EXISTS") { i + 3 } else { i }
+}
+
+fn plain_view(t: &Toks, i: usize) -> bool {
+    let Some((_, mut i)) = t.name(if_not_exists(t, i)) else { return false };
+    if t.punct(i, "(") {
+        i = t.close_of(i) + 1;
+    }
+    let (Some(first), Some(last)) = (t.t.get(i + 1), t.t.last()) else { return false };
+    t.is(i, "AS") && (t.is(i + 1, "SELECT") || t.is(i + 1, "WITH")) && agent_read_refusal_in(&t.src[first.start..last.end], t.dialect).is_none()
+}
+
+fn plain_table(t: &Toks, i: usize) -> bool {
+    let Some((_, open)) = t.name(if_not_exists(t, i)) else { return false };
+    if !t.punct(open, "(") {
+        return false;
+    }
+    let close = t.close_of(open);
+    if close >= t.t.len() {
+        return false;
+    }
+    // `(LIKE other)` and MySQL's `(VALUES …)`, `(TABLE other)`: another table's columns or rows.
+    let body = t.sub(open + 1..close);
+    let copies = |i: usize| body.is(i, "LIKE") || body.is(i, "VALUES") || body.is(i, "TABLE") || body.punct(i, "(");
+    !copies(0) && !body.top().into_iter().any(|i| body.punct(i, ",") && copies(i + 1)) && plain_table_options(t, close + 1)
+}
+
+/// MySQL options that only describe the table. Left out on purpose: `DATA DIRECTORY`,
+/// `CONNECTION`, `UNION`, and any engine but InnoDB (FEDERATED and CSV reach outside it).
+const MY_TABLE_OPTIONS: &[&str] = &["CHARSET", "COLLATE", "AUTO_INCREMENT", "COMMENT", "ROW_FORMAT"];
+
+fn plain_table_options(t: &Toks, mut i: usize) -> bool {
+    let n = t.t.len();
+    match t.dialect {
+        Dialect::Postgres => i == n || (t.is(i, "ON") && t.is(i + 1, "COMMIT") && (i + 3 == n && t.is(i + 2, "DROP") || i + 4 == n && (t.is(i + 2, "DELETE") || t.is(i + 2, "PRESERVE")) && t.is(i + 3, "ROWS"))),
+        Dialect::TSql => i == n || (i + 2 == n && t.is(i, "ON") && t.t[i + 1].text(t.src).trim_matches(['[', ']']).eq_ignore_ascii_case("PRIMARY")),
+        Dialect::DuckDb => i == n,
+        Dialect::Sqlite => {
+            while i < n {
+                if t.is(i, "STRICT") {
+                    i += 1;
+                } else if t.is(i, "WITHOUT") && t.is(i + 1, "ROWID") {
+                    i += 2;
+                } else {
+                    return false;
+                }
+                if t.punct(i, ",") {
+                    i += 1;
+                }
+            }
+            true
+        }
+        Dialect::MySql => {
+            while i < n {
+                if t.is(i, "DEFAULT") {
+                    i += 1;
+                }
+                let engine = t.is(i, "ENGINE");
+                if t.is(i, "CHARACTER") && t.is(i + 1, "SET") {
+                    i += 2;
+                } else if engine || t.word(i).is_some_and(|w| MY_TABLE_OPTIONS.contains(&w.as_str())) {
+                    i += 1;
+                } else {
+                    return false;
+                }
+                if t.op(i, "=") {
+                    i += 1;
+                }
+                let value = t.t.get(i).is_some_and(|x| matches!(x.kind, TokenKind::Keyword | TokenKind::Ident | TokenKind::Number | TokenKind::String));
+                if !value || engine && !t.is(i, "InnoDB") {
+                    return false;
+                }
+                i += 1;
+                if t.punct(i, ",") {
+                    i += 1;
+                }
+            }
+            true
+        }
+    }
+}
+
+fn plain_index(t: &Toks) -> bool {
+    let n = t.t.len();
+    let mut i = 1;
+    if t.is(i, "UNIQUE") {
+        i += 1;
+    }
+    if t.dialect == Dialect::TSql && (t.is(i, "CLUSTERED") || t.is(i, "NONCLUSTERED")) {
+        i += 1;
+    }
+    if !t.is(i, "INDEX") {
+        return false;
+    }
+    i = if_not_exists(t, i + 1);
+    if !t.is(i, "ON") {
+        let Some((_, next)) = t.name(i) else { return false };
+        i = next;
+    }
+    if !t.is(i, "ON") {
+        return false;
+    }
+    let Some((_, next)) = t.name(i + 1) else { return false };
+    i = next;
+    let using = |i: usize| if t.is(i, "USING") { i + 2 } else { i };
+    i = using(i);
+    if !t.punct(i, "(") {
+        return false;
+    }
+    i = t.close_of(i) + 1;
+    if t.is(i, "INCLUDE") && t.punct(i + 1, "(") {
+        i = t.close_of(i + 1) + 1;
+    }
+    if t.is(i, "NULLS") {
+        i += if t.is(i + 1, "NOT") { 3 } else { 2 };
+    }
+    i = using(i);
+    i == n || t.is(i, "WHERE")
 }
 
 pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
@@ -1482,21 +1642,31 @@ pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
 /// The class of pieces as `agent_pieces` cut them (what an allowlist leaves): joined again, a
 /// T-SQL routine would take in what follows it.
 pub fn pieces_class<S: AsRef<str>>(pieces: &[S], dialect: Dialect) -> WriteClass {
-    let mut safe = false;
+    let (mut safe, mut destructive) = (false, false);
     let mut reasons: Vec<String> = Vec::new();
     for p in pieces {
-        match piece(p.as_ref(), dialect) {
-            Piece::Neutral | Piece::Read => {}
-            Piece::Safe => safe = true,
-            Piece::Destructive(r) => {
-                if !reasons.contains(&r) {
-                    reasons.push(r);
-                }
+        let r = match piece(p.as_ref(), dialect) {
+            Piece::Neutral | Piece::Read => continue,
+            Piece::Safe => {
+                safe = true;
+                continue;
             }
+            Piece::Create(r) => r,
+            Piece::Destructive(r) => {
+                destructive = true;
+                r
+            }
+        };
+        if !reasons.contains(&r) {
+            reasons.push(r);
         }
     }
-    if !reasons.is_empty() {
+    // DDL commits on its own in MySQL: beside a write it would commit that write before the row
+    // limit counts it, and survive the rollback when the limit is passed.
+    if destructive || (safe && !reasons.is_empty() && dialect == Dialect::MySql) {
         WriteClass::Destructive { reasons }
+    } else if !reasons.is_empty() {
+        WriteClass::Create { what: reasons }
     } else if safe {
         WriteClass::SafeWrite
     } else {
@@ -2087,6 +2257,7 @@ mod tests {
         enum W {
             R,
             S,
+            C(&'static str),
             D(&'static str),
         }
         use Dialect::{MySql as My, Postgres as Pg, TSql as Ms};
@@ -2163,7 +2334,7 @@ mod tests {
             (Pg, "dRoP tAbLe t", D("DROP TABLE")),
             (Pg, "/* harmless */ DROP TABLE t", D("DROP TABLE")),
             (Pg, "ALTER TABLE t ADD COLUMN c int", D("ALTER TABLE")),
-            (Pg, "CREATE TEMP TABLE x (a int)", D("CREATE TABLE")),
+            (Pg, "CREATE TEMP TABLE x (a int)", C("CREATE TABLE")),
             (Pg, "CREATE INDEX CONCURRENTLY i ON t (x)", D("CREATE INDEX")),
             (Pg, "GRANT ALL ON t TO public", D("GRANT")),
             (Pg, "REVOKE SELECT ON t FROM u", D("REVOKE")),
@@ -2228,7 +2399,7 @@ mod tests {
             (Ms, "SELECT disable, receive, [open] FROM t", R),
             (Ms, "SELECT * FROM t ORDER BY a OFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY", R),
             (Ms, "DECLARE @x int\nSET @x = 1\nUPDATE t SET a = @x WHERE id = 2", S),
-            (Ms, "CREATE TABLE c (id int REFERENCES p ON DELETE SET NULL ON UPDATE SET DEFAULT)", D("CREATE")),
+            (Ms, "CREATE TABLE c (id int REFERENCES p ON DELETE SET NULL ON UPDATE SET DEFAULT)", C("CREATE TABLE")),
             (Ms, "SET ANSI_NULLS, QUOTED_IDENTIFIER ON; INSERT INTO t VALUES (1)", S),
             (Pg, "SELECT set_config('role', 'admin', true); INSERT INTO t VALUES (1)", D("set_config()")),
             (Pg, "BEGIN; INSERT INTO t VALUES (1); COMMIT", D("transaction control")),
@@ -2240,6 +2411,7 @@ mod tests {
             let got = agent_write_class(sql, *d);
             let ok = match (want, &got) {
                 (R, WriteClass::Read) | (S, WriteClass::SafeWrite) => true,
+                (C(x), WriteClass::Create { what }) => what.iter().any(|r| r.contains(x)),
                 (D(x), WriteClass::Destructive { reasons }) => reasons.iter().any(|r| r.contains(x)),
                 _ => false,
             };
@@ -2249,6 +2421,158 @@ mod tests {
         }
         assert!(failed.is_empty(), "{} of {} wrong:\n{}", failed.len(), corpus.len(), failed.join("\n"));
         assert!(corpus.len() >= 100, "{}", corpus.len());
+    }
+
+    #[test]
+    fn new_objects_are_their_own_class() {
+        use Dialect::{DuckDb as Dk, MySql as My, Postgres as Pg, Sqlite as Li, TSql as Ms};
+        let plain: &[(Dialect, &str, &[&str])] = &[
+            (Pg, "CREATE TABLE t (id int PRIMARY KEY, a text)", &["CREATE TABLE"]),
+            (Pg, "create table if not exists public.t (id serial, a text default 'x', b int check (b > 0))", &["CREATE TABLE"]),
+            (Pg, "/* x */ cReAtE /* y */ TaBlE t -- z\n (a int)", &["CREATE TABLE"]),
+            (Pg, "CREATE TEMPORARY TABLE t (a int) ON COMMIT DROP", &["CREATE TABLE"]),
+            (Pg, "CREATE UNLOGGED TABLE t (a int);", &["CREATE TABLE"]),
+            (Pg, "CREATE TABLE c (id int REFERENCES p (id) ON DELETE CASCADE)", &["CREATE TABLE"]),
+            (Pg, "CREATE INDEX i ON t (a)", &["CREATE INDEX"]),
+            (Pg, "CREATE INDEX ON t (a)", &["CREATE INDEX"]),
+            (Pg, "CREATE UNIQUE INDEX IF NOT EXISTS i ON s.t USING btree (lower(a)) INCLUDE (b) NULLS NOT DISTINCT WHERE a IS NOT NULL", &["CREATE INDEX"]),
+            (Pg, "CREATE VIEW v AS SELECT a FROM t", &["CREATE VIEW"]),
+            (Pg, "CREATE TEMP VIEW v (x) AS WITH c AS (SELECT 1 AS a) SELECT a FROM c", &["CREATE VIEW"]),
+            (Pg, "CREATE SCHEMA s", &["CREATE SCHEMA"]),
+            (Pg, "CREATE SCHEMA IF NOT EXISTS s", &["CREATE SCHEMA"]),
+            (Pg, "CREATE SCHEMA s; CREATE TABLE s.t (a int); CREATE INDEX i ON s.t (a); INSERT INTO s.t VALUES (1)", &["CREATE SCHEMA", "CREATE TABLE", "CREATE INDEX"]),
+            (My, "CREATE TABLE `t` (id INT AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='x'", &["CREATE TABLE"]),
+            (My, "CREATE TABLE t (a int) ENGINE InnoDB, DEFAULT CHARACTER SET utf8mb4", &["CREATE TABLE"]),
+            (My, "/*!50000 CREATE TABLE t (a int) */", &["CREATE TABLE"]),
+            (My, "CREATE INDEX i ON t (a) USING BTREE", &["CREATE INDEX"]),
+            (My, "CREATE VIEW v AS SELECT a FROM t", &["CREATE VIEW"]),
+            (My, "CREATE SCHEMA s", &["CREATE SCHEMA"]),
+            (My, "CREATE TABLE a (x int); CREATE INDEX i ON a (x)", &["CREATE TABLE", "CREATE INDEX"]),
+            (Ms, "CREATE TABLE [dbo].[t] ([id] int IDENTITY(1,1) PRIMARY KEY, v nvarchar(10)) ON [PRIMARY]", &["CREATE TABLE"]),
+            (Ms, "CREATE TABLE #t (a int)", &["CREATE TABLE"]),
+            (Ms, "CREATE TABLE a (x int) CREATE TABLE b (y int)", &["CREATE TABLE"]),
+            (Ms, "CREATE TABLE shop.p (id int PRIMARY KEY)\nINSERT INTO shop.p VALUES (1)", &["CREATE TABLE"]),
+            (Ms, "CREATE UNIQUE NONCLUSTERED INDEX i ON dbo.t (a) INCLUDE (b) WHERE a > 0", &["CREATE INDEX"]),
+            (Ms, "CREATE VIEW dbo.v AS SELECT a FROM dbo.t", &["CREATE VIEW"]),
+            (Ms, "CREATE SCHEMA s", &["CREATE SCHEMA"]),
+            (Li, "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT) STRICT, WITHOUT ROWID", &["CREATE TABLE"]),
+            (Li, "CREATE VIEW IF NOT EXISTS v AS SELECT a FROM t", &["CREATE VIEW"]),
+            (Dk, "CREATE TABLE t (a INT)", &["CREATE TABLE"]),
+            (Dk, "CREATE SCHEMA s", &["CREATE SCHEMA"]),
+        ];
+        for (d, sql, what) in plain {
+            let want = WriteClass::Create { what: what.iter().map(|w| w.to_string()).collect() };
+            assert_eq!(agent_write_class(sql, *d), want, "{d:?} {sql}");
+        }
+        for (d, sql) in [
+            (Pg, "CREATE OR REPLACE VIEW v AS SELECT 1"),
+            (Dk, "CREATE OR REPLACE TABLE t (a int)"),
+            (Dk, "CREATE OR REPLACE SCHEMA s"),
+            (My, "CREATE OR REPLACE TABLE t (a int)"),
+            (My, "CREATE /*!100100 OR REPLACE */ TABLE t (a int)"),
+            (Ms, "CREATE OR ALTER VIEW v AS SELECT 1"),
+            (Ms, "create /* x */ or /* y */ alter procedure p as select 1"),
+            (Pg, "CREATE TABLE t AS SELECT * FROM u"),
+            (Pg, "CREATE TABLE t AS TABLE u"),
+            (Pg, "CREATE TABLE t AS VALUES (1)"),
+            (Pg, "CREATE TABLE t AS EXECUTE p"),
+            (Pg, "CREATE TEMP TABLE t AS SELECT 1"),
+            (Pg, "CREATE TABLE t (a) AS SELECT 1"),
+            (Pg, "CREATE TABLE t (LIKE u INCLUDING ALL)"),
+            (Pg, "CREATE TABLE t (a int, LIKE u)"),
+            (Pg, "CREATE TABLE t (a int) INHERITS (u)"),
+            (Pg, "CREATE TABLE t PARTITION OF u DEFAULT"),
+            (Pg, "CREATE TABLE t (a int) TABLESPACE fast"),
+            (Pg, "CREATE TABLE t (a int DEFAULT (SELECT 1))"),
+            (Pg, "SELECT * INTO t FROM u"),
+            (Pg, "EXPLAIN ANALYZE CREATE TABLE t AS SELECT 1"),
+            (My, "CREATE TABLE t SELECT * FROM u"),
+            (My, "CREATE TABLE t (a int) SELECT * FROM u"),
+            (My, "CREATE TABLE t (SELECT * FROM u)"),
+            (My, "CREATE TABLE t LIKE u"),
+            (My, "CREATE TABLE t (LIKE u)"),
+            (My, "CREATE TABLE t (a int) ENGINE=FEDERATED CONNECTION='mysql://u@h/d/t'"),
+            (My, "CREATE TABLE t (a int) ENGINE=CSV"),
+            (My, "CREATE TABLE t (a int) DATA DIRECTORY='/x'"),
+            (My, "CREATE TABLE t (a int) /*!50100 PARTITION BY HASH(a) PARTITIONS 4 */"),
+            (Ms, "SELECT * INTO t FROM u"),
+            (Ms, "CREATE TABLE t (a int) WITH (DISTRIBUTION = HASH(a)) AS SELECT 1"),
+            (Li, "CREATE TABLE t AS SELECT 1"),
+            (Li, "CREATE VIRTUAL TABLE t USING fts5(a)"),
+            (Dk, "CREATE TABLE t AS SELECT * FROM u"),
+            (Dk, "CREATE TABLE t AS FROM 'x.csv'"),
+            (Pg, "CREATE MATERIALIZED VIEW v AS SELECT 1"),
+            (Pg, "CREATE VIEW v AS SELECT nextval('s')"),
+            (Pg, "CREATE VIEW v AS SELECT * FROM t FOR UPDATE"),
+            (Pg, "CREATE RECURSIVE VIEW v (a) AS SELECT 1"),
+            (My, "CREATE ALGORITHM=MERGE VIEW v AS SELECT 1"),
+            (My, "CREATE DEFINER=root VIEW v AS SELECT 1"),
+            (My, "CREATE SQL SECURITY DEFINER VIEW v AS SELECT 1"),
+            (Ms, "CREATE VIEW v AS SELECT 1 DROP TABLE x"),
+            (Ms, "CREATE VIEW v WITH SCHEMABINDING AS SELECT a FROM dbo.t"),
+            (Pg, "CREATE INDEX CONCURRENTLY i ON t (a)"),
+            (Pg, "CREATE INDEX CONCURRENTLY ON t (a)"),
+            (Pg, "CREATE INDEX i ON ONLY t (a)"),
+            (Pg, "CREATE INDEX i ON t ((SELECT 1))"),
+            (Ms, "CREATE INDEX i ON t (a) WITH (DROP_EXISTING = ON)"),
+            (Ms, "CREATE INDEX i ON t (a) ON fg"),
+            (My, "CREATE FULLTEXT INDEX i ON t (a)"),
+            (Pg, "CREATE SCHEMA s AUTHORIZATION joe"),
+            (Pg, "CREATE SCHEMA AUTHORIZATION joe"),
+            (Pg, "CREATE SCHEMA s CREATE TABLE t (a int)"),
+            (Ms, "CREATE SCHEMA s AUTHORIZATION dbo"),
+            (My, "CREATE SCHEMA s /*!40100 DEFAULT CHARACTER SET utf8mb4 */"),
+            (Pg, "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$"),
+            (Pg, "CREATE PROCEDURE p() LANGUAGE sql AS $$ SELECT 1 $$"),
+            (Pg, "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW EXECUTE FUNCTION f()"),
+            (My, "CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW SET NEW.a = 1"),
+            (Ms, "CREATE TRIGGER tr ON t AFTER INSERT AS SELECT 1"),
+            (Ms, "CREATE PROC p AS SELECT 1"),
+            (Li, "CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM u; END"),
+            (Dk, "CREATE MACRO m(a) AS a + 1"),
+            (Pg, "CREATE USER u"),
+            (Pg, "CREATE ROLE r"),
+            (My, "CREATE USER u IDENTIFIED BY 'x'"),
+            (Ms, "CREATE LOGIN l WITH PASSWORD = 'x'"),
+            (Ms, "CREATE USER u FOR LOGIN l"),
+            (Pg, "CREATE DATABASE d"),
+            (Pg, "CREATE SEQUENCE s"),
+            (Pg, "CREATE TYPE t AS ENUM ('a')"),
+            (Pg, "CREATE EXTENSION x"),
+            (Pg, "CREATE FOREIGN TABLE t (a int) SERVER s"),
+            (Pg, "CREATE WHATEVER x"),
+            (Pg, "(CREATE TABLE t (a int))"),
+            (Pg, "CREATE TABLE t (a int"),
+            (Pg, "CREATE TABLE"),
+            (Pg, "CREATE"),
+            (Pg, "CREATE TABLE t (a text DEFAULT pg_read_file('/x'))"),
+            (Pg, "CREATE TABLE t (a int) DROP TABLE u"),
+            (Pg, "CREATE TABLE t (a int); DROP TABLE u"),
+            (Pg, "CREATE TABLE t (a int); DELETE FROM u"),
+            (Pg, "CREATE TABLE t (a int); DELETE FROM u WHERE 1=1"),
+            (Pg, "CREATE TABLE t (a int); TRUNCATE u"),
+            (Ms, "CREATE TABLE t (a int) DROP TABLE u"),
+            (Ms, "CREATE TABLE t (a int) EXEC dbo.p"),
+            (Ms, "IF OBJECT_ID('t') IS NULL CREATE TABLE t (a int)"),
+            (My, "CREATE TABLE t (a int); DROP TABLE u"),
+        ] {
+            assert!(agent_write_class(sql, d).is_destructive(), "{d:?} {sql}: {:?}", agent_write_class(sql, d));
+        }
+        // What a new object leaves out.
+        for sql in ["DROP TABLE t", "ALTER TABLE t ADD c int", "TRUNCATE t", "DELETE FROM t", "UPDATE t SET a = 1", "DELETE FROM t WHERE 1=1"] {
+            assert!(agent_write_class(sql, Pg).is_destructive(), "{sql}");
+        }
+        assert_eq!(agent_write_class("DELETE FROM t WHERE id = 1", Pg), WriteClass::SafeWrite);
+        // MySQL commits DDL at once: beside a write, the row limit's count would come too late.
+        for sql in ["INSERT INTO t VALUES (1); CREATE TABLE u (a int)", "CREATE TABLE u (a int); DELETE FROM t WHERE id > 0"] {
+            assert!(agent_write_class(sql, My).is_destructive(), "{sql}");
+            assert!(matches!(agent_write_class(sql, Pg), WriteClass::Create { .. }), "{sql}");
+            assert!(matches!(agent_write_class(sql, Ms), WriteClass::Create { .. }), "{sql}");
+            assert_eq!(agent_preview(sql, My), Preview::AskFirst, "{sql}");
+        }
+        assert!(matches!(agent_write_class("CREATE TABLE u (a int); SELECT 1", My), WriteClass::Create { .. }));
+        assert_eq!(agent_write_class("CREATE TABLE t (a int)", Ms).reasons(), ["CREATE TABLE"]);
+        assert!(agent_write_class("CREATE TABLE t (a int)", Pg).needs_user_login() && !agent_write_class("CREATE TABLE t (a int)", Pg).is_destructive());
     }
 
     #[test]

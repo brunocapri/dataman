@@ -24,7 +24,8 @@ review and run themselves (use this for writes the user wants to run personally)
 list_favorites, and run_favorite runs one by its name (close is enough; an unclear name returns the candidates to choose \
 from and runs nothing). Writes (execute, open_query, run_favorite) follow \
 each connection's MCP tier, set by the user: read refuses them; write runs non-destructive DML (INSERT, UPDATE/DELETE with a real \
-WHERE) within a row limit; full also allows destructive statements, which wait for the user's Allow in the app, as do writes over \
+WHERE) within a row limit; full also runs CREATE of a new table, index, view or schema (on a connection with an agent login, those wait \
+for the Allow too) and allows destructive statements, which wait for the user's Allow in the app, as do writes over \
 the row limit and every write on production. A connection may also list statements the user allows without asking (allowed \
 in list_connections; ? stands for one value) or let anything run (yolo); a read-only database still refuses writes. You \
 cannot approve or allow anything yourself. The user may also keep data from agents per connection (list_connections' agents): \

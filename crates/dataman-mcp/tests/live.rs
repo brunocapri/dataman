@@ -215,17 +215,22 @@ fn postgres_tools() {
          CREATE TABLE {s}.orders (id int PRIMARY KEY, customer_id int NOT NULL REFERENCES {s}.customer(id), total numeric(10,2) CHECK (total >= 0), data jsonb); \
          CREATE INDEX orders_customer ON {s}.orders (customer_id)"
     );
-    e.answer(&[Deny]);
-    assert!(e.err("execute", f(json!({"sql": ddl}))).contains("denied in Dataman"));
-    let q = e.asked();
-    assert_eq!(q.len(), 1);
-    assert_eq!((q[0].reasons.clone(), q[0].affected, q[0].connection.as_str(), q[0].tool.as_str()), (vec!["CREATE SCHEMA".to_string(), "CREATE TABLE".into(), "CREATE INDEX".into()], None, "pgf", "execute"));
-    assert_eq!(e.count("pg", &format!("SELECT count(*) FROM pg_namespace WHERE nspname = '{s}'")), json!(0), "denied before it ran");
-    e.answer(&[Allow]);
     let r = e.ok("execute", f(json!({"sql": ddl})));
     assert_eq!((r["committed"].as_bool(), r["statements"].as_array().unwrap().len()), (Some(true), 4));
-    assert_eq!(r["approved"]["reasons"][0], "CREATE SCHEMA");
-    assert_eq!(e.asked().len(), 1);
+    assert!(r.get("approved").is_none() && e.asked().is_empty(), "new objects run unasked on full: {r}");
+    // A CREATE beside something that needs the Allow waits with it, before anything runs.
+    e.answer(&[Deny]);
+    assert!(e.err("execute", f(json!({"sql": format!("CREATE TABLE {s}.held (a int); ALTER TABLE {s}.customer ADD COLUMN held int")}))).contains("denied in Dataman"));
+    let q = e.asked();
+    assert_eq!(q.len(), 1);
+    assert_eq!((q[0].reasons.clone(), q[0].affected, q[0].connection.as_str(), q[0].tool.as_str()), (vec!["CREATE TABLE".to_string(), "ALTER TABLE".into()], None, "pgf", "execute"));
+    assert_eq!(e.count("pg", &format!("SELECT count(*) FROM pg_tables WHERE schemaname = '{s}' AND tablename = 'held'")), json!(0), "denied before it ran");
+    // Past the row limit the whole call rolls back, the new table with it.
+    e.answer(&[Deny]);
+    let err = e.err("execute", f(json!({"sql": format!("CREATE TABLE {s}.many (a int); INSERT INTO {s}.many SELECT generate_series(1, 200)")})));
+    assert!(err.contains("rolled back"), "{err}");
+    assert_eq!(e.asked()[0].affected, Some(200));
+    assert_eq!(e.count("pg", &format!("SELECT count(*) FROM pg_tables WHERE schemaname = '{s}' AND tablename = 'many'")), json!(0), "rolled back");
 
     let r = e.ok("execute", w(json!({"sql": format!("INSERT INTO {s}.customer VALUES (1, 'Alice', ''), (2, 'Bob', NULL) RETURNING id")})));
     assert_eq!(r["statements"][0], json!(["INSERT", 2]));
@@ -610,12 +615,16 @@ fn mysql_tiers() {
     e.answer(&[Allow]);
     e.ok("execute", json!({"connection": "myf", "sql": format!("CREATE DATABASE {db}")}));
     assert_eq!(e.asked()[0].reasons, vec!["CREATE DATABASE".to_string()]);
-    e.answer(&[Allow]);
     e.ok("execute", on("myf", "CREATE TABLE t (id int PRIMARY KEY, a int)".into()));
-    assert_eq!(e.asked()[0].affected, None);
+    assert!(e.asked().is_empty(), "new objects run unasked on full");
     assert!(e.err("execute", on("myw", "CREATE TABLE u (id int)".into())).contains("destructive"));
     let r = e.ok("execute", on("myw", "INSERT INTO t VALUES (1, 0), (2, 0), (3, 0)".into()));
     assert_eq!(r["statements"][0], json!(["INSERT", 3]));
+    // DDL commits at once here: beside a write it asks before anything runs.
+    e.answer(&[Deny]);
+    assert!(e.err("execute", on("myf", "INSERT INTO t VALUES (4, 0); CREATE TABLE u (id int)".into())).contains("denied in Dataman"));
+    assert_eq!(e.asked()[0].reasons, vec!["CREATE TABLE".to_string()]);
+    assert_eq!(e.ok("run_query", json!({"connection": "myw", "database": db, "sql": "SELECT count(*) FROM t"}))["rows"], json!([[3]]), "denied before it ran");
     assert_eq!(e.ok("execute", on("myw", "UPDATE t SET a = 1 WHERE id = 2".into()))["statements"][0], json!(["UPDATE", 1]));
     for sql in ["DELETE FROM t", "DELETE FROM t WHERE 1", "UPDATE t SET a = 2 WHERE id = id", "DELETE FROM t ORDER BY id LIMIT 1"] {
         assert!(e.err("execute", on("myw", sql.into())).contains("destructive"), "{sql}");
@@ -640,9 +649,8 @@ fn sql_server_tiers() {
     use Answer::*;
     let e = env();
     let t = format!("mcp_live_{}", std::process::id());
-    e.answer(&[Allow]);
     e.ok("execute", json!({"connection": "msf", "sql": format!("CREATE TABLE dbo.{t} (id int PRIMARY KEY, a int)")}));
-    assert_eq!(e.asked()[0].reasons, vec!["CREATE TABLE".to_string()]);
+    assert!(e.asked().is_empty(), "new objects run unasked on full");
     let r = e.ok("execute", json!({"connection": "msw", "sql": format!("SET NOCOUNT OFF; INSERT INTO dbo.{t} VALUES (1, 0), (2, 0), (3, 0)")}));
     assert!(r["statements"].as_array().unwrap().iter().any(|s| s == &json!(["INSERT", 3])), "{r}");
     for sql in [format!("DELETE TOP (1) FROM dbo.{t}"), format!("DELETE FROM dbo.{t} WHERE 1=1"), format!("EXEC('DROP TABLE dbo.{t}')"), format!("TRUNCATE TABLE dbo.{t}")] {
