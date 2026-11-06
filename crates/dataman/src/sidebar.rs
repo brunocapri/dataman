@@ -120,7 +120,7 @@ impl Workspace {
         };
         let rail = self.render_rail(window, cx);
         let view = div().flex_1().min_w_0().h_full().child(view);
-        div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().line).child(rail).child(view).into_any_element()
+        div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().pane_line).child(rail).child(view).into_any_element()
     }
 
     fn render_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -232,7 +232,7 @@ impl Workspace {
             .flex_col()
             .items_center()
             .gap(px(4.))
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .border_r_1()
             .children(icons)
             .child(div().flex_1())

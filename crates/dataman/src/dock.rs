@@ -247,7 +247,7 @@ impl Workspace {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .border_color(t.line)
+                    .border_color(t.pane_line)
                     .when_some(fill, |b, f| b.bg(f))
                     .when(!glass && !production, |b| b.border_t_1())
                     .when(!glass && production, |b| b.border_t_2().border_color(t.err))
@@ -261,13 +261,13 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .overflow_hidden()
-                        .border_color(t.line)
+                        .border_color(t.pane_line)
                         .when(!last, |c| c.w(px(col.rect.w)))
                         .when(last, |c| c.flex_1().min_w_0())
                         .when(seam_l, |c| c.border_l_1())
                         .child(div().h(px(metrics::TITLE_H)).flex_none().when(!glass, |b| b.bg(t.panel)))
                         .child(body)
-                        .when(body_l, |c| c.child(div().absolute().top(px(metrics::TITLE_H)).bottom_0().left_0().w(px(1.)).bg(t.line))),
+                        .when(body_l, |c| c.child(div().absolute().top(px(metrics::TITLE_H)).bottom_0().left_0().w(px(1.)).bg(t.pane_line))),
                 );
             }
             let rect = df.rect;
@@ -290,7 +290,7 @@ impl Workspace {
             .relative()
             .flex_none()
             .overflow_hidden()
-            .border_color(t.line)
+            .border_color(t.pane_line)
             .w_full()
             // The last slot takes what is left (no gap from rounding).
             .when(!last, |e| e.h(px(r.h)))

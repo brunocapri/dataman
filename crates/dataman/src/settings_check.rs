@@ -56,6 +56,20 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("th-dark", cx);
     let dark = cx.update(|_, cx| crate::theme::ActiveTheme::theme(cx).is_dark()).unwrap_or(false);
     r.check("Theme: Light, then Dark, applied at once", light && dark && settings(ws, cx).theme == dataman_core::ThemePref::Dark, format!("{light} {dark}"));
+    let bg = |cx: &mut AsyncWindowContext| cx.update(|_, cx| crate::theme::ActiveTheme::theme(cx).bg);
+    click_probe("th-solarized", cx);
+    let (solarized, saved) = (bg(cx), settings(ws, cx).theme);
+    r.check("Theme: Solarized applied and saved", solarized.ok() == Some(crate::theme::Theme::solarized().bg) && saved == dataman_core::ThemePref::Solarized, format!("{saved:?}"));
+    click_probe("th-black", cx);
+    let (black, saved) = (bg(cx), settings(ws, cx).theme);
+    r.check("Theme: Black applied and saved", black.ok() == Some(crate::theme::Theme::black().bg) && saved == dataman_core::ThemePref::Black, format!("{saved:?}"));
+    if crate::theme::translucency_works() {
+        click_probe("tr-on", cx);
+        let glass = bg(cx);
+        click_probe("tr-off", cx);
+        r.check("Theme: translucency keeps Black", glass.ok() == Some(crate::theme::Theme::black().bg), "");
+    }
+    click_probe("th-dark", cx);
 
     let before = crate::theme::mono();
     click_probe("font-1", cx);
@@ -69,9 +83,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("Code font size: 14 saved", fs == 14, fs);
 
     if crate::theme::translucency_works() {
+        click_probe("tr-on", cx);
+        let on = settings(ws, cx).translucency;
         click_probe("tr-off", cx);
-        let tr = settings(ws, cx).translucency;
-        r.check("Window translucency: Off saved", tr == dataman_core::Translucency::Off, format!("{tr:?}"));
+        let off = settings(ws, cx).translucency;
+        r.check("Window translucency: On, then Off saved", on == dataman_core::Translucency::On && off == dataman_core::Translucency::Off, format!("{on:?} {off:?}"));
     }
 
     click_probe("rm-on", cx);
