@@ -21,6 +21,47 @@ pub fn ident_value(src: &str, t: &Token) -> String {
     ident_value_in(src, t, Dialect::Postgres)
 }
 
+/// A quoted name as ClickHouse reads it (probed on 25.8): `` `fi\x6Ce` `` and `` `fi\Nle` `` are
+/// `file`, while a backslash before a letter that means nothing stays.
+fn backslash_unquoted(inner: &str, q: u8) -> String {
+    let b = inner.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == q && b.get(i + 1) == Some(&q) {
+            out.push(q);
+            i += 2;
+        } else if b[i] != b'\\' {
+            out.push(b[i]);
+            i += 1;
+        } else {
+            let next = b.get(i + 1).copied();
+            i += 2;
+            match next {
+                Some(b'x') => {
+                    let hex = inner.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok());
+                    out.extend(hex);
+                    i += if hex.is_some() { 2 } else { 0 };
+                }
+                Some(b'N') => {}
+                Some(b'a') => out.push(7),
+                Some(b'b') => out.push(8),
+                Some(b'e') => out.push(0x1b),
+                Some(b'f') => out.push(12),
+                Some(b'n') => out.push(b'\n'),
+                Some(b'r') => out.push(b'\r'),
+                Some(b't') => out.push(b'\t'),
+                Some(b'v') => out.push(11),
+                Some(b'0') => out.push(0),
+                Some(c @ (b'\\' | b'\'' | b'"' | b'`' | b'/' | b'=')) => out.push(c),
+                Some(c) => out.extend([b'\\', c]),
+                None => out.push(b'\\'),
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     let s = t.text(src);
     if t.kind == TokenKind::QuotedIdent {
@@ -29,6 +70,9 @@ pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
         {
             return unicode_escapes(u[1..].strip_suffix('"').unwrap_or(&u[1..])).replace("\"\"", "\"");
         }
+        if let Some(inner) = s.strip_prefix('“') {
+            return inner.strip_suffix('”').unwrap_or(inner).to_string();
+        }
         let (open, close) = match s.chars().next() {
             Some('`') => ('`', '`'),
             Some('[') => ('[', ']'),
@@ -36,6 +80,9 @@ pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
         };
         let inner = s.strip_prefix(open).unwrap_or(s);
         let inner = inner.strip_suffix(close).unwrap_or(inner);
+        if dialect.lex().backslash_quotes {
+            return backslash_unquoted(inner, close as u8);
+        }
         inner.replace(&format!("{close}{close}"), &close.to_string())
     } else if dialect.folds_to_lower() {
         s.to_lowercase()

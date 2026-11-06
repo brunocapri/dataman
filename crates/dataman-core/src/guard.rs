@@ -150,7 +150,12 @@ pub fn classify_in(sql: &str, dialect: Dialect) -> Facts {
         let t = Toks { src: &text, t: &all, dialect };
         pieces.extend(statements(&t).into_iter().map(|r| with_queries(&t.sub(r))).filter(|f| !f.verb.is_empty()));
     }
-    combine(pieces)
+    let mut f = combine(pieces);
+    // Nothing can hold it back or undo it, so nothing runs it as if something could.
+    if !dialect.has_transactions() && (f.is_write() || f.effect == Effect::Other) {
+        f.outside_tx = true;
+    }
+    f
 }
 
 fn significant(sql: &str, dialect: Dialect) -> Vec<Token> {
@@ -167,10 +172,27 @@ fn statements(t: &Toks) -> Vec<std::ops::Range<usize>> {
         let to = t.t.partition_point(|x| x.end <= s.range.end);
         if t.dialect == Dialect::TSql {
             out.extend(tsql_pieces(&t.sub(from..to)).into_iter().map(|r| from + r.start..from + r.end));
+        } else if t.dialect == Dialect::ClickHouse {
+            out.extend(parallel_pieces(&t.sub(from..to)).into_iter().map(|r| from + r.start..from + r.end));
         } else {
             out.push(from..to);
         }
     }
+    out
+}
+
+/// `a PARALLEL WITH b` runs both at once, and one being refused does not hold the other back
+/// (probed on 25.8: `SELECT 1 PARALLEL WITH DROP TABLE t` answers an error, and drops the table).
+fn parallel_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in t.top() {
+        if t.is(i, "PARALLEL") && t.is(i + 1, "WITH") && i > start && !matches!(t.word(i + 2).as_deref(), Some("TOTALS" | "ROLLUP" | "CUBE" | "FILL" | "TIES")) {
+            out.push(start..i);
+            start = i + 2;
+        }
+    }
+    out.push(start..t.t.len());
     out
 }
 
@@ -341,6 +363,15 @@ fn with_queries_top(t: &Toks) -> Facts {
     if !t.is(0, "WITH") {
         return statement(t);
     }
+    // ClickHouse's WITH names expressions too (`WITH 1 AS x SELECT x`): what it heads is the first
+    // statement word outside parentheses, and its queries cannot write.
+    if t.dialect == Dialect::ClickHouse {
+        let head = t.top().into_iter().find(|&i| i > 0 && (t.is(i, "SELECT") || t.is(i, "INSERT")));
+        return match head {
+            Some(i) => statement(&t.sub(i..t.t.len())),
+            None => Facts { verb: "WITH".into(), effect: Effect::Other, ..Default::default() },
+        };
+    }
     let mut i = 1;
     if t.is(i, "RECURSIVE") {
         i += 1;
@@ -455,6 +486,17 @@ fn statement(t: &Toks) -> Facts {
     let Some(v) = t.word(0) else { return Facts::default() };
     let mut f = Facts { verb: v.clone(), ..Default::default() };
     match v.as_str() {
+        "DESCRIBE" | "DESC" | "EXISTS" if t.dialect == Dialect::ClickHouse => {}
+        "OPTIMIZE" if t.dialect == Dialect::ClickHouse => {
+            f.effect = Effect::Write;
+            f.target = t.is(1, "TABLE").then(|| t.name(2).map(|(n, _)| n)).flatten();
+        }
+        "ATTACH" | "DETACH" | "EXCHANGE" | "RENAME" | "UNDROP" | "BACKUP" | "RESTORE" | "MOVE" | "SYSTEM" if t.dialect == Dialect::ClickHouse => {
+            f.effect = Effect::Ddl;
+            if t.is(1, "TABLE") || t.is(1, "TABLES") || t.is(1, "DICTIONARY") || t.is(1, "DICTIONARIES") || t.is(1, "DATABASE") || t.is(1, "VIEW") {
+                f.target = t.name(2).map(|(n, _)| n);
+            }
+        }
         "SELECT" => {
             let top = t.top();
             if let Some(&at) = top.iter().find(|&&i| t.is(i, "INTO")) {
@@ -575,6 +617,7 @@ fn statement(t: &Toks) -> Facts {
         "INSERT" => {
             f.effect = Effect::Write;
             let i = (0..t.t.len()).find(|&i| t.is(i, "INTO")).map_or(1, |i| i + 1);
+            let i = if t.dialect == Dialect::ClickHouse && t.is(i, "TABLE") { i + 1 } else { i };
             f.target = t.name(i).map(|(n, _)| n);
         }
         "MERGE" => {
@@ -1089,6 +1132,10 @@ pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     if f.is_write() {
         return Some(format!("read-only connection: {} is not run", f.verb));
     }
+    // ClickHouse's `readonly` setting does not stop it.
+    if dialect == Dialect::ClickHouse && f.verb == "KILL" {
+        return Some("read-only connection: KILL is not run".into());
+    }
     if dialect == Dialect::TSql { tsql_read_only_refusal(sql) } else { None }
 }
 
@@ -1146,6 +1193,7 @@ fn is_read(f: &Facts, dialect: Dialect) -> bool {
     let reads = matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES" | "SHOW" | "EXPLAIN")
         || (dialect == Dialect::MySql && matches!(f.verb.as_str(), "DESCRIBE" | "DESC"))
         || (dialect == Dialect::DuckDb && matches!(f.verb.as_str(), "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT"))
+        || (dialect == Dialect::ClickHouse && matches!(f.verb.as_str(), "DESCRIBE" | "DESC" | "EXISTS"))
         || (is_file_dialect(dialect) && f.verb.starts_with("PRAGMA "));
     f.effect == Effect::Read && reads
 }
@@ -1197,13 +1245,12 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
 /// DuckDB statements and functions that reach files or other databases: `read_csv(…)`, a file
 /// named in FROM (`FROM 'x.csv'`, `FROM "x.parquet"`), COPY, ATTACH, INSTALL, EXPORT.
 pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
-    if !is_file_dialect(dialect) {
+    if !is_file_dialect(dialect) && dialect != Dialect::ClickHouse {
         return None;
     }
     for piece in agent_pieces(sql, dialect) {
         let all = significant(&piece, dialect);
         let t = Toks { src: &piece, t: &all, dialect };
-        let f = classify_in(&piece, dialect);
         // A prepared statement is what it prepares (`PREPARE w AS COPY … TO …`, run by EXECUTE).
         if dialect == Dialect::DuckDb
             && t.is(0, "PREPARE")
@@ -1212,8 +1259,15 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         {
             return Some(e);
         }
-        if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO") {
-            return Some(format!("{} reaches files outside the database", f.verb));
+        for r in statements(&t).into_iter().filter(|r| !r.is_empty()) {
+            let verb = classify_in(&piece[all[r.start].start..all[r.end - 1].end], dialect).verb;
+            if matches!(verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO" | "BACKUP" | "RESTORE") {
+                return Some(format!("{verb} reaches files outside the database"));
+            }
+        }
+        let f = classify_in(&piece, dialect);
+        if dialect == Dialect::ClickHouse && (0..all.len()).any(|i| t.is(i, "OUTFILE") || t.is(i, "INFILE")) {
+            return Some("INTO OUTFILE and FROM INFILE reach files outside the database".into());
         }
         // A DuckDB file is one instance in the process: its settings (log and temp paths, memory,
         // extensions, external access) are every connection's, the user's tabs included.
@@ -1285,10 +1339,22 @@ fn file_access_in(t: &Toks) -> Option<String> {
     let list = match t.dialect {
         Dialect::DuckDb => functions::DUCKDB_FILE,
         Dialect::Sqlite => functions::SQLITE_FILE,
+        Dialect::ClickHouse => functions::CLICKHOUSE_FILE,
         _ => return None,
     };
     for i in 0..t.t.len() {
         if !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+            continue;
+        }
+        if t.dialect == Dialect::ClickHouse {
+            // The name as the server reads it (`` `fi\x6Ce` `` is `file`). Every `dictGet…` reads a
+            // dictionary, loaded from wherever it was made to. An engine needs no parentheses
+            // (`ENGINE = Filesystem`).
+            let name = crate::sql::ident_value_in(t.src, &t.t[i], t.dialect).to_ascii_lowercase();
+            let engine = i > 0 && (t.is(i - 1, "ENGINE") || (i > 1 && t.op(i - 1, "=") && t.is(i - 2, "ENGINE")));
+            if (t.punct(i + 1, "(") || engine) && (functions::is(&name, list) || name.starts_with("dictget") || name == "dicthas") {
+                return Some(format!("{name}() reaches files, other servers or tables past the agents' rules"));
+            }
             continue;
         }
         let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
@@ -1296,6 +1362,9 @@ fn file_access_in(t: &Toks) -> Option<String> {
         if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && functions::is(&name, list) {
             return Some(format!("{name}() reaches files or code outside the database"));
         }
+    }
+    if t.dialect == Dialect::ClickHouse {
+        return clickhouse_not_known_plain(t);
     }
     if t.dialect != Dialect::DuckDb {
         return None;
@@ -1326,6 +1395,66 @@ fn file_access_in(t: &Toks) -> Option<String> {
             TokenKind::String | TokenKind::DollarString if at_table => return Some("a file named in FROM is read from disk".into()),
             TokenKind::QuotedIdent if at_table && path_like(tok.text(t.src)) => return Some("a file named in FROM is read from disk".into()),
             _ => {}
+        }
+    }
+    None
+}
+
+/// What stands where a table, an engine or a dictionary's source goes and is not known to stay
+/// inside the database: the list of those is short and read, the servers' lists grow. Scalar
+/// functions are too many for that, and stay `CLICKHOUSE_FILE`'s.
+fn clickhouse_not_known_plain(t: &Toks) -> Option<String> {
+    let creates = ["CREATE", "ATTACH", "REPLACE", "ALTER"].iter().any(|w| t.is(0, w));
+    let describes = t.is(0, "DESCRIBE") || t.is(0, "DESC");
+    const CLAUSE_END: &[&str] = &["WHERE", "PREWHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET", "SETTINGS", "FORMAT", "UNION", "EXCEPT", "INTERSECT", "WINDOW", "QUALIFY", "INTO", "VALUES"];
+    // Per parenthesis: whether a comma or a `(` here is still where tables go, and whether this
+    // level is a query (`extract(DAY FROM f(x))` has a FROM that names no table).
+    let mut levels = vec![(false, true)];
+    for i in 0..t.t.len() {
+        let table_place = i > 0 && {
+            let &(from, _) = levels.last().unwrap_or(&(false, false));
+            let after_from = (t.is(i - 1, "FROM") && from) || (t.is(i - 1, "JOIN") && from && !(i > 1 && t.is(i - 2, "ARRAY")));
+            after_from
+                || (from && (t.punct(i - 1, ",") || t.punct(i - 1, "(")))
+                || t.is(i - 1, "FUNCTION")
+                || (describes && (t.is(i - 1, "DESCRIBE") || t.is(i - 1, "DESC") || t.is(i - 1, "TABLE")))
+                || (creates && t.is(i - 1, "AS") && !t.is(1, "FUNCTION"))
+        };
+        if t.punct(i, "(") {
+            levels.push((table_place, false));
+            continue;
+        }
+        if t.punct(i, ")") {
+            if levels.len() > 1 {
+                levels.pop();
+            }
+            continue;
+        }
+        if let Some(w) = t.word(i)
+            && let Some(level) = levels.last_mut()
+        {
+            let first = i == 0 || t.punct(i - 1, "(");
+            if w == "SELECT" {
+                *level = (false, true);
+            } else if (w == "FROM" && (level.1 || first)) || (w == "JOIN" && level.1) {
+                level.0 = true;
+            } else if CLAUSE_END.contains(&w.as_str()) {
+                level.0 = false;
+            }
+        }
+        if !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+            continue;
+        }
+        let name = crate::sql::ident_value_in(t.src, &t.t[i], t.dialect);
+        if table_place && t.punct(i + 1, "(") && !functions::clickhouse_plain_table_function(&name) {
+            return Some(format!("{name}() is not known to stay inside the database"));
+        }
+        let engine = i > 0 && (t.is(i - 1, "ENGINE") || (i > 1 && t.op(i - 1, "=") && t.is(i - 2, "ENGINE")));
+        if creates && engine && !functions::clickhouse_plain_engine(&name) {
+            return Some(format!("the engine {name} is not known to stay inside the database"));
+        }
+        if creates && t.is(i, "SOURCE") && t.punct(i + 1, "(") && !t.is(i + 2, "NULL") {
+            return Some("a dictionary's source reaches outside the database".into());
         }
     }
     None
@@ -1472,6 +1601,7 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
         _ if neutral(&t, &f) => Piece::Neutral,
         Effect::Read if agent_read_refusal_in(sql, dialect).is_none() => Piece::Read,
         Effect::Read if matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES") => Piece::Safe,
+        Effect::Write if !dialect.has_transactions() => Piece::Destructive(format!("{} (nothing counts its rows first or undoes it)", f.verb)),
         Effect::Write => match f.verb.as_str() {
             "INSERT" if dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE")) => {
                 Piece::Destructive("INSERT … EXEC".into())
@@ -1552,6 +1682,8 @@ fn plain_table_options(t: &Toks, mut i: usize) -> bool {
         Dialect::Postgres => i == n || (t.is(i, "ON") && t.is(i + 1, "COMMIT") && (i + 3 == n && t.is(i + 2, "DROP") || i + 4 == n && (t.is(i + 2, "DELETE") || t.is(i + 2, "PRESERVE")) && t.is(i + 3, "ROWS"))),
         Dialect::TSql => i == n || (i + 2 == n && t.is(i, "ON") && t.t[i + 1].text(t.src).trim_matches(['[', ']']).eq_ignore_ascii_case("PRIMARY")),
         Dialect::DuckDb => i == n,
+        // Its engine says where the data lives, and every option bends that: never plain.
+        Dialect::ClickHouse => false,
         Dialect::Sqlite => {
             while i < n {
                 if t.is(i, "STRICT") {

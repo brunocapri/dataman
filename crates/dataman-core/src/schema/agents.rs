@@ -89,6 +89,8 @@ pub const PG_REFERENCED_BY: &str = "SELECT con.conname, n.nspname || '.' || t.re
   JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
   WHERE con.contype = 'f' AND con.confrelid = $1::oid ORDER BY 2, 1";
 
+const CH_GENERATED: &str = "SELECT database, table, name, default_expression FROM system.columns WHERE database = currentDatabase() AND default_kind IN ('MATERIALIZED', 'ALIAS')";
+
 impl Connection {
     /// Generated (computed) columns of the database and the columns each is computed from, by the
     /// engine's catalog: PostgreSQL's pg_depend, SQL Server's sql_expression_dependencies, the
@@ -101,6 +103,7 @@ impl Connection {
             Engine::SqlServer => (MS_GENERATED, false),
             Engine::Sqlite => (LITE_GENERATED, true),
             Engine::DuckDb => (DUCK_GENERATED, true),
+            Engine::ClickHouse => (CH_GENERATED, true),
             Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => return Ok(Vec::new()),
         };
         let limits = Limits { max_rows: 100_000, max_bytes: 32 * 1024 * 1024, max_cell: 64 * 1024, ..Limits::default() };

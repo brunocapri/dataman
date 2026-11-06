@@ -100,6 +100,7 @@ assets!(
     "logos/sql-server.svg",
     "logos/sqlite.svg",
     "logos/duckdb.svg",
+    "logos/clickhouse.svg",
 );
 
 pub struct Assets;

@@ -159,6 +159,14 @@ impl Connection {
         }
     }
 
+    /// A connection that is read-only because this use needs it, whatever the database's setting.
+    pub(crate) async fn dedicated_read_only(&self, db: &str, read_only: bool) -> Result<Dedicated> {
+        let mut p = self.profile_for(db);
+        p.read_only = read_only;
+        let password = self.cred.secret(&p).await?;
+        backend::dedicated(&p, password.as_deref(), Some(db), self.tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&p, e))
+    }
+
     pub(crate) async fn dedicated(&self, database: Option<&str>) -> Result<Dedicated> {
         let db = database.unwrap_or(self.database());
         let p = self.profile_for(db);
@@ -410,9 +418,9 @@ impl Session {
         if let Some(c) = g.as_ref()
             && !c.is_closed()
         {
-            // A file database is opened read-only or not: a change of mind reopens it (between
-            // transactions only).
-            let stale = self.conn.engine().is_file()
+            // Read-only is how it was opened: a change of mind reopens it (between transactions
+            // only).
+            let stale = self.conn.caps().read_only_on_connect
                 && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database))
                 && !self.tx.get().status.is_open();
             if !stale {
@@ -482,7 +490,8 @@ impl Session {
             let client = self.client().await;
             return self.run_on(client, rs, false).await;
         }
-        let ro = self.conn.read_only_for(&self.database) || self.conn.dialect() == Dialect::Sqlite;
+        let d = self.conn.dialect();
+        let ro = self.conn.read_only_for(&self.database) || d == Dialect::Sqlite || !d.has_transactions();
         let client = match self.conn.agent_take(&self.database, ro).await {
             Ok(d) => {
                 let d = Arc::new(d);
@@ -529,9 +538,21 @@ impl Session {
         let dialect = self.conn.dialect();
         let facts = crate::guard::classify_in(&rs.sql, dialect);
         let rollback = rs.rolled_back();
+        // Nothing would undo it: it does not run. A read has nothing to undo (and an agent's runs
+        // on a read-only connection).
+        if rollback && !dialect.has_transactions() && (facts.is_write() || facts.effect == crate::guard::Effect::Other) {
+            let info = ErrorInfo { message: format!("{} has no transactions: {} cannot be rolled back, so it did not run", self.conn.engine().label(), facts.verb), ..Default::default() };
+            self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
+            rs.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.elapsed = Some(Duration::ZERO);
+                s.error = Some(info);
+            });
+            return;
+        }
         // Rolled back: a transaction of its own, or a savepoint inside the open one (whose work
         // must survive).
-        let wrap = if rollback {
+        let wrap = if rollback && dialect.has_transactions() {
             let savepoint = self.tx.get().status.is_open();
             // An agent's read never runs inside a transaction someone else opened: a read-only
             // one of its own, or not at all.

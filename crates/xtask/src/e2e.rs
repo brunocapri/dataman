@@ -28,6 +28,7 @@ enum Db {
     Es,
     OpenSearch,
     Redis,
+    ClickHouse,
     Ssh,
 }
 
@@ -43,6 +44,7 @@ impl Db {
             Es => "es",
             OpenSearch => "opensearch",
             Redis => "redis",
+            ClickHouse => "clickhouse",
             Ssh => "ssh",
         }
     }
@@ -61,6 +63,7 @@ impl Db {
             Es => 9201,
             OpenSearch => 9200,
             Redis => 63790,
+            ClickHouse => 18123,
             Ssh => 2299,
         }
     }
@@ -82,7 +85,7 @@ const SQL3: &[Db] = &[Pg, MySql, MsSql];
 /// databases) and connects what it drives itself.
 const STAGES: &[Stage] = &[
     st("newuser-check", SQL3, 300),
-    st("connections-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis, Ssh], 400),
+    st("connections-check", &[Pg, MySql, MsSql, ClickHouse, Mongo, Es, OpenSearch, Redis, Ssh], 400),
     st("conn-steps-check", &[], 200),
     st("conns-check", &[Pg], 120),
     st("ui-check", &[Pg], 400),
@@ -126,6 +129,7 @@ const STAGES: &[Stage] = &[
     st("mcp-check", &[Pg], 300),
     st("mcp-tools-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis], 400),
     st("agents-check", &[Pg], 200),
+    st("clickhouse-check", &[ClickHouse], 200),
     st("sqlite-check", &[], 120),
     st("duckdb-check", &[], 120),
     st("project-check", &[], 120),
@@ -178,7 +182,7 @@ pub fn run(args: &[String]) -> Result<()> {
         }
     }
     for n in &o.needs {
-        if ![Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis, Ssh].iter().any(|d| d.service() == n) {
+        if ![Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis, ClickHouse, Ssh].iter().any(|d| d.service() == n) {
             bail!("no service {n} (`xtask e2e --list`)");
         }
     }
@@ -312,6 +316,7 @@ fn password(db: Db) -> String {
         Mongo => ("DATAMAN_MONGO_PASSWORD", "dataman"),
         Es => ("DATAMAN_ES_PASSWORD", "dataman"),
         Redis => ("DATAMAN_REDIS_PASSWORD", "dataman"),
+        ClickHouse => ("DATAMAN_CLICKHOUSE_PASSWORD", "dataman"),
         OpenSearch | Ssh => return String::new(),
     };
     std::env::var(var).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.into())
@@ -407,6 +412,11 @@ fn reset(root: &Path, needs: &BTreeSet<Db>) -> Result<()> {
         exec(&c, &["/opt/mssql-tools18/bin/sqlcmd", "-C", "-I", "-b", "-S", "localhost", "-U", "sa", "-P", &pw], Some(&seeds.join("mssql.sql")))?;
         println!("   mssql: reset");
     }
+    if needs.contains(&ClickHouse) {
+        let c = container(ClickHouse.port())?;
+        exec(&c, &["clickhouse-client", "--password", &password(ClickHouse), "--multiquery"], Some(&seeds.join("clickhouse.sql")))?;
+        println!("   clickhouse: reset");
+    }
     Ok(())
 }
 
@@ -436,6 +446,7 @@ fn stage_env(root: &Path) -> Vec<(String, String)> {
         ("DATAMAN_BENCH_ES".into(), format!("127.0.0.1:{}:elastic:{}", Es.port(), password(Es))),
         ("DATAMAN_BENCH_OPENSEARCH".into(), format!("127.0.0.1:{}", OpenSearch.port())),
         ("DATAMAN_BENCH_REDIS".into(), format!("127.0.0.1:{}:{}", Redis.port(), password(Redis))),
+        ("DATAMAN_BENCH_CLICKHOUSE".into(), format!("127.0.0.1:{}:default:{}", ClickHouse.port(), password(ClickHouse))),
         ("DATAMAN_BENCH_SSH".into(), format!("127.0.0.1:{}:dataman", Ssh.port())),
         ("DATAMAN_BENCH_SSH_KEY".into(), root.join("target/e2e/ssh/id_ed25519").display().to_string()),
     ];

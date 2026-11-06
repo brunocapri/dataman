@@ -22,6 +22,8 @@ mod assets;
 mod bench;
 #[cfg(feature = "checks")]
 mod check;
+#[cfg(feature = "checks")]
+mod clickhouse_check;
 mod chrome;
 mod conn_dialog;
 mod conn_menu;

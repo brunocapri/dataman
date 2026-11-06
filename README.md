@@ -59,7 +59,7 @@ Claude Code and any other MCP client can work with your databases through it, an
     <td align="center" width="96"><img src="crates/dataman/assets/logos/elasticsearch.svg" width="36"><br><sub>Elasticsearch</sub></td>
     <td align="center" width="96"><img src="crates/dataman/assets/logos/opensearch.svg" width="36"><br><sub>OpenSearch</sub></td>
     <td align="center" width="96"><img src="crates/dataman/assets/logos/redis.svg" width="36"><br><sub>Redis</sub></td>
-    <td></td>
+    <td align="center" width="96"><img src="crates/dataman/assets/logos/clickhouse.svg" width="36"><br><sub>ClickHouse</sub></td>
   </tr>
 </table>
 
@@ -239,9 +239,9 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 
 **Off.** The connection still appears in the agent's list, showing only its name, environment and engine. Nothing runs on it, its favorites are hidden, and agents cannot edit it.
 
-**Read.** Every read runs in a read-only transaction that is always rolled back.
+**Read.** Every read runs in a read-only transaction that is always rolled back. ClickHouse has no transactions: there a read runs on a connection the server itself holds read-only, where a statement cannot change settings (`SET`, `SETTINGS`).
 
-- **Runs:** `SELECT`, `WITH … SELECT`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN`, plus MySQL `DESCRIBE`, the DuckDB `DESCRIBE` / `SUMMARIZE` / `PIVOT` forms, and report-only `PRAGMA`s.
+- **Runs:** `SELECT`, `WITH … SELECT`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN`, plus MySQL `DESCRIBE`, the DuckDB `DESCRIBE` / `SUMMARIZE` / `PIVOT` forms, ClickHouse `DESCRIBE` and `EXISTS`, and report-only `PRAGMA`s.
 - **Refused:**
   - row locks (`FOR UPDATE`, `FOR SHARE`, `LOCK IN SHARE MODE`);
   - CTEs that write, `SELECT … INTO`, `COPY`, `CALL`, `DO` and `SET`;
@@ -255,6 +255,7 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 - **Row limit** (default 100 rows). The limit counts every row changed by the whole call, not per statement. The write runs in a transaction, and if it changed more rows than the limit, it is rolled back and you are asked. Your Allow shows the count and up to 5 of the changed rows. When it runs again, it commits only if it changes no more rows than you saw.
 - **Scripts.** All the statements of one call run in one transaction, committed only if every one succeeds. A statement that cannot run inside a transaction (`VACUUM`, `CREATE INDEX CONCURRENTLY`) must come alone.
 - **`CREATE` and destructive statements are refused** on this tier, with a message saying they need full.
+- **ClickHouse has no safe writes.** Nothing can count a write's rows first or undo it, so every write there, `INSERT` included, is destructive: it needs full and your Allow, and runs alone in its call.
 
 **Full.** Adds `CREATE` of new objects, which runs without asking: plain `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW` and `CREATE SCHEMA`. The row limit still counts the whole call, so a `CREATE TABLE` with a large `INSERT` waits for your Allow.
 
@@ -326,6 +327,8 @@ Anything that reaches the files or programs on the database server always waits 
 - **PostgreSQL:** `COPY` to or from a file or `PROGRAM`, `ALTER SYSTEM`, `LOAD`, and the large-object and file functions.
 - **MySQL:** `INTO OUTFILE`, `DUMPFILE` and `LOAD DATA INFILE`.
 - **SQL Server:** `BULK INSERT`, `BACKUP`, `RESTORE`, `OPENROWSET`, `xp_cmdshell` and the other `xp_` / `sp_oa` procedures.
+
+ClickHouse never lets an agent reach outside its tables, not even with your Allow. A table function or engine is refused unless it is on a short list known to stay inside the database, which also shuts out any a newer server adds, and so is every dictionary source. Also refused: `merge`, `dictGet`, `COLUMNS('…')`, `INTO OUTFILE`, `BACKUP`, `RESTORE`, `ATTACH` and `DETACH`.
 
 SQLite and DuckDB never let an agent touch other files, not even with your Allow: `ATTACH`, `COPY`, `INSTALL` / `LOAD`, `read_csv` / `read_parquet` / `read_json`, file paths in place of tables, and the scanners for other databases are all refused.
 

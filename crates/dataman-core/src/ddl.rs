@@ -204,6 +204,7 @@ impl Connection {
                 crate::config::Engine::SqlServer => this.ms_table_ddl(&db, &schema, &name).await,
                 crate::config::Engine::Sqlite => this.lite_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog")),
                 crate::config::Engine::DuckDb => this.duck_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog")),
+                crate::config::Engine::ClickHouse => this.ch_ddl(&db, &schema, &name).await,
                 _ => Ok(render(&this.table_def(&db, &schema, &name).await?)),
             }
         })
@@ -259,6 +260,14 @@ impl Connection {
         Ok(Some(format!("-- {}: as stored in {}\n{}\n", Dialect::DuckDb.qualified(Some(schema), name), db, parts.join("\n\n"))))
     }
 
+    async fn ch_ddl(&self, db: &str, schema: &str, name: &str) -> Result<String> {
+        use crate::schema::ch;
+        let client = self.meta(db).await?;
+        let rows = first_ok(&client, &[&ch::show_create_sql(schema, name)]).await?;
+        let body = rows.first().and_then(|r| get(r, 0)).with_context(|| format!("{schema}.{name} is not in the catalog"))?;
+        Ok(format!("{};\n", body.trim_end().trim_end_matches(';')))
+    }
+
     async fn show_create(&self, what: &str, db: &str, schema: &str, name: &str) -> Result<String> {
         use crate::schema::my;
         let client = self.meta(db).await?;
@@ -279,6 +288,9 @@ impl Connection {
             }
             if this.engine() == crate::config::Engine::DuckDb {
                 return this.duck_ddl("view", &db, &schema, &name).await;
+            }
+            if this.engine() == crate::config::Engine::ClickHouse {
+                return this.ch_ddl(&db, &schema, &name).await.map(Some);
             }
             if this.engine() == crate::config::Engine::SqlServer {
                 let client = this.meta(&db).await?;

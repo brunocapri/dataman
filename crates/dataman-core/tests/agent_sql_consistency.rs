@@ -353,6 +353,24 @@ fn privacy_rewrite_keeps_statements() {
 /// What each server was seen to do (PostgreSQL 18, MySQL 8.4, SQL Server 2022), and the cases
 /// the properties above found: the class and the read gate's answer they must keep.
 const REGRESSIONS: &[(Dialect, &str, u8, bool)] = &[
+    // ClickHouse: what the server runs behind what a plainer lexer takes for a comment, a string or
+    // a word.
+    (Dialect::ClickHouse, "SELECT 1 // '\n, file('x') --'", 3, false),
+    (Dialect::ClickHouse, "SELECT * FROM\u{a0}file('x', 'CSV', 'a Int8')", 3, false),
+    (Dialect::ClickHouse, "SELECT * FROM “file”('x', 'CSV', 'a Int8')", 3, false),
+    (Dialect::ClickHouse, "SELECT ‘ ' ’, file('x') -- '", 3, false),
+    (Dialect::ClickHouse, "SELECT‘'’, file('x') -- '", 3, false),
+    (Dialect::ClickHouse, "SELECT `fi\\x6Ce`('x')", 3, false),
+    (Dialect::ClickHouse, "SELECT `fi\\Nle`('x')", 3, false),
+    (Dialect::ClickHouse, "SELECT 1 AS $a$, file('x')", 3, false),
+    (Dialect::ClickHouse, "SELECT $1$ ' $1$, file('x') -- '", 3, false),
+    (Dialect::ClickHouse, "SELECT {x:Enum('}' = 1)}, file('x'), ''", 3, false),
+    (Dialect::ClickHouse, "SELECT 1 PARALLEL WITH DROP TABLE t", 3, false),
+    (Dialect::ClickHouse, "SELECT 1 // file('x')", 0, true),
+    (Dialect::ClickHouse, "SELECT ‘file('x')’", 0, true),
+    (Dialect::ClickHouse, "SELECT $1$file('x')$1$", 0, true),
+    (Dialect::ClickHouse, "SELECT {x:Enum('file(' = 1)}", 0, true),
+    (Dialect::ClickHouse, "SELECT a FROM t GROUP BY a WITH TOTALS", 0, true),
     (Dialect::Postgres, "SELECT 1; DELETE FROM t", 3, false),
     // MySQL runs what `/*! … */` holds; versioned ones are read run and skipped.
     (Dialect::MySql, "SELECT 1 /*!; DELETE FROM t */", 3, false),

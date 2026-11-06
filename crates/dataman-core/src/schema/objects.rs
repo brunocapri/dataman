@@ -533,6 +533,7 @@ impl Connection {
             let client = this.meta(&db).await?;
             let r = match this.engine() {
                 Engine::MySql => first_ok(&client, &[&my::stats_sql(&schema)]).await.map(|rows| my::parse_stats(&rows)),
+                Engine::ClickHouse => first_ok(&client, &[&super::ch::stats_sql(&schema)]).await.map(|rows| super::ch::parse_stats(&rows)),
                 Engine::SqlServer => {
                     let qs = ms::stats_sql(&schema);
                     first_ok(&client, &[&qs[0], &qs[1]]).await.map(|rows| ms::parse_stats(&rows))
@@ -578,7 +579,7 @@ impl Connection {
                         .collect());
                 }
                 // DuckDB keeps no dependencies either; its views are not read for them yet.
-                Engine::DuckDb => return Ok(Vec::new()),
+                Engine::DuckDb | Engine::ClickHouse => return Ok(Vec::new()),
                 Engine::MySql => format!(
                     "SELECT TABLE_SCHEMA, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
                      UNION ALL SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}"
@@ -743,6 +744,10 @@ impl Connection {
                 let client = this.meta(&db).await?;
                 t.constraints = Some(lite::constraints(&client, &schema, &rel).await);
                 t.triggers = first_ok(&client, &[&lite::triggers_sql(&schema, Some(&rel))]).await.ok().map(|rows| rows.iter().filter_map(|r| lite::parse_trigger(r)).collect());
+                t.partitions = Some(Vec::new());
+            } else if this.engine() == Engine::ClickHouse {
+                t.constraints = Some(Vec::new());
+                t.triggers = Some(Vec::new());
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::DuckDb {
                 let client = this.meta(&db).await?;

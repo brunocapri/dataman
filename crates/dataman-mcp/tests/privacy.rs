@@ -64,6 +64,7 @@ fn env(s: &str, settings: &str) -> Env {
     let mg = "engine = \"mongodb\"\nsave_password = true\n";
     let es = "engine = \"elasticsearch\"\nsave_password = true\n";
     let rd = "engine = \"redis\"\nsave_password = true\n";
+    let ch = "engine = \"clickhouse\"\nsave_password = true\n";
     let pg_rules = format!(
         "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nstructure = false\n\
          sensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"*tax_id*\", how = \"hash\" }}, {{ col = \"customers.city\", how = \"hidden\", on = false }}]\n\
@@ -87,6 +88,16 @@ fn env(s: &str, settings: &str) -> Env {
         conn("ms", "DATAMAN_MSSQL", "127.0.0.1:14330", "sa", "tempdb", &format!("{ms}[connection.mcp_rules.visible]\nmode = \"only\"\nitems = [{{ name = \"dbo.{s}_open*\", kind = \"table\" }}]\n"))
             .replace("sslmode = \"disable\"", "sslmode = \"require\""),
         conn("msadmin", "DATAMAN_MSSQL", "127.0.0.1:14330", "sa", "tempdb", &format!("{ms}mcp = \"full\"")).replace("sslmode = \"disable\"", "sslmode = \"require\""),
+        conn("chadmin", "DATAMAN_CLICKHOUSE", "127.0.0.1:18123", "default", "default", &format!("{ch}mcp = \"full\"")),
+        conn("chread", "DATAMAN_CLICKHOUSE", "127.0.0.1:18123", "default", s, ch),
+        conn(
+            "ch",
+            "DATAMAN_CLICKHOUSE",
+            "127.0.0.1:18123",
+            "default",
+            s,
+            &format!("{ch}mcp = \"full\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"customers.email\", how = \"partial\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.payments\", kind = \"table\" }}, {{ name = \"users.password_hash\", kind = \"column\" }}]\n"),
+        ),
         conn("mgadmin", "DATAMAN_MONGO", "127.0.0.1:27027", "root", s, &format!("{mg}mcp = \"full\"")),
         conn(
             "mg",
@@ -125,6 +136,7 @@ fn env(s: &str, settings: &str) -> Env {
         (&["mg", "mgadmin", "limited-mg"][..], pw("DATAMAN_MONGO_PASSWORD", "dataman")),
         (&["es", "esadmin"][..], pw("DATAMAN_ES_PASSWORD", "dataman")),
         (&["rd", "rdadmin"][..], pw("DATAMAN_REDIS_PASSWORD", "dataman")),
+        (&["ch", "chread", "chadmin"][..], pw("DATAMAN_CLICKHOUSE_PASSWORD", "dataman")),
     ] {
         for id in ids {
             secrets.set(id, &p).unwrap();
@@ -471,6 +483,145 @@ fn mysql_and_sql_server_privacy() {
         e.admin("execute", with("msadmin", json!({"sql": format!("DROP VIEW dbo.{s}_open_v; DROP VIEW dbo.{s}_open_ok; DROP TABLE dbo.{s}_open; DROP TABLE dbo.{s}_closed")})));
         e.done();
     }
+}
+
+/// What a ClickHouse connection promises an agent, through the tools: reads on a connection the
+/// server holds read-only, every write destructive and alone, nothing outside the tables at any
+/// tier, and what the rules keep out of every path.
+#[test]
+fn clickhouse_through_the_tools() {
+    if !up("DATAMAN_CLICKHOUSE", "127.0.0.1:18123") {
+        return;
+    }
+    let s = format!("mcp_ch_{}", std::process::id());
+    let e = env(&s, "");
+    let admin = |sql: String| e.admin("execute", with("chadmin", json!({"sql": sql})));
+    admin(format!("DROP DATABASE IF EXISTS {s}"));
+    admin(format!("CREATE DATABASE {s}"));
+    admin(format!("CREATE TABLE {s}.users (id UInt64, name String, password_hash String) ENGINE = MergeTree ORDER BY id"));
+    admin(format!("CREATE TABLE {s}.customers (id UInt64, name String, email String) ENGINE = MergeTree ORDER BY id"));
+    admin(format!("CREATE TABLE {s}.payments (id UInt64, card String) ENGINE = MergeTree ORDER BY id"));
+    admin(format!("INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-ana')"));
+    // No shape a scan of the reply would recognize: only the rules keep it.
+    admin(format!("INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana-at-acme')"));
+    admin(format!("INSERT INTO {s}.payments VALUES (1, '4111')"));
+
+    // The read tier: reads run, on a read-only connection; writes do not, with or without a human.
+    let r = |x: Value| with("chread", x);
+    let got = e.ok("run_query", r(json!({"sql": "SELECT getSetting('readonly'), count() FROM users"})));
+    assert_eq!(got["rows"][0][0], 1, "{got}");
+    e.human.allow.lock().extend([true; 4]);
+    assert!(e.err("execute", r(json!({"sql": "DROP TABLE users"}))).contains("read"));
+    e.human.allow.lock().clear();
+    for sql in ["INSERT INTO users (id) VALUES (2)", "SET max_threads = 1", "KILL QUERY WHERE 1", "SELECT 1 PARALLEL WITH DROP TABLE users", "UNDROP TABLE x", "INSERT INTO FUNCTION null('a Int8') SELECT 1"] {
+        assert!(e.err("run_query", r(json!({"sql": sql}))).contains("not a read"), "{sql}");
+    }
+    // Files and other servers: at no tier, Allow or not.
+    for sql in [
+        "SELECT * FROM file('x', 'CSV', 'a Int8')",
+        "SELECT 1 // '\n, file('x') --'",
+        "SELECT * FROM\u{a0}file('x', 'CSV', 'a Int8')",
+        "SELECT * FROM `fi\\x6Ce`('x', 'CSV', 'a Int8')",
+        "SELECT * FROM mergeTreeIndex('default', 't')",
+        "SELECT * FROM remote('127.0.0.1', system.one)",
+        "SELECT dictIsIn('d', 1, 1)",
+        "SELECT 1 INTO OUTFILE 'x'",
+    ] {
+        let err = e.err("run_query", r(json!({"sql": sql})));
+        assert!(err.contains("reaches") || err.contains("not a read"), "{sql}: {err}");
+        e.human.allow.lock().extend([true; 4]);
+        assert!(e.call("execute", with("chadmin", json!({"sql": sql}))).is_err(), "{sql} with Allow");
+        e.human.allow.lock().clear();
+    }
+    for sql in ["CREATE TABLE f (a Int8) ENGINE = File(CSV)", "CREATE DATABASE f ENGINE = Filesystem", "BACKUP TABLE users TO Disk('b', 'x')", "DETACH TABLE users", "DROP TABLE IF EXISTS x PARALLEL WITH DETACH TABLE users"] {
+        e.human.allow.lock().extend([true; 4]);
+        assert!(e.call("execute", with("chadmin", json!({"sql": sql}))).is_err(), "{sql}");
+        e.human.allow.lock().clear();
+    }
+    let users = |e: &Env| e.admin("run_query", with("chread", json!({"sql": "SELECT count() FROM users"})))["rows"][0][0].clone();
+    assert_eq!(users(&e), "1", "still there, still attached");
+
+    // A write: asks, every kind of it, and does nothing on a No.
+    let w = |x: Value| with("chadmin", x);
+    let before = e.human.asked.lock().len();
+    let insert = format!("INSERT INTO {s}.users (id, name) VALUES (2, 'Bo')");
+    assert!(e.call("execute", w(json!({"sql": insert}))).is_err(), "no answer is a No");
+    assert_eq!(e.human.asked.lock().len(), before + 1, "it asked");
+    assert_eq!(users(&e), "1");
+    // Alone in its call.
+    e.human.allow.lock().extend([true; 4]);
+    assert!(e.call("execute", w(json!({"sql": format!("{insert}; SELECT 1")}))).is_err());
+    e.human.allow.lock().clear();
+    assert_eq!(users(&e), "1");
+    e.admin("execute", w(json!({"sql": insert})));
+    assert_eq!(users(&e), "2", "with Allow it runs");
+
+    // The rules: what is kept is out of every path.
+    let m = |x: Value| with("ch", x);
+    let got = e.ok("run_query", m(json!({"sql": "SELECT * FROM users ORDER BY id"})));
+    assert_eq!(got["columns"].as_array().unwrap().len(), 2, "narrowed: {got}");
+    assert!(!got.to_string().contains("hash-ana"), "{got}");
+    let got = e.ok("run_query", m(json!({"sql": "SELECT id, email FROM customers"})));
+    assert_ne!(got["rows"][0][1], "ana-at-acme", "{got}");
+    // A scalar subquery may be compared in a filter; the server's error quotes what it answered.
+    for sql in ["SELECT id FROM users WHERE id = (SELECT email FROM customers LIMIT 1)", "SELECT id FROM users WHERE (SELECT email FROM customers LIMIT 1) = 1"] {
+        let err = e.err("run_query", m(json!({"sql": sql})));
+        assert!(err.contains("‹value›") && !err.contains("ana-at-acme"), "{sql}: {err}");
+    }
+    for sql in [
+        "SELECT password_hash FROM users",
+        "SELECT `password\\x5Fhash` FROM users",
+        "SELECT * FROM payments",
+        "SELECT * FROM `pay\\x6Dents`",
+        "SELECT * FROM “payments”",
+        "SELECT id FROM users WHERE id IN payments",
+        "SELECT id FROM users WHERE id IN (payments)",
+        "SELECT in(id, payments) FROM users",
+        "SELECT 1 FROM users ALL INNER JOIN payments ON 1",
+        "SELECT 1 FROM users ANY LEFT JOIN payments USING id",
+        "SELECT * FROM system.tables",
+        "SELECT * FROM `sys\\x74em`.`tables`",
+        "SELECT id FROM users WHERE id IN system.one",
+        "SELECT query FROM system.query_log",
+        "SELECT * FROM information_schema.columns",
+        "SHOW CREATE TABLE payments",
+        "SHOW TABLES",
+        "DESC payments",
+        "EXISTS payments",
+        "SELECT upper(email) FROM customers",
+        "SELECT email AS e FROM customers",
+        "SELECT email FROM customers FORMAT CSV",
+        "SELECT * FROM customers FORMAT JSONEachRow",
+        "SELECT `em\\x61il` AS e FROM customers",
+        "EXPLAIN PLAN actions = 1 SELECT id FROM users WHERE (SELECT email FROM customers LIMIT 1) = name",
+    ] {
+        let err = e.err("run_query", m(json!({"sql": sql})));
+        assert!(!err.contains("4111") && !err.contains("hash-ana") && !err.contains("ana-at-acme"), "{sql}: {err}");
+    }
+    let params = |sql: &str, v: &str| m(json!({"sql": sql, "params": [v]}));
+    for (sql, v) in [("SELECT * FROM {t:Identifier}", "payments"), ("SELECT {c:Identifier} FROM users", "password_hash"), ("SELECT {c:Identifier} AS e FROM customers", "email")] {
+        let err = e.err("run_query", params(sql, v));
+        assert!(err.contains("Identifier") || err.contains("could not follow"), "{sql}: {err}");
+    }
+    assert_eq!(e.ok("run_query", params("SELECT id FROM users WHERE name = {n:String}", "Ana"))["rows"][0][0], "1");
+    // The catalog tools show what is visible only.
+    let listed = names(&e.ok("list_tables", m(json!({"schema": s}))), 1);
+    assert!(listed.contains(&"users".to_string()) && !listed.contains(&"payments".to_string()), "{listed:?}");
+    let described = e.ok("describe_table", m(json!({"table": "users"})));
+    assert!(described.to_string().contains("name") && !described.to_string().contains("password_hash"), "{described}");
+    assert!(e.call("describe_table", m(json!({"table": "payments"}))).is_err());
+    assert!(e.call("sample_rows", m(json!({"table": "payments"}))).is_err());
+    let sampled = e.ok("sample_rows", m(json!({"table": "users"})));
+    assert!(!sampled.to_string().contains("hash-ana"), "{sampled}");
+    // Writes keep their hands off it too, even with Allow.
+    for sql in ["TRUNCATE TABLE payments", "DROP TABLE payments", "OPTIMIZE TABLE payments FINAL", "ALTER TABLE users DROP COLUMN password_hash", "INSERT INTO payments VALUES (2, 'x')"] {
+        e.human.allow.lock().extend([true; 4]);
+        assert!(e.call("execute", m(json!({"sql": sql}))).is_err(), "{sql}");
+        e.human.allow.lock().clear();
+    }
+    assert_eq!(e.ok("run_query", with("chread", json!({"sql": "SELECT count() FROM payments"})))["rows"][0][0], "1");
+    admin(format!("DROP DATABASE {s}"));
+    e.done();
 }
 
 /// The connection's limits (Rows per read, Time per call) hold for samples as they do for run_query.
