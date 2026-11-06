@@ -90,6 +90,32 @@ services:
       interval: 2s
       retries: 30
 
+  # HTTP on 18123, HTTPS on 18443 with a certificate of its own, made when the container starts.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        c=/etc/clickhouse-server
+        if [ ! -f $$c/config.d/dataman-tls.xml ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=localhost -addext subjectAltName=DNS:localhost,IP:127.0.0.1 -keyout $$c/server.key -out $$c/server.crt 2>/dev/null
+          chown clickhouse:clickhouse $$c/server.key $$c/server.crt
+          printf '<clickhouse><https_port>8443</https_port><openSSL><server><certificateFile>%s/server.crt</certificateFile><privateKeyFile>%s/server.key</privateKeyFile></server></openSSL></clickhouse>\n' $$c $$c > $$c/config.d/dataman-tls.xml
+        fi
+        exec /entrypoint.sh
+    environment:
+      CLICKHOUSE_PASSWORD: dataman
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports: ["18123:8123", "18443:8443"]
+    ulimits:
+      nofile: 262144
+    healthcheck:
+      test: clickhouse-client --password dataman -q 'SELECT 1'
+      interval: 2s
+      retries: 60
+
   # An SSH bastion for the tunnel checks: user `dataman`, the key the runner makes in
   # target/e2e/ssh (or the password `dataman-ssh`); it forwards to the host's ports. sshd is
   # installed when the container is first created (no image build, so no registry access).

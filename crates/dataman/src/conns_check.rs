@@ -287,9 +287,10 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
 }
 
 async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    for e in [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis] {
+    for e in [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::ClickHouse, Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis] {
         let (p, pw) = profile(e);
         let url = match e {
+            Engine::ClickHouse => format!("clickhouse://{}:{pw}@{}:{}/{}?sslmode=disable", p.user, p.host, p.port, p.database),
             Engine::Postgres => format!("postgresql://{}:{pw}@{}:{}/{}", p.user, p.host, p.port, p.database),
             Engine::MySql => format!("mysql://{}:{pw}@{}:{}/{}", p.user, p.host, p.port, p.database),
             Engine::SqlServer => format!("Server=tcp:{},{};Database={};User Id={};Password={pw};TrustServerCertificate=True", p.host, p.port, p.database, p.user),

@@ -501,6 +501,9 @@ fn table_command(sql: &str, toks: &[Token], d: Dialect, insert: bool) -> Option<
             return Some(format!("{}()", t.1.text(sql)));
         }
     }
+    if d == Dialect::ClickHouse {
+        return matches!(w(0).as_str(), "DESC" | "DESCRIBE" | "SHOW" | "EXISTS").then(|| w(0));
+    }
     if d == Dialect::DuckDb {
         return match w(0).as_str() {
             "DESCRIBE" | "SUMMARIZE" | "SHOW" => Some(w(0)),

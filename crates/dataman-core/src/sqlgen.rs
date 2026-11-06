@@ -210,6 +210,7 @@ fn bytes_literal(d: Dialect, hex: &str) -> Option<String> {
     match d {
         Dialect::MySql | Dialect::Sqlite => Some(format!("X'{hex}'")),
         Dialect::DuckDb => Some(format!("from_hex('{hex}')")),
+        Dialect::ClickHouse => Some(format!("unhex('{hex}')")),
         Dialect::TSql | Dialect::Postgres => None,
     }
 }
@@ -226,7 +227,7 @@ fn push_quoted(d: Dialect, out: &mut String, s: &str) {
     }
     out.push('\'');
     for c in s.chars() {
-        if c == '\'' || (c == '\\' && d == Dialect::MySql) {
+        if c == '\'' || (c == '\\' && d.backslash_literals()) {
             out.push(c);
         }
         out.push(c);
@@ -497,6 +498,15 @@ pub fn create_table_template_duckdb(schema: &str) -> String {
     )
 }
 
+pub fn create_table_template_clickhouse(database: &str) -> String {
+    let d = Dialect::ClickHouse;
+    format!(
+        "-- A new table in {}. Edit the columns and the sort key, then run it with {RUN_KEY}.\nCREATE TABLE {} (\n    id         UInt64,\n    name       String,\n    created_at DateTime DEFAULT now()\n)\nENGINE = MergeTree\nORDER BY id;",
+        d.quote_ident(database),
+        d.qualified(Some(database), "new_table")
+    )
+}
+
 pub fn create_table_template_tsql(schema: &str) -> String {
     let d = Dialect::TSql;
     format!(
@@ -515,7 +525,7 @@ pub fn drop_database_template_in(d: Dialect, db: &str) -> Option<String> {
     let q = d.quote_ident(db);
     Some(match d {
         Dialect::Postgres => drop_database_template(db),
-        Dialect::MySql => danger(&format!("DROP DATABASE deletes {q} and everything in it, for good."), format!("DROP DATABASE {q};")),
+        Dialect::MySql | Dialect::ClickHouse => danger(&format!("DROP DATABASE deletes {q} and everything in it, for good."), format!("DROP DATABASE {q};")),
         Dialect::Sqlite | Dialect::DuckDb => return None,
         Dialect::TSql => danger(
             &format!(

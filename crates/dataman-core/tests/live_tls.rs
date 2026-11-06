@@ -245,3 +245,28 @@ fn snakeoil_certificate() {
     assert!(err.to_lowercase().contains("certificate"), "{err}");
     eprintln!("verify-full, snakeoil: {err}");
 }
+
+/// The bastion reaches the host's ClickHouse by a name only it can resolve: the URL keeps the name
+/// and takes the tunnel's port.
+#[test]
+fn clickhouse_through_the_tunnel() {
+    let Some(((h, p), keys)) = setup().ssh.clone() else { return };
+    let db = std::env::var("DATAMAN_SSH_CLICKHOUSE").unwrap_or_else(|_| "host.docker.internal:18123".into());
+    let (dh, dp) = db.rsplit_once(':').unwrap();
+    let ssh = SshSettings { host: h, port: Some(p), user: "dataman".into(), auth: SshAuth::Key, key_file: keys.join("k_ed").display().to_string() };
+    let prof = ConnectionProfile {
+        engine: dataman_core::config::Engine::ClickHouse,
+        host: dh.into(),
+        port: dp.parse().unwrap(),
+        user: "default".into(),
+        database: "system".into(),
+        sslmode: SslMode::Disable,
+        ssh: Some(ssh),
+        ..ConnectionProfile::new("clickhouse-ssh")
+    };
+    let e = env();
+    let c = connect(&e, &prof).unwrap();
+    assert!(c.tunneled() && !c.tls_in_use());
+    let s = c.session(None);
+    assert_eq!(ok(&e, &s, "SELECT currentDatabase()"), "system");
+}

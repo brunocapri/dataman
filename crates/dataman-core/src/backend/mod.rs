@@ -4,6 +4,7 @@ pub(crate) mod duck;
 #[cfg(not(feature = "duckdb"))]
 #[path = "duck/off.rs"]
 pub(crate) mod duck;
+pub(crate) mod ch;
 pub mod class;
 pub(crate) mod embed;
 #[cfg(feature = "sqlite")]
@@ -106,6 +107,13 @@ pub struct Caps {
     pub rowid_key: bool,
     /// A document field's values can be read by its path (`sample_field_values`).
     pub field_values: bool,
+    /// A row can be told apart and changed from the grid. ClickHouse's primary key is a sort key:
+    /// it does not name one row, and its mutations run later, on their own.
+    pub row_edits: bool,
+    /// Dataman can make an agent a login of its own on this engine.
+    pub agent_login: bool,
+    /// Read-only is how the connection was made: changing it makes a new one, between transactions.
+    pub read_only_on_connect: bool,
 }
 
 impl Caps {
@@ -134,6 +142,9 @@ impl Caps {
         uuid_upper: false,
         rowid_key: false,
         field_values: false,
+        row_edits: true,
+        agent_login: true,
+        read_only_on_connect: false,
     };
 
     pub(crate) const BASIC: Caps = Caps {
@@ -161,6 +172,9 @@ impl Caps {
         uuid_upper: false,
         rowid_key: false,
         field_values: false,
+        row_edits: true,
+        agent_login: true,
+        read_only_on_connect: false,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
@@ -168,8 +182,9 @@ impl Caps {
     pub const MYSQL: Caps = Caps { schemas: false, functions: true, triggers: true, uuid_types: &["uuid"], ..Caps::BASIC };
     pub const SQL_SERVER: Caps =
         Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, uuid_types: &["uniqueidentifier"], uuid_upper: true, ..Caps::BASIC };
-    pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, ..Caps::BASIC };
-    pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], ..Caps::BASIC };
+    pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
+    pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
+    pub const CLICKHOUSE: Caps = Caps { schemas: false, uuid_types: &["uuid"], row_edits: false, agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
 
     pub fn of(engine: Engine) -> Caps {
         engine.spec().caps
@@ -183,6 +198,9 @@ pub fn server_error(e: &anyhow::Error) -> Option<ErrorInfo> {
         }
         if let Some(e @ ms::MsError::Server(_)) = c.downcast_ref::<ms::MsError>() {
             return Some(ms::error_info(e));
+        }
+        if let Some(e @ ch::ChError::Server { .. }) = c.downcast_ref::<ch::ChError>() {
+            return Some(ch::error_info(e));
         }
         #[cfg(feature = "sqlite")]
         if let Some(e @ (rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. })) = c.downcast_ref::<lite::LiteError>() {
@@ -207,6 +225,9 @@ pub fn server_error_class(e: &anyhow::Error) -> Option<crate::result::ErrorClass
         }
         if let Some(e @ ms::MsError::Server(_)) = c.downcast_ref::<ms::MsError>() {
             return Some(ms::error_info(e).class(Engine::SqlServer));
+        }
+        if let Some(e @ ch::ChError::Server { .. }) = c.downcast_ref::<ch::ChError>() {
+            return Some(ch::error_info(e).class(Engine::ClickHouse));
         }
         #[cfg(feature = "sqlite")]
         if let Some(e @ (rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. })) = c.downcast_ref::<lite::LiteError>() {
@@ -265,6 +286,7 @@ pub(crate) enum Db {
     Ms(Arc<ms::Client>),
     Lite(Arc<lite::Client>),
     Duck(Arc<duck::Client>),
+    Ch(Arc<ch::Client>),
 }
 
 impl Db {
@@ -275,6 +297,7 @@ impl Db {
             Db::Ms(c) => c.is_closed(),
             Db::Lite(c) => c.is_closed(),
             Db::Duck(c) => c.is_closed(),
+            Db::Ch(c) => c.is_closed(),
         }
     }
 
@@ -285,6 +308,7 @@ impl Db {
             Db::Ms(c) => c.execute(sql).await.map_err(|e| ms::error_info_at(&e, sql, 0)),
             Db::Lite(c) => c.execute(sql).await.map_err(|e| lite::error_info_at(&e, sql)),
             Db::Duck(c) => c.execute(sql).await.map_err(|e| duck::error_info_at(&e, sql)),
+            Db::Ch(c) => c.execute(sql).await.map_err(|e| ch::error_info_at(&e, sql)),
         }
     }
 
@@ -311,6 +335,11 @@ impl Db {
                 let ((columns, _), rows) = c.stream(sql, &[]).await.map_err(|e| duck::error_info_at(&e, sql))?;
                 Ok(Prepared { columns, stmt: PreparedStmt::Duck(parking_lot::Mutex::new(Some(rows))) })
             }
+            // The columns come with the rows: it runs once, here, as SQL Server's.
+            Db::Ch(c) => {
+                let (columns, rows) = c.query(sql, &[]).await.map_err(|e| ch::error_info_at(&e, sql))?;
+                Ok(Prepared { columns, stmt: PreparedStmt::Ch(parking_lot::Mutex::new(Some(rows))) })
+            }
         }
     }
 }
@@ -322,6 +351,7 @@ pub(crate) async fn text_rows(db: &Db, sql: &str) -> Result<Vec<Vec<Option<Strin
         Db::Ms(c) => Ok(c.text_rows(sql).await?),
         Db::Lite(c) => Ok(c.text_rows(sql).await?),
         Db::Duck(c) => Ok(c.text_rows(sql).await?),
+        Db::Ch(c) => Ok(c.text_rows(sql).await?),
     }
 }
 
@@ -345,6 +375,7 @@ pub(crate) enum Dedicated {
     Ms(Arc<ms::Client>),
     Lite(Arc<lite::Client>),
     Duck(Arc<duck::Client>),
+    Ch(Arc<ch::Client>),
 }
 
 impl Dedicated {
@@ -355,6 +386,7 @@ impl Dedicated {
             Dedicated::Ms(c) => Db::Ms(c.clone()),
             Dedicated::Lite(c) => Db::Lite(c.clone()),
             Dedicated::Duck(c) => Db::Duck(c.clone()),
+            Dedicated::Ch(c) => Db::Ch(c.clone()),
         }
     }
 
@@ -364,6 +396,7 @@ impl Dedicated {
             Dedicated::My(c) => c.tls_active,
             Dedicated::Ms(c) => c.tls_active,
             Dedicated::Lite(_) | Dedicated::Duck(_) => false,
+            Dedicated::Ch(c) => c.tls_active,
         }
     }
 
@@ -374,20 +407,21 @@ impl Dedicated {
             Dedicated::Ms(c) => c.cancel().await,
             Dedicated::Lite(c) => c.cancel().await,
             Dedicated::Duck(c) => c.cancel().await,
+            Dedicated::Ch(c) => c.cancel().await,
         }
     }
 
     pub(crate) fn pg(&self) -> Option<&pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
-            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => None,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) | Dedicated::Ch(_) => None,
         }
     }
 
     pub(crate) fn pg_mut(&mut self) -> Option<&mut pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
-            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => None,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) | Dedicated::Ch(_) => None,
         }
     }
 }
@@ -399,6 +433,7 @@ pub(crate) enum Canceller {
     Ms(ms::Canceller),
     Lite(lite::Canceller),
     Duck(duck::Canceller),
+    Ch(ch::Canceller),
 }
 
 impl Canceller {
@@ -409,6 +444,7 @@ impl Canceller {
             Canceller::Ms(c) => c.cancel().await,
             Canceller::Lite(c) => c.cancel().await,
             Canceller::Duck(c) => c.cancel().await,
+            Canceller::Ch(c) => c.cancel().await,
         }
     }
 }
@@ -424,6 +460,7 @@ pub(crate) async fn dedicated(p: &ConnectionProfile, password: Option<&str>, dat
         Engine::SqlServer => Ok(Dedicated::Ms(ms::connect(p, password, database, tunnel, None).await?)),
         Engine::Sqlite => Ok(Dedicated::Lite(lite::connect(p, lite::Open { read_only: p.read_only, ..Default::default() }, None).await?)),
         Engine::DuckDb => Ok(Dedicated::Duck(duck::connect(p, database, None).await?)),
+        Engine::ClickHouse => Ok(Dedicated::Ch(ch::connect(p, password, database, tunnel, false).await?)),
         e => Err(no_sql(e)),
     }
 }
@@ -456,6 +493,10 @@ pub(crate) async fn session(
             let c = duck::connect(p, database, Some(watch)).await?;
             Ok((Db::Duck(c.clone()), Canceller::Duck(c.canceller())))
         }
+        Engine::ClickHouse => {
+            let c = ch::connect(p, password, database, tunnel, true).await?;
+            Ok((Db::Ch(c.clone()), Canceller::Ch(c)))
+        }
         e => Err(no_sql(e)),
     }
 }
@@ -467,6 +508,7 @@ pub(crate) async fn server_info(db: &Db) -> Result<ServerInfo> {
         Db::Ms(c) => ms::server_info(c).await,
         Db::Lite(c) => lite::server_info(c).await,
         Db::Duck(c) => duck::server_info(c).await,
+        Db::Ch(c) => ch::server_info(c).await,
     }
 }
 
@@ -477,6 +519,7 @@ pub(crate) async fn search_path(db: &Db, user: &str) -> Vec<String> {
         Db::Ms(c) => ms::search_path(c).await,
         Db::Lite(_) => vec!["main".into()],
         Db::Duck(c) => duck::search_path(c).await,
+        Db::Ch(c) => ch::search_path(c).await,
     }
 }
 
@@ -499,6 +542,7 @@ enum PreparedStmt {
     Ms(parking_lot::Mutex<Option<ms::MsRows>>),
     Lite(Arc<lite::Client>, String, Vec<crate::value::Kind>),
     Duck(parking_lot::Mutex<Option<embed::Rows<duck::DuckError>>>),
+    Ch(parking_lot::Mutex<Option<ch::ChRows>>),
 }
 
 impl Prepared {
@@ -520,6 +564,10 @@ impl Prepared {
                 Some(r) => Ok(Rows::Duck(r)),
                 None => Err(ErrorInfo { message: "the statement already ran".into(), ..Default::default() }),
             },
+            PreparedStmt::Ch(rows) => match rows.lock().take() {
+                Some(r) => Ok(Rows::Ch(r)),
+                None => Err(ErrorInfo { message: "the statement already ran".into(), ..Default::default() }),
+            },
         }
     }
 }
@@ -530,6 +578,7 @@ pub(crate) enum Rows {
     Ms(ms::MsRows),
     Lite(embed::Rows<lite::LiteError>),
     Duck(embed::Rows<duck::DuckError>),
+    Ch(ch::ChRows),
 }
 
 impl RowSource for Rows {
@@ -542,6 +591,7 @@ impl RowSource for Rows {
             Rows::Ms(r) => r.next_into(b).await.map_err(|e| ms::error_info(&e)),
             Rows::Lite(r) => r.next_into(b).await.map_err(|e| lite::error_info(&e)),
             Rows::Duck(r) => r.next_into(b).await.map_err(|e| duck::error_info(&e)),
+            Rows::Ch(r) => r.next_into(b).await.map_err(|e| ch::error_info(&e)),
         }
     }
 
@@ -552,6 +602,7 @@ impl RowSource for Rows {
             Rows::Ms(r) => r.skip().await.map_err(|e| ms::error_info(&e)),
             Rows::Lite(r) => r.skip().await.map_err(|e| lite::error_info(&e)),
             Rows::Duck(r) => r.skip().await.map_err(|e| duck::error_info(&e)),
+            Rows::Ch(r) => r.skip().await.map_err(|e| ch::error_info(&e)),
         }
     }
 
@@ -562,6 +613,7 @@ impl RowSource for Rows {
             Rows::Ms(_) => None,
             Rows::Lite(r) => r.affected(),
             Rows::Duck(r) => r.affected(),
+            Rows::Ch(r) => r.affected(),
         }
     }
 }
@@ -699,6 +751,7 @@ pub(crate) async fn run(
         Db::Ms(c) => ms::run(c, rs, started, on_pause, aborted, next).await,
         Db::Lite(c) => lite::run(c, rs, started, on_pause, aborted, next).await,
         Db::Duck(c) => duck::run(c, rs, started, on_pause, aborted, next).await,
+        Db::Ch(c) => ch::run(c, rs, started, on_pause, aborted).await,
     }
 }
 
@@ -716,5 +769,7 @@ mod tests {
         assert!(!lite.schemas && lite.explain && lite.triggers && lite.transactional_ddl && !lite.drop_database && !lite.truncate && !lite.import);
         let duck = Caps::of(Engine::DuckDb);
         assert!(duck.schemas && duck.explain && !duck.triggers && !duck.drop_database && duck.truncate && !duck.activity && !duck.functions);
+        let ch = Caps::of(Engine::ClickHouse);
+        assert!(!ch.schemas && !ch.transactional_ddl && !ch.row_edits && !ch.explain && !ch.agent_login && ch.read_only_on_connect && ch.truncate);
     }
 }

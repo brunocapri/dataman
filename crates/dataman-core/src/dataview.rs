@@ -392,6 +392,7 @@ impl Connection {
                 crate::schema::lite::lit(schema)
             )),
             Engine::DuckDb => Some(crate::schema::duck::primary_key_sql(schema, table)),
+            Engine::ClickHouse => Some(crate::schema::ch::primary_key_sql(schema, table)),
             _ => None,
         };
         if let Some(q) = other {

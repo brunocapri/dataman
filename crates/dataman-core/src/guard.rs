@@ -150,7 +150,12 @@ pub fn classify_in(sql: &str, dialect: Dialect) -> Facts {
         let t = Toks { src: &text, t: &all, dialect };
         pieces.extend(statements(&t).into_iter().map(|r| with_queries(&t.sub(r))).filter(|f| !f.verb.is_empty()));
     }
-    combine(pieces)
+    let mut f = combine(pieces);
+    // Nothing can hold it back or undo it, so nothing runs it as if something could.
+    if !dialect.has_transactions() && (f.is_write() || f.effect == Effect::Other) {
+        f.outside_tx = true;
+    }
+    f
 }
 
 fn significant(sql: &str, dialect: Dialect) -> Vec<Token> {
@@ -341,6 +346,15 @@ fn with_queries_top(t: &Toks) -> Facts {
     if !t.is(0, "WITH") {
         return statement(t);
     }
+    // ClickHouse's WITH names expressions too (`WITH 1 AS x SELECT x`): what it heads is the first
+    // statement word outside parentheses, and its queries cannot write.
+    if t.dialect == Dialect::ClickHouse {
+        let head = t.top().into_iter().find(|&i| i > 0 && (t.is(i, "SELECT") || t.is(i, "INSERT")));
+        return match head {
+            Some(i) => statement(&t.sub(i..t.t.len())),
+            None => Facts { verb: "WITH".into(), effect: Effect::Other, ..Default::default() },
+        };
+    }
     let mut i = 1;
     if t.is(i, "RECURSIVE") {
         i += 1;
@@ -455,6 +469,17 @@ fn statement(t: &Toks) -> Facts {
     let Some(v) = t.word(0) else { return Facts::default() };
     let mut f = Facts { verb: v.clone(), ..Default::default() };
     match v.as_str() {
+        "DESCRIBE" | "DESC" | "EXISTS" if t.dialect == Dialect::ClickHouse => {}
+        "OPTIMIZE" if t.dialect == Dialect::ClickHouse => {
+            f.effect = Effect::Write;
+            f.target = t.is(1, "TABLE").then(|| t.name(2).map(|(n, _)| n)).flatten();
+        }
+        "ATTACH" | "DETACH" | "EXCHANGE" | "RENAME" | "UNDROP" | "BACKUP" | "RESTORE" | "MOVE" | "SYSTEM" if t.dialect == Dialect::ClickHouse => {
+            f.effect = Effect::Ddl;
+            if t.is(1, "TABLE") || t.is(1, "TABLES") || t.is(1, "DICTIONARY") || t.is(1, "DICTIONARIES") || t.is(1, "DATABASE") || t.is(1, "VIEW") {
+                f.target = t.name(2).map(|(n, _)| n);
+            }
+        }
         "SELECT" => {
             let top = t.top();
             if let Some(&at) = top.iter().find(|&&i| t.is(i, "INTO")) {
@@ -575,6 +600,7 @@ fn statement(t: &Toks) -> Facts {
         "INSERT" => {
             f.effect = Effect::Write;
             let i = (0..t.t.len()).find(|&i| t.is(i, "INTO")).map_or(1, |i| i + 1);
+            let i = if t.dialect == Dialect::ClickHouse && t.is(i, "TABLE") { i + 1 } else { i };
             f.target = t.name(i).map(|(n, _)| n);
         }
         "MERGE" => {
@@ -1146,6 +1172,7 @@ fn is_read(f: &Facts, dialect: Dialect) -> bool {
     let reads = matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES" | "SHOW" | "EXPLAIN")
         || (dialect == Dialect::MySql && matches!(f.verb.as_str(), "DESCRIBE" | "DESC"))
         || (dialect == Dialect::DuckDb && matches!(f.verb.as_str(), "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT"))
+        || (dialect == Dialect::ClickHouse && matches!(f.verb.as_str(), "DESCRIBE" | "DESC" | "EXISTS"))
         || (is_file_dialect(dialect) && f.verb.starts_with("PRAGMA "));
     f.effect == Effect::Read && reads
 }
@@ -1197,7 +1224,7 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
 /// DuckDB statements and functions that reach files or other databases: `read_csv(…)`, a file
 /// named in FROM (`FROM 'x.csv'`, `FROM "x.parquet"`), COPY, ATTACH, INSTALL, EXPORT.
 pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
-    if !is_file_dialect(dialect) {
+    if !is_file_dialect(dialect) && dialect != Dialect::ClickHouse {
         return None;
     }
     for piece in agent_pieces(sql, dialect) {
@@ -1212,8 +1239,11 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         {
             return Some(e);
         }
-        if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO") {
+        if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO" | "BACKUP" | "RESTORE") {
             return Some(format!("{} reaches files outside the database", f.verb));
+        }
+        if dialect == Dialect::ClickHouse && (0..all.len()).any(|i| t.is(i, "OUTFILE") || t.is(i, "INFILE")) {
+            return Some("INTO OUTFILE and FROM INFILE reach files outside the database".into());
         }
         // A DuckDB file is one instance in the process: its settings (log and temp paths, memory,
         // extensions, external access) are every connection's, the user's tabs included.
@@ -1285,6 +1315,7 @@ fn file_access_in(t: &Toks) -> Option<String> {
     let list = match t.dialect {
         Dialect::DuckDb => functions::DUCKDB_FILE,
         Dialect::Sqlite => functions::SQLITE_FILE,
+        Dialect::ClickHouse => functions::CLICKHOUSE_FILE,
         _ => return None,
     };
     for i in 0..t.t.len() {
@@ -1292,6 +1323,13 @@ fn file_access_in(t: &Toks) -> Option<String> {
             continue;
         }
         let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+        if t.dialect == Dialect::ClickHouse {
+            // Every `dictGet…` reads a dictionary, loaded from wherever it was made to.
+            if t.punct(i + 1, "(") && (functions::is(&name, list) || name.starts_with("dictget") || name == "dicthas") {
+                return Some(format!("{name}() reaches files, other servers or tables past the agents' rules"));
+            }
+            continue;
+        }
         // DuckDB's `duckdb_…` functions are views too (`FROM duckdb_logs`).
         if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && functions::is(&name, list) {
             return Some(format!("{name}() reaches files or code outside the database"));
@@ -1472,6 +1510,7 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
         _ if neutral(&t, &f) => Piece::Neutral,
         Effect::Read if agent_read_refusal_in(sql, dialect).is_none() => Piece::Read,
         Effect::Read if matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES") => Piece::Safe,
+        Effect::Write if !dialect.has_transactions() => Piece::Destructive(format!("{} (nothing counts its rows first or undoes it)", f.verb)),
         Effect::Write => match f.verb.as_str() {
             "INSERT" if dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE")) => {
                 Piece::Destructive("INSERT … EXEC".into())
@@ -1552,6 +1591,8 @@ fn plain_table_options(t: &Toks, mut i: usize) -> bool {
         Dialect::Postgres => i == n || (t.is(i, "ON") && t.is(i + 1, "COMMIT") && (i + 3 == n && t.is(i + 2, "DROP") || i + 4 == n && (t.is(i + 2, "DELETE") || t.is(i + 2, "PRESERVE")) && t.is(i + 3, "ROWS"))),
         Dialect::TSql => i == n || (i + 2 == n && t.is(i, "ON") && t.t[i + 1].text(t.src).trim_matches(['[', ']']).eq_ignore_ascii_case("PRIMARY")),
         Dialect::DuckDb => i == n,
+        // Its engine says where the data lives, and every option bends that: never plain.
+        Dialect::ClickHouse => false,
         Dialect::Sqlite => {
             while i < n {
                 if t.is(i, "STRICT") {

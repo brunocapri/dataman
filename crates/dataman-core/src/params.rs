@@ -26,6 +26,13 @@ pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
     if dialect == Dialect::TSql {
         return detect_tsql(sql);
     }
+    if dialect == Dialect::ClickHouse {
+        let names = brace_names(sql);
+        return (!names.is_empty()).then(|| Prepared {
+            sql: sql.to_string(),
+            params: names.into_iter().zip(1u32..).map(|(key, index)| Param { key, index, hint: None }).collect(),
+        });
+    }
     if matches!(dialect, Dialect::Sqlite | Dialect::DuckDb) {
         return detect_numbered(sql, dialect);
     }
@@ -39,6 +46,19 @@ pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
     }
     let n = sig.iter().filter(|t| t.kind == TokenKind::Param).count() as u32;
     (n > 0).then(|| Prepared { sql: sql.to_string(), params: (1..=n).map(|i| Param { key: format!("?{i}"), index: i, hint: None }).collect() })
+}
+
+/// ClickHouse's `{name:Type}`: the names in the order they first appear, which is the order values
+/// are given in (the server binds by name).
+pub(crate) fn brace_names(sql: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in tokenize_in(sql, Dialect::ClickHouse).iter().filter(|t| t.kind == TokenKind::Param && t.text(sql).starts_with('{')) {
+        let name = t.text(sql)[1..].split(':').next().unwrap_or_default();
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
 }
 
 /// SQLite (`?`, `?N`, `:x`, `@x`, `$x`) and DuckDB (`?`, `$N`), numbered as the engine does: a

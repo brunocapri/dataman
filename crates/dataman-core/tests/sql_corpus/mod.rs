@@ -4,7 +4,7 @@
 
 use dataman_core::sql::{Dialect, TokenKind, tokenize_in};
 
-pub const DIALECTS: [Dialect; 5] = [Dialect::Postgres, Dialect::MySql, Dialect::TSql, Dialect::Sqlite, Dialect::DuckDb];
+pub const DIALECTS: [Dialect; 6] = [Dialect::Postgres, Dialect::MySql, Dialect::TSql, Dialect::Sqlite, Dialect::DuckDb, Dialect::ClickHouse];
 
 pub const EMPTY: &[&str] = &["", "   ", "\n\t", ";", ";;", " ; ; ", "-- only a comment", "/* only */", "/* a */ ; -- b"];
 
@@ -263,6 +263,76 @@ pub const SQLITE: &[&str] = &[
     "WITH d AS (SELECT 1) SELECT * FROM d",
 ];
 
+pub const CLICKHOUSE: &[&str] = &[
+    "SELECT 1",
+    "select * from users where id = 1",
+    "SELECT 'a;b' AS x",
+    "SELECT 'it''s; DELETE FROM t'",
+    "SELECT 'it\\'s; DELETE FROM t'",
+    "SELECT \"weird;name\" FROM `Users`",
+    "SELECT `a\\`; DROP TABLE t` FROM t",
+    "SELECT $t$a; DELETE FROM t$t$",
+    "SELECT 1 /* a /* nested; DELETE FROM t */ still; */",
+    "SELECT 1 --; DELETE FROM t\n",
+    "# a comment; DELETE FROM t\nSELECT 1",
+    "SELECT a::String FROM t",
+    "SELECT x FROM t WHERE y = {v:UInt64}",
+    "SELECT {'a;b': 1}",
+    "SELECT * FROM t FINAL PREWHERE a > 1 SAMPLE 0.1 LIMIT 1 BY a SETTINGS max_threads = 1",
+    "SELECT * FROM t FORMAT JSON",
+    "WITH 1 AS x SELECT x",
+    "WITH x AS (SELECT 1) SELECT * FROM x",
+    "SHOW TABLES",
+    "SHOW CREATE TABLE t",
+    "DESCRIBE TABLE t",
+    "DESC t",
+    "EXISTS TABLE t",
+    "EXPLAIN SELECT 1",
+    "SELECT * FROM file('/etc/passwd', 'LineAsString')",
+    "SELECT * FROM url('http://x/', CSV)",
+    "SELECT * FROM S3('http://x/', CSV)",
+    "SELECT * FROM remote('other', db.t)",
+    "SELECT * FROM mysql('h', 'd', 't', 'u', 'p')",
+    "SELECT * FROM merge('db', '.*')",
+    "SELECT dictGetString('d', 'a', 1)",
+    "SELECT COLUMNS('pass') FROM users",
+    "SELECT * FROM executable('x.sh', CSV, 'a Int8')",
+    "SELECT 1 INTO OUTFILE 'x.csv'",
+    "INSERT INTO t VALUES (1)",
+    "INSERT INTO TABLE t SELECT * FROM u",
+    "INSERT INTO FUNCTION file('x.csv') SELECT 1",
+    "DELETE FROM t WHERE id = 1",
+    "UPDATE t SET a = 1 WHERE id = 1",
+    "ALTER TABLE t DELETE WHERE id = 1",
+    "ALTER TABLE t UPDATE a = 1 WHERE 1",
+    "ALTER TABLE t DROP PARTITION 2024",
+    "ALTER TABLE t DROP COLUMN a",
+    "TRUNCATE TABLE t",
+    "DROP TABLE t",
+    "CREATE TABLE t (a Int8) ENGINE = Memory",
+    "CREATE TABLE t (a Int8) ENGINE = File(CSV)",
+    "CREATE TABLE t ENGINE = MergeTree ORDER BY a AS SELECT 1 a",
+    "CREATE MATERIALIZED VIEW v TO t AS SELECT * FROM u",
+    "CREATE DICTIONARY d (a Int8) PRIMARY KEY a SOURCE(FILE(PATH 'x' FORMAT CSV)) LAYOUT(FLAT()) LIFETIME(0)",
+    "RENAME TABLE a TO b",
+    "EXCHANGE TABLES a AND b",
+    "OPTIMIZE TABLE t FINAL",
+    "ATTACH TABLE t",
+    "DETACH TABLE t",
+    "UNDROP TABLE t",
+    "BACKUP TABLE t TO Disk('b', 'x')",
+    "RESTORE TABLE t FROM Disk('b', 'x')",
+    "SYSTEM SHUTDOWN",
+    "SYSTEM DROP DNS CACHE",
+    "KILL QUERY WHERE 1",
+    "SET max_threads = 1",
+    "USE other",
+    "GRANT SELECT ON t TO u",
+    "REVOKE SELECT ON t FROM u",
+    "BEGIN TRANSACTION",
+    "COMMIT",
+];
+
 pub const DUCKDB: &[&str] = &[
     "SELECT 1",
     "SELECT [1, 2, 3][2], {'a': 1}.a, x::INT FROM t",
@@ -337,6 +407,8 @@ pub const SCRIPTS: &[(Dialect, &str)] = &[
     (Dialect::Sqlite, "CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM u; END; SELECT 2"),
     (Dialect::Sqlite, "SELECT [a;b] FROM t; PRAGMA user_version = 1"),
     (Dialect::DuckDb, "SELECT 1; DELETE FROM t"),
+    (Dialect::ClickHouse, "SELECT 1; DELETE FROM t WHERE 1"),
+    (Dialect::ClickHouse, "SELECT $x$;$x$; SELECT {'a': 1}; SYSTEM SHUTDOWN"),
     (Dialect::DuckDb, "SELECT $x$;$x$; SELECT [1, 2]; ATTACH 'x.db'"),
 ];
 
@@ -347,6 +419,7 @@ pub fn corpus(d: Dialect) -> &'static [&'static str] {
         Dialect::TSql => TSQL,
         Dialect::Sqlite => SQLITE,
         Dialect::DuckDb => DUCKDB,
+        Dialect::ClickHouse => CLICKHOUSE,
     }
 }
 

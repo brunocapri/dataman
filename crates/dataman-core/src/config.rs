@@ -29,6 +29,8 @@ pub enum Engine {
     Sqlite,
     #[serde(rename = "duckdb")]
     DuckDb,
+    #[serde(rename = "clickhouse")]
+    ClickHouse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,10 +41,11 @@ pub enum Family {
 }
 
 impl Engine {
-    pub const ALL: [Engine; 9] = [
+    pub const ALL: [Engine; 10] = [
         Engine::Postgres,
         Engine::MySql,
         Engine::SqlServer,
+        Engine::ClickHouse,
         Engine::Sqlite,
         Engine::DuckDb,
         Engine::MongoDb,
@@ -746,6 +749,7 @@ impl ConnectionProfile {
                 let scheme = if matches!(self.sslmode, SslMode::Require | SslMode::VerifyFull) { "https" } else { "http" };
                 return format!("{scheme}://{user}{host}:{}", self.port);
             }
+            Engine::ClickHouse => return format!("clickhouse://{user}{host}:{}/{}?sslmode={}", self.port, percent_encode(&self.database), self.sslmode.label()),
             _ => {}
         }
         if self.engine == Engine::SqlServer {
@@ -1609,7 +1613,7 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![pg, my, ms]);
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].engine, Engine::Postgres);
-        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 0, 0, 27017, 9200, 9200, 6379]);
+        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 8123, 0, 0, 27017, 9200, 9200, 6379]);
     }
 
     #[test]

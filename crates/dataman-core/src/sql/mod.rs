@@ -21,6 +21,19 @@ pub fn ident_value(src: &str, t: &Token) -> String {
     ident_value_in(src, t, Dialect::Postgres)
 }
 
+fn backslash_unquoted(inner: &str, q: char) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut it = inner.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\\' || (c == q && it.peek() == Some(&q)) {
+            out.extend(it.next());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     let s = t.text(src);
     if t.kind == TokenKind::QuotedIdent {
@@ -36,6 +49,9 @@ pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
         };
         let inner = s.strip_prefix(open).unwrap_or(s);
         let inner = inner.strip_suffix(close).unwrap_or(inner);
+        if dialect.lex().backslash_quotes {
+            return backslash_unquoted(inner, close);
+        }
         inner.replace(&format!("{close}{close}"), &close.to_string())
     } else if dialect.folds_to_lower() {
         s.to_lowercase()

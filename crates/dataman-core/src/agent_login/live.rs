@@ -88,6 +88,7 @@ pub async fn probe(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<(Probe,
             _ => bail!("not a search server"),
         },
         Engine::Sqlite | Engine::DuckDb => bail!("{FILE_NOTE}"),
+        Engine::ClickHouse => bail!("Dataman makes no agent login on ClickHouse: the connection's own login and its rules apply"),
     })
 }
 
@@ -139,7 +140,7 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, persist: Option<
         Engine::MongoDb => mongo::create_plan(spec, inv, probe, password, prod),
         Engine::Redis => redis::create_plan(spec, probe, persist.unwrap_or(redis::Persist::None), password, prod),
         Engine::Elasticsearch | Engine::OpenSearch => search::create_plan(spec, inv, probe, password, prod),
-        Engine::Sqlite | Engine::DuckDb => Plan::default(),
+        Engine::Sqlite | Engine::DuckDb | Engine::ClickHouse => Plan::default(),
     }
 }
 

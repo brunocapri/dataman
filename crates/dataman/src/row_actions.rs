@@ -56,6 +56,7 @@ impl Workspace {
                 Act::CreateTable => {
                     let sql = match self.conn_dialect(&conn, cx) {
                         dataman_core::sql::Dialect::Sqlite => sqlgen::create_table_template_sqlite(),
+                        dataman_core::sql::Dialect::ClickHouse => sqlgen::create_table_template_clickhouse(&db),
                         _ => sqlgen::create_table_template_mysql(&db),
                     };
                     self.open_sql_tab(&conn, Some(&db), &sql, false, window, cx);

@@ -13,7 +13,7 @@ use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, SimpleQueryMessage};
 
 use crate::backend::pg::{TextParam, column_infos, error_info, push_row};
-use crate::backend::{Dedicated, RowSource, duck, lite, ms, my};
+use crate::backend::{Dedicated, RowSource, ch, duck, lite, ms, my};
 use crate::conn::Connection;
 use crate::guard;
 use crate::result::{Cell, ChunkBuilder, ColumnInfo, ErrorClass, ErrorInfo, format_cell};
@@ -227,6 +227,8 @@ impl Connection {
         let d = if self.engine() == crate::config::Engine::Sqlite {
             let agent = if ro { lite::Agent::Read } else { lite::Agent::Write };
             Dedicated::Lite(lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent), kept: Some(self.agent_rules.clone()) }, None).await?)
+        } else if !self.dialect().has_transactions() {
+            self.dedicated_read_only(db, ro).await?
         } else {
             self.dedicated(Some(db)).await?
         };
@@ -246,7 +248,7 @@ impl Connection {
             Dedicated::Ms(c) => {
                 let _ = c.execute("SET LANGUAGE us_english").await;
             }
-            Dedicated::Lite(_) | Dedicated::Duck(_) => {}
+            Dedicated::Lite(_) | Dedicated::Duck(_) | Dedicated::Ch(_) => {}
         }
         Ok(d)
     }
@@ -296,8 +298,9 @@ impl Connection {
         if let Some(r) = guard::file_access(sql, dialect) {
             return Err(Stop::Refused(r));
         }
-        // SQLite's readers run on connections that cannot write: a pool of their own.
-        let ro = ro || (dialect == Dialect::Sqlite && mode == Mode::Read);
+        // SQLite's readers run on connections that cannot write: a pool of their own. Where nothing
+        // can roll a read back, so do those.
+        let ro = ro || (mode == Mode::Read && (dialect == Dialect::Sqlite || !dialect.has_transactions()));
         let started = Instant::now();
         let mut d = tokio::select! {
             d = self.agent_take(&db, ro) => d.map_err(Stop::Other)?,
@@ -312,6 +315,7 @@ impl Connection {
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Lite(c) => lite_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Duck(c) => duck_in_transaction(c, &stmts, &params, mode, &limits).await,
+                    Dedicated::Ch(c) => ch_statements(c, &stmts, &params, mode, &limits).await,
                 }
             };
             tokio::pin!(work);
@@ -376,7 +380,7 @@ impl Connection {
 }
 
 async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Result<(), Failed> {
-    if mode == Mode::Autocommit {
+    if mode == Mode::Autocommit || !dialect.has_transactions() {
         return Ok(());
     }
     let sql = if commit { dialect.commit() } else { dialect.rollback() };
@@ -386,7 +390,62 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
         Dedicated::Ms(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(ms::error_info_at(&e, sql, 0)), !c.is_closed())),
         Dedicated::Lite(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(lite::error_info_at(&e, sql)), !c.is_closed())),
         Dedicated::Duck(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(duck::error_info_at(&e, sql)), !c.is_closed())),
+        Dedicated::Ch(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(ch::error_info_at(&e, sql)), !c.is_closed())),
     }
+}
+
+/// ClickHouse has no transaction to run them in: a read is held to it by its read-only connection
+/// (the server refuses anything else), a write is alone in its call (`Facts::outside_tx`) and has
+/// been allowed by then. The caller's timer cancels.
+async fn ch_statements(c: &Arc<ch::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+    let mut out = Outcome::default();
+    for (i, s) in stmts.iter().enumerate() {
+        let last = i + 1 == stmts.len();
+        let p = if last { params } else { &[] };
+        let (cut0, t0) = (out.cut_cells, Instant::now());
+        if mode == Mode::Read {
+            out.start_part();
+        }
+        let r = ch_statement(c, s, p, mode, !last, limits, &mut out).await;
+        if mode == Mode::Read && r.is_ok() {
+            out.end_part(i, s, cut0, t0.elapsed());
+        }
+        match r {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = tokio::time::timeout(Duration::from_secs(2), c.cancel()).await;
+                return Ok((out, false));
+            }
+            Err(e) => return Err((e, true)),
+        }
+    }
+    Ok((out, true))
+}
+
+async fn ch_statement(c: &Arc<ch::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+    let verb = guard::classify_in(sql, Dialect::ClickHouse).verb;
+    let (cols, mut rows) = c.query(sql, params).await.map_err(|e| Stop::Server(ch::error_info_at(&e, sql)))?;
+    let returns_rows = !cols.is_empty();
+    if returns_rows {
+        start_rows(&cols, mode, out);
+    }
+    let mut b = ChunkBuilder::new(&cols);
+    loop {
+        let next = rows.next_into(&mut b).await.map_err(|e| Stop::Server(ch::error_info(&e)))?;
+        if !next {
+            break;
+        }
+        let chunk = b.finish();
+        // A cell that turned its column to text: the column is text from here on.
+        let cols: Vec<ColumnInfo> = cols.iter().enumerate().map(|(i, c)| ColumnInfo { kind: b.kind(i), ..c.clone() }).collect();
+        match keep_row(&cols, &chunk, mode, more, limits, out) {
+            Keep::Yes | Keep::Skip => {}
+            Keep::Stop => return Ok(false),
+        }
+    }
+    let affected = rows.affected();
+    out.statements.push(Done { verb, affected: if returns_rows && mode == Mode::Read { None } else { affected } });
+    Ok(true)
 }
 
 /// DuckDB has no statement time limit either: the caller's timer interrupts. A read runs in a

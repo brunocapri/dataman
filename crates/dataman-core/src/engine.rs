@@ -70,7 +70,7 @@ const FILE: Form = Form { file: true, user_required: false, database: false, dat
 const NO_FILES: &[&str] = &[];
 
 /// In `Engine`'s declaration order: `Engine::spec` indexes it.
-pub static SPECS: [EngineSpec; 9] = [
+pub static SPECS: [EngineSpec; 10] = [
     EngineSpec {
         engine: Engine::Postgres,
         slug: "postgres",
@@ -287,6 +287,30 @@ pub static SPECS: [EngineSpec; 9] = [
         nouns: TABLES,
         form: FILE,
     },
+    EngineSpec {
+        engine: Engine::ClickHouse,
+        slug: "clickhouse",
+        label: "ClickHouse",
+        aliases: &["ch"],
+        search: "clickhouse ch analytics olap columnar",
+        default_port: 8123,
+        default_user: "default",
+        family: Family::Sql,
+        family_label: "Analytical",
+        file_exts: NO_FILES,
+        dialect: Some(Dialect::ClickHouse),
+        caps: Caps::CLICKHOUSE,
+        badge: "CH",
+        logo: "logos/clickhouse.svg",
+        default_database: "default",
+        default_schema: None,
+        db_names_ignore_case: false,
+        system_dbs: &["system", "information_schema", "INFORMATION_SCHEMA"],
+        system_schemas: &["system", "information_schema", "INFORMATION_SCHEMA"],
+        numbered_dbs: None,
+        nouns: TABLES,
+        form: Form { database_placeholder: "default", scheme: "clickhouse", ..SERVER },
+    },
 ];
 
 impl Engine {
@@ -372,7 +396,7 @@ mod tests {
             assert_eq!(e.spec().caps.file, e.spec().form.file, "{e:?}");
             assert_eq!(e.is_sql(), e.sql_dialect().is_some(), "{e:?}");
         }
-        assert_eq!(Engine::port_list(), "5432 / 3306 / 1433 / 27017 / 9200 / 6379");
+        assert_eq!(Engine::port_list(), "5432 / 3306 / 1433 / 27017 / 9200 / 6379 / 8123");
         assert_eq!((Engine::Redis.db_label("3"), Engine::MySql.db_label("shop")), ("db3".to_string(), "shop".to_string()));
         assert!(Engine::SqlServer.is_system_db("tempdb") && !Engine::Postgres.is_system_db("postgres"));
         assert!(Engine::Postgres.is_system_schema("pg_toast_temp_3") && !Engine::Postgres.is_system_schema("public"));

@@ -573,6 +573,9 @@ impl Connection {
 
     async fn resolve_edit_target(self: &Arc<Self>, db: &str, rs: &ResultSet, key: Option<Vec<String>>) -> Result<Editability> {
         let ro = |s: &str| Ok(Editability::ReadOnly(s.to_string()));
+        if !self.caps().row_edits {
+            return Ok(Editability::ReadOnly(format!("{} has no key that names one row", self.engine().label())));
+        }
         if self.read_only_for(db) {
             return ro("the database is read-only");
         }

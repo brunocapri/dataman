@@ -15,7 +15,7 @@ use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
 use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode, connstr};
 use dataman_mcp::agents::{self, AGENTS, Added, Listing};
 
-const ENGINES: [Engine; 9] = Engine::ALL;
+const ENGINES: [Engine; 10] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") {
     "saved in Keychain"
 } else if cfg!(windows) {

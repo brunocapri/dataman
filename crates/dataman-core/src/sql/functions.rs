@@ -18,6 +18,9 @@ pub const SQLITE_FILE: Does = Does(1 << 3);
 /// DuckDB: reads (and runs) whatever it names: files, other databases, SQL in a string, secrets,
 /// the instance every connection to the file shares and its logs.
 pub const DUCKDB_FILE: Does = Does(1 << 4);
+/// ClickHouse: table functions, table engines and dictionary sources that read (and write) files,
+/// URLs, buckets and other servers, or read tables whole past what the agents' rules narrow.
+pub const CLICKHOUSE_FILE: Does = Does(1 << 7);
 /// Reads tables, schemas or files whole, around the agents' rules on columns.
 pub const READS_AROUND: Does = Does(1 << 5);
 /// An effect a write is allowed to have (a sequence, a notification).
@@ -50,6 +53,62 @@ macro_rules! table {
 }
 
 table! {
+    ("azureblobstorage", CLICKHOUSE_FILE),
+    ("azureblobstoragecluster", CLICKHOUSE_FILE),
+    ("azurequeue", CLICKHOUSE_FILE),
+    ("clickhouse", CLICKHOUSE_FILE),
+    ("cluster", CLICKHOUSE_FILE),
+    ("clusterallreplicas", CLICKHOUSE_FILE),
+    ("columns", CLICKHOUSE_FILE),
+    ("cos", CLICKHOUSE_FILE),
+    ("cosn", CLICKHOUSE_FILE),
+    ("deltalake", CLICKHOUSE_FILE),
+    ("deltalakecluster", CLICKHOUSE_FILE),
+    ("dictionary", CLICKHOUSE_FILE),
+    ("distributed", CLICKHOUSE_FILE),
+    ("executable", CLICKHOUSE_FILE),
+    ("executable_pool", CLICKHOUSE_FILE),
+    ("executablepool", CLICKHOUSE_FILE),
+    ("file", CLICKHOUSE_FILE),
+    ("filecluster", CLICKHOUSE_FILE),
+    ("gcs", CLICKHOUSE_FILE),
+    ("hdfs", CLICKHOUSE_FILE),
+    ("hdfscluster", CLICKHOUSE_FILE),
+    ("http", CLICKHOUSE_FILE),
+    ("hudi", CLICKHOUSE_FILE),
+    ("hudicluster", CLICKHOUSE_FILE),
+    ("iceberg", CLICKHOUSE_FILE),
+    ("icebergazure", CLICKHOUSE_FILE),
+    ("iceberghdfs", CLICKHOUSE_FILE),
+    ("iceberglocal", CLICKHOUSE_FILE),
+    ("icebergs3", CLICKHOUSE_FILE),
+    ("input", CLICKHOUSE_FILE),
+    ("jdbc", CLICKHOUSE_FILE),
+    ("joinget", CLICKHOUSE_FILE),
+    ("joingetornull", CLICKHOUSE_FILE),
+    ("kafka", CLICKHOUSE_FILE),
+    ("loop", CLICKHOUSE_FILE),
+    ("merge", CLICKHOUSE_FILE),
+    ("mongodb", CLICKHOUSE_FILE),
+    ("mysql", CLICKHOUSE_FILE),
+    ("nats", CLICKHOUSE_FILE),
+    ("odbc", CLICKHOUSE_FILE),
+    ("oss", CLICKHOUSE_FILE),
+    ("paimon", CLICKHOUSE_FILE),
+    ("postgresql", CLICKHOUSE_FILE),
+    ("rabbitmq", CLICKHOUSE_FILE),
+    ("redis", CLICKHOUSE_FILE),
+    ("remote", CLICKHOUSE_FILE),
+    ("remotesecure", CLICKHOUSE_FILE),
+    ("s3", CLICKHOUSE_FILE),
+    ("s3cluster", CLICKHOUSE_FILE),
+    ("s3queue", CLICKHOUSE_FILE),
+    ("sqlite", CLICKHOUSE_FILE),
+    ("url", CLICKHOUSE_FILE),
+    ("urlcluster", CLICKHOUSE_FILE),
+    ("view", CLICKHOUSE_FILE),
+    ("viewexplain", CLICKHOUSE_FILE),
+    ("viewifpermitted", CLICKHOUSE_FILE),
     ("pg_terminate_backend", EFFECT),
     ("pg_cancel_backend", EFFECT),
     ("pg_reload_conf", EFFECT),
@@ -241,5 +300,6 @@ mod tests {
         }
         assert!(is("QUERY_TO_XML", STRING_SQL) && is("query_to_xml", READS_AROUND) && is("\"pg_read_file\"", SERVER_FILE));
         assert!(is("nextval", WRITE_OK) && is("nextval", EFFECT) && !is("upper", EFFECT));
+        assert!(is("S3", CLICKHOUSE_FILE) && !is("url", EFFECT), "a name other engines may use is refused on ClickHouse only");
     }
 }
