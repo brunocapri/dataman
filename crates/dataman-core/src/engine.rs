@@ -166,7 +166,7 @@ pub static SPECS: [EngineSpec; 9] = [
         family_label: "Document",
         file_exts: NO_FILES,
         dialect: None,
-        caps: Caps::NONE,
+        caps: Caps { field_values: true, ..Caps::NONE },
         badge: "MDB",
         logo: "logos/mongodb.svg",
         default_database: "",

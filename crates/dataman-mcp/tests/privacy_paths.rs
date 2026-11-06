@@ -465,6 +465,44 @@ fn mysql_and_sql_server_values_stay_kept() {
     }
 }
 
+/// DAT-36: what an agent gets on SQL Server. A rule holds whatever the case of the rule, the
+/// catalog and the statement. Values of a known key shape are masked with no rule at all, while
+/// a key of no known shape gets through without one: why Scan again keeps a column named `ApiKey`.
+#[test]
+fn mssql_rules_and_masks_for_scanned_names() {
+    if !up(MS) {
+        return;
+    }
+    let s = "mcp_scan_dat36";
+    let (shaped, unshaped) = ("sk_live_abcdefghij012345", "abc123deadbeefcafe");
+    // Spelled unlike the catalog (`Token`, `lowered`, `ApiKey2`), as a hand-written rule may be.
+    let rules = format!(
+        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{}_ACCTS.TOKEN\", how = \"hidden\" }}, {{ col = \"{s}_accts.Lowered\", how = \"hidden\" }}, {{ col = \"{s}_accts.apikey2\", how = \"hidden\" }}]\n",
+        s.to_uppercase()
+    );
+    let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules)], "", None);
+    e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE IF EXISTS dbo.{s}_accts; CREATE TABLE dbo.{s}_accts (Id int, Token varchar(50), lowered varchar(50), Notes varchar(50), ApiKey varchar(50), ApiKey2 varchar(50))")})));
+    e.admin("execute", with("msadmin", json!({"sql": format!("INSERT INTO dbo.{s}_accts VALUES (1, 'taken-token-value', 'taken-lower-value', '{shaped}', '{unshaped}', '{unshaped}')")})));
+    let q = |sql: String| e.ok("run_query", with("ss", json!({"sql": sql}))).to_string();
+    let t = format!("dbo.{s}_accts");
+    let upper = format!("dbo.{}_ACCTS", s.to_uppercase());
+    for (names, value) in [(["Token", "token", "TOKEN", "[tOkEn]"], "taken-token-value"), (["lowered", "Lowered", "LOWERED", "[lOwErEd]"], "taken-lower-value")] {
+        for name in names {
+            for read in [format!("SELECT {name} FROM {t}"), format!("SELECT {name} FROM {upper}"), format!("SELECT * FROM {t}")] {
+                let got = q(read.clone());
+                assert!(!got.contains(value), "{read}: {got}");
+            }
+        }
+    }
+    assert!(e.call("run_query", with("ss", json!({"sql": format!("SELECT Id FROM {t} WHERE UPPER(TOKEN) = 'X'")}))).is_err(), "not through a filter either");
+    let notes = q(format!("SELECT Notes FROM {t}"));
+    assert!(!notes.contains(shaped), "the API key Mask, on a column named nothing like a key: {notes}");
+    assert!(q(format!("SELECT ApiKey FROM {t}")).contains(unshaped), "no shape and no rule: the name is all there is to go on");
+    assert!(!q(format!("SELECT ApiKey2 FROM {t}")).contains(unshaped), "the rule Scan again adds for it");
+    e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{s}_accts")})));
+    e.done();
+}
+
 #[test]
 fn mongodb_values_stay_kept() {
     if !up(MG) {

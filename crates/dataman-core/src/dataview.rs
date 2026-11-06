@@ -11,6 +11,13 @@ use crate::sql::Dialect;
 use crate::sqlgen::{CellValue, qualified, quote_literal, value_literal_in};
 use crate::value::Kind;
 
+/// Up to `n` values of a column that aren't null.
+pub(crate) fn sample_column_sql(d: Dialect, schema: &str, table: &str, column: &str, n: u32) -> String {
+    let (c, rel) = (d.quote_ident(column), d.qualified(Some(schema), table));
+    let l = d.limit(n.into());
+    format!("SELECT {}{c} FROM {rel} WHERE {c} IS NOT NULL{}", l.top, l.tail)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Op {
     Eq,
@@ -355,9 +362,7 @@ impl Connection {
             let e = self.engine();
             return self.spawn(async move { Err(anyhow::anyhow!("{} has no SQL to sample a column with", e.label())) });
         };
-        let (c, rel) = (d.quote_ident(column), d.qualified(Some(schema), table));
-        let l = d.limit(n.into());
-        let sql = format!("SELECT {}{c} FROM {rel} WHERE {c} IS NOT NULL{}", l.top, l.tail);
+        let sql = sample_column_sql(d, schema, table, column, n);
         self.spawn(async move {
             let client = this.meta(&db).await?;
             Ok(text_rows(&client, &sql).await?.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())

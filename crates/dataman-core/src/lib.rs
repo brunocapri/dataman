@@ -4,6 +4,7 @@ pub mod audit;
 pub mod agents_config;
 pub mod approved;
 pub mod agent_nosql;
+pub mod agent_scan;
 pub mod agent_sql;
 pub mod backend;
 pub mod batch;

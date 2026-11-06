@@ -4,7 +4,7 @@
 //! before Save.
 
 use dataman_core::privacy::{self, AgentView, Keep, Mask, Names, Side};
-use dataman_core::{ConnectionProfile, Engine};
+use dataman_core::ConnectionProfile;
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, div, prelude::*};
 
 use crate::agents::{AgentsPage, Tip, qmark};
@@ -87,7 +87,7 @@ impl AgentsPage {
                     Some((schema, table, c)) => conn.sample_column_values(&db, &schema, &table, &c, SAMPLE_ROWS).await.ok().map(|v| (v, table)),
                     None => None,
                 }
-            } else if engine == Engine::MongoDb && !col.contains('*') {
+            } else if engine.caps().field_values && !col.contains('*') {
                 match col.split_once('.') {
                     Some((coll, path)) => conn.sample_field_values(&db, coll, path, SAMPLE_ROWS as i64).await.ok().map(|v| (v, coll.to_string())),
                     None => None,

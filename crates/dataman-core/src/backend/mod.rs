@@ -105,6 +105,8 @@ pub struct Caps {
     pub uuid_upper: bool,
     /// An `INTEGER PRIMARY KEY` left out of an INSERT takes the next rowid.
     pub rowid_key: bool,
+    /// A document field's values can be read by its path (`sample_field_values`).
+    pub field_values: bool,
 }
 
 impl Caps {
@@ -132,6 +134,7 @@ impl Caps {
         uuid_types: &["uuid"],
         uuid_upper: false,
         rowid_key: false,
+        field_values: false,
     };
 
     pub(crate) const BASIC: Caps = Caps {
@@ -158,6 +161,7 @@ impl Caps {
         uuid_types: &[],
         uuid_upper: false,
         rowid_key: false,
+        field_values: false,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };

@@ -196,14 +196,14 @@ impl AgentsPage {
                         }
                     }
                 }
-                // An empty Sensitive columns: the columns that look sensitive by their names, then
-                // the tables.
+                // An empty Sensitive columns: the columns whose names alone say they're sensitive
+                // (no values are read for this list), then the tables.
                 None if w == Which::Sensitive && tail.is_empty() => {
                     let mut unread = false;
                     for (s, t) in &tables {
                         match conn.schema.cached_columns(&db, s, t) {
                             Some(cols) => {
-                                for c in cols.iter().filter(|c| dataman_core::privacy::sensitive_name(&c.name).is_some()) {
+                                for c in cols.iter().filter(|c| dataman_core::privacy::sensitive_name(&c.name).is_some_and(|h| h.sure)) {
                                     push(Some(0), Choice { text: format!("{t}.{}", c.name), kind: ItemKind::Column, detail: c.type_name.clone() });
                                 }
                             }

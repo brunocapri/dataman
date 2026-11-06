@@ -3,6 +3,8 @@
 //! connection and settings. The `agents-*` demo stages show its pages for screenshots.
 
 
+use std::sync::Arc;
+
 use dataman_core::config::Engine;
 use dataman_core::privacy::{AgentView, CustomType, ItemKind, Mask, ReadFrom, SensitiveCol, VisibleItem};
 use dataman_core::{ConnectionProfile, Core, Environment, McpAccess};
@@ -907,6 +909,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("Esc closes the suggestions", cx.update(|_, cx| a.read(cx).suggest.which.is_none()).unwrap_or(false), "");
     key(cx, "cmd-a");
     key(cx, "backspace");
+    check_scan(&core, &a, &pg, &pw, r, cx).await;
     tap(&a, "agents-field-sensitive", cx).await;
     typ(cx, "customer.email");
     tap(&a, "agents-sens-add", cx).await;
@@ -1239,6 +1242,64 @@ fn login_ui<T>(a: &Entity<AgentsPage>, cx: &mut AsyncWindowContext, f: impl FnOn
 /// identity as the in-app hub connects, Verify,
 /// Rotate (the old password refused), Remove with its SQL (agents refused after), then a
 /// connection deleted with its login dropped on the server.
+/// Scan again on capitalized columns: a name with nothing behind it is not suggested, and what is
+/// there stands in any spelling. The connection's rules are as they were afterwards.
+async fn check_scan(core: &Arc<Core>, a: &Entity<AgentsPage>, pg: &ConnectionProfile, pw: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let drop = r#"DROP TABLE IF EXISTS public."ScanBlank", public."ScanFilled""#;
+    let _ = crate::check::sql(core, pg, pw, drop, cx).await;
+    for stmt in [
+        r#"CREATE TABLE public."ScanBlank" (id int, "Phone" text, "Token" text, "TokenHash" text, "ApiKey" text, "UserPassword" text)"#,
+        r#"CREATE TABLE public."ScanFilled" (id int, "Phone" text, "Mobile" text, "Token" text)"#,
+        r#"INSERT INTO public."ScanFilled" VALUES (1, '(11) 91234-5678', '415-555-0132', 'abc123deadbeefcafe')"#,
+    ] {
+        let made = crate::check::sql(core, pg, pw, stmt, cx).await;
+        r.check("Scan again's tables are made", made.is_ok(), format!("{made:?}"));
+    }
+    let before = rules(core, &pg.id);
+    let scan = async |a: &Entity<AgentsPage>, cx: &mut AsyncWindowContext| {
+        let _ = cx.update(|_, cx| a.update(cx, |v, _| v.scan_note = None));
+        tap(a, "agents-scan", cx).await;
+        until(cx, 40, |cx| cx.update(|_, cx| a.read(cx).scan_note.as_deref().is_some_and(|n| n != "Scanning…")).unwrap_or(false)).await;
+        cx.update(|_, cx| a.read(cx).scan_note.clone()).ok().flatten().unwrap_or_default()
+    };
+    let note = scan(a, cx).await;
+    let after = rules(core, &pg.id).sensitive;
+    let listed = |t: &str, c: &str| after.iter().find(|s| s.col == format!("{t}.{c}") && s.on).map(|s| s.how);
+    r.check(
+        "Scan again, empty columns: ApiKey and UserPassword by their names; not Phone, Token or TokenHash",
+        listed("ScanBlank", "ApiKey") == Some(Mask::Hidden) && listed("ScanBlank", "UserPassword") == Some(Mask::Hidden) && ["Phone", "Token", "TokenHash"].iter().all(|c| listed("ScanBlank", c).is_none()),
+        format!("{note}: {after:?}"),
+    );
+    r.check(
+        "Scan again, columns with values: Phone and Token, which no Mask would catch; not Mobile, which the Phone mask does",
+        listed("ScanFilled", "Phone") == Some(Mask::PARTIAL) && listed("ScanFilled", "Token") == Some(Mask::Hidden) && listed("ScanFilled", "Mobile").is_none(),
+        format!("{note}: {after:?}"),
+    );
+    let note = scan(a, cx).await;
+    r.check("Scan again a second time adds nothing", note == "Nothing new found." && rules(core, &pg.id).sensitive == after, &note);
+    // An entry in other spellings is the column's decision: Scan again doesn't add it back.
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp_rules.sensitive = after.iter().filter(|s| !s.col.starts_with("ScanFilled.") && s.col != "ScanBlank.ApiKey").cloned().collect();
+        for col in ["SCANFILLED.PHONE", "public.scanfilled.token", "*apikey*"] {
+            p.mcp_rules.sensitive.push(SensitiveCol { col: col.into(), how: Mask::Hidden, on: true });
+        }
+        let _ = core.config.upsert(p);
+    }
+    let spelled = rules(core, &pg.id).sensitive;
+    let _ = cx.update(|_, cx| a.update(cx, |v, cx| v.store.update(cx, |s, cx| s.reload(cx))));
+    let note = scan(a, cx).await;
+    r.check("…nor a column an entry names in another case, with its schema or by a pattern", note == "Nothing new found." && rules(core, &pg.id).sensitive == spelled, format!("{note}: {:?}", rules(core, &pg.id).sensitive));
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp_rules = before;
+        let _ = core.config.upsert(p);
+    }
+    let _ = cx.update(|_, cx| a.update(cx, |v, cx| {
+        v.scan_note = None;
+        v.store.update(cx, |s, cx| s.reload(cx));
+    }));
+    let _ = crate::check::sql(core, pg, pw, drop, cx).await;
+}
+
 async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &ConnectionProfile, pw: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     use dataman_core::agent_login::{self, live};
     use crate::agents_login::Sheet;
