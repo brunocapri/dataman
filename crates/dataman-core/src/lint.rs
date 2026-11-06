@@ -41,7 +41,8 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
     let mut switched = false;
     for s in &stmts {
         let from = tokens.partition_point(|t| t.start < s.range.start);
-        let toks: Vec<Token> = tokens[from..].iter().take_while(|t| t.start < s.range.end).filter(|t| !t.kind.is_trivia() && t.end <= s.range.end).copied().collect();
+        let toks: Vec<Token> =
+            tokens[from..].iter().take_while(|t| t.start < s.range.end).filter(|t| !t.kind.is_trivia() && t.end <= s.range.end).copied().collect();
         let toks = if dialect == Dialect::TSql { without_tsql_hints(src, toks) } else { toks };
         let Some(first) = toks.first() else { continue };
         let verb = first.text(src).to_ascii_uppercase();
@@ -154,7 +155,15 @@ fn created_in(src: &str, tokens: &[Token], dialect: Dialect) -> HashSet<String> 
         Some(crate::sql::ident_value_in(src, sig[i], dialect).to_lowercase())
     };
     for i in 0..sig.len() {
-        let obj = (w(i, "TABLE") || w(i, "VIEW")) && (i > 0 && (w(i - 1, "CREATE") || w(i - 1, "TEMP") || w(i - 1, "TEMPORARY") || w(i - 1, "UNLOGGED") || w(i - 1, "MATERIALIZED") || w(i - 1, "REPLACE") || w(i - 1, "RECURSIVE")));
+        let obj = (w(i, "TABLE") || w(i, "VIEW"))
+            && (i > 0
+                && (w(i - 1, "CREATE")
+                    || w(i - 1, "TEMP")
+                    || w(i - 1, "TEMPORARY")
+                    || w(i - 1, "UNLOGGED")
+                    || w(i - 1, "MATERIALIZED")
+                    || w(i - 1, "REPLACE")
+                    || w(i - 1, "RECURSIVE")));
         if obj {
             let mut k = i + 1;
             if w(k, "IF") {
@@ -196,7 +205,11 @@ fn unknown_tables(a: &Analysis, snap: &SchemaSnapshot, known: &dyn Fn(&str) -> b
                         continue;
                     }
                     if snap.resolve(Some(sc), name).is_none() {
-                        out.push(Lint { range: src.name_range.clone(), severity: Severity::Error, message: format!("relation \"{sc}.{name}\" does not exist") });
+                        out.push(Lint {
+                            range: src.name_range.clone(),
+                            severity: Severity::Error,
+                            message: format!("relation \"{sc}.{name}\" does not exist"),
+                        });
                     }
                 }
                 None => {
@@ -261,7 +274,11 @@ fn columns(a: &Analysis, snap: &SchemaSnapshot, out: &mut Vec<Lint>) {
         let Some(cols) = a.source_columns(t.scope, src, snap) else { continue };
         if !cols.is_empty() && !cols.iter().any(|(n, _)| a.col_eq(n, &t.name)) && !SYSTEM_COLUMNS.contains(&t.name.as_str()) {
             let rel = src.visible_name().unwrap_or("");
-            out.push(Lint { range: t.range.clone(), severity: Severity::Error, message: format!("column \"{}\" of relation \"{rel}\" does not exist", t.name) });
+            out.push(Lint {
+                range: t.range.clone(),
+                severity: Severity::Error,
+                message: format!("column \"{}\" of relation \"{rel}\" does not exist", t.name),
+            });
         }
     }
 }
@@ -536,13 +553,23 @@ mod tests {
             assert_eq!(m, [want], "{sql}");
         }
         s.dialect = crate::sql::Dialect::Postgres;
-        let l = lint("MERGE INTO orders t USING customer c ON t.customer = c.id WHEN MATCHED THEN UPDATE SET total = 0", &LintContext { schema: Some(&s), ..Default::default() });
+        let l = lint(
+            "MERGE INTO orders t USING customer c ON t.customer = c.id WHEN MATCHED THEN UPDATE SET total = 0",
+            &LintContext { schema: Some(&s), ..Default::default() },
+        );
         assert!(l.iter().all(|x| !x.message.contains("does not exist")), "{l:?}");
         s.dialect = crate::sql::Dialect::MySql;
-        let m: Vec<String> = lint("SELECT IF(total > 0, 'a', 'b') AS k FROM orders WHERE totl = 1", &LintContext { schema: Some(&s), ..Default::default() }).into_iter().map(|l| l.message).collect();
+        let m: Vec<String> = lint("SELECT IF(total > 0, 'a', 'b') AS k FROM orders WHERE totl = 1", &LintContext { schema: Some(&s), ..Default::default() })
+            .into_iter()
+            .map(|l| l.message)
+            .collect();
         assert_eq!(m, ["column \"totl\" does not exist"]);
         s.dialect = crate::sql::Dialect::TSql;
-        let m: Vec<String> = lint("SELECT c.id FROM customer c CROSS APPLY f(c.id) x JOIN orders p WHERE 'x", &LintContext { schema: Some(&s), ..Default::default() }).into_iter().map(|l| l.message).collect();
+        let m: Vec<String> =
+            lint("SELECT c.id FROM customer c CROSS APPLY f(c.id) x JOIN orders p WHERE 'x", &LintContext { schema: Some(&s), ..Default::default() })
+                .into_iter()
+                .map(|l| l.message)
+                .collect();
         assert!(m.iter().any(|x| x == "unterminated string"), "{m:?}");
     }
 

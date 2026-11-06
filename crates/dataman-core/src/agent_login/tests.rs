@@ -13,7 +13,15 @@ fn conn(engine: Engine) -> ConnectionProfile {
 }
 
 fn table(schema: &str, name: &str, cols: &[&str]) -> Obj {
-    Obj { schema: schema.into(), name: name.into(), kind: ObjKind::Table, columns: cols.iter().map(|c| Col::new(c)).collect(), grantable: true, owner: "app".into(), sequences: Vec::new() }
+    Obj {
+        schema: schema.into(),
+        name: name.into(),
+        kind: ObjKind::Table,
+        columns: cols.iter().map(|c| Col::new(c)).collect(),
+        grantable: true,
+        owner: "app".into(),
+        sequences: Vec::new(),
+    }
 }
 
 fn inv_sql(schema: &str) -> Inventory {
@@ -121,7 +129,8 @@ fn rules_hash_moves_with_what_is_granted_only() {
 #[test]
 fn access_over_globs_and_generated_columns() {
     let mut p = conn(Engine::Postgres);
-    p.mcp_rules.visible.items = vec![VisibleItem { name: "audit_*".into(), kind: ItemKind::Table }, VisibleItem { name: "*.secret*".into(), kind: ItemKind::Column }];
+    p.mcp_rules.visible.items =
+        vec![VisibleItem { name: "audit_*".into(), kind: ItemKind::Table }, VisibleItem { name: "*.secret*".into(), kind: ItemKind::Column }];
     let mut inv = inv_sql("public");
     inv.objects.push(table("public", "AUDIT_2024", &["id"]));
     inv.objects.push(table("public", "audit", &["id"]));
@@ -281,7 +290,11 @@ fn sql_server_plan() {
     golden("mssql_guarded.display.sql", &plan.display());
     assert!(!plan.copy().contains("pw-not-shown") && plan.copy().contains("HASHED"));
     assert!(shown.contains("CREATE VIEW [dataman_agent_a1b2c3d4_views].[users]"), "{shown}");
-    assert!(shown.contains("GRANT SELECT ([created_at], [id], [name]), UPDATE ([created_at], [id], [name]) ON OBJECT::[dbo].[users]") && shown.contains("GRANT DELETE ON OBJECT::[dbo].[users]"), "writes on the visible columns: {shown}");
+    assert!(
+        shown.contains("GRANT SELECT ([created_at], [id], [name]), UPDATE ([created_at], [id], [name]) ON OBJECT::[dbo].[users]")
+            && shown.contains("GRANT DELETE ON OBJECT::[dbo].[users]"),
+        "writes on the visible columns: {shown}"
+    );
     assert!(!shown.contains("INSERT ([") && !shown.contains("INSERT, UPDATE, DELETE ON OBJECT::[dbo].[users]"), "no INSERT per column on SQL Server");
     assert!(!shown.contains("[email]),") && !shown.contains("([password_hash"), "never the masked or hidden ones");
     assert!(shown.contains("ALTER LOGIN [dataman_agent_a1b2c3d4] DISABLE") && shown.contains("ENABLE"));
@@ -290,7 +303,9 @@ fn sql_server_plan() {
     let mut az = probe_sql();
     az.flavor.azure = true;
     let plan = ms::create_plan(&s, &inv, &az, "pw-not-shown", false);
-    assert!(plan.shown().contains("CREATE USER [dataman_agent_a1b2c3d4] WITH PASSWORD = N'<password from the Keychain>'") && !plan.shown().contains("pw-not-shown"));
+    assert!(
+        plan.shown().contains("CREATE USER [dataman_agent_a1b2c3d4] WITH PASSWORD = N'<password from the Keychain>'") && !plan.shown().contains("pw-not-shown")
+    );
     assert!(!plan.shown().contains("CREATE LOGIN"));
     // Read tier: denied writes on top.
     let mut r = conn(Engine::SqlServer);
@@ -320,7 +335,10 @@ fn mongo_plan() {
     golden("mongo_guarded.display.js", &plan.display());
     assert!(!shown.contains("pw-not-shown") && plan.copy().contains("pw-not-shown"), "MongoDB takes the password: the copy alone has it");
     assert!(shown.contains("\"createRole\":\"dataman_agent_a1b2c3d4\""));
-    assert!(shown.contains("\"create\":\"dataman_agent_a1b2c3d4_views.users\"") && shown.contains("\"password_hash\":0"), "the hidden field (named by the rules, not sampled) is projected out: {shown}");
+    assert!(
+        shown.contains("\"create\":\"dataman_agent_a1b2c3d4_views.users\"") && shown.contains("\"password_hash\":0"),
+        "the hidden field (named by the rules, not sampled) is projected out: {shown}"
+    );
     assert!(!shown.contains("listCollections") && !shown.contains("\"collection\":\"audit_log\""));
     assert!(shown.find("createUser").unwrap() > shown.find("createRole").unwrap(), "the user last");
     // Atlas: nothing to run, the role to paste.
@@ -424,9 +442,22 @@ fn diff_and_sync() {
 fn remove_drops_only_what_dataman_made() {
     let plan = pg::remove_plan("dataman_agent_x", "dataman_agent_x", "shop", &[], &["users".into()], true, true, true);
     let t = plan.shown();
-    assert!(t.contains("DROP VIEW IF EXISTS \"dataman_agent_x\".\"users\"") && t.contains("DROP OWNED BY \"dataman_agent_x\"") && t.contains("DROP ROLE \"dataman_agent_x\""));
+    assert!(
+        t.contains("DROP VIEW IF EXISTS \"dataman_agent_x\".\"users\"")
+            && t.contains("DROP OWNED BY \"dataman_agent_x\"")
+            && t.contains("DROP ROLE \"dataman_agent_x\"")
+    );
     assert!(!t.contains("CASCADE"), "never CASCADE: what depends on it is not Dataman's");
-    let plan = pg::remove_plan("dataman_agent_x", "dataman_agent_x", "shop", &[Grant::Table { schema: "public".into(), name: "t".into(), privilege: "SELECT".into() }], &[], false, false, false);
+    let plan = pg::remove_plan(
+        "dataman_agent_x",
+        "dataman_agent_x",
+        "shop",
+        &[Grant::Table { schema: "public".into(), name: "t".into(), privilege: "SELECT".into() }],
+        &[],
+        false,
+        false,
+        false,
+    );
     assert!(plan.shown().contains("REVOKE SELECT ON \"public\".\"t\" FROM") && !plan.shown().contains("DROP OWNED") && !plan.shown().contains("DROP SCHEMA"));
     let my = my::remove_plan("u", "u", &[], false, false).shown();
     assert!(my.contains("DROP USER 'u'@'%'") && !my.contains("DROP DATABASE"));
@@ -533,7 +564,13 @@ fn a_mark_names_exactly_one_connection() {
 fn another_tunnel_is_another_server() {
     let mut p = conn(Engine::Postgres);
     let direct = server_of(&p);
-    p.ssh = Some(crate::config::SshSettings { host: "bastion-a".into(), port: None, user: "jump".into(), auth: crate::config::SshAuth::Agent, key_file: String::new() });
+    p.ssh = Some(crate::config::SshSettings {
+        host: "bastion-a".into(),
+        port: None,
+        user: "jump".into(),
+        auth: crate::config::SshAuth::Agent,
+        key_file: String::new(),
+    });
     let a = server_of(&p);
     assert_ne!(a, direct, "the same host through a tunnel is the bastion's to resolve");
     p.ssh.as_mut().unwrap().host = "bastion-b".into();
@@ -552,10 +589,22 @@ fn view_names_never_clash() {
     p.mcp_rules.sensitive.push(SensitiveCol { col: "*.secret".into(), how: Mask::PARTIAL, on: true });
     let s = compile(&p, "", &opts());
     let inv = Inventory {
-        objects: [table("public", "salt", &["id", "v"]), table("a", "b__c", &["id", "secret"]), table("a__b", "c", &["id", "secret"]), table("A__B", "C", &["id", "secret"])].into_iter().map(|o| Obj { owner: "dbo".into(), ..o }).collect(),
+        objects: [
+            table("public", "salt", &["id", "v"]),
+            table("a", "b__c", &["id", "secret"]),
+            table("a__b", "c", &["id", "secret"]),
+            table("A__B", "C", &["id", "secret"]),
+        ]
+        .into_iter()
+        .map(|o| Obj { owner: "dbo".into(), ..o })
+        .collect(),
         ..Default::default()
     };
-    for (engine, d) in [(Engine::Postgres, pg::desired(&s, &inv, &probe_sql()).views), (Engine::SqlServer, ms::desired(&s, &inv, &probe_sql()).views), (Engine::MySql, my::desired(&s, &inv, &probe_sql()).views)] {
+    for (engine, d) in [
+        (Engine::Postgres, pg::desired(&s, &inv, &probe_sql()).views),
+        (Engine::SqlServer, ms::desired(&s, &inv, &probe_sql()).views),
+        (Engine::MySql, my::desired(&s, &inv, &probe_sql()).views),
+    ] {
         let names: Vec<String> = d.iter().map(|v| v.name.to_ascii_lowercase()).collect();
         assert_eq!(names.len(), 4, "{engine:?}: {names:?}");
         let mut u = names.clone();
@@ -579,7 +628,16 @@ fn what_every_login_reads_is_said_not_claimed() {
     ];
     for (engine, plan) in [
         (Engine::Postgres, pg::create_plan(&s, &inv, &probe_sql(), "pw", false)),
-        (Engine::SqlServer, ms::create_plan(&compile(&guarded(Engine::SqlServer), "", &opts()), &Inventory { open: inv.open.iter().map(|o| Open { schema: "dbo".into(), ..o.clone() }).collect(), ..inv_sql("dbo") }, &probe_sql(), "pw", false)),
+        (
+            Engine::SqlServer,
+            ms::create_plan(
+                &compile(&guarded(Engine::SqlServer), "", &opts()),
+                &Inventory { open: inv.open.iter().map(|o| Open { schema: "dbo".into(), ..o.clone() }).collect(), ..inv_sql("dbo") },
+                &probe_sql(),
+                "pw",
+                false,
+            ),
+        ),
     ] {
         let objs: Vec<&str> = plan.exposed.iter().map(|e| e.object.as_str()).collect();
         assert_eq!(plan.exposed.len(), 2, "{engine:?}: {objs:?}");
@@ -587,7 +645,10 @@ fn what_every_login_reads_is_said_not_claimed() {
         assert!(!objs.iter().any(|o| o.contains("orders")), "{engine:?}: open and visible is no leak");
         let w = whos(&plan);
         assert!(w.iter().any(|(r, who)| r.contains("readable by every login") && *who == Who::Dataman), "{engine:?}: {w:?}");
-        assert!(!w.iter().any(|(r, who)| (r.ends_with(" hidden") || r.ends_with(" masked")) && *who == Who::Database), "{engine:?}: not claimed as the database's: {w:?}");
+        assert!(
+            !w.iter().any(|(r, who)| (r.ends_with(" hidden") || r.ends_with(" masked")) && *who == Who::Database),
+            "{engine:?}: not claimed as the database's: {w:?}"
+        );
         let copy = plan.copy();
         assert!(copy.contains("every login may read them") && copy.contains("FROM PUBLIC;") || copy.contains("FROM [public];"), "{engine:?}: {copy}");
         // Not run: the user's to decide.
@@ -627,7 +688,11 @@ fn mariadb_keeps_its_mark_and_its_views() {
     assert!(sync.steps_run().next().is_none(), "in sync: {}", sync.shown());
     // Remove drops the marks table with the views, then the database.
     let rm = my::remove_plan(&gs.user, &gs.space, &["shop__users".into()], true, true);
-    assert!(rm.shown().contains("DROP TABLE IF EXISTS `dataman_agent_a1b2c3d4_views`.`dataman_views`") && rm.shown().contains("DROP DATABASE IF EXISTS"), "{}", rm.shown());
+    assert!(
+        rm.shown().contains("DROP TABLE IF EXISTS `dataman_agent_a1b2c3d4_views`.`dataman_views`") && rm.shown().contains("DROP DATABASE IF EXISTS"),
+        "{}",
+        rm.shown()
+    );
 }
 
 #[test]

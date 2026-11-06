@@ -285,8 +285,18 @@ fn exec(s: &str, top: &[bool]) -> Option<String> {
 
 /// `CREATE ROLE`, `CREATE USER` and `ALTER USER`: their options a group a line.
 fn clauses(s: &str, top: &[bool]) -> Option<String> {
-    const AT: [&str; 10] =
-        [" PASSWORD '", " PASSWORD REQUIRE ", " NOSUPERUSER ", " IDENTIFIED ", " WITH MAX_", " ACCOUNT ", " ATTRIBUTE ", " CONNECTION LIMIT ", " VALID UNTIL ", " DEFAULT ROLE "];
+    const AT: [&str; 10] = [
+        " PASSWORD '",
+        " PASSWORD REQUIRE ",
+        " NOSUPERUSER ",
+        " IDENTIFIED ",
+        " WITH MAX_",
+        " ACCOUNT ",
+        " ATTRIBUTE ",
+        " CONNECTION LIMIT ",
+        " VALID UNTIL ",
+        " DEFAULT ROLE ",
+    ];
     let mut cuts: Vec<usize> = AT.iter().filter_map(|p| first(s, top, p)).collect();
     if cuts.is_empty() {
         return None;
@@ -311,7 +321,10 @@ mod tests {
     #[test]
     fn short_lines_stay() {
         assert_eq!(step(Some(Engine::Postgres), "GRANT USAGE ON SCHEMA \"public\" TO \"a\";"), "GRANT USAGE ON SCHEMA \"public\" TO \"a\";");
-        assert_eq!(step(Some(Engine::MongoDb), "db.getSiblingDB(\"admin\").runCommand({\"dropRole\":\"u\"})"), "db.getSiblingDB(\"admin\").runCommand({\"dropRole\": \"u\"})");
+        assert_eq!(
+            step(Some(Engine::MongoDb), "db.getSiblingDB(\"admin\").runCommand({\"dropRole\":\"u\"})"),
+            "db.getSiblingDB(\"admin\").runCommand({\"dropRole\": \"u\"})"
+        );
     }
 
     #[test]

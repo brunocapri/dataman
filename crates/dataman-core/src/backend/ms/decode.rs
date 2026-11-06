@@ -349,10 +349,13 @@ mod tests {
         push_value(&mut b, 0, Kind::TimestampTz, &ColumnData::DateTimeOffset(Some(dto)));
         b.end_row();
         let mut utc = String::new();
-        value::format_timestamp(match b.finish().cell(0, 0) {
-            crate::result::Cell::Int(v) => v,
-            c => panic!("{c:?}"),
-        }, &mut utc);
+        value::format_timestamp(
+            match b.finish().cell(0, 0) {
+                crate::result::Cell::Int(v) => v,
+                c => panic!("{c:?}"),
+            },
+            &mut utc,
+        );
         assert_eq!(utc, "2026-10-13 12:00:00");
         assert_eq!(value_text(&ColumnData::DateTimeOffset(Some(dto))).as_deref(), Some("2026-10-13 09:00:00 -03:00"));
     }

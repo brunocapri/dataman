@@ -7,9 +7,9 @@ use dataman_core::batch::Key;
 use gpui::{AnyElement, App, EntityId, Hsla, IntoElement, ParentElement, SharedString, Styled, div, prelude::FluentBuilder};
 
 use crate::motion::{self, Fold};
-use dataman_core::groups::Pane;
 use crate::theme::{Theme, metrics, px};
 use crate::ui;
+use dataman_core::groups::Pane;
 
 pub(crate) struct Gone {
     pub pane: Pane,

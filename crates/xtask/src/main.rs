@@ -199,7 +199,8 @@ fn feed(args: &[String]) -> Result<()> {
     // and date stay.
     let base: Option<serde_json::Value> = match flag(args, "--base") {
         Some(p) => {
-            let b: serde_json::Value = serde_json::from_slice(&std::fs::read(p).with_context(|| format!("reading {p}"))?).with_context(|| format!("{p} is not JSON"))?;
+            let b: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(p).with_context(|| format!("reading {p}"))?).with_context(|| format!("{p} is not JSON"))?;
             if b["version"].as_str() != Some(version) {
                 bail!("{p} offers {}, not {version}", b["version"]);
             }
@@ -271,7 +272,9 @@ fn verify(feed: &str, dmg: &str, args: &[String]) -> Result<()> {
         bail!("the download is {} bytes, the feed says {size}", bytes.len());
     }
     let key = data_encoding::BASE64.decode(pubkey.trim().as_bytes()).context("the public key is not base64")?;
-    let sig = data_encoding::BASE64.decode(entry["ed25519"].as_str().context("the feed has no signature")?.trim().as_bytes()).context("the signature is not base64")?;
+    let sig = data_encoding::BASE64
+        .decode(entry["ed25519"].as_str().context("the feed has no signature")?.trim().as_bytes())
+        .context("the signature is not base64")?;
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key).verify(&bytes, &sig).map_err(|_| anyhow!("signature mismatch"))?;
     println!("{version}: {size} bytes, signature valid");
     Ok(())

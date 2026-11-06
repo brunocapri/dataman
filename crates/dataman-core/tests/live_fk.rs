@@ -22,7 +22,8 @@ fn jump_at(rs: &dataman_core::ResultSet, fk: &ForeignKeys, row: usize, col: usiz
 fn pg_references_from_origins() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    let (rs, fk) = fks(&e, &c, "SELECT o.id, o.customer, c.name, o.total * 2 AS doubled FROM orders o JOIN customer c ON c.id = o.customer ORDER BY o.id LIMIT 5");
+    let (rs, fk) =
+        fks(&e, &c, "SELECT o.id, o.customer, c.name, o.total * 2 AS doubled FROM orders o JOIN customer c ON c.id = o.customer ORDER BY o.id LIMIT 5");
     assert_eq!(fk.flags(), vec![false, true, false, false]);
     let j = jump_at(&rs, &fk, 0, 1).unwrap();
     let id = rs.snapshot().text(0, 1).unwrap().into_owned();

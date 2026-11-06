@@ -54,7 +54,11 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
         }
         Engine::Redis => {
             let c = rds::connect(p, password, tunnel).await?;
-            let info = ServerInfo { database: c.default_db.to_string(), user: p.user.clone(), ..ServerInfo::of(p.engine, Default::default(), c.version.clone(), &c.version) };
+            let info = ServerInfo {
+                database: c.default_db.to_string(),
+                user: p.user.clone(),
+                ..ServerInfo::of(p.engine, Default::default(), c.version.clone(), &c.version)
+            };
             Ok((Client::Redis(Arc::new(c)), info))
         }
         e => Err(anyhow!("{} has no documents", e.label())),

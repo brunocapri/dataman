@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 
-use gpui::{EntityId, FollowMode, ListAlignment, ListState};
 use dataman_core::ResultSet;
 use dataman_core::result::Phase;
+use gpui::{EntityId, FollowMode, ListAlignment, ListState};
 
 use crate::tab::BatchItem;
 use crate::theme::px;

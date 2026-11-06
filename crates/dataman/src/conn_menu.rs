@@ -87,7 +87,11 @@ fn header(t: &Theme, menu: &str, f: &ConnFolder, n: usize, open: bool, holds_pic
         .child(ui::disclosure_still(open, 9., t.tx3))
         .child(ui::folder_icon(open, None, 12., crate::tree::folder_color(f, t).unwrap_or(t.tx3)))
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(f.name.clone()))
-        .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(t.tx4).child(if !open && holds_pick { "✓".to_string() } else { n.to_string() }))
+        .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(t.tx4).child(if !open && holds_pick {
+            "✓".to_string()
+        } else {
+            n.to_string()
+        }))
         // Folding never picks, nor closes the menu.
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| {

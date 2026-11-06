@@ -20,7 +20,8 @@ impl FileStamp {
         let ids = {
             use std::os::windows::fs::OpenOptionsExt as _;
             // No access asked: metadata only, whoever else has the file open.
-            let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS).open(path).ok();
+            let f =
+                std::fs::OpenOptions::new().access_mode(0).custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS).open(path).ok();
             f.and_then(|f| windows_ids(&f))
         };
         #[cfg(not(windows))]
@@ -67,7 +68,9 @@ impl FileStamp {
 #[cfg(windows)]
 fn windows_ids(f: &std::fs::File) -> Option<(u64, (i64, i64))> {
     use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    };
     let h = f.as_raw_handle();
     // SAFETY: a valid handle and out-structures of the sizes given.
     unsafe {

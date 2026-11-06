@@ -1,12 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{
-    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels,
-    Point, point, px,
-};
 use dataman_core::batch::{Key, State};
 use dataman_core::result::{PREFETCH, Phase, SortDir};
+use gpui::{
+    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, point, px,
+};
 
 use crate::app::Workspace;
 use crate::tab::QueryTab;
@@ -59,14 +58,8 @@ async fn finished(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
 }
 
 fn names(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Vec<String> {
-    cx.update(|_, cx| {
-        tab.read(cx)
-            .result_tabs()
-            .iter()
-            .map(|t| format!("{}{}", t.number.map(|n| format!("{n} · ")).unwrap_or_default(), t.label))
-            .collect()
-    })
-    .unwrap()
+    cx.update(|_, cx| tab.read(cx).result_tabs().iter().map(|t| format!("{}{}", t.number.map(|n| format!("{n} · ")).unwrap_or_default(), t.label)).collect())
+        .unwrap()
 }
 
 fn shown(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Option<Key> {
@@ -198,10 +191,7 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
             let g = grid.read(cx);
             let Some((open, _, hits, ..)) = g.demo_find(cx) else { return (false, false) };
             let snap = g.result().unwrap().snapshot();
-            let ok = !hits.is_empty()
-                && hits.iter().take(200).all(|&(r, c)| {
-                    snap.text(r as usize, c as usize).is_some_and(|v| v.to_lowercase().contains('a'))
-                });
+            let ok = !hits.is_empty() && hits.iter().take(200).all(|&(r, c)| snap.text(r as usize, c as usize).is_some_and(|v| v.to_lowercase().contains('a')));
             (open, ok)
         })
         .unwrap();
@@ -303,7 +293,11 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     settle(&grid, cx).await;
     let n = col_of(0, cx);
     let state = cx.update(|_, cx| grid.read(cx).result().and_then(|r| r.sort_state())).ok().flatten();
-    report("a third click brings back the server's order", state.is_none() && n.first().cloned().flatten().as_deref() == Some("1") && same(cx), format!("{:?}", n.first()));
+    report(
+        "a third click brings back the server's order",
+        state.is_none() && n.first().cloned().flatten().as_deref() == Some("1") && same(cx),
+        format!("{:?}", n.first()),
+    );
     for (label, desc) in [("Sort ascending", false), ("Sort descending", true)] {
         let _ = cx.update(|window, cx| {
             grid.update(cx, |g, cx| {
@@ -338,7 +332,11 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         })
     });
     let copied = crate::check::clipboard(cx);
-    report("the header menu's Copy column name puts the column's name on the clipboard", !name.is_empty() && copied == name, format!("{name:?} -> {copied:?}, menu {labels:?}"));
+    report(
+        "the header menu's Copy column name puts the column's name on the clipboard",
+        !name.is_empty() && copied == name,
+        format!("{name:?} -> {copied:?}, menu {labels:?}"),
+    );
     let before = cx.update(|_, cx| (grid.read(cx).display_order(), grid.read(cx).result().and_then(|r| r.sort_state()))).unwrap();
     let m = Modifiers::default();
     let p = header(0, cx);
@@ -355,7 +353,12 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let mut label = String::new();
     for _ in 0..200 {
         pause(cx, 50).await;
-        let got = cx.update(|_, cx| tab.read(cx).result().filter(|r| r.phase() == Phase::Paused && r.estimate_known()).map(|r| crate::chrome::fetch_all_label(Some(r)).to_string())).ok().flatten();
+        let got = cx
+            .update(|_, cx| {
+                tab.read(cx).result().filter(|r| r.phase() == Phase::Paused && r.estimate_known()).map(|r| crate::chrome::fetch_all_label(Some(r)).to_string())
+            })
+            .ok()
+            .flatten();
         if let Some(l) = got {
             label = l;
             break;
@@ -470,7 +473,11 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let frames = fetch_rest(&tab, cx).await;
     let rows = cx.update(|_, cx| tab.read(cx).result().map(|r| r.rows())).ok().flatten();
     let all = dividers(&tab, cx);
-    report("gutters: short script, 100,000 rows: one divider, wider", rows == Some(100_000) && aligned(all) && all.1 > base.1 + 1., format!("{rows:?} rows, {all:?}"));
+    report(
+        "gutters: short script, 100,000 rows: one divider, wider",
+        rows == Some(100_000) && aligned(all) && all.1 > base.1 + 1.,
+        format!("{rows:?} rows, {all:?}"),
+    );
     let steady = frames.windows(2).all(|w| w[1].0 >= w[0].0 - 0.01 && w[1].1 >= w[0].1 - 0.01);
     let apart = frames.iter().filter(|f| !aligned(**f)).count();
     report(
@@ -529,10 +536,6 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     run_in(&copy, short, many, cx).await;
     fetch_rest(&copy, cx).await;
     let (l, r) = (dividers(&tab, cx), dividers(&copy, cx));
-    report(
-        "gutters: two editor groups: one divider in each",
-        copy != tab && aligned(l) && aligned(r) && r.0 > l.0 + 100.,
-        format!("left {l:?}, right {r:?}"),
-    );
+    report("gutters: two editor groups: one divider in each", copy != tab && aligned(l) && aligned(r) && r.0 > l.0 + 100., format!("left {l:?}, right {r:?}"));
     ok
 }

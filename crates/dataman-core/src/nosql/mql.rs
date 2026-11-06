@@ -38,10 +38,40 @@ pub enum Op {
 }
 
 const READ_COMMANDS: &[&str] = &[
-    "ping", "buildinfo", "hello", "ismaster", "serverstatus", "dbstats", "collstats", "datasize", "listcollections",
-    "listdatabases", "listindexes", "count", "distinct", "find", "explain", "hostinfo", "getlog", "getparameter",
-    "connectionstatus", "replsetgetstatus", "currentop", "top", "validate", "usersinfo", "rolesinfo", "getcmdlineopts",
-    "listcommands", "features", "whatsmyuri", "getmore", "aggregate", "connpoolstats", "shardingstate", "lockinfo",
+    "ping",
+    "buildinfo",
+    "hello",
+    "ismaster",
+    "serverstatus",
+    "dbstats",
+    "collstats",
+    "datasize",
+    "listcollections",
+    "listdatabases",
+    "listindexes",
+    "count",
+    "distinct",
+    "find",
+    "explain",
+    "hostinfo",
+    "getlog",
+    "getparameter",
+    "connectionstatus",
+    "replsetgetstatus",
+    "currentop",
+    "top",
+    "validate",
+    "usersinfo",
+    "rolesinfo",
+    "getcmdlineopts",
+    "listcommands",
+    "features",
+    "whatsmyuri",
+    "getmore",
+    "aggregate",
+    "connpoolstats",
+    "shardingstate",
+    "lockinfo",
 ];
 
 impl Op {
@@ -70,9 +100,14 @@ impl Op {
     pub fn class(&self) -> WriteClass {
         let destructive = |why: &str| WriteClass::Destructive { reasons: vec![why.to_string()] };
         match self {
-            Op::ShowDbs | Op::ShowCollections | Op::Use(_) | Op::Find { .. } | Op::Count { .. } | Op::Distinct { .. } | Op::Indexes { .. } | Op::Stats { .. } => {
-                WriteClass::Read
-            }
+            Op::ShowDbs
+            | Op::ShowCollections
+            | Op::Use(_)
+            | Op::Find { .. }
+            | Op::Count { .. }
+            | Op::Distinct { .. }
+            | Op::Indexes { .. }
+            | Op::Stats { .. } => WriteClass::Read,
             Op::Aggregate { pipeline, .. } => {
                 if pipeline.iter().any(|s| s.contains_key("$out") || s.contains_key("$merge")) {
                     destructive("$out / $merge writes a collection")
@@ -106,14 +141,14 @@ impl Op {
                 let repairs = name == "validate" && doc.keys().any(|k| matches!(k.to_ascii_lowercase().as_str(), "repair" | "fixmultikey"));
                 let reads = READ_COMMANDS.contains(&name.as_str())
                     && !repairs
-                    && !(name == "aggregate" && doc.get_array("pipeline").is_ok_and(|p| {
-                        p.iter().any(|s| s.as_document().is_some_and(|s| s.contains_key("$out") || s.contains_key("$merge")))
-                    }));
+                    && !(name == "aggregate"
+                        && doc
+                            .get_array("pipeline")
+                            .is_ok_and(|p| p.iter().any(|s| s.as_document().is_some_and(|s| s.contains_key("$out") || s.contains_key("$merge")))));
                 if reads { WriteClass::Read } else { destructive(&format!("runs the {name} command")) }
             }
         }
     }
-
 }
 
 pub fn split(text: &str) -> Vec<Range<usize>> {
@@ -462,7 +497,13 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
             let mut options = document(args.get(2), at, "the options")?;
             let upsert = flag(&options, "upsert");
             options.remove("upsert");
-            Op::Replace { coll: coll.clone(), filter: document(args.first(), at, "the filter")?, doc: document(args.get(1), at, "the replacement")?, upsert, options }
+            Op::Replace {
+                coll: coll.clone(),
+                filter: document(args.first(), at, "the filter")?,
+                doc: document(args.get(1), at, "the replacement")?,
+                upsert,
+                options,
+            }
         }
         "findOneAndUpdate" | "findOneAndReplace" | "findOneAndDelete" | "findAndModify" => {
             let delete = name == "findOneAndDelete";
@@ -471,7 +512,9 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
                 None
             } else {
                 Some(match args.get(1) {
-                    Some(Val::Arr(stages)) => Bson::Array(stages.iter().map(|s| document(Some(s), at, "a stage").map(Bson::Document)).collect::<Result<_, _>>()?),
+                    Some(Val::Arr(stages)) => {
+                        Bson::Array(stages.iter().map(|s| document(Some(s), at, "a stage").map(Bson::Document)).collect::<Result<_, _>>()?)
+                    }
                     v => Bson::Document(document(v, at, if name == "findOneAndReplace" { "the replacement" } else { "the update" })?),
                 })
             };
@@ -484,7 +527,10 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
             for o in &ops {
                 let k = o.keys().next().map(String::as_str).unwrap_or("");
                 if !["insertOne", "updateOne", "updateMany", "replaceOne", "deleteOne", "deleteMany"].contains(&k) {
-                    return Err(err_at(at, format!("bulkWrite: {k:?} is not an operation (insertOne, updateOne, updateMany, replaceOne, deleteOne, deleteMany)")));
+                    return Err(err_at(
+                        at,
+                        format!("bulkWrite: {k:?} is not an operation (insertOne, updateOne, updateMany, replaceOne, deleteOne, deleteMany)"),
+                    ));
                 }
             }
             Op::BulkWrite { coll: coll.clone(), ops }
@@ -498,7 +544,9 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
             options.remove("justOne");
             Op::Delete { coll: coll.clone(), filter: document(args.first(), at, "the filter")?, many, options }
         }
-        "createIndex" | "ensureIndex" => Op::CreateIndex { coll: coll.clone(), keys: document(args.first(), at, "the keys")?, options: document(args.get(1), at, "the options")? },
+        "createIndex" | "ensureIndex" => {
+            Op::CreateIndex { coll: coll.clone(), keys: document(args.first(), at, "the keys")?, options: document(args.get(1), at, "the options")? }
+        }
         "dropIndex" => {
             let index = match args.first() {
                 Some(v) => shell::to_bson(v).map_err(|e| err_at(at, e))?,
@@ -553,7 +601,10 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
                 op = Op::Command { doc: doc! { "explain": find, "verbosity": verbosity }, admin: false };
             }
             (Op::Aggregate { coll: Some(coll), pipeline }, "explain") => {
-                op = Op::Command { doc: doc! { "explain": { "aggregate": coll.clone(), "pipeline": pipeline.clone(), "cursor": {} }, "verbosity": "queryPlanner" }, admin: false };
+                op = Op::Command {
+                    doc: doc! { "explain": { "aggregate": coll.clone(), "pipeline": pipeline.clone(), "cursor": {} }, "verbosity": "queryPlanner" },
+                    admin: false,
+                };
             }
             (_, other) => return Err(err_at(at, format!(".{other}() does not go here"))),
         }

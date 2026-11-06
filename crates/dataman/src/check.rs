@@ -6,11 +6,13 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Bounds, Entity, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
+use dataman_core::Core;
 use dataman_core::config::{ConnectionProfile, Engine, SslMode};
 use dataman_core::nosql::{Output, Page};
 use dataman_core::result::Phase;
-use dataman_core::Core;
+use gpui::{
+    AsyncWindowContext, Bounds, Entity, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, point,
+};
 
 use crate::app::Workspace;
 use crate::conns::ConnState;
@@ -18,7 +20,32 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check" | "conn-steps-check" | "errors-check") || crate::conn_folders_check::is_stage(s)
+    matches!(
+        s,
+        "connections-check"
+            | "tabs-check"
+            | "edit-check"
+            | "explorer-check"
+            | "export-check"
+            | "import-check"
+            | "settings-check"
+            | "welcome-check"
+            | "palette-check"
+            | "nosql-engines-check"
+            | "mcp-tools-check"
+            | "dropdowns-check"
+            | "history-filter-check"
+            | "json-check"
+            | "dates-check"
+            | "agents-check"
+            | "sqlite-check"
+            | "duckdb-check"
+            | "project-check"
+            | "outside-check"
+            | "format-check"
+            | "conn-steps-check"
+            | "errors-check"
+    ) || crate::conn_folders_check::is_stage(s)
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -176,7 +203,15 @@ fn reveal_in_sheet(id: &str, cx: &mut AsyncWindowContext) {
             return;
         }
         let dy = if b.origin.y > card.origin.y + card.size.height / 2. { -80. } else { 80. };
-        input(cx, PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: centre(card), delta: gpui::ScrollDelta::Pixels(point(gpui::px(0.), gpui::px(dy))), modifiers: Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+        input(
+            cx,
+            PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position: centre(card),
+                delta: gpui::ScrollDelta::Pixels(point(gpui::px(0.), gpui::px(dy))),
+                modifiers: Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            }),
+        );
     }
 }
 

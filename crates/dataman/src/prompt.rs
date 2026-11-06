@@ -4,8 +4,8 @@
 //! button is the default (Enter); Esc answers the Cancel button, else the last.
 
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, PromptButton, PromptHandle, PromptLevel, PromptResponse,
-    RenderablePromptHandle, SharedString, Window, div, prelude::*,
+    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, PromptButton, PromptHandle, PromptLevel, PromptResponse, RenderablePromptHandle,
+    SharedString, Window, div, prelude::*,
 };
 
 use crate::theme::{ActiveTheme, px};

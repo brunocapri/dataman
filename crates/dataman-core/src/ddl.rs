@@ -14,7 +14,9 @@ use crate::sqlgen::{qualified, quote_ident, quote_literal, view_ddl};
 pub fn add_constraint(dialect: Dialect, schema: Option<&str>, table: &str, name: &str, definition: &str) -> String {
     let def = definition.trim().trim_end_matches(';');
     match dialect {
-        Dialect::Sqlite => format!("-- SQLite cannot add a constraint to an existing table: rebuild {table} with\n-- CONSTRAINT {} {def}", dialect.quote_ident(name)),
+        Dialect::Sqlite => {
+            format!("-- SQLite cannot add a constraint to an existing table: rebuild {table} with\n-- CONSTRAINT {} {def}", dialect.quote_ident(name))
+        }
         d => format!("ALTER TABLE {} ADD CONSTRAINT {} {def};", d.qualified(schema, table), d.quote_ident(name)),
     }
 }
@@ -123,7 +125,9 @@ fn column_line(c: &ColumnDef) -> String {
     if c.not_null == Some(true) && c.identity.is_none() && !(serial && serial_type(&c.type_name).is_some()) {
         s.push_str(" NOT NULL");
     }
-    if c.generated.is_none() && c.identity.is_none() && !(serial && serial_type(&c.type_name).is_some())
+    if c.generated.is_none()
+        && c.identity.is_none()
+        && !(serial && serial_type(&c.type_name).is_some())
         && let Some(d) = &c.default
     {
         s.push_str(" DEFAULT ");
@@ -169,9 +173,9 @@ pub fn render(t: &TableDef) -> String {
         .comment
         .iter()
         .map(|c| format!("COMMENT ON TABLE {q} IS {};", quote_literal(c)))
-        .chain(t.columns.iter().filter_map(|c| {
-            c.comment.as_ref().map(|txt| format!("COMMENT ON COLUMN {q}.{} IS {};", quote_ident(&c.name), quote_literal(txt)))
-        }))
+        .chain(
+            t.columns.iter().filter_map(|c| c.comment.as_ref().map(|txt| format!("COMMENT ON COLUMN {q}.{} IS {};", quote_ident(&c.name), quote_literal(txt)))),
+        )
         .collect();
     if !comments.is_empty() {
         out.push('\n');
@@ -202,8 +206,12 @@ impl Connection {
             match this.engine() {
                 crate::config::Engine::MySql => this.show_create("TABLE", &db, &schema, &name).await,
                 crate::config::Engine::SqlServer => this.ms_table_ddl(&db, &schema, &name).await,
-                crate::config::Engine::Sqlite => this.lite_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog")),
-                crate::config::Engine::DuckDb => this.duck_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog")),
+                crate::config::Engine::Sqlite => {
+                    this.lite_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog"))
+                }
+                crate::config::Engine::DuckDb => {
+                    this.duck_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog"))
+                }
                 _ => Ok(render(&this.table_def(&db, &schema, &name).await?)),
             }
         })
@@ -240,7 +248,8 @@ impl Connection {
             k = lit(kind),
             table = if kind == "table" { "1" } else { "0" },
         );
-        let parts: Vec<String> = first_ok(&client, &[&q]).await?.iter().filter_map(|r| get(r, 0)).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
+        let parts: Vec<String> =
+            first_ok(&client, &[&q]).await?.iter().filter_map(|r| get(r, 0)).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
         if parts.is_empty() {
             return Ok(None);
         }
@@ -254,7 +263,14 @@ impl Connection {
         let Some(body) = first_ok(&client, &[&duck::definition_sql(kind, "", schema, name)]).await?.first().and_then(|r| get(r, 0)) else { return Ok(None) };
         let mut parts = vec![format!("{};", body.trim_end().trim_end_matches(';'))];
         if kind == "table" {
-            parts.extend(first_ok(&client, &[&duck::index_sql("", schema, name)]).await.unwrap_or_default().iter().filter_map(|r| get(r, 0)).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))));
+            parts.extend(
+                first_ok(&client, &[&duck::index_sql("", schema, name)])
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|r| get(r, 0))
+                    .map(|s| format!("{};", s.trim_end().trim_end_matches(';'))),
+            );
         }
         Ok(Some(format!("-- {}: as stored in {}\n{}\n", Dialect::DuckDb.qualified(Some(schema), name), db, parts.join("\n\n"))))
     }

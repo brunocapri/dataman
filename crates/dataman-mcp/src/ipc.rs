@@ -304,10 +304,14 @@ async fn connection(r: impl tokio::io::AsyncRead + Unpin, mut w: impl AsyncWrite
         Ok(Op::Read { uri, client }) => {
             let server = Server::new(hub, reg, "stdio");
             let r = server.read_text(&uri, client, CancellationToken::new()).await;
-            let reply = Reply { ok: true, error: None, result: Some(match r {
-                Ok(text) => serde_json::json!({"text": text}),
-                Err(e) => serde_json::json!({"error": e}),
-            }) };
+            let reply = Reply {
+                ok: true,
+                error: None,
+                result: Some(match r {
+                    Ok(text) => serde_json::json!({"text": text}),
+                    Err(e) => serde_json::json!({"error": e}),
+                }),
+            };
             return write_reply(&mut w, &reply).await;
         }
         Ok(Op::Call { tool, args, client }) => (tool, args, client),
@@ -440,12 +444,22 @@ mod tests {
 
     #[test]
     fn messages_roundtrip() {
-        let r = Request { v: 1, key: "k".into(), op: Op::Call { tool: "execute".into(), args: json!({"sql": "x"}).as_object().unwrap().clone(), client: "c".into() } };
+        let r = Request {
+            v: 1,
+            key: "k".into(),
+            op: Op::Call { tool: "execute".into(), args: json!({"sql": "x"}).as_object().unwrap().clone(), client: "c".into() },
+        };
         let s = serde_json::to_string(&r).unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&s).unwrap(), json!({"v": 1, "key": "k", "op": "call", "tool": "execute", "args": {"sql": "x"}, "client": "c"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&s).unwrap(),
+            json!({"v": 1, "key": "k", "op": "call", "tool": "execute", "args": {"sql": "x"}, "client": "c"})
+        );
         assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
         let rd = Request { v: 1, key: "k".into(), op: Op::Read { uri: "dataman://x/-/schema".into(), client: "c".into() } };
-        assert_eq!(serde_json::from_str::<Value>(&serde_json::to_string(&rd).unwrap()).unwrap(), json!({"v": 1, "key": "k", "op": "read", "uri": "dataman://x/-/schema", "client": "c"}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&serde_json::to_string(&rd).unwrap()).unwrap(),
+            json!({"v": 1, "key": "k", "op": "read", "uri": "dataman://x/-/schema", "client": "c"})
+        );
         let p: Request = serde_json::from_str(r#"{"v":1,"key":"k","op":"ping"}"#).unwrap();
         assert_eq!(p.op, Op::Ping);
         let ok = Reply { ok: true, error: None, result: Some(json!({"content": []})) };
@@ -457,7 +471,7 @@ mod tests {
     fn authorization() {
         let key = new_key();
         assert!(key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit()) && key != new_key());
-        let line =|k: &str, v: u32| serde_json::to_string(&Request { v, key: k.into(), op: Op::Ping }).unwrap();
+        let line = |k: &str, v: u32| serde_json::to_string(&Request { v, key: k.into(), op: Op::Ping }).unwrap();
         assert_eq!(authorize(&line(&key, 1), &key), Ok(Op::Ping));
         assert_eq!(authorize(&line("wrong", 1), &key).unwrap_err(), "unauthorized");
         assert_eq!(authorize(&line(&key[..63], 1), &key).unwrap_err(), "unauthorized");
@@ -472,7 +486,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
         std::fs::create_dir_all(&dirs.config).unwrap();
-        std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"alpha\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
+        std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"alpha\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n")
+            .unwrap();
         #[cfg(unix)]
         drop(std::os::unix::net::UnixListener::bind(socket_path(&dirs)).unwrap());
         #[cfg(windows)]

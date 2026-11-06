@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use dataman_core::agent_sql::{self, Context, Table};
 use dataman_core::bounded::{self, Mode};
 use dataman_core::guard::{self, Effect, Preview, WriteClass};
-use dataman_core::privacy::{AgentRules, AgentView, ItemKind, SensitiveCol, Visible, VisibleItem, VisibleMode, Mask};
+use dataman_core::privacy::{AgentRules, AgentView, ItemKind, Mask, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::sql::{Dialect, TokenKind, split_in, tokenize_in};
 use sql_corpus::*;
 
@@ -316,14 +316,20 @@ fn privacy_rewrite_keeps_statements() {
     let mut fails = Vec::new();
     let routines = HashSet::new();
     let tables = |schema: Option<&str>, name: &str| {
-        Some(Table { schema: schema.unwrap_or("public").to_string(), name: name.to_string(), columns: ["id", "a", "name", "email", "ssn", "secret"].map(String::from).to_vec() })
+        Some(Table {
+            schema: schema.unwrap_or("public").to_string(),
+            name: name.to_string(),
+            columns: ["id", "a", "name", "email", "ssn", "secret"].map(String::from).to_vec(),
+        })
     };
     for view in [AgentView::Data, AgentView::Masked] {
         let r = rules(view);
         for d in DIALECTS {
             let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines, views: &[] };
             let mut texts = texts(d);
-            texts.extend(["SELECT * FROM users", "SELECT u.* FROM users u JOIN t ON t.id = u.id; SELECT 2", "SELECT ssn FROM users WHERE id = 1"].map(String::from));
+            texts.extend(
+                ["SELECT * FROM users", "SELECT u.* FROM users u JOIN t ON t.id = u.id; SELECT 2", "SELECT ssn FROM users WHERE id = 1"].map(String::from),
+            );
             for t in texts {
                 // Reads are checked as reads once the read gate took them; everything else as a write.
                 let read = bounded::refusal_in(&bounded::statements_in(&t, d), 0, Mode::Read, false, d).is_none();
@@ -338,10 +344,19 @@ fn privacy_rewrite_keeps_statements() {
                     }
                     let reads = |s: &[String]| bounded::refusal_in(s, 0, Mode::Read, false, d).is_none();
                     if !write && reads(&before) && !reads(&after) {
-                        fails.push(format!("[{d:?} {view:?}] {t:?} became {:?}, which the read gate refuses: {:?}", c.sql, bounded::refusal_in(&after, 0, Mode::Read, false, d)));
+                        fails.push(format!(
+                            "[{d:?} {view:?}] {t:?} became {:?}, which the read gate refuses: {:?}",
+                            c.sql,
+                            bounded::refusal_in(&after, 0, Mode::Read, false, d)
+                        ));
                     }
                     if rank(&guard::agent_write_class(&t, d)) != rank(&guard::agent_write_class(&c.sql, d)) {
-                        fails.push(format!("[{d:?} {view:?}] {t:?} became {:?}: {:?}, then {:?}", c.sql, guard::agent_write_class(&t, d), guard::agent_write_class(&c.sql, d)));
+                        fails.push(format!(
+                            "[{d:?} {view:?}] {t:?} became {:?}: {:?}, then {:?}",
+                            c.sql,
+                            guard::agent_write_class(&t, d),
+                            guard::agent_write_class(&c.sql, d)
+                        ));
                     }
                 }
             }
@@ -405,7 +420,8 @@ fn regressions_keep_their_reading() {
     // Masked data: a sensitive column renamed inside `/*! … */` is still renamed.
     let r = rules(AgentView::Masked);
     let routines = HashSet::new();
-    let tables = |_: Option<&str>, name: &str| Some(Table { schema: "app".into(), name: name.into(), columns: ["id", "ssn", "secret"].map(String::from).to_vec() });
+    let tables =
+        |_: Option<&str>, name: &str| Some(Table { schema: "app".into(), name: name.into(), columns: ["id", "ssn", "secret"].map(String::from).to_vec() });
     let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines, views: &[] };
     for sql in ["SELECT /*! ssn AS x */ FROM users", "SELECT id /*!99999 , ssn AS x */ FROM users", "SELECT id /*! , secret */ FROM users"] {
         if let Ok(c) = agent_sql::check(sql, false, &cx) {

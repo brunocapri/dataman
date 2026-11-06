@@ -3,15 +3,15 @@ use std::time::Instant;
 use dataman_core::jsontree::{self, Doc, Node, Row, RowKey};
 use dataman_core::value::Kind;
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, StyledText, Task, TextRun,
-    Window, actions, div, font, prelude::*,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, StyledText, Task, TextRun, Window, actions, div,
+    font, prelude::*,
 };
 
 use crate::assets::{Icon, icon};
 use crate::editor::{CodeEditor, EditorEvent};
 use crate::theme::{ActiveTheme, Theme, px};
-use crate::ui::{self, Btn};
 use crate::ui::Tipped;
+use crate::ui::{self, Btn};
 
 actions!(value_sheet, [CloseValue, CopyValue]);
 
@@ -128,7 +128,20 @@ impl ValueView {
         } else {
             (None, None)
         };
-        let mut v = ValueView { focus, cell, shape, doc: root.map(Doc::new), rows: Vec::new(), pretty, text, copied_at: None, _copied: None, edit, error: None, _edit_sub: sub };
+        let mut v = ValueView {
+            focus,
+            cell,
+            shape,
+            doc: root.map(Doc::new),
+            rows: Vec::new(),
+            pretty,
+            text,
+            copied_at: None,
+            _copied: None,
+            edit,
+            error: None,
+            _edit_sub: sub,
+        };
         v.refresh_rows();
         v
     }
@@ -228,7 +241,10 @@ impl ValueView {
         let lines = if self.text {
             self.pretty.lines().map(str::to_string).collect()
         } else {
-            self.rows.iter().map(|r| format!("{}{}{}", "  ".repeat(r.depth - 1), key_text(r).map(|k| format!("{k}: ")).unwrap_or_default(), self.leaf_text(r))).collect()
+            self.rows
+                .iter()
+                .map(|r| format!("{}{}{}", "  ".repeat(r.depth - 1), key_text(r).map(|k| format!("{k}: ")).unwrap_or_default(), self.leaf_text(r)))
+                .collect()
         };
         (self.cell.column.clone(), !self.text, lines)
     }
@@ -268,7 +284,13 @@ impl ValueView {
             .map(|(i, r)| {
                 let path = r.path.clone();
                 let null = !r.container && self.doc.as_ref().and_then(|d| d.root.get(&r.path)).is_some_and(|n| matches!(n, Node::Null));
-                let color = if r.container { t.tx3 } else if null && self.shape == Shape::List { t.null } else { json_color(t, r.type_name) };
+                let color = if r.container {
+                    t.tx3
+                } else if null && self.shape == Shape::List {
+                    t.null
+                } else {
+                    json_color(t, r.type_name)
+                };
                 div()
                     .id(("vv-row", i))
                     .min_h(px(LINE))
@@ -430,27 +452,49 @@ impl Render for ValueView {
                 ui::segmented(&t)
                     .w(px(132.))
                     .h(px(26.))
-                    .child(ui::segment(&t, "vv-tree", tree_label, !text).when(!tree_ok, |d| d.opacity(0.4)).on_click(cx.listener(|v, _, window, cx| v.set_text(false, window, cx))))
+                    .child(
+                        ui::segment(&t, "vv-tree", tree_label, !text)
+                            .when(!tree_ok, |d| d.opacity(0.4))
+                            .on_click(cx.listener(|v, _, window, cx| v.set_text(false, window, cx))),
+                    )
                     .child(ui::segment(&t, "vv-text", "Text", text).on_click(cx.listener(|v, _, window, cx| v.set_text(true, window, cx)))),
             )
             .when(!text && self.rows.iter().any(|r| r.container), |d| {
-                d.child(ui::button(&t, "vv-expand", Btn::Ghost).h(px(24.)).text_size(px(crate::theme::text::UI)).child("Expand all").on_click(cx.listener(|v, _, _, cx| v.all(true, cx))))
-                    .child(ui::button(&t, "vv-collapse", Btn::Ghost).h(px(24.)).text_size(px(crate::theme::text::UI)).child("Collapse all").on_click(cx.listener(|v, _, _, cx| v.all(false, cx))))
+                d.child(
+                    ui::button(&t, "vv-expand", Btn::Ghost)
+                        .h(px(24.))
+                        .text_size(px(crate::theme::text::UI))
+                        .child("Expand all")
+                        .on_click(cx.listener(|v, _, _, cx| v.all(true, cx))),
+                )
+                .child(
+                    ui::button(&t, "vv-collapse", Btn::Ghost)
+                        .h(px(24.))
+                        .text_size(px(crate::theme::text::UI))
+                        .child("Collapse all")
+                        .on_click(cx.listener(|v, _, _, cx| v.all(false, cx))),
+                )
             })
             .child(div().flex_1())
             .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(self.meta()));
         let editing = text && self.edit.is_some();
-        let lines = if editing { Vec::new() } else if text { self.render_text(&t) } else { self.render_tree(&t, cx) };
+        let lines = if editing {
+            Vec::new()
+        } else if text {
+            self.render_text(&t)
+        } else {
+            self.render_tree(&t, cx)
+        };
         let total = if text { self.pretty.lines().count() } else { self.rows.len() };
         let more = (total > MAX_LINES).then(|| {
-            div()
-                .px(px(14.))
-                .pt(px(6.))
-                .text_size(px(crate::theme::text::SMALL))
-                .text_color(t.tx3)
-                .child(format!("first {} of {} lines · Copy takes the whole value", crate::grid::ui_count(MAX_LINES), crate::grid::ui_count(total)))
+            div().px(px(14.)).pt(px(6.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!(
+                "first {} of {} lines · Copy takes the whole value",
+                crate::grid::ui_count(MAX_LINES),
+                crate::grid::ui_count(total)
+            ))
         });
-        let empty = (lines.is_empty() && !text).then(|| div().px(px(14.)).text_color(t.tx3).child(if self.shape == Shape::List { "no items" } else { "empty" }));
+        let empty =
+            (lines.is_empty() && !text).then(|| div().px(px(14.)).text_color(t.tx3).child(if self.shape == Shape::List { "no items" } else { "empty" }));
         let body = div()
             .id("vv-body")
             .mx(px(20.))
@@ -470,7 +514,10 @@ impl Render for ValueView {
             .children(empty)
             .children(more);
         let changed = self.edited(cx).is_some();
-        let note = self.error.clone().map(|e| ui::error_block(&t, "value-json-error", format!("Not valid JSON: {e}")).mx(px(20.)).mt(px(8.)).text_size(px(crate::theme::text::UI)));
+        let note = self
+            .error
+            .clone()
+            .map(|e| ui::error_block(&t, "value-json-error", format!("Not valid JSON: {e}")).mx(px(20.)).mt(px(8.)).text_size(px(crate::theme::text::UI)));
         let copied = self.copied_at.and_then(|at| crate::motion::copied(at, Instant::now(), cx.reduce_motion()));
         let copy_tip = if text { "The formatted text" } else { "The value as stored" };
         let footer = ui::modal_footer(&t)
@@ -551,12 +598,15 @@ impl Render for ValueView {
             .on_action(cx.listener(|_, _: &CloseValue, _, cx| cx.emit(ValueEvent::Close)))
             .on_action(cx.listener(|v, _: &CopyValue, _, cx| v.copy(cx)))
             // Not the second press of a double click on the eye that opened it.
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, ev: &gpui::MouseDownEvent, _, cx| {
-                cx.stop_propagation();
-                if ev.click_count < 2 {
-                    cx.emit(ValueEvent::Close);
-                }
-            }))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|_, ev: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if ev.click_count < 2 {
+                        cx.emit(ValueEvent::Close);
+                    }
+                }),
+            )
             .child(ui::esc_closes(Some("ValueSheet"), cx.listener(|_, _: &CloseValue, _, cx| cx.emit(ValueEvent::Close))))
             .child(card)
     }

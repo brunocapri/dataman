@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use gpui::{AnyWindowHandle, App, AppContext as _, Global, SharedString, WeakEntity};
 use dataman_core::Core;
 use dataman_core::update::{self, Feed, UpdateConfig};
+use gpui::{AnyWindowHandle, App, AppContext as _, Global, SharedString, WeakEntity};
 
 use crate::app::Workspace;
 

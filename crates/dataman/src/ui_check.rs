@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use gpui::{
-    AsyncWindowContext, Entity, Focusable, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
-    Pixels, Point, point, px,
-};
 use dataman_core::layout::NavView;
 use dataman_core::result::Phase;
+use gpui::{
+    AsyncWindowContext, Entity, Focusable, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    PlatformInput, Point, point, px,
+};
 
 use crate::app::Workspace;
 use crate::tab::QueryTab;
@@ -26,7 +26,8 @@ async fn tip_error(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext
                 let core = w.store.read(cx).core.clone();
                 let swatches = ["rose", "amber", "teal", "violet", "sky", "lime"];
                 for i in 0..30 {
-                    let mut p = dataman_core::ConnectionProfile::new(format!("{}-{:02}", ["staging", "analytics", "billing", "search", "ledger"][i % 5], i + 1));
+                    let mut p =
+                        dataman_core::ConnectionProfile::new(format!("{}-{:02}", ["staging", "analytics", "billing", "search", "ledger"][i % 5], i + 1));
                     (p.host, p.port, p.color) = ("127.0.0.1".into(), 9, Some(swatches[i % swatches.len()].into()));
                     let _ = core.save_connection(p, None, None);
                 }
@@ -83,7 +84,16 @@ fn mouse_move(cx: &mut AsyncWindowContext, p: Point<Pixels>, pressed: bool) {
 }
 
 fn down(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
-    input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+    input(
+        cx,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: p,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+    );
 }
 
 fn up(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
@@ -258,11 +268,13 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     );
     let ro_tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&first, Some(db), "", false, window, cx))).ok().flatten();
     if let Some(t) = ro_tab {
-        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
-            if let Some(i) = w.tabs.iter().position(|x| *x == t) {
-                w.activate(i, window, cx);
-            }
-        }));
+        let _ = cx.update(|window, cx| {
+            ws.update(cx, |w, cx| {
+                if let Some(i) = w.tabs.iter().position(|x| *x == t) {
+                    w.activate(i, window, cx);
+                }
+            })
+        });
         let write = "CREATE TEMP TABLE dataman_ro_ui (a int)";
         let tab = run_sql(ws, write, cx).await;
         let code = cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.status().error).and_then(|e| e.code)).ok().flatten();
@@ -318,7 +330,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         report("the tabs make room: the gap the dragged tab would land in opens there", gap == Some((dataman_core::groups::Pane::Left, 3)), format!("{gap:?}"));
         up(cx, point(p2.x + px(4.), p2.y));
     }
-    report("while a tab is dragged its ghost follows, a gap opens where it would land and the tabs stay put", during == (true, Some(3), true), format!("{during:?}"));
+    report(
+        "while a tab is dragged its ghost follows, a gap opens where it would land and the tabs stay put",
+        during == (true, Some(3), true),
+        format!("{during:?}"),
+    );
     let after = tabs(ws, cx);
     let moved = after.len() == before.len() && after[2] == before[0] && after[0] == before[1] && after[1] == before[2];
     let active = cx.update(|_, cx| ws.read(cx).active_tab().cloned()).ok().flatten();
@@ -339,7 +355,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let menu_pick = |cx: &mut AsyncWindowContext, i: usize, k: usize| -> bool {
         let Some((p, _)) = tab_points(ws, i, cx) else { return false };
         mouse_move(cx, p, false);
-        input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+        input(
+            cx,
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position: p,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+        );
         input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position: p, modifiers: Modifiers::default(), click_count: 1 }));
         draw(cx);
         let open = cx.update(|_, cx| ws.read(cx).tab_menu.is_some()).unwrap_or(false);
@@ -353,7 +378,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let saved = match tab_points(ws, 2, cx) {
         Some((p, _)) => {
             mouse_move(cx, p, false);
-            input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+            input(
+                cx,
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Right,
+                    position: p,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+            );
             input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position: p, modifiers: Modifiers::default(), click_count: 1 }));
             draw(cx);
             pause(cx, 150).await;
@@ -373,7 +407,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let open = menu_pick(cx, 3, 2);
     let still = cx.update(|_, cx| ws.read(cx).tab_menu.is_some()).unwrap_or(false);
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.tab_menu = None));
-    report("a right click opens the tab's menu; on the last tab Close to the Right does nothing", open && still && tabs(ws, cx) == four, format!("{} tabs", tabs(ws, cx).len()));
+    report(
+        "a right click opens the tab's menu; on the last tab Close to the Right does nothing",
+        open && still && tabs(ws, cx) == four,
+        format!("{} tabs", tabs(ws, cx).len()),
+    );
     let hit = menu_pick(cx, 1, 2);
     let left = tabs(ws, cx);
     report("Close to the Right closes the tabs after it", hit && left == four[..2], format!("{} tabs", left.len()));
@@ -473,14 +511,26 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         for (s, engine, host, port, user, db, pw) in [
             ("postgresql://app:s3cret@db.example.com:6543/shop?sslmode=require", Engine::Postgres, "db.example.com", 6543, "app", "shop", "s3cret"),
             ("mysql://app:s3cret@db.example.com:3307/shop", Engine::MySql, "db.example.com", 3307, "app", "shop", "s3cret"),
-            ("jdbc:sqlserver://db.example.com:14330;databaseName=shop;user=app;password=s3cret", Engine::SqlServer, "db.example.com", 14330, "app", "shop", "s3cret"),
+            (
+                "jdbc:sqlserver://db.example.com:14330;databaseName=shop;user=app;password=s3cret",
+                Engine::SqlServer,
+                "db.example.com",
+                14330,
+                "app",
+                "shop",
+                "s3cret",
+            ),
             ("Server=tcp:db.example.com,1433;Database=shop;User Id=app;Encrypt=False", Engine::SqlServer, "db.example.com", 1433, "app", "shop", ""),
         ] {
             let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.set_conn_str(s, cx)));
             draw(cx);
             let (p, typed) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
             let got = (p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str(), typed.as_str());
-            report(&format!("the connection string reads {}", s.split([':', '=']).next().unwrap_or(s)), got == (engine, host, port, user, db, pw), format!("{got:?}"));
+            report(
+                &format!("the connection string reads {}", s.split([':', '=']).next().unwrap_or(s)),
+                got == (engine, host, port, user, db, pw),
+                format!("{got:?}"),
+            );
         }
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.set_conn_str("postgres//app@db.example.com/shop", cx)));
         key(cx, "cmd-enter");
@@ -507,17 +557,29 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let remote = tls(cx);
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("localhost", cx)));
         let local = tls(cx);
-        report("a remote host starts with SSL required, localhost with prefer", remote == (SslMode::Require, None) && local == (SslMode::Prefer, None), format!("{remote:?} {local:?}"));
+        report(
+            "a remote host starts with SSL required, localhost with prefer",
+            remote == (SslMode::Require, None) && local == (SslMode::Prefer, None),
+            format!("{remote:?} {local:?}"),
+        );
         let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Redis, window, cx)));
         let here = tls(cx);
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("cache.example.com", cx)));
         let there = tls(cx);
-        report("Redis: off on this machine, on across the network", here == (SslMode::Disable, None) && there == (SslMode::Require, None), format!("{here:?} {there:?}"));
+        report(
+            "Redis: off on this machine, on across the network",
+            here == (SslMode::Disable, None) && there == (SslMode::Require, None),
+            format!("{here:?} {there:?}"),
+        );
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_ssh(true, cx)));
         let tunneled = tls(cx);
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_ssh(false, cx)));
         let back = tls(cx);
-        report("through an SSH tunnel it is as on this machine, no warning; without it, on again", tunneled == (SslMode::Disable, None) && back == (SslMode::Require, None), format!("{tunneled:?} {back:?}"));
+        report(
+            "through an SSH tunnel it is as on this machine, no warning; without it, on again",
+            tunneled == (SslMode::Disable, None) && back == (SslMode::Require, None),
+            format!("{tunneled:?} {back:?}"),
+        );
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_tls(SslMode::Disable, cx)));
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("other.example.com", cx)));
         draw(cx);
@@ -547,7 +609,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         })
         .unwrap_or_default();
     let distinct = ids.iter().collect::<std::collections::HashSet<_>>().len();
-    report("each family resolves its Regular, Medium, SemiBold, Bold and Italic faces", ids.len() == 10 && distinct == 10, format!("{distinct} of {}", ids.len()));
+    report(
+        "each family resolves its Regular, Medium, SemiBold, Bold and Italic faces",
+        ids.len() == 10 && distinct == 10,
+        format!("{distinct} of {}", ids.len()),
+    );
     new_tab(ws, cx);
     let tab = run_sql(ws, "SELECT 42 AS n, 'café naïve ≠ ≤ → 東京 😀' AS sample, now() AS at", cx).await;
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
@@ -565,7 +631,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let same_widths = |w: &[f32]| w.len() == w0.len() && w0.iter().zip(w).all(|(a, b)| (a - b).abs() <= 1.5);
     switch(cx, Box::new(crate::app::FontGeistMono));
     let (w1, cw1) = widths(cx);
-    report("Geist Mono live: 0.6 em and the same widths", crate::theme::mono() == "Geist Mono" && (cw1 - crate::theme::ADVANCE * 12.).abs() < 0.05 && same_widths(&w1), format!("advance {cw1:.2}, widths {w0:?} → {w1:?}"));
+    report(
+        "Geist Mono live: 0.6 em and the same widths",
+        crate::theme::mono() == "Geist Mono" && (cw1 - crate::theme::ADVANCE * 12.).abs() < 0.05 && same_widths(&w1),
+        format!("advance {cw1:.2}, widths {w0:?} → {w1:?}"),
+    );
     switch(cx, Box::new(crate::app::FontLilex));
     let (w2, _) = widths(cx);
     report("Lilex again: the widths it started with", crate::theme::mono() == "Lilex" && same_widths(&w2), format!("{w2:?}"));
@@ -638,7 +708,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     async fn settle(script: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
         for _ in 0..200 {
             pause(cx, 50).await;
-            if cx.update(|_, cx| !script.read(cx).is_running() && !script.read(cx).run_continues() && script.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true) {
+            if cx
+                .update(|_, cx| {
+                    !script.read(cx).is_running() && !script.read(cx).run_continues() && script.read(cx).run_phase().is_some_and(|p| p.is_finished())
+                })
+                .unwrap_or(true)
+            {
                 break;
             }
         }
@@ -792,7 +867,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     if can_blur {
         let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOn), cx));
         draw(cx);
-        report(&format!("blur {blur:?}: Dataman's view only where it is the blur", blur = blur()), own_view_installed() == own, format!("installed {}", own_view_installed()));
+        report(
+            &format!("blur {blur:?}: Dataman's view only where it is the blur", blur = blur()),
+            own_view_installed() == own,
+            format!("installed {}", own_view_installed()),
+        );
         if own {
             report("Dataman's view is under GPUI's and fills the window", fits(cx), format!("{:?}", own_view_layout()));
             let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::TranslucencyOff), cx));
@@ -856,7 +935,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let head = cx.update(|_, cx| grid.read(cx).demo_selection()).ok().flatten();
     up(cx, below);
     let down_far = head.is_some_and(|(a, h)| a == (0, 0) && h.1 == 0 && h.0 > visible_rows);
-    report("past the bottom edge it scrolls down and extends through the rows", sy > 50. && down_far, format!("scroll y {sy:.0}, selection {head:?}, {visible_rows} rows visible"));
+    report(
+        "past the bottom edge it scrolls down and extends through the rows",
+        sy > 50. && down_far,
+        format!("scroll y {sy:.0}, selection {head:?}, {visible_rows} rows visible"),
+    );
 
     let editor = cx.update(|_, cx| wide.read(cx).editor.clone()).unwrap();
     let measure = |cx: &mut AsyncWindowContext| {
@@ -879,8 +962,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let near = |a: f32, b: f32, tol: f32| (a - b).abs() <= tol;
     report(
         "⌘= ⌘= zooms to 125 %: tabs, editor lines and grid rows 1.25× taller, the editor's advance measured 1.25× wider, saved",
-        z == 1.25 && saved == 1.25 && near(m1.0, m0.0 * 1.25, 0.5) && near(m1.1, (m0.1 * 1.25).round(), 0.5) && near(m1.2, m0.2 * 1.25, 0.3) && near(m1.3, m0.3 * 1.25, 0.01),
-        format!("zoom {z} saved {saved}: tab {:.1}→{:.1}, line {:.1}→{:.1}, advance {:.2}→{:.2}, row {:.1}→{:.1}", m0.0, m1.0, m0.1, m1.1, m0.2, m1.2, m0.3, m1.3),
+        z == 1.25
+            && saved == 1.25
+            && near(m1.0, m0.0 * 1.25, 0.5)
+            && near(m1.1, (m0.1 * 1.25).round(), 0.5)
+            && near(m1.2, m0.2 * 1.25, 0.3)
+            && near(m1.3, m0.3 * 1.25, 0.01),
+        format!(
+            "zoom {z} saved {saved}: tab {:.1}→{:.1}, line {:.1}→{:.1}, advance {:.2}→{:.2}, row {:.1}→{:.1}",
+            m0.0, m1.0, m0.1, m1.1, m0.2, m1.2, m0.3, m1.3
+        ),
     );
     report(
         "the grid's columns keep their widths in points and its advance in points",
@@ -918,10 +1009,15 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         draw(cx);
         cx.update(|_, cx| sv.read(cx).demo_key_points(id)).unwrap_or_default()
     };
-    let recording = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_recording()).ok().flatten();
+    let recording =
+        |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_recording()).ok().flatten();
     let k = |s: &str| keymap::parse(&keymap::native(s)).unwrap_or_default();
     let (cap, reset) = points(&sv, "new_tab", cx);
-    report("Keyboard lists New tab on ⌘T, no reset while it is the default", cap.is_some() && reset.is_none() && keymap::key_label("new_tab") == keymap::label("cmd-t"), format!("{cap:?} {reset:?}"));
+    report(
+        "Keyboard lists New tab on ⌘T, no reset while it is the default",
+        cap.is_some() && reset.is_none() && keymap::key_label("new_tab") == keymap::label("cmd-t"),
+        format!("{cap:?} {reset:?}"),
+    );
     if let Some(cap) = cap {
         click(cx, cap);
         let rec = recording(&sv, cx);
@@ -935,7 +1031,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         press(cx, "cmd-alt-t");
         let bound = cx
             .update(|_, cx| {
-                cx.key_bindings().borrow().bindings_for_action(&crate::app::NewTab).map(|b| b.keystrokes().iter().map(|k| k.inner().unparse()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>()
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(&crate::app::NewTab)
+                    .map(|b| b.keystrokes().iter().map(|k| k.inner().unparse()).collect::<Vec<_>>().join(" "))
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         let saved = saved_keys(cx);
@@ -981,13 +1081,19 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             if let (_, Some(r)) = points(&sv, "new_tab", cx) {
                 click(cx, r);
             }
-            report("the reset puts ⌘T back and drops it from [keys]", keymap::effective("new_tab") == [k("cmd-t")] && !saved_keys(cx).contains_key("new_tab"), format!("{:?}", keymap::effective("new_tab")));
+            report(
+                "the reset puts ⌘T back and drops it from [keys]",
+                keymap::effective("new_tab") == [k("cmd-t")] && !saved_keys(cx).contains_key("new_tab"),
+                format!("{:?}", keymap::effective("new_tab")),
+            );
             search(&sv, "favorite query", cx);
             if let (Some(h), _) = points(&sv, "favorite_query", cx) {
                 click(cx, h);
                 press(cx, "backspace");
             }
-            let removed = keymap::effective("favorite_query").is_empty() && saved_keys(cx).get("favorite_query").map(String::as_str) == Some("") && keymap::key("favorite_query").is_none();
+            let removed = keymap::effective("favorite_query").is_empty()
+                && saved_keys(cx).get("favorite_query").map(String::as_str) == Some("")
+                && keymap::key("favorite_query").is_none();
             search(&sv, "", cx);
             draw(cx);
             if let Some(p) = cx.update(|_, cx| sv.read(cx).demo_reset_all_point()).ok().flatten() {
@@ -998,7 +1104,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
                 removed && keymap::effective("favorite_query") == [k("cmd-d")] && saved_keys(cx).is_empty(),
                 format!("removed {removed}, {:?} {:?}", keymap::effective("favorite_query"), saved_keys(cx)),
             );
-            let key_search = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_key_search()).unwrap_or_default();
+            let key_search = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| {
+                cx.update(|_, cx| sv.read(cx).demo_key_search()).unwrap_or_default()
+            };
             let n0 = tabs(ws, cx).len();
             draw(cx);
             if let Some(p) = cx.update(|_, cx| sv.read(cx).demo_key_search_point()).ok().flatten() {
@@ -1045,7 +1153,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
     report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.trim_end() == "answer\n7" && csv.trim_end() == "7", format!("{with:?} {csv:?}"));
-    let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion())).is_some()).unwrap_or(false);
+    let shown = |cx: &mut AsyncWindowContext| {
+        cx.update(|_, cx| grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion())).is_some())
+            .unwrap_or(false)
+    };
     let copied_now = shown(cx);
     pause(cx, 2100).await;
     draw(cx);
@@ -1057,9 +1168,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let wants = ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\n"];
     let mut copies = Vec::new();
     for (fmt, want) in [(dataman_core::result::CopyFormat::Csv, wants[0]), (dataman_core::result::CopyFormat::Tsv, wants[1])] {
-        copies.push(crate::check::copied(cx, want, |cx| {
-            let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, true, cx)));
-        }).await);
+        copies.push(
+            crate::check::copied(cx, want, |cx| {
+                let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, true, cx)));
+            })
+            .await,
+        );
     }
     report("Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers leaves a NULL empty", copies == wants, format!("{copies:?}"));
     let mut cells = Vec::new();
@@ -1107,7 +1221,12 @@ async fn grid_row_keys(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     press(cx, "cmd-shift-left");
     let (sel, _) = state(cx);
     report("⇧⌘← back to its first", sel == Some(((2, 0), (2, 0))), format!("{sel:?}"));
-    report("Back and Forward are ⌃⌘← ⌃⌘→", crate::keymap::effective("go_back") == [crate::keymap::native("ctrl-cmd-left")] && crate::keymap::effective("go_forward") == [crate::keymap::native("ctrl-cmd-right")], format!("{:?}", crate::keymap::effective("go_back")));
+    report(
+        "Back and Forward are ⌃⌘← ⌃⌘→",
+        crate::keymap::effective("go_back") == [crate::keymap::native("ctrl-cmd-left")]
+            && crate::keymap::effective("go_forward") == [crate::keymap::native("ctrl-cmd-right")],
+        format!("{:?}", crate::keymap::effective("go_back")),
+    );
     let ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| *t == wide)).ok().flatten().unwrap_or(0);
     let other = if ix == 0 { 1 } else { 0 };
     if cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) < 2 {
@@ -1168,7 +1287,11 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     draw(cx);
     let after = bounds(cx);
     let landed = cx.update(|_, cx| ws.read(cx).zoom_tween.is_none() || ws.read(cx).zoom_now(&tab, cx) == 1.).unwrap_or(false);
-    report("⇧⌘↩ on the grid zooms the result, animated", (!motion || !in_time || (mid > 0.05 && mid < 0.999)) && zoom(cx) == 1. && landed, format!("mid {mid} end {}{}", zoom(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }));
+    report(
+        "⇧⌘↩ on the grid zooms the result, animated",
+        (!motion || !in_time || (mid > 0.05 && mid < 0.999)) && zoom(cx) == 1. && landed,
+        format!("mid {mid} end {}{}", zoom(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }),
+    );
     report(
         "mid-way the result has grown part of the way",
         !motion || !in_time || mid_b.zip(after).is_some_and(|(m, a)| m.top() < before.top() && m.top() > a.top()),
@@ -1178,7 +1301,9 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     let divider = crate::theme::metrics::DIVIDER;
     report(
         "zoomed: it covers the Run row, the editor and the side panel; the divider stays on top",
-        after.is_some_and(|a| a.top() < before.top() && (a.top().as_f32() - title - divider).abs() < 4. && (a.right() - win.width).abs() < px(2.) && a.right() > before.right()),
+        after.is_some_and(|a| {
+            a.top() < before.top() && (a.top().as_f32() - title - divider).abs() < 4. && (a.right() - win.width).abs() < px(2.) && a.right() > before.right()
+        }),
         format!("{before:?} → {after:?} (window {win:?})"),
     );
     report(
@@ -1200,7 +1325,11 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
         }
     }
     let again = cx.update(|_, cx| tab.read(cx).result().map(|r| (std::sync::Arc::as_ptr(r) as usize, r.rows()))).ok().flatten();
-    report("⌘↩ on the zoomed grid re-runs the tab's script", again.is_some_and(|(p, n)| Some(p) != first && n == 40) && zoom(cx) == 1., format!("{first:?} → {again:?}"));
+    report(
+        "⌘↩ on the zoomed grid re-runs the tab's script",
+        again.is_some_and(|(p, n)| Some(p) != first && n == 40) && zoom(cx) == 1.,
+        format!("{first:?} → {again:?}"),
+    );
     let other = new_tab(ws, cx);
     let other_zoomed = cx.update(|_, cx| other.read(cx).zoomed).unwrap_or(true);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&tab, window, cx)));
@@ -1211,7 +1340,11 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     pause(cx, 340).await;
     draw(cx);
     let restored = bounds(cx);
-    report("esc on the zoomed grid closes it; the layout is back", zoom(cx) == 0. && restored.is_some_and(|r| (r.top() - before.top()).abs() < px(1.) && (r.right() - before.right()).abs() < px(1.)), format!("{before:?} → {restored:?}"));
+    report(
+        "esc on the zoomed grid closes it; the layout is back",
+        zoom(cx) == 0. && restored.is_some_and(|r| (r.top() - before.top()).abs() < px(1.) && (r.right() - before.right()).abs() < px(1.)),
+        format!("{before:?} → {restored:?}"),
+    );
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
     draw(cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
@@ -1239,7 +1372,10 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
         let frac_kept = cx.update(|_, cx| ws.read(cx).editor_frac).ok().flatten() == frac;
         report(
             "the divider pulled past the editor's minimum zooms the result at once, the divider on top",
-            cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false) && zoom(cx) == 1. && frac_kept && pulled.is_some_and(|a| (a.top().as_f32() - title - divider).abs() < 4.),
+            cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false)
+                && zoom(cx) == 1.
+                && frac_kept
+                && pulled.is_some_and(|a| (a.top().as_f32() - title - divider).abs() < 4.),
             format!("{split:?} → {pulled:?}, frac {frac:?} kept {frac_kept}"),
         );
         let grab = point(x, px(title + divider / 2.));
@@ -1328,7 +1464,9 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&off)).ok().flatten();
     report(
         "a failed connection's row and its error row carry the whole error on hover",
-        row.as_ref().is_some_and(|(_, dim, tip, err)| *dim && tip.as_deref() == Some(long.as_str()) && err.as_ref().is_some_and(|(l, t)| !l.contains('\n') && t.as_deref() == Some(long.as_str()))),
+        row.as_ref().is_some_and(|(_, dim, tip, err)| {
+            *dim && tip.as_deref() == Some(long.as_str()) && err.as_ref().is_some_and(|(l, t)| !l.contains('\n') && t.as_deref() == Some(long.as_str()))
+        }),
         format!("{:?}", row.as_ref().map(|r| (r.0.clone(), r.1, r.2.as_ref().map(|t| t.len()), r.3.as_ref().map(|e| e.0.clone())))),
     );
     let (fit, w) = crate::ui::fit_tip(&long);
@@ -1373,7 +1511,13 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     // Where it stands when none showed: the pointer, the control now, the last input, the hosts.
     let why = cx
         .update(|window, _| (window.mouse_position(), window.last_input_was_keyboard(), window.is_window_active()))
-        .map(|(at, keyboard, active)| format!("pointer {at:?}, keyboard {keyboard}, active {active}, control now {:?}, tips {stats0:?} → {:?}", crate::check::probed("tb-format", cx), crate::ui::tip_stats()))
+        .map(|(at, keyboard, active)| {
+            format!(
+                "pointer {at:?}, keyboard {keyboard}, active {active}, control now {:?}, tips {stats0:?} → {:?}",
+                crate::check::probed("tb-format", cx),
+                crate::ui::tip_stats()
+            )
+        })
         .unwrap_or_default();
     if let (Some(r), Some(b)) = (control, shown) {
         let (from, to) = (crate::check::centre(r), crate::check::centre(b));
@@ -1445,7 +1589,11 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let _ = cx.update(|_, cx| crate::theme::set_pref(dataman_core::ThemePref::Dark, cx));
     let dark = crate::dock_icon::shown_light();
     let _ = cx.update(|_, cx| crate::theme::set_pref(pref, cx));
-    report("the Dock icon is the light one in the light theme, the dark one in the dark theme", light == Some(true) && dark == Some(false), format!("{light:?} {dark:?}"));
+    report(
+        "the Dock icon is the light one in the light theme, the dark one in the dark theme",
+        light == Some(true) && dark == Some(false),
+        format!("{light:?} {dark:?}"),
+    );
     ok
 }
 
@@ -1458,6 +1606,15 @@ fn press(cx: &mut AsyncWindowContext, k: &str) {
 
 fn middle_click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
     mouse_move(cx, p, false);
-    input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Middle, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+    input(
+        cx,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Middle,
+            position: p,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+    );
     input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Middle, position: p, modifiers: Modifiers::default(), click_count: 1 }));
 }

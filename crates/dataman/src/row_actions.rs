@@ -1,13 +1,10 @@
 //! Statements that destroy something (DROP, TRUNCATE) only ever open in a new tab with a
 //! warning comment: nothing here runs them.
 
-use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, Focusable, FontWeight, MouseButton, Window, actions, div,
-    prelude::*,
-};
 use crate::theme::px;
 use dataman_core::schema::RelKind;
 use dataman_core::sqlgen;
+use gpui::{AnyElement, App, ClipboardItem, Context, Entity, Focusable, FontWeight, MouseButton, Window, actions, div, prelude::*};
 
 use crate::app::{Bound, Side, Workspace};
 use crate::privileges::{PrivilegesEvent, PrivilegesPanel};
@@ -16,16 +13,7 @@ use crate::theme::ActiveTheme;
 use crate::tree_menu::{Act, Gen, Obj, Target};
 use crate::ui::{self, Btn};
 
-actions!(
-    row_actions,
-    [
-        CancelDeleteConnection,
-        ConfirmDeleteConnection,
-        DuplicateConnection,
-        DeleteConnection,
-        CopyConnectionString,
-    ]
-);
+actions!(row_actions, [CancelDeleteConnection, ConfirmDeleteConnection, DuplicateConnection, DeleteConnection, CopyConnectionString,]);
 
 const CONFIRM: &str = "ConfirmDeleteConnection";
 /// How many names the sheet deleting several lists before "and n more".
@@ -380,9 +368,7 @@ impl Workspace {
     }
 
     fn deliver_sql(&mut self, conn: &str, db: &str, sql: String, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if alt
-            && let Some(tab) = self.active_tab().cloned()
-        {
+        if alt && let Some(tab) = self.active_tab().cloned() {
             let editor = tab.read(cx).editor.clone();
             editor.update(cx, |e, cx| e.insert_at_cursor(&format!("{sql}\n"), cx));
             window.focus(&editor.focus_handle(cx), cx);

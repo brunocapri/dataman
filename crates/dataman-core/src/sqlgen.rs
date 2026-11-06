@@ -6,7 +6,6 @@ use crate::schema::Column;
 use crate::sql::Dialect;
 use crate::value::{self, Kind};
 
-
 pub const RUN_KEY: &str = if cfg!(target_os = "macos") { "⌘↩" } else { "Ctrl+↩" };
 pub fn quote_ident(name: &str) -> String {
     Dialect::Postgres.quote_ident(name)
@@ -119,7 +118,13 @@ fn tsql_time(s: &str) -> String {
         let n = b.len();
         let hhmm = n > 7 && matches!(b[n - 6], b'+' | b'-') && b[n - 5..].iter().enumerate().all(|(i, c)| if i == 2 { *c == b':' } else { c.is_ascii_digit() });
         let hh = n > 4 && matches!(b[n - 3], b'+' | b'-') && b[n - 2..].iter().all(u8::is_ascii_digit);
-        let at = if hhmm { n - 6 } else if hh { n - 3 } else { 0 };
+        let at = if hhmm {
+            n - 6
+        } else if hh {
+            n - 3
+        } else {
+            0
+        };
         if at > 1 && b[at - 1] == b' ' && out.is_char_boundary(at - 1) {
             out.remove(at - 1);
         }
@@ -144,10 +149,10 @@ pub fn literal_in(d: Dialect, kind: Kind, cell: Cell<'_>) -> String {
         Cell::Bool(b) if bool_bits(d) => if b { "1" } else { "0" }.into(),
         Cell::Bool(b) => if b { "TRUE" } else { "FALSE" }.into(),
         Cell::Int(v) => match kind {
-            Kind::Timestamp if ms && !value::is_odd_date(v) => d.quote_literal(&tsql_time(&format_cell(kind, cell).map(|s| s.into_owned()).unwrap_or_default())),
-            Kind::Date | Kind::Time | Kind::Timestamp => {
-                d.quote_literal(&format_cell(kind, cell).map(|s| s.into_owned()).unwrap_or_default())
+            Kind::Timestamp if ms && !value::is_odd_date(v) => {
+                d.quote_literal(&tsql_time(&format_cell(kind, cell).map(|s| s.into_owned()).unwrap_or_default()))
             }
+            Kind::Date | Kind::Time | Kind::Timestamp => d.quote_literal(&format_cell(kind, cell).map(|s| s.into_owned()).unwrap_or_default()),
             Kind::TimestampTz if ms => {
                 let mut s = String::new();
                 value::format_timestamp(v, &mut s);
@@ -195,7 +200,9 @@ pub fn push_value_literal_in(d: Dialect, out: &mut String, kind: Kind, v: Option
         },
         Kind::Int if is_integer(t) => out.push_str(t),
         Kind::Float | Kind::Float4 | Kind::Numeric if is_decimal(t) => out.push_str(t),
-        Kind::Bytes if hex_bytes(t).and_then(|h| bytes_literal(d, h)).is_some() => out.push_str(&hex_bytes(t).and_then(|h| bytes_literal(d, h)).unwrap_or_default()),
+        Kind::Bytes if hex_bytes(t).and_then(|h| bytes_literal(d, h)).is_some() => {
+            out.push_str(&hex_bytes(t).and_then(|h| bytes_literal(d, h)).unwrap_or_default())
+        }
         Kind::Bytes if ms && hex_bytes(t).is_some() => {
             out.push_str("0x");
             out.push_str(hex_bytes(t).unwrap_or_default());
@@ -379,7 +386,8 @@ pub fn insert_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column])
     // SQLite has no `DEFAULT` in VALUES: a column with a default is left out instead.
     let generated = |c: &&Column| {
         (d == Dialect::TSql
-            && (c.default.as_deref().is_some_and(|x| x.starts_with("IDENTITY") || x.starts_with("AS ")) || matches!(c.type_name.as_str(), "timestamp" | "rowversion")))
+            && (c.default.as_deref().is_some_and(|x| x.starts_with("IDENTITY") || x.starts_with("AS "))
+                || matches!(c.type_name.as_str(), "timestamp" | "rowversion")))
             || (d == Dialect::Sqlite && c.default.is_some())
     };
     let cols: Vec<&Column> = cols.iter().filter(|c| !generated(c)).collect();
@@ -397,12 +405,7 @@ pub fn insert_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column])
             (v, column_note(c))
         })
         .collect();
-    format!(
-        "INSERT INTO {} ({})\nVALUES (\n{}\n);",
-        qualified(Some(schema), name),
-        names.join(", "),
-        commented_values(&values, "    ")
-    )
+    format!("INSERT INTO {} ({})\nVALUES (\n{}\n);", qualified(Some(schema), name), names.join(", "), commented_values(&values, "    "))
 }
 
 /// No primary key and no `id` column: `WHERE false`, which matches no row, so a template run
@@ -428,7 +431,8 @@ pub fn update_template(schema: &str, name: &str, cols: &[Column]) -> String {
 pub fn update_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column]) -> String {
     let generated = |c: &Column| {
         d == Dialect::TSql
-            && (c.default.as_deref().is_some_and(|x| x.starts_with("IDENTITY") || x.starts_with("AS ")) || matches!(c.type_name.as_str(), "timestamp" | "rowversion"))
+            && (c.default.as_deref().is_some_and(|x| x.starts_with("IDENTITY") || x.starts_with("AS "))
+                || matches!(c.type_name.as_str(), "timestamp" | "rowversion"))
     };
     let set: Vec<&Column> = {
         let non_key: Vec<&Column> = cols.iter().filter(|c| !c.primary_key && !generated(c)).collect();
@@ -572,10 +576,7 @@ pub fn drop_schema_template_in(d: Dialect, schema: &str) -> String {
 
 pub fn drop_schema_template(schema: &str) -> String {
     let q = quote_ident(schema);
-    danger(
-        &format!("DROP SCHEMA deletes {q}. It fails if the schema is not empty; CASCADE also drops every object in it."),
-        format!("DROP SCHEMA {q};"),
-    )
+    danger(&format!("DROP SCHEMA deletes {q}. It fails if the schema is not empty; CASCADE also drops every object in it."), format!("DROP SCHEMA {q};"))
 }
 
 #[cfg(test)]
@@ -620,10 +621,7 @@ pub fn revoke_template(schema: &str, table: Option<&str>, role: Option<&str>) ->
         None => (format!("SCHEMA {}", quote_ident(schema)), quote_ident(schema)),
     };
     let g = grantee(role);
-    danger(
-        &format!("REVOKE takes privileges on {what} away from {g}: its sessions lose that access at once."),
-        format!("REVOKE ALL ON {on} FROM {g};"),
-    )
+    danger(&format!("REVOKE takes privileges on {what} away from {g}: its sessions lose that access at once."), format!("REVOKE ALL ON {on} FROM {g};"))
 }
 
 pub fn function_call(schema: &str, f: &crate::schema::Function) -> String {
@@ -671,10 +669,7 @@ pub fn function_call_in(d: Dialect, schema: &str, f: &crate::schema::Function) -
 
 pub fn sequence_reset_template(schema: &str, name: &str, owned_by: Option<(&str, &str)>) -> String {
     let q = qualified(Some(schema), name);
-    let mut s = danger(
-        &format!("RESTART sets {q} back to its start: new rows can collide with existing keys."),
-        format!("ALTER SEQUENCE {q} RESTART;"),
-    );
+    let mut s = danger(&format!("RESTART sets {q} back to its start: new rows can collide with existing keys."), format!("ALTER SEQUENCE {q} RESTART;"));
     if let Some((t, c)) = owned_by {
         s.push_str(&format!(
             "\n\n-- Or continue after the largest {}:\n-- SELECT setval({}, (SELECT coalesce(max({}), 0) + 1 FROM {}), false);",
@@ -731,11 +726,7 @@ pub fn extension_update_template(name: &str, to: Option<&str>) -> String {
 }
 
 pub fn search_path_for(schema: &str) -> String {
-    if schema == "public" {
-        "SET search_path TO public;".to_string()
-    } else {
-        format!("SET search_path TO {}, public;", quote_ident(schema))
-    }
+    if schema == "public" { "SET search_path TO public;".to_string() } else { format!("SET search_path TO {}, public;", quote_ident(schema)) }
 }
 
 #[cfg(test)]
@@ -794,7 +785,11 @@ mod tests {
         assert!(drop_database_template_in(lite, "main").is_none() && drop_database_template_in(duck, "w").is_none());
         assert!(truncate_template_in(lite, "main", "t").ends_with("DELETE FROM main.t;"));
         assert!(truncate_template_in(duck, "main", "t").ends_with("TRUNCATE TABLE main.t;"));
-        let cols = vec![col("id", "INTEGER", true, Some(false), None), col("at", "TEXT", false, None, Some("CURRENT_TIMESTAMP")), col("ok", "BOOLEAN", false, None, None)];
+        let cols = vec![
+            col("id", "INTEGER", true, Some(false), None),
+            col("at", "TEXT", false, None, Some("CURRENT_TIMESTAMP")),
+            col("ok", "BOOLEAN", false, None, None),
+        ];
         let ins = insert_template_in(lite, "main", "t", &cols);
         assert!(!ins.contains("DEFAULT") && ins.starts_with("INSERT INTO main.t (id, ok)"), "{ins}");
         assert!(create_table_template_sqlite().contains("INTEGER PRIMARY KEY"));
@@ -835,7 +830,10 @@ mod tests {
         assert!(create_table_template_tsql("dbo").contains("IDENTITY(1, 1) PRIMARY KEY"));
         assert!(drop_database_template_in(ms, "shop").unwrap().contains("SINGLE_USER"));
         assert!(drop_table_template_in(ms, "dbo", "t").ends_with("DROP TABLE dbo.t;"));
-        assert_eq!(trigger_toggle_template_in(ms, "dbo", "orders", "trg x", true), format!("-- [trg x] fires again on dbo.orders. Run it with {RUN_KEY}.\nALTER TABLE dbo.orders ENABLE TRIGGER [trg x];"));
+        assert_eq!(
+            trigger_toggle_template_in(ms, "dbo", "orders", "trg x", true),
+            format!("-- [trg x] fires again on dbo.orders. Run it with {RUN_KEY}.\nALTER TABLE dbo.orders ENABLE TRIGGER [trg x];")
+        );
         let p = crate::schema::Function {
             oid: 1,
             name: "customer_orders".into(),

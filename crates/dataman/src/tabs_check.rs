@@ -1,8 +1,8 @@
 //! `tabs-check`: which connection a new tab (⌘T) gets, and the toolbar's connection picker
 //! moving a tab between SQL and the document view, all with real clicks and keys.
 
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::Engine;
+use gpui::{AsyncWindowContext, Entity};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -27,7 +27,15 @@ async fn pick(ws: &Entity<Workspace>, id: &str, db: &str, cx: &mut AsyncWindowCo
         }
         let dy = gpui::px(if full.top() < list.top() { 120. } else { -120. });
         let delta = gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), dy));
-        input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: centre(list), delta, modifiers: Default::default(), touch_phase: gpui::TouchPhase::Moved }));
+        input(
+            cx,
+            gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position: centre(list),
+                delta,
+                modifiers: Default::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            }),
+        );
         pause(cx, 30).await;
     }
     let ok = click_probe(&item, cx);
@@ -55,7 +63,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
 
     let t = active(ws, cx).unwrap();
     let picked = pick(ws, &pg, &pg_db, cx).await;
-    r.check("the toolbar's picker puts a tab on PostgreSQL: the SQL grid", picked && view(&t, cx) == (Some(Engine::Postgres), false, None), format!("{picked} {:?}", view(&t, cx)));
+    r.check(
+        "the toolbar's picker puts a tab on PostgreSQL: the SQL grid",
+        picked && view(&t, cx) == (Some(Engine::Postgres), false, None),
+        format!("{picked} {:?}", view(&t, cx)),
+    );
     let t1 = new_tab_key(ws, cx);
     let on = t1.as_ref().map(|t| (tab_conn(t, cx), view(t, cx)));
     r.check("⌘T from a PostgreSQL tab: a SQL tab on PostgreSQL", on == Some((Some(pg.clone()), (Some(Engine::Postgres), false, None))), format!("{on:?}"));
@@ -79,7 +91,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         format!("{picked} {:?}", view(&t2, cx)),
     );
     let picked = pick(ws, &pg, &pg_db, cx).await;
-    r.check("…and back to PostgreSQL: the grid again, no document pane", picked && view(&t2, cx) == (Some(Engine::Postgres), false, None), format!("{picked} {:?}", view(&t2, cx)));
+    r.check(
+        "…and back to PostgreSQL: the grid again, no document pane",
+        picked && view(&t2, cx) == (Some(Engine::Postgres), false, None),
+        format!("{picked} {:?}", view(&t2, cx)),
+    );
 
     let _ = cx.update(|window, cx| {
         let tab = t1.clone();
@@ -98,7 +114,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 100).await;
     let t4 = new_tab_key(ws, cx);
     let on = t4.as_ref().map(|t| (tab_conn(t, cx), view(t, cx).1));
-    r.check("clicking Redis in the explorer, then ⌘T: a document tab on Redis", row.is_some() && on == Some((Some(redis.clone()), true)), format!("{row:?} {on:?}"));
+    r.check(
+        "clicking Redis in the explorer, then ⌘T: a document tab on Redis",
+        row.is_some() && on == Some((Some(redis.clone()), true)),
+        format!("{row:?} {on:?}"),
+    );
 
     let n = tabs(ws, cx).len();
     key(cx, "cmd-1");

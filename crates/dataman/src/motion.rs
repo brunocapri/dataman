@@ -2,8 +2,8 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::{App, Bounds, Global, Pixels, Point, point, size};
 use crate::theme::px;
+use gpui::{App, Bounds, Global, Pixels, Point, point, size};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CubicBezier {
@@ -47,7 +47,11 @@ impl CubicBezier {
             if (v - x).abs() < 1e-5 {
                 break;
             }
-            if v < x { lo = s } else { hi = s }
+            if v < x {
+                lo = s
+            } else {
+                hi = s
+            }
             s = (lo + hi) / 2.;
         }
         Self::sample(self.y1, self.y2, s)
@@ -364,14 +368,7 @@ pub fn paint_pop(
     scale: f32,
     text: Option<(&gpui::ShapedLine, Point<Pixels>, Pixels)>,
 ) {
-    window.paint_quad(gpui::quad(
-        scale_bounds(rest, scale),
-        px(radius * scale),
-        fill,
-        px(0.),
-        gpui::transparent_black(),
-        gpui::BorderStyle::Solid,
-    ));
+    window.paint_quad(gpui::quad(scale_bounds(rest, scale), px(radius * scale), fill, px(0.), gpui::transparent_black(), gpui::BorderStyle::Solid));
     if let Some((line, origin, lh)) = text {
         let at = scale_point(origin, rest.center(), scale);
         let _ = line.paint(at, lh * scale, gpui::TextAlign::Left, None, window, cx);

@@ -2,18 +2,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
-    ScrollHandle, SharedString, Task, Window, actions, anchored, deferred, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::Connection;
 use dataman_core::guard::{self, Finding};
 use dataman_core::import::{
-    ColumnMap, CsvDialect, Encoding, ImportFormat, ImportOptions, ImportProgress, ImportReport, Method, OnError, Outcome, PgType,
-    Preview, auto_map, preview_task, table_name_for,
+    ColumnMap, CsvDialect, Encoding, ImportFormat, ImportOptions, ImportProgress, ImportReport, Method, OnError, Outcome, PgType, Preview, auto_map,
+    preview_task, table_name_for,
 };
 use dataman_core::schema::Column;
+use gpui::{
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle, SharedString, Task, Window, actions,
+    anchored, deferred, div, prelude::*,
+};
 
 use crate::assets::{Icon, icon};
 use crate::export_ui::fmt_bytes;
@@ -331,7 +331,11 @@ impl DataImportView {
                 .iter()
                 .enumerate()
                 .filter(|(_, m)| m.is_some())
-                .map(|(i, _)| ColumnMap { source: i, target: p.columns[i].name.clone(), type_name: self.types.get(i).copied().unwrap_or(PgType::Text).sql().into() })
+                .map(|(i, _)| ColumnMap {
+                    source: i,
+                    target: p.columns[i].name.clone(),
+                    type_name: self.types.get(i).copied().unwrap_or(PgType::Text).sql().into(),
+                })
                 .collect()
         } else {
             let cols = self.target_cols.as_ref().ok_or("the table's columns are still being read")?;
@@ -608,9 +612,20 @@ impl DataImportView {
         match &j.state {
             JobState::Running => {
                 buttons.push(
-                    ui::button(t, "di-bg", Btn::Secondary).h(px(28.)).child("Run in background").on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))).into_any_element(),
+                    ui::button(t, "di-bg", Btn::Secondary)
+                        .h(px(28.))
+                        .child("Run in background")
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close)))
+                        .into_any_element(),
                 );
-                buttons.push(ui::button(t, "di-stop", Btn::Danger).h(px(28.)).child("Stop").child(ui::key_hint("⌘.")).on_click(cx.listener(|v, _, _, cx| v.stop(cx))).into_any_element());
+                buttons.push(
+                    ui::button(t, "di-stop", Btn::Danger)
+                        .h(px(28.))
+                        .child("Stop")
+                        .child(ui::key_hint("⌘."))
+                        .on_click(cx.listener(|v, _, _, cx| v.stop(cx)))
+                        .into_any_element(),
+                );
             }
             JobState::Done(r) if r.outcome == Outcome::Done => {
                 let ev = DataImportEvent::ViewData {
@@ -631,11 +646,31 @@ impl DataImportView {
                         }))
                         .into_any_element(),
                 );
-                buttons.push(ui::button(t, "di-close", Btn::Primary).h(px(28.)).child("Close").child(ui::key_hint("esc")).on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))).into_any_element());
+                buttons.push(
+                    ui::button(t, "di-close", Btn::Primary)
+                        .h(px(28.))
+                        .child("Close")
+                        .child(ui::key_hint("esc"))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close)))
+                        .into_any_element(),
+                );
             }
             JobState::Done(_) => {
-                buttons.push(ui::button(t, "di-back", Btn::Secondary).h(px(28.)).child("Back to options").on_click(cx.listener(|v, _, _, cx| v.back_to_options(cx))).into_any_element());
-                buttons.push(ui::button(t, "di-close", Btn::Ghost).h(px(28.)).child("Close").child(ui::key_hint("esc")).on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))).into_any_element());
+                buttons.push(
+                    ui::button(t, "di-back", Btn::Secondary)
+                        .h(px(28.))
+                        .child("Back to options")
+                        .on_click(cx.listener(|v, _, _, cx| v.back_to_options(cx)))
+                        .into_any_element(),
+                );
+                buttons.push(
+                    ui::button(t, "di-close", Btn::Ghost)
+                        .h(px(28.))
+                        .child("Close")
+                        .child(ui::key_hint("esc"))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close)))
+                        .into_any_element(),
+                );
             }
         }
         div()
@@ -666,7 +701,15 @@ impl DataImportView {
                     .flex_row()
                     .items_center()
                     .gap(px(8.))
-                    .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(if note_err { t.err } else { t.tx3 }).child(note.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(crate::theme::text::SMALL))
+                            .line_height(px(16.))
+                            .text_color(if note_err { t.err } else { t.tx3 })
+                            .child(note.clone()),
+                    )
                     .when(note_err, |d| d.child(ui::copy_error(t, "di-progress-copy", note)))
                     .children(buttons),
             )
@@ -706,7 +749,15 @@ impl DataImportView {
                 .gap(px(2.))
                 .border_r_1()
                 .border_color(t.line)
-                .child(div().text_color(if on { t.tx } else { t.tx3 }).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().overflow_hidden().text_ellipsis().child(c.name.clone()))
+                .child(
+                    div()
+                        .text_color(if on { t.tx } else { t.tx3 })
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .child(c.name.clone()),
+                )
                 .child(
                     div()
                         .id(("di-map", i))
@@ -720,7 +771,16 @@ impl DataImportView {
                         .text_size(px(crate::theme::text::SMALL))
                         .when(open, |d| d.bg(t.acc_s))
                         .when(!open && !locked, move |d| d.hover(move |s| s.bg(hov)))
-                        .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(if on { t.acc_t } else { t.tx4 }).child(label))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(if on { t.acc_t } else { t.tx4 })
+                                .child(label),
+                        )
                         .child(ui::dropdown_arrow(("di-map-arrow", i), open, 9., t.tx4))
                         .when(!locked, |d| {
                             d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
@@ -744,21 +804,16 @@ impl DataImportView {
             .child(div().absolute().top_0().left(offset_x).w(px(total_w)).flex().flex_row().children(heads));
         let skipped: Vec<bool> = (0..n).map(|i| self.map.get(i).copied().flatten().is_none()).collect();
         let rows = p.rows.iter().enumerate().map(|(r, row)| {
-            div()
-                .flex_none()
-                .h(px(ROW_H))
-                .w(px(total_w))
-                .flex()
-                .flex_row()
-                .when(r % 2 == 1, |d| d.bg(t.hov.opacity(0.5)))
-                .children(row.iter().enumerate().map(|(i, v)| {
+            div().flex_none().h(px(ROW_H)).w(px(total_w)).flex().flex_row().when(r % 2 == 1, |d| d.bg(t.hov.opacity(0.5))).children(row.iter().enumerate().map(
+                |(i, v)| {
                     let cell = div().flex_none().w(px(COL_W)).px(px(8.)).flex().items_center().whitespace_nowrap().overflow_hidden().text_ellipsis();
                     let cell = if skipped.get(i).copied().unwrap_or(false) { cell.opacity(0.4) } else { cell };
                     match v {
                         Some(s) => cell.text_color(t.tx2).child(one_line(s)),
                         None => cell.text_color(t.tx4).child("NULL"),
                     }
-                }))
+                },
+            ))
         });
         let body = div()
             .id("di-rows")
@@ -872,26 +927,33 @@ impl DataImportView {
         }
         let left = offset_x + px(COL_W * i as f32);
         let left = if left < px(0.) { px(0.) } else { left };
-        div().absolute().top_0().left_0().child(deferred(
-            anchored().child(ui::menu_in("di-col-menu-in", 
-                div().pl(left).pt(px(HEAD_H - 2.)).child(
-                    ui::popover(t)
-                        .id("di-col-menu")
-                        .w(px(220.))
-                        .max_h(px(300.))
-                        .overflow_y_scroll()
-                        .on_mouse_down_out(cx.listener(|v, _, _, cx| {
-                            if let Some(m) = v.menu.take() {
-                                ui::menu_shut(format!("import-{m:?}"));
-                            }
-                            cx.notify();
-                        }))
-                        .children(items),
-                ),
-            )),
-        )
-        .priority(3))
-        .into_any_element()
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .child(
+                deferred(
+                    anchored().child(ui::menu_in(
+                        "di-col-menu-in",
+                        div().pl(left).pt(px(HEAD_H - 2.)).child(
+                            ui::popover(t)
+                                .id("di-col-menu")
+                                .w(px(220.))
+                                .max_h(px(300.))
+                                .overflow_y_scroll()
+                                .on_mouse_down_out(cx.listener(|v, _, _, cx| {
+                                    if let Some(m) = v.menu.take() {
+                                        ui::menu_shut(format!("import-{m:?}"));
+                                    }
+                                    cx.notify();
+                                }))
+                                .children(items),
+                        ),
+                    )),
+                )
+                .priority(3),
+            )
+            .into_any_element()
     }
 
     fn render_guard(&self, findings: &[Finding], stmts: &[String], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -945,16 +1007,12 @@ impl DataImportView {
                         ui::modal_footer(t)
                             .child(footer)
                             .child(div().flex_1())
-                            .child(
-                                ui::button(t, "di-guard-cancel", Btn::Secondary)
-                                    .h(px(28.))
-                                    .child("Cancel")
-                                    .child(ui::key_hint("esc"))
-                                    .on_click(cx.listener(|v, _, _, cx| {
-                                        v.guard = None;
-                                        cx.notify();
-                                    })),
-                            )
+                            .child(ui::button(t, "di-guard-cancel", Btn::Secondary).h(px(28.)).child("Cancel").child(ui::key_hint("esc")).on_click(
+                                cx.listener(|v, _, _, cx| {
+                                    v.guard = None;
+                                    cx.notify();
+                                }),
+                            ))
                             .child(
                                 ui::button(t, "di-guard-run", Btn::Danger)
                                     .h(px(28.))
@@ -1046,22 +1104,42 @@ impl Render for DataImportView {
                 .bg(t.field)
                 .border_1()
                 .border_color(t.field_b)
-                .child(div().flex_none().max_w(px(260.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(
-                    self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                ))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(
-                    self.path.parent().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_default(),
-                ))
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(260.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(t.tx3)
+                        .child(self.path.parent().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_default()),
+                )
                 .children(self.preview.as_ref().map(|p| div().flex_none().text_color(t.tx3).child(fmt_bytes(p.file_bytes))))
-                .child(div().id("di-choose").flex_none().text_color(t.acc_t).child("Choose…").when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_file(cx))))),
+                .child(
+                    div()
+                        .id("di-choose")
+                        .flex_none()
+                        .text_color(t.acc_t)
+                        .child("Choose…")
+                        .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_file(cx)))),
+                ),
         );
-        let formats = div().flex_none().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "FORMAT")).child(
-            ui::segmented(&t).w(px(330.)).children(ImportFormat::ALL.into_iter().map(|f| {
+        let formats = div().flex_none().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "FORMAT")).child(ui::segmented(&t).w(px(330.)).children(
+            ImportFormat::ALL.into_iter().map(|f| {
                 ui::segment(&t, f.label(), f.label(), shown_format == Some(f))
                     .when(locked, |d| d.opacity(0.6).cursor_default())
                     .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx))))
-            })),
-        );
+            }),
+        ));
         let top = div().flex().flex_row().gap(px(16.)).child(file).child(formats);
 
         let menu_open = self.menu;
@@ -1073,7 +1151,8 @@ impl Render for DataImportView {
                 let choices = f.choices();
                 let menu = open.then(|| {
                     deferred(
-                        anchored().child(ui::menu_in("di-field-menu-in", 
+                        anchored().child(ui::menu_in(
+                            "di-field-menu-in",
                             ui::popover(&t)
                                 .mt(px(52.))
                                 .w(px(180.))
@@ -1135,7 +1214,16 @@ impl Render for DataImportView {
                 .gap(px(16.))
                 .child(
                     div().w(px(180.)).flex().flex_col().gap(px(6.)).child(ui::caps(&t, "SCHEMA")).child(
-                        div().h(px(28.)).px(px(10.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx2).child(self.target.schema.clone()),
+                        div()
+                            .h(px(28.))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .bg(t.field)
+                            .border_1()
+                            .border_color(t.field_b)
+                            .text_color(t.tx2)
+                            .child(self.target.schema.clone()),
                     ),
                 )
                 .child(div().flex_1().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "TABLE")).child(div().h(px(30.)).child(self.table_name.clone())))
@@ -1183,15 +1271,17 @@ impl Render for DataImportView {
         };
 
         let check = |id: &'static str, label: &'static str, on: bool, danger: bool, enabled: bool, t: &Theme| {
-            div()
-                .id(id)
-                .h(px(26.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .child(ui::checkbox(t, on))
-                .child(div().text_color(if !enabled { t.tx4 } else if danger && on { t.err } else { t.tx }).child(label))
+            div().id(id).h(px(26.)).flex().flex_row().items_center().gap(px(8.)).child(ui::checkbox(t, on)).child(
+                div()
+                    .text_color(if !enabled {
+                        t.tx4
+                    } else if danger && on {
+                        t.err
+                    } else {
+                        t.tx
+                    })
+                    .child(label),
+            )
         };
         let can_truncate = !self.new_table() && !locked;
         let options = div()
@@ -1243,7 +1333,14 @@ impl Render for DataImportView {
         let footer: AnyElement = match &self.job {
             Some(j) => self.render_progress(j, &t, cx),
             None => ui::modal_footer(&t)
-                .child(div().flex_1().min_w_0().flex().text_size(px(crate::theme::text::SMALL)).children(self.error.clone().filter(|_| self.preview.is_some()).map(|e| ui::error_line(&t, "di-error-line", e))))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .text_size(px(crate::theme::text::SMALL))
+                        .children(self.error.clone().filter(|_| self.preview.is_some()).map(|e| ui::error_line(&t, "di-error-line", e))),
+                )
                 .child(ui::button(&t, "di-cancel", Btn::Ghost).h(px(28.)).child("Cancel").on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))))
                 .child(
                     ui::button(&t, "di-start", if ready { Btn::Primary } else { Btn::Ghost })
@@ -1270,14 +1367,28 @@ impl Render for DataImportView {
             .on_action(cx.listener(Self::close_esc))
             .on_action(cx.listener(|v, _: &StartDataImport, _, cx| v.start(cx)))
             .on_action(cx.listener(|v, _: &StopDataImport, _, cx| v.stop(cx)))
-            .on_mouse_down(MouseButton::Left, cx.listener(|v, _, _, cx| {
-                if v.guard.take().is_some() {
-                    cx.notify();
-                } else {
-                    cx.emit(DataImportEvent::Close)
-                }
-            }))
-            .child(div().absolute().top(px(40.)).left_0().right_0().bottom(px(12.)).flex().items_start().justify_center().child(sheet.child(header).child(body).child(footer)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, _, _, cx| {
+                    if v.guard.take().is_some() {
+                        cx.notify();
+                    } else {
+                        cx.emit(DataImportEvent::Close)
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(40.))
+                    .left_0()
+                    .right_0()
+                    .bottom(px(12.))
+                    .flex()
+                    .items_start()
+                    .justify_center()
+                    .child(sheet.child(header).child(body).child(footer)),
+            )
             .children(guard)
             .child(ui::esc_closes(Some("DataImport"), cx.listener(Self::close_esc)))
     }
@@ -1307,7 +1418,13 @@ impl Workspace {
             _ => {
                 let tab = self.active_tab().ok_or("Select a table or a schema in the explorer first")?.read(cx);
                 let c = tab.connection().ok_or("Select a table or a schema in the explorer first")?;
-                let schema = c.info.search_path.iter().find(|s| !s.starts_with("pg_") && *s != "$user").cloned().unwrap_or_else(|| c.engine().default_schema().unwrap_or_default().to_string());
+                let schema = c
+                    .info
+                    .search_path
+                    .iter()
+                    .find(|s| !s.starts_with("pg_") && *s != "$user")
+                    .cloned()
+                    .unwrap_or_else(|| c.engine().default_schema().unwrap_or_default().to_string());
                 (c.profile.id.clone(), tab.database().to_string(), schema, None)
             }
         };

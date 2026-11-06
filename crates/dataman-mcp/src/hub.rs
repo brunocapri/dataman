@@ -9,8 +9,8 @@ use futures_util::future::BoxFuture;
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
-use dataman_core::audit::Audit;
 use dataman_core::agent_login;
+use dataman_core::audit::Audit;
 use dataman_core::privacy::Types;
 
 pub const PER_CONNECTION: usize = 2;
@@ -331,7 +331,10 @@ impl Hub {
         let mine = g.waiting.get(client).copied().unwrap_or(0);
         let all: usize = g.waiting.values().sum();
         if mine >= WAITING_PER_CLIENT || all >= WAITING {
-            return Err(format!("{} questions already wait for the user in Dataman; wait for an answer before asking more", if mine >= WAITING_PER_CLIENT { mine } else { all }));
+            return Err(format!(
+                "{} questions already wait for the user in Dataman; wait for an answer before asking more",
+                if mine >= WAITING_PER_CLIENT { mine } else { all }
+            ));
         }
         *g.waiting.entry(client.to_string()).or_default() += 1;
         Ok(AskSlot { asks: self.asks.clone(), client: client.to_string() })
@@ -497,7 +500,10 @@ impl Hub {
             Some(l) => {
                 // The Keychain may wait for a prompt: not on the runtime's workers.
                 let (secrets, id, user) = (self.core.secrets.clone(), p.id.clone(), l.user.clone());
-                let pw = tokio::task::spawn_blocking(move || agent_login::live::password_of(&*secrets, &id, &user)).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:#}"))?;
+                let pw = tokio::task::spawn_blocking(move || agent_login::live::password_of(&*secrets, &id, &user))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .map_err(|e| format!("{e:#}"))?;
                 agent_pw = Some(pw.clone());
                 self.core.connect_agent(p, agent_login::live::agent_profile(&agent, &l.user), pw)
             }
@@ -506,7 +512,11 @@ impl Hub {
         // Past its time, or this call dropped: the tunnel and the Keychain read stop too.
         let mut task = task.abort_on_drop();
         let as_login = p.agent_login.as_ref().map(|l| format!(" as its agent login {}", l.user)).unwrap_or_default();
-        let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Verify)" } else { "" };
+        let never = if p.agent_login.is_some() {
+            ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Verify)"
+        } else {
+            ""
+        };
         let first = match tokio::time::timeout(CONNECT_TIMEOUT, &mut task).await {
             Ok(Ok(c)) => Ok(c),
             Ok(Err(e)) => Err(format!("{e:#}")),
@@ -517,7 +527,9 @@ impl Hub {
         // (the user's login, as a sync), then connected again.
         let lost = match (&first, &p.agent_login) {
             (Err(e), Some(_)) if p.engine == dataman_core::Engine::SqlServer => agent_login::live::lost_database(e),
-            (Ok(c), Some(l)) if p.engine == dataman_core::Engine::SqlServer => !agent_login::live::reaches(c, &agent_login::live::database_for(p, Some(l))).await,
+            (Ok(c), Some(l)) if p.engine == dataman_core::Engine::SqlServer => {
+                !agent_login::live::reaches(c, &agent_login::live::database_for(p, Some(l))).await
+            }
             _ => false,
         };
         let c = match (lost, &p.agent_login, &agent_pw) {
@@ -545,7 +557,12 @@ impl Hub {
     /// The agent login put back in its database made again, with the user's login, where the
     /// user lets Dataman keep it in step on its own (Auto sync); the record kept as a sync keeps
     /// it. Otherwise, why agents are refused and what puts it back.
-    fn put_back<'a>(&'a self, p: &'a ConnectionProfile, l: &'a dataman_core::agent_login::AgentLogin, pw: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    fn put_back<'a>(
+        &'a self,
+        p: &'a ConnectionProfile,
+        l: &'a dataman_core::agent_login::AgentLogin,
+        pw: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(self.put_back_now(p, l, pw))
     }
 
@@ -556,7 +573,8 @@ impl Hub {
             return Err(lost());
         }
         let admin = self.connect_user(p).await.map_err(|e| format!("{}; and Dataman could not connect as you to put it back: {e}", lost()))?;
-        let plan = agent_login::live::reattach(&self.core, &admin, p, l, pw).await.map_err(|e| format!("cannot connect to {} as its agent login: {e:#}", p.name))?;
+        let plan =
+            agent_login::live::reattach(&self.core, &admin, p, l, pw).await.map_err(|e| format!("cannot connect to {} as its agent login: {e:#}", p.name))?;
         let Some(plan) = plan else {
             return Err(format!("cannot connect to {} as its agent login {}: it doesn't reach {db}", p.name, l.user));
         };

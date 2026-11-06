@@ -2,8 +2,8 @@
 //! row, NULL, discard), reviewing and committing, a conflict and Overwrite, committing without
 //! review, and the result zoom on ⌘⇧↩. Every commit is read back on a connection of its own.
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -109,7 +109,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let done = committed(&tab, cx).await;
     let name = sql1(&core, &pg, &pw, &read("name", "101"), cx).await;
     let gone = sql1(&core, &pg, &pw, "SELECT count(*) FROM dataman_scratch.products_edit WHERE id = 103", cx).await;
-    r.check("Commit writes the edit and the delete", done && name.as_deref() == Some("Aurora edited") && gone.as_deref() == Some("0"), format!("{done} {name:?} {gone:?}"));
+    r.check(
+        "Commit writes the edit and the delete",
+        done && name.as_deref() == Some("Aurora edited") && gone.as_deref() == Some("0"),
+        format!("{done} {name:?} {gone:?}"),
+    );
 
     edit_cell(&tab, "104", PRICE, Some("1"), cx).await;
     let had = pending(&tab, cx);
@@ -117,7 +121,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "cmd-backspace");
     let left = pending(&tab, cx);
     let price = sql1(&core, &pg, &pw, &read("price", "104"), cx).await;
-    r.check("⌘⌫ discards the pending edit; the table keeps its value", had == 1 && left == 0 && price.as_deref() == Some("49.00"), format!("{had} → {left} {price:?}"));
+    r.check(
+        "⌘⌫ discards the pending edit; the table keeps its value",
+        had == 1 && left == 0 && price.as_deref() == Some("49.00"),
+        format!("{had} → {left} {price:?}"),
+    );
 
     edit_cell(&tab, "104", STOCK, None, cx).await;
     key(cx, "cmd-s");
@@ -135,7 +143,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     });
     let one = copied(cx, "7", |cx| key(cx, "cmd-c")).await;
     let with = copied(cx, "stock\n7\n", |cx| key(cx, "cmd-shift-c")).await;
-    r.check("a NULL with a pending edit copies what the cell shows, never \\N", stored.is_none() && one == "7" && with == "stock\n7\n", format!("{stored:?} {one:?} {with:?}"));
+    r.check(
+        "a NULL with a pending edit copies what the cell shows, never \\N",
+        stored.is_none() && one == "7" && with == "stock\n7\n",
+        format!("{stored:?} {one:?} {with:?}"),
+    );
     key(cx, "cmd-backspace");
 
     edit_cell(&tab, "105", NAME, Some("mine"), cx).await;
@@ -145,7 +157,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     until(cx, 10, |cx| cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_conflicts()).unwrap_or(0) > 0).await;
     let conflicts = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_conflicts()).unwrap_or(0);
     let kept = sql1(&core, &pg, &pw, &read("name", "105"), cx).await;
-    r.check("a row changed underneath: the commit stops on the conflict, theirs kept", conflicts == 1 && kept.as_deref() == Some("theirs"), format!("{conflicts} {kept:?}"));
+    r.check(
+        "a row changed underneath: the commit stops on the conflict, theirs kept",
+        conflicts == 1 && kept.as_deref() == Some("theirs"),
+        format!("{conflicts} {kept:?}"),
+    );
     until(cx, 5, |cx| probed("cf-over", cx).is_some()).await;
     click_probe("cf-over", cx);
     committed(&tab, cx).await;

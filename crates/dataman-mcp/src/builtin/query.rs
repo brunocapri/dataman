@@ -121,7 +121,8 @@ pub(super) async fn open(cx: &Call, a: Args) -> Result<Value, ToolError> {
     let target = cx.target(&a, Need::Read)?;
     let d = target.engine.dialect();
     let stmts = bounded::statements_in(sql, d);
-    let reads = guard::agent_write_class(sql, d) == WriteClass::Read && (stmts.len() == 1 || stmts.iter().all(|s| guard::agent_read_refusal_in(s, d).is_none()));
+    let reads =
+        guard::agent_write_class(sql, d) == WriteClass::Read && (stmts.len() == 1 || stmts.iter().all(|s| guard::agent_read_refusal_in(s, d).is_none()));
     if reads {
         return read(cx, &a, true).await;
     }
@@ -153,7 +154,12 @@ fn one(sql: &str, d: Dialect) -> Result<String, ToolError> {
 }
 
 fn plan_limits(timeout_ms: u64) -> Limits {
-    Limits { max_rows: 10_000, max_bytes: 8 * 1024 * 1024, max_cell: 8 * 1024 * 1024, timeout: std::time::Duration::from_millis(timeout_ms.clamp(100, 300_000)) }
+    Limits {
+        max_rows: 10_000,
+        max_bytes: 8 * 1024 * 1024,
+        max_cell: 8 * 1024 * 1024,
+        timeout: std::time::Duration::from_millis(timeout_ms.clamp(100, 300_000)),
+    }
 }
 
 fn plan_json(out: &bounded::Outcome, format: &str, rolled_back: bool) -> Value {
@@ -215,11 +221,7 @@ async fn narrowed(cx: &Call, a: &Args, o: &Opened, stmt: String) -> Result<Strin
 }
 
 fn plans(o: &Opened) -> Result<(), ToolError> {
-    if o.conn.caps().explain {
-        Ok(())
-    } else {
-        Err(ToolError::Invalid(format!("plans are not available on {} connections", o.conn.engine().label())))
-    }
+    if o.conn.caps().explain { Ok(()) } else { Err(ToolError::Invalid(format!("plans are not available on {} connections", o.conn.engine().label()))) }
 }
 
 fn explain_plain(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {

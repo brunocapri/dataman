@@ -87,8 +87,32 @@ fn detect_numbered(sql: &str, d: Dialect) -> Option<Prepared> {
 }
 
 const TSQL_STATEMENT_WORDS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "SET", "IF", "WHILE", "EXEC", "EXECUTE", "RETURN", "PRINT", "BEGIN", "END",
-    "OPEN", "FETCH", "CLOSE", "DEALLOCATE", "WITH", "TRUNCATE", "DROP", "CREATE", "ALTER", "WAITFOR", "THROW", "RAISERROR",
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
+    "SET",
+    "IF",
+    "WHILE",
+    "EXEC",
+    "EXECUTE",
+    "RETURN",
+    "PRINT",
+    "BEGIN",
+    "END",
+    "OPEN",
+    "FETCH",
+    "CLOSE",
+    "DEALLOCATE",
+    "WITH",
+    "TRUNCATE",
+    "DROP",
+    "CREATE",
+    "ALTER",
+    "WAITFOR",
+    "THROW",
+    "RAISERROR",
 ];
 
 pub fn detect_tsql(sql: &str) -> Option<Prepared> {
@@ -163,10 +187,8 @@ pub fn detect_tsql(sql: &str) -> Option<Prepared> {
         pos = r.end;
     }
     out.push_str(&sql[pos..]);
-    let keys: Vec<String> = named
-        .iter()
-        .map(|n| at.iter().find(|(_, k)| named[*k] == *n).map(|(r, _)| sql[r.clone()].to_string()).unwrap_or_else(|| n.clone()))
-        .collect();
+    let keys: Vec<String> =
+        named.iter().map(|n| at.iter().find(|(_, k)| named[*k] == *n).map(|(r, _)| sql[r.clone()].to_string()).unwrap_or_else(|| n.clone())).collect();
     Some(Prepared { sql: out, params: keys.into_iter().enumerate().map(|(k, key)| Param { key, index: k as u32 + 1, hint: None }).collect() })
 }
 
@@ -176,14 +198,19 @@ pub fn detect_tsql(sql: &str) -> Option<Prepared> {
 /// value and a placeholder don't pair up is refused, since it can only run with the wrong values.
 pub fn tsql_bound(sql: &str, given: usize) -> Result<std::borrow::Cow<'_, str>, String> {
     let tokens = tokenize_in(sql, Dialect::TSql);
-    let native = |t: &Token| t.kind == TokenKind::Ident && t.text(sql).get(..2).is_some_and(|p| p.eq_ignore_ascii_case("@P")) && t.text(sql)[2..].parse::<u32>().is_ok();
+    let native =
+        |t: &Token| t.kind == TokenKind::Ident && t.text(sql).get(..2).is_some_and(|p| p.eq_ignore_ascii_case("@P")) && t.text(sql)[2..].parse::<u32>().is_ok();
     if tokens.iter().any(native) {
         return Ok(sql.into());
     }
     let mut at: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
     for w in tokens.windows(2) {
         // `$1.50` is a Number too, and stays the literal it is.
-        if w[0].text(sql) == "$" && w[0].end == w[1].start && w[1].kind == TokenKind::Number && let Ok(n) = w[1].text(sql).parse::<usize>() {
+        if w[0].text(sql) == "$"
+            && w[0].end == w[1].start
+            && w[1].kind == TokenKind::Number
+            && let Ok(n) = w[1].text(sql).parse::<usize>()
+        {
             at.push((w[0].start..w[1].end, n));
         }
     }
@@ -419,7 +446,10 @@ mod tests {
     fn tsql_numbered_placeholders() {
         let bound = |s: &'static str, n| tsql_bound(s, n).map(|c| c.into_owned());
         assert_eq!(bound("SELECT * FROM t WHERE a = $1 AND b = $2 OR c = $1", 2).unwrap(), "SELECT * FROM t WHERE a = @P1 AND b = @P2 OR c = @P1");
-        assert_eq!(bound("SELECT '$1', [$1], a$1 FROM t -- $1\n /* $1 */ WHERE x = $1", 1).unwrap(), "SELECT '$1', [$1], a$1 FROM t -- $1\n /* $1 */ WHERE x = @P1");
+        assert_eq!(
+            bound("SELECT '$1', [$1], a$1 FROM t -- $1\n /* $1 */ WHERE x = $1", 1).unwrap(),
+            "SELECT '$1', [$1], a$1 FROM t -- $1\n /* $1 */ WHERE x = @P1"
+        );
         assert_eq!(bound("SELECT $1, $9.50, $.5", 1).unwrap(), "SELECT @P1, $9.50, $.5", "a money literal stays one");
         assert_eq!(bound("SELECT @P1, $1", 1).unwrap(), "SELECT @P1, $1", "already bound");
         assert_eq!(bound("SELECT @p1", 1).unwrap(), "SELECT @p1");
@@ -433,7 +463,8 @@ mod tests {
     #[test]
     fn tsql_variables() {
         let d = Dialect::TSql;
-        let p = detect_in("SELECT * FROM orders WHERE customer_id = @Customer AND status = @s OR @s IS NULL AND x = @customer -- @nope\n AND y = '@no'", d).unwrap();
+        let p = detect_in("SELECT * FROM orders WHERE customer_id = @Customer AND status = @s OR @s IS NULL AND x = @customer -- @nope\n AND y = '@no'", d)
+            .unwrap();
         assert_eq!(p.params.iter().map(|x| (x.key.as_str(), x.index)).collect::<Vec<_>>(), vec![("@Customer", 1), ("@s", 2)]);
         assert_eq!(p.sql, "SELECT * FROM orders WHERE customer_id = @P1 AND status = @P2 OR @P2 IS NULL AND x = @P1 -- @nope\n AND y = '@no'");
         assert!(detect_in("DECLARE @a int = 1, @b int; SELECT @a + @b, @@ROWCOUNT", d).is_none());

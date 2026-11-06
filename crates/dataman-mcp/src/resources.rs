@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use dataman_core::McpAccess;
-use dataman_core::schema::{RelKind, Relation};
 use dataman_core::bounded::{Limits, Mode};
+use dataman_core::schema::{RelKind, Relation};
 use serde_json::{Value, json};
 
 use crate::policy::Need;
@@ -339,7 +339,11 @@ mod tests {
             Rel {
                 kind: "table".into(),
                 rows: Some(48_000),
-                columns: vec![("id".into(), "bigint".into(), true, true), ("note".into(), "text".into(), false, false), ("customer_id".into(), "bigint".into(), false, true)],
+                columns: vec![
+                    ("id".into(), "bigint".into(), true, true),
+                    ("note".into(), "text".into(), false, false),
+                    ("customer_id".into(), "bigint".into(), false, true),
+                ],
                 fks: vec!["FOREIGN KEY (customer_id) REFERENCES customers(id)".into()],
             },
         );

@@ -59,7 +59,12 @@ async fn lookup(o: &Opened, schema: Option<&str>, name: &str) -> Option<(Table, 
         let mut columns: Vec<String> = o.conn.columns(&o.database, &vs, &vn).await.ok()?.into_iter().map(|c| c.name).collect();
         // The view leaves hidden columns out; those the rules name are the table's too, so
         // Dataman refuses them itself instead of the server not knowing them.
-        columns.extend(named_hidden(&o.profile.mcp_rules, &m.schema, &m.table).into_iter().filter(|h| !columns.iter().any(|c| c.eq_ignore_ascii_case(h))).collect::<Vec<_>>());
+        columns.extend(
+            named_hidden(&o.profile.mcp_rules, &m.schema, &m.table)
+                .into_iter()
+                .filter(|h| !columns.iter().any(|c| c.eq_ignore_ascii_case(h)))
+                .collect::<Vec<_>>(),
+        );
         return Some((Table { schema: m.schema.clone(), name: m.table.clone(), columns }, RelKind::Table));
     };
     let cols = o.conn.columns(&o.database, &r.schema, &r.name).await.ok()?;
@@ -154,20 +159,33 @@ pub async fn view_reads_kept(o: &Opened, r: &AgentRules, view: &Table, kind: Rel
             continue;
         }
         if seen.len() > VIEW_DEPTH {
-            return Err(format!("{} reads through more views than Dataman follows, and {conn} keeps some data from agents: query its tables directly", view.name));
+            return Err(format!(
+                "{} reads through more views than Dataman follows, and {conn} keeps some data from agents: query its tables directly",
+                view.name
+            ));
         }
-        let sources = o.conn.view_sources(&o.database, &schema, &name).await.map_err(|e| format!("Dataman could not check what {} reads ({e:#}), and {conn} keeps some data from agents", view.name))?;
+        let sources = o
+            .conn
+            .view_sources(&o.database, &schema, &name)
+            .await
+            .map_err(|e| format!("Dataman could not check what {} reads ({e:#}), and {conn} keeps some data from agents", view.name))?;
         for src in sources {
             match src.kind {
                 ViewSourceKind::Function => {
-                    return Err(format!("{} calls {}(), a function of your database; agents cannot read it on {conn} while some data is kept from them", view.name, src.name));
+                    return Err(format!(
+                        "{} calls {}(), a function of your database; agents cannot read it on {conn} while some data is kept from them",
+                        view.name, src.name
+                    ));
                 }
                 ViewSourceKind::Unknown => {
                     return Err(format!("{} reads {}, which Dataman cannot check, and {conn} keeps some data from agents", view.name, src.name));
                 }
                 ViewSourceKind::Relation => {
                     let Some((t, k)) = lookup(o, Some(&src.schema), &src.name).await else {
-                        return Err(format!("{} reads {}.{}, which Dataman cannot check, and {conn} keeps some data from agents", view.name, src.schema, src.name));
+                        return Err(format!(
+                            "{} reads {}.{}, which Dataman cannot check, and {conn} keeps some data from agents",
+                            view.name, src.schema, src.name
+                        ));
                     };
                     if keeps(r, &t) {
                         return Err(format!("{} reads {}.{}, which keeps data from agents on {conn}: query {} directly", view.name, t.schema, t.name, t.name));
@@ -187,7 +205,9 @@ pub async fn effective_rules(cx: &Call, o: &Opened) -> Result<AgentRules, ToolEr
     if !restricted(r) || !o.conn.engine().is_sql() {
         return Ok(r.clone());
     }
-    let cols = o.conn.generated_columns(&o.database, cx.cancel.clone().cancelled_owned()).await.map_err(|e| ToolError::Failed(format!("Dataman could not read the generated columns of {} ({e}), and {} keeps some data from agents", o.database, o.profile.name)))?;
+    let cols = o.conn.generated_columns(&o.database, cx.cancel.clone().cancelled_owned()).await.map_err(|e| {
+        ToolError::Failed(format!("Dataman could not read the generated columns of {} ({e}), and {} keeps some data from agents", o.database, o.profile.name))
+    })?;
     Ok(r.with_generated(&cols, Names::Qualified))
 }
 
@@ -301,7 +321,8 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
     let mut used: Vec<(String, Mask)> = Vec::new();
     let was_cut = |s: &str| read.max_cell > agent.max_cell && s.ends_with('…') && s.chars().count() == read.max_cell + 1;
     let mut apply = |columns: &[bounded::Column], rows: &mut Vec<Vec<Value>>, cut_cells: &mut usize, counts: &mut dataman_core::privacy::Counts| {
-        let at: Vec<(usize, Mask)> = columns.iter().enumerate().filter_map(|(i, c)| masks.iter().find(|(m, _)| m.eq_ignore_ascii_case(&c.name)).map(|(_, how)| (i, *how))).collect();
+        let at: Vec<(usize, Mask)> =
+            columns.iter().enumerate().filter_map(|(i, c)| masks.iter().find(|(m, _)| m.eq_ignore_ascii_case(&c.name)).map(|(_, how)| (i, *how))).collect();
         for (i, how) in &at {
             let name = columns[*i].name.clone();
             if !used.iter().any(|(n, _)| *n == name) {
@@ -437,8 +458,15 @@ async fn mongo_views(o: &Opened, r: &AgentRules, reads: Vec<(String, String)>) -
         }
         if !views.contains_key(&db) {
             let stmt = "db.runCommand({listCollections: 1, filter: {type: \"view\"}})";
-            let ran = o.conn.run_nosql(&db, stmt, dataman_core::nosql::Page::default()).await.map_err(|e| format!("Dataman could not check the views of {db} ({e:#}), and {conn} keeps some data from agents"))?;
-            let found = ran_docs(&ran).into_iter().filter_map(|d| Some((d.get("name")?.as_str()?.to_string(), d.get("options").cloned().unwrap_or(Value::Null)))).collect();
+            let ran = o
+                .conn
+                .run_nosql(&db, stmt, dataman_core::nosql::Page::default())
+                .await
+                .map_err(|e| format!("Dataman could not check the views of {db} ({e:#}), and {conn} keeps some data from agents"))?;
+            let found = ran_docs(&ran)
+                .into_iter()
+                .filter_map(|d| Some((d.get("name")?.as_str()?.to_string(), d.get("options").cloned().unwrap_or(Value::Null))))
+                .collect();
             views.insert(db.clone(), found);
         }
         let Some((_, options)) = views[&db].iter().find(|(n, _)| *n == coll) else { continue };
@@ -505,7 +533,12 @@ async fn es_aliases(o: &Opened, r: &AgentRules, text: &str) -> Result<bool, Stri
                 a.iter()
                     .filter_map(|x| {
                         let n = x.get("name")?.as_str()?.to_string();
-                        let list = x.get("indices").or_else(|| x.get("backing_indices")).and_then(Value::as_array).map(|l| l.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                        let list = x
+                            .get("indices")
+                            .or_else(|| x.get("backing_indices"))
+                            .and_then(Value::as_array)
+                            .map(|l| l.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                            .unwrap_or_default();
                         Some((n, list))
                     })
                     .collect()

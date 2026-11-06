@@ -21,7 +21,8 @@ fn addr(var: &str, default: &str) -> (String, u16) {
 
 fn up(var: &str, default: &str) -> bool {
     let (h, p) = addr(var, default);
-    let ok = std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok());
+    let ok = std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok());
     if !ok {
         eprintln!("skipping: nothing at {h}:{p} ({var})");
     }
@@ -50,7 +51,9 @@ struct Env {
 
 fn conn(id: &str, var: &str, default: &str, user: &str, db: &str, extra: &str) -> String {
     let (h, p) = addr(var, default);
-    format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{h}\"\nport = {p}\nuser = \"{user}\"\ndatabase = \"{db}\"\nsslmode = \"disable\"\n{extra}\n")
+    format!(
+        "[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{h}\"\nport = {p}\nuser = \"{user}\"\ndatabase = \"{db}\"\nsslmode = \"disable\"\n{extra}\n"
+    )
 }
 
 /// `s` is this run's PostgreSQL schema (and the MySQL database, the Mongo database, the Redis key
@@ -302,9 +305,17 @@ fn postgres_privacy() {
     let r = q(format!("SELECT name || ' <' || 'ana@acme.com' || '>' AS x FROM {s}.customers")).unwrap();
     assert_eq!(r["rows"][0][0], "Ana <a•••@acme.com>", "e-mails are masked inside any value");
     let logged = e.audit().last().unwrap()["seen"]["values"].clone();
-    assert!(r["masked"] == json!({"E-mail": 1}) && r["masked"] == logged, "the reply counts every value masked in it, once, as the log does: {} vs {logged}", r["masked"]);
+    assert!(
+        r["masked"] == json!({"E-mail": 1}) && r["masked"] == logged,
+        "the reply counts every value masked in it, once, as the log does: {} vs {logged}",
+        r["masked"]
+    );
     let raw = e.ok("run_query", a(json!({"sql": "SELECT 'ana@acme.com' AS x, '4242 4242 4242 4242' AS card"})));
-    assert_eq!((raw["rows"][0][0].as_str(), raw["rows"][0][1].as_str()), (Some("ana@acme.com"), Some("4242 4242 4242 4242")), "on Data nothing is masked: {raw}");
+    assert_eq!(
+        (raw["rows"][0][0].as_str(), raw["rows"][0][1].as_str()),
+        (Some("ana@acme.com"), Some("4242 4242 4242 4242")),
+        "on Data nothing is masked: {raw}"
+    );
     assert!(raw.get("masked").is_none(), "{raw}");
     assert!(q(format!("SELECT upper(email) FROM {s}.customers")).unwrap_err().contains("masked for agents"));
     assert!(q(format!("SELECT email AS e FROM {s}.customers")).unwrap_err().contains("masked for agents"));
@@ -397,7 +408,10 @@ fn postgres_views_long_cells_and_returning() {
     let found = in_schema(&e.ok("search_objects", p(json!({"pattern": "password"}))), &s);
     assert!(!found.contains("password_hash"), "the hidden column's name does not come back through a view: {found}");
     let listed = names(&e.ok("list_tables", p(json!({"schema": s}))), 1);
-    assert!(listed.contains(&"v_ok".to_string()) && !listed.iter().any(|n| ["v_renamed", "v_star", "v_of_v", "mv", "v_masked"].contains(&n.as_str())), "{listed:?}");
+    assert!(
+        listed.contains(&"v_ok".to_string()) && !listed.iter().any(|n| ["v_renamed", "v_star", "v_of_v", "mv", "v_masked"].contains(&n.as_str())),
+        "{listed:?}"
+    );
     assert!(e.err("describe_table", p(json!({"table": format!("{s}.v_star")}))).contains("keeps data from agents"));
     assert!(e.ok("get_ddl", p(json!({"object": format!("{s}.v_ok")})))["ddl"].is_string());
 
@@ -421,7 +435,10 @@ fn postgres_views_long_cells_and_returning() {
         Err(e) => assert!(!e.contains("not-a-taxid-7"), "{e}"),
     }
     let agent: Vec<String> = e.audit().into_iter().filter(|x| x["connection"] == "prod-pg").map(|x| x.to_string()).collect();
-    assert!(!agent.is_empty() && agent.iter().all(|l| !l.contains("secret-hash-1") && !l.contains("not-a-taxid-7")), "nothing kept reaches the audit log: {agent:?}");
+    assert!(
+        !agent.is_empty() && agent.iter().all(|l| !l.contains("secret-hash-1") && !l.contains("not-a-taxid-7")),
+        "nothing kept reaches the audit log: {agent:?}"
+    );
 
     e.admin("execute", a(json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
     e.done();
@@ -435,7 +452,10 @@ fn mysql_and_sql_server_privacy() {
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE DATABASE {s}")})));
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE TABLE {s}.users (id int PRIMARY KEY, name text, password_hash text)")})));
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE TABLE {s}.customers (id int PRIMARY KEY, email text)")})));
-        e.admin("execute", with("myadmin", json!({"sql": format!("INSERT INTO {s}.users VALUES (1, 'Ana', 'x'); INSERT INTO {s}.customers VALUES (1, 'ana@acme.com')")})));
+        e.admin(
+            "execute",
+            with("myadmin", json!({"sql": format!("INSERT INTO {s}.users VALUES (1, 'Ana', 'x'); INSERT INTO {s}.customers VALUES (1, 'ana@acme.com')")})),
+        );
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE TABLE {s}.plain (id int)")})));
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE VIEW {s}.v_users AS SELECT id, password_hash AS h FROM {s}.users")})));
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE VIEW {s}.v_of_v AS SELECT h FROM {s}.v_users")})));
@@ -467,8 +487,17 @@ fn mysql_and_sql_server_privacy() {
         assert!(err.contains("keeps data from agents"), "{err}");
         assert!(e.ok("run_query", m(json!({"sql": format!("SELECT * FROM dbo.{s}_open_ok")})))["rows"].is_array());
         let listed = names(&e.ok("list_tables", m(json!({"schema": "dbo"}))), 1);
-        assert!(listed.contains(&format!("{s}_open")) && !listed.contains(&format!("{s}_closed")) && listed.contains(&format!("{s}_open_ok")) && !listed.contains(&format!("{s}_open_v")), "{listed:?}");
-        e.admin("execute", with("msadmin", json!({"sql": format!("DROP VIEW dbo.{s}_open_v; DROP VIEW dbo.{s}_open_ok; DROP TABLE dbo.{s}_open; DROP TABLE dbo.{s}_closed")})));
+        assert!(
+            listed.contains(&format!("{s}_open"))
+                && !listed.contains(&format!("{s}_closed"))
+                && listed.contains(&format!("{s}_open_ok"))
+                && !listed.contains(&format!("{s}_open_v")),
+            "{listed:?}"
+        );
+        e.admin(
+            "execute",
+            with("msadmin", json!({"sql": format!("DROP VIEW dbo.{s}_open_v; DROP VIEW dbo.{s}_open_ok; DROP TABLE dbo.{s}_open; DROP TABLE dbo.{s}_closed")})),
+        );
         e.done();
     }
 }
@@ -519,7 +548,13 @@ fn mongodb_privacy() {
     assert!(!r.to_string().contains("ssn") && r.to_string().contains("Ana"), "{r}");
     assert!(e.err("nosql_query", m(json!({"query": "db.users.find({ssn: \"123-45-6789\"})"}))).contains("hidden"));
     assert!(e.err("nosql_query", m(json!({"query": "db.payments.find({})"}))).contains("not visible"));
-    assert!(e.err("nosql_query", m(json!({"query": "db.users.aggregate([{$lookup: {from: \"payments\", localField: \"_id\", foreignField: \"_id\", as: \"p\"}}])"}))).contains("not visible"));
+    assert!(
+        e.err(
+            "nosql_query",
+            m(json!({"query": "db.users.aggregate([{$lookup: {from: \"payments\", localField: \"_id\", foreignField: \"_id\", as: \"p\"}}])"}))
+        )
+        .contains("not visible")
+    );
     assert!(e.err("nosql_query", m(json!({"query": "db.users.find({$where: \"true\"})"}))).contains("running code"));
     let r = e.ok("nosql_query", m(json!({"query": "db.customers.find({email: /acme/})"})));
     assert_eq!(r["documents"][0]["email"], "••••••••.com", "{r}");

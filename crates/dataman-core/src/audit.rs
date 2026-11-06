@@ -400,7 +400,11 @@ pub fn clear_before(audit: &Path, cutoff: chrono::DateTime<chrono::Utc>) -> std:
             let keep = s.ts >= cutoff;
             calls.saw(&s, !keep);
             if let Some(id) = s.id {
-                if keep { kept.insert(id) } else { gone.insert(id) };
+                if keep {
+                    kept.insert(id)
+                } else {
+                    gone.insert(id)
+                };
             }
             keep
         })?;
@@ -514,12 +518,7 @@ pub fn tail(path: &Path, n: usize) -> Vec<Entry> {
     if f.read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
-    let mut lines: Vec<Entry> = buf
-        .lines()
-        .skip(if start > 0 { 1 } else { 0 })
-        .map_while(Result::ok)
-        .filter_map(|l| serde_json::from_str(&l).ok())
-        .collect();
+    let mut lines: Vec<Entry> = buf.lines().skip(if start > 0 { 1 } else { 0 }).map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect();
     // A call's start goes once its end is there.
     let ended: std::collections::HashSet<String> = lines.iter().filter(|e| e.outcome != Outcome::Started).filter_map(|e| e.id.clone()).collect();
     lines.retain(|e| e.outcome != Outcome::Started || e.id.as_ref().is_none_or(|id| !ended.contains(id)));
@@ -620,7 +619,11 @@ mod tests {
         assert_eq!(first["sql"], "SELECT ?");
         assert_eq!(first["outcome"], "ok");
         assert!(
-            first.get("database").is_none() && first.get("error").is_none() && first.get("approval").is_none() && first.get("query").is_none() && first.get("draft").is_none(),
+            first.get("database").is_none()
+                && first.get("error").is_none()
+                && first.get("approval").is_none()
+                && first.get("query").is_none()
+                && first.get("draft").is_none(),
             "absent fields stay out: {first}"
         );
         assert!(first.get("allowed_by").is_none(), "{first}");
@@ -673,7 +676,8 @@ mod tests {
         let old = r#"{"ts":"2026-10-14T12:00:00Z","client":"claude-code","transport":"http","tool":"run_query","connection":"local pg","sql":"SELECT * FROM t WHERE id = ?","ms":1.5,"outcome":"ok"}"#;
         let old: Entry = serde_json::from_str(old).unwrap();
         assert_eq!((old.query.as_deref(), old.statement()), (None, Some("SELECT * FROM t WHERE id = ?")));
-        let none: Entry = serde_json::from_str(r#"{"ts":"2026-10-14T12:00:00Z","client":"c","transport":"stdio","tool":"list_tables","ms":1,"outcome":"ok"}"#).unwrap();
+        let none: Entry =
+            serde_json::from_str(r#"{"ts":"2026-10-14T12:00:00Z","client":"c","transport":"stdio","tool":"list_tables","ms":1,"outcome":"ok"}"#).unwrap();
         assert_eq!(none.statement(), None);
         assert!(full(&"x".repeat(QUERY_MAX + 1)).is_none());
     }
@@ -750,7 +754,11 @@ mod tests {
     }
 
     fn ids(path: &Path) -> Vec<String> {
-        both(path).iter().filter_map(|p| std::fs::read_to_string(p).ok()).flat_map(|t| t.lines().map(|l| serde_json::from_str::<Stamp>(l).unwrap().id.unwrap()).collect::<Vec<_>>()).collect()
+        both(path)
+            .iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .flat_map(|t| t.lines().map(|l| serde_json::from_str::<Stamp>(l).unwrap().id.unwrap()).collect::<Vec<_>>())
+            .collect()
     }
 
     fn day(s: &str) -> chrono::NaiveDate {

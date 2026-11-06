@@ -184,7 +184,13 @@ impl Env {
     /// None without a home folder, where no agent keeps its settings.
     pub fn here() -> Option<Env> {
         let home = dataman_core::os::home()?;
-        let settings = if cfg!(target_os = "macos") { Some(home.join("Library").join("Application Support")) } else if cfg!(windows) { dataman_core::os::app_data() } else { dataman_core::os::config_home() }?;
+        let settings = if cfg!(target_os = "macos") {
+            Some(home.join("Library").join("Application Support"))
+        } else if cfg!(windows) {
+            dataman_core::os::app_data()
+        } else {
+            dataman_core::os::config_home()
+        }?;
         let mut dirs = cloudauth::default_dirs();
         dirs.extend(HOME_BINS.map(|d| home.join(d)));
         dirs.extend(nvm_bins(&home));
@@ -256,7 +262,13 @@ impl Listing {
         let mut rows: Vec<Row> = AGENTS
             .iter()
             .enumerate()
-            .map(|(index, agent)| Row { index, agent, installed: env.as_ref().is_some_and(|e| e.has(agent)), added: !words.is_empty() && env.as_ref().is_some_and(|e| e.added(agent, &words)), copy: copy_text(agent, &words) })
+            .map(|(index, agent)| Row {
+                index,
+                agent,
+                installed: env.as_ref().is_some_and(|e| e.has(agent)),
+                added: !words.is_empty() && env.as_ref().is_some_and(|e| e.added(agent, &words)),
+                copy: copy_text(agent, &words),
+            })
             .collect();
         rows.sort_by_key(|r| !r.installed);
         Listing { rows, env, argv }
@@ -408,7 +420,11 @@ mod tests {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let f = bin.join(name);
-        std::fs::write(&f, format!("#!/bin/sh\n[ -z \"$DATAMAN_SCRIPT_PROBE\" ] || exit 0\nfor a in \"$@\"; do echo \"$a\"; done > '{}/{name}.args'\n{then}\n", dir.display())).unwrap();
+        std::fs::write(
+            &f,
+            format!("#!/bin/sh\n[ -z \"$DATAMAN_SCRIPT_PROBE\" ] || exit 0\nfor a in \"$@\"; do echo \"$a\"; done > '{}/{name}.args'\n{then}\n", dir.display()),
+        )
+        .unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
         // A fork elsewhere in the test process can hold the file's write descriptor for an instant,
         // and exec then fails with ETXTBSY. Once one run gets through none is left.
@@ -498,9 +514,13 @@ mod tests {
         let entry = d.join("entry");
         std::fs::write(&entry, "/old/place/dataman-mcp").unwrap();
         let e = entry.display();
-        fake(d, "claude", &format!(
-            "case \"$2\" in\nremove) /bin/rm '{e}' ;;\nadd) if [ -f '{e}' ]; then echo 'MCP server dataman already exists in user config' >&2; exit 1; fi; echo \"$7\" > '{e}' ;;\nesac"
-        ));
+        fake(
+            d,
+            "claude",
+            &format!(
+                "case \"$2\" in\nremove) /bin/rm '{e}' ;;\nadd) if [ -f '{e}' ]; then echo 'MCP server dataman already exists in user config' >&2; exit 1; fi; echo \"$7\" > '{e}' ;;\nesac"
+            ),
+        );
         assert_eq!(add(agent("claude"), &l).await, Ok(Added::Done));
         assert_eq!(std::fs::read_to_string(&entry).unwrap().trim(), BIN);
     }

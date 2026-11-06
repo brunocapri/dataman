@@ -129,7 +129,9 @@ fn for_each_statement(sql: &str, dialect: Dialect, mut f: impl FnMut(&str, std::
 
 /// The names in a statement, `a` or `s.a`, as `(schema, name)`.
 fn ddl_names(sql: &str, toks: &[Token]) -> Vec<(Option<String>, String)> {
-    let name = |t: &Token| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword).then(|| t.text(sql).trim_matches(['"', '`', '[', ']']).to_string());
+    let name = |t: &Token| {
+        matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword).then(|| t.text(sql).trim_matches(['"', '`', '[', ']']).to_string())
+    };
     let mut out = Vec::new();
     for (i, t) in toks.iter().enumerate() {
         let Some(n) = name(t) else { continue };
@@ -144,7 +146,8 @@ fn ddl_names(sql: &str, toks: &[Token]) -> Vec<(Option<String>, String)> {
 }
 
 fn word(sql: &str, t: &Token) -> Option<String> {
-    matches!(t.kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent).then(|| t.text(sql).trim_matches(['"', '`', '[', ']']).to_ascii_uppercase())
+    matches!(t.kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent)
+        .then(|| t.text(sql).trim_matches(['"', '`', '[', ']']).to_ascii_uppercase())
 }
 
 fn activity_name(name: &str) -> bool {
@@ -242,7 +245,9 @@ fn statement(
     }
 
     if let Some(e) = table_command(sql, toks, d, verb == "INSERT") {
-        return Err(format!("{e} is not available to agents on {conn} while some data is kept from them: write SELECT … FROM, or use list_tables and describe_table"));
+        return Err(format!(
+            "{e} is not available to agents on {conn} while some data is kept from them: write SELECT … FROM, or use list_tables and describe_table"
+        ));
     }
     if a.unsure {
         return Err(format!("Dataman could not follow this statement, and {conn} keeps some data from agents: write it more plainly"));
@@ -285,7 +290,9 @@ fn statement(
                 SourceKind::Table { schema, name } => (schema.as_deref(), name.as_str()),
                 SourceKind::Function(f) => {
                     if cx.routines.contains(&f.to_lowercase()) {
-                        return Err(format!("{f}() is a function of your database; agents cannot call your functions on {conn} while some data is kept from them"));
+                        return Err(format!(
+                            "{f}() is a function of your database; agents cannot call your functions on {conn} while some data is kept from them"
+                        ));
                     }
                     // `sys.dm_db_stats_histogram(…)` and the like read the catalog and its statistics.
                     let written = sql[src.name_range.clone()].split('(').next().unwrap_or("");
@@ -295,7 +302,9 @@ fn statement(
                     // DuckDB's `duckdb_tables()`, `duckdb_columns()`… hold definitions, defaults and
                     // checks; SQLite's `pragma_table_info()` and the like too.
                     if catalog || ["pg_", "dm_", "fn_", "duckdb_", "pragma_"].iter().any(|p| lower.starts_with(p)) {
-                        return Err(format!("{f}() reads the system catalog: on {conn} agents list and describe through list_tables, describe_table and search_objects"));
+                        return Err(format!(
+                            "{f}() reads the system catalog: on {conn} agents list and describe through list_tables, describe_table and search_objects"
+                        ));
                     }
                     // DuckDB's table macros that take a table by name read all of it.
                     if cx.dialect == Dialect::DuckDb && matches!(lower.as_str(), "histogram" | "histogram_values" | "summary") {
@@ -322,7 +331,8 @@ fn statement(
                 return Err(format!("{} is not visible to agents on {conn}", t.name));
             }
             let hidden: Vec<String> = t.columns.iter().filter(|c| rules.visible.column_hidden(Some(&t.schema), &t.name, c, names)).cloned().collect();
-            let sensitive: Vec<(String, Mask)> = t.columns.iter().filter_map(|c| rules.sensitive_mask(Some(&t.schema), &t.name, c, names).map(|m| (c.clone(), m))).collect();
+            let sensitive: Vec<(String, Mask)> =
+                t.columns.iter().filter_map(|c| rules.sensitive_mask(Some(&t.schema), &t.name, c, names).map(|m| (c.clone(), m))).collect();
             if !hidden.is_empty() || !sensitive.is_empty() {
                 narrowed.push((si, k, Narrowed { table: t, hidden, sensitive }));
             }
@@ -352,7 +362,8 @@ fn statement(
     let reads = !write || facts.effect == Effect::Read;
     let star_inside = toks.windows(4).any(|w| w[0].text(sql) == "(" && w[2].text(sql) == "." && w[3].text(sql) == "*");
     if any_hidden && !reads {
-        let star = toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("RETURNING") && w[1].text(sql) == "*") || a.scopes.iter().any(|s| s.items.iter().any(|i| matches!(i, Item::Star(_))));
+        let star = toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("RETURNING") && w[1].text(sql) == "*")
+            || a.scopes.iter().any(|s| s.items.iter().any(|i| matches!(i, Item::Star(_))));
         if star {
             return Err(format!("name the columns: some columns are hidden from agents on {conn}"));
         }
@@ -420,19 +431,40 @@ fn statement(
     }
     let calls = call_spans(sql, toks);
     for n in &sensitive {
-        if let Some(src) = a.scopes.iter().flat_map(|s| &s.sources).find(|s| s.alias_columns.is_some() && matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &n.table.name))) {
-            return Err(format!("{} is renamed by a column list ({}): masked columns of {} cannot be renamed on {conn}", src.alias.as_deref().unwrap_or(&n.table.name), src.alias_columns.as_ref().map(|c| c.join(", ")).unwrap_or_default(), n.table.name));
+        if let Some(src) = a
+            .scopes
+            .iter()
+            .flat_map(|s| &s.sources)
+            .find(|s| s.alias_columns.is_some() && matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &n.table.name)))
+        {
+            return Err(format!(
+                "{} is renamed by a column list ({}): masked columns of {} cannot be renamed on {conn}",
+                src.alias.as_deref().unwrap_or(&n.table.name),
+                src.alias_columns.as_ref().map(|c| c.join(", ")).unwrap_or_default(),
+                n.table.name
+            ));
         }
         let cols: Vec<String> = n.sensitive.iter().map(|(c, _)| c.clone()).collect();
         for (col, how) in &n.sensitive {
             let label = format!("{}.{col}", n.table.name);
-            let refuse = || format!("{label} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed");
+            let refuse = || {
+                format!(
+                    "{label} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed"
+                )
+            };
             if a.refs.iter().any(|r| eq(&r.name, col) && !matches!(r.clause, Clause::Select | Clause::Where | Clause::On)) {
                 return Err(refuse());
             }
             for (si, s) in a.scopes.iter().enumerate() {
                 let refs = a.refs.iter().filter(|r| r.scope == si && r.clause == Clause::Select && eq(&r.name, col)).count();
-                let bare: Vec<usize> = s.items.iter().zip(&s.item_refs).enumerate().filter(|(_, (item, r))| matches!((item, r), (Item::Named(out), Some((_, c))) if eq(out, col) && eq(c, col))).map(|(i, _)| i).collect();
+                let bare: Vec<usize> = s
+                    .items
+                    .iter()
+                    .zip(&s.item_refs)
+                    .enumerate()
+                    .filter(|(_, (item, r))| matches!((item, r), (Item::Named(out), Some((_, c))) if eq(out, col) && eq(c, col)))
+                    .map(|(i, _)| i)
+                    .collect();
                 if refs > bare.len() {
                     return Err(refuse());
                 }
@@ -456,7 +488,10 @@ fn statement(
             }
         }
         if let Some(c) = unfollowed(&a, sql, toks, &cols, &eq) {
-            return Err(format!("{}.{c} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed", n.table.name));
+            return Err(format!(
+                "{}.{c} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed",
+                n.table.name
+            ));
         }
         // Whole rows carry every column: `SELECT u`, `row_to_json(u)`, `to_jsonb(u.*)`, and so do
         // the rows of a subquery or a WITH query that selects a masked column.
@@ -466,9 +501,13 @@ fn statement(
     }
     let by_position = positional_order(sql, toks);
     if let Some(w) = by_position {
-        return Err(format!("{w} BY a position is not available to agents in Masked data on {conn}: name the columns (masked columns cannot be sorted or grouped)"));
+        return Err(format!(
+            "{w} BY a position is not available to agents in Masked data on {conn}: name the columns (masked columns cannot be sorted or grouped)"
+        ));
     }
-    if d == Dialect::TSql && toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("FOR") && ["JSON", "XML"].iter().any(|x| w[1].text(sql).eq_ignore_ascii_case(x))) {
+    if d == Dialect::TSql
+        && toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("FOR") && ["JSON", "XML"].iter().any(|x| w[1].text(sql).eq_ignore_ascii_case(x)))
+    {
         return Err(format!("FOR JSON and FOR XML are not available to agents in Masked data on {conn}: masked columns come back masked only as columns"));
     }
     Ok(())
@@ -479,7 +518,9 @@ fn statement(
 fn table_command(sql: &str, toks: &[Token], d: Dialect, insert: bool) -> Option<String> {
     let w = |i: usize| toks.get(i).and_then(|t| word(sql, t)).unwrap_or_default();
     for (i, t) in toks.iter().enumerate().filter(|_| d != Dialect::TSql) {
-        if word(sql, t).as_deref() != Some("TABLE") || toks.get(i + 1).is_none_or(|n| !matches!(n.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword)) {
+        if word(sql, t).as_deref() != Some("TABLE")
+            || toks.get(i + 1).is_none_or(|n| !matches!(n.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword))
+        {
             continue;
         }
         let query = match i.checked_sub(1).map(|p| toks[p]) {
@@ -497,7 +538,9 @@ fn table_command(sql: &str, toks: &[Token], d: Dialect, insert: bool) -> Option<
         if w(0) == "PRAGMA" {
             return Some("PRAGMA".into());
         }
-        if let Some(t) = toks.iter().enumerate().find(|(i, t)| word(sql, t).is_some_and(|x| x.starts_with("PRAGMA_")) && toks.get(i + 1).is_some_and(|n| n.text(sql) == "(")) {
+        if let Some(t) =
+            toks.iter().enumerate().find(|(i, t)| word(sql, t).is_some_and(|x| x.starts_with("PRAGMA_")) && toks.get(i + 1).is_some_and(|n| n.text(sql) == "("))
+        {
             return Some(format!("{}()", t.1.text(sql)));
         }
     }
@@ -525,13 +568,20 @@ fn table_command(sql: &str, toks: &[Token], d: Dialect, insert: bool) -> Option<
 
 /// An unqualified reference that names a source of `t` rather than one of its columns.
 fn whole_row(a: &Analysis, t: &Table, eq: &dyn Fn(&str, &str) -> bool) -> bool {
-    let src_names: Vec<&str> = a.scopes.iter().flat_map(|s| &s.sources).filter(|s| matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &t.name))).filter_map(|s| s.visible_name()).collect();
+    let src_names: Vec<&str> = a
+        .scopes
+        .iter()
+        .flat_map(|s| &s.sources)
+        .filter(|s| matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &t.name)))
+        .filter_map(|s| s.visible_name())
+        .collect();
     a.refs.iter().any(|r| r.qualifier.is_none() && src_names.iter().any(|x| eq(x, &r.name)) && !t.columns.iter().any(|c| eq(c, &r.name)))
 }
 
 /// A whole row of a subquery, a WITH query or a function: `row_to_json(x) FROM (SELECT …) x`.
 fn any_source_row(a: &Analysis, eq: &dyn Fn(&str, &str) -> bool) -> bool {
-    let mut names: Vec<&str> = a.scopes.iter().flat_map(|s| &s.sources).filter(|s| !matches!(s.kind, SourceKind::Table { .. })).filter_map(|s| s.visible_name()).collect();
+    let mut names: Vec<&str> =
+        a.scopes.iter().flat_map(|s| &s.sources).filter(|s| !matches!(s.kind, SourceKind::Table { .. })).filter_map(|s| s.visible_name()).collect();
     names.extend(a.ctes.iter().map(|c| c.name.as_str()));
     a.refs.iter().any(|r| r.qualifier.is_none() && names.iter().any(|x| eq(x, &r.name)))
 }
@@ -557,7 +607,10 @@ fn reaches(a: &Analysis, si: usize, item: usize, col: &str, reads: bool, eq: &dy
 }
 
 /// Words a parenthesis may follow in a filter without being a call's (or a cast's) arguments.
-const FILTER_WORDS: &[&str] = &["WHERE", "ON", "AND", "OR", "NOT", "IN", "WHEN", "THEN", "ELSE", "BETWEEN", "HAVING", "EXISTS", "ANY", "ALL", "SOME", "SELECT", "FROM", "JOIN", "AS", "LATERAL"];
+const FILTER_WORDS: &[&str] = &[
+    "WHERE", "ON", "AND", "OR", "NOT", "IN", "WHEN", "THEN", "ELSE", "BETWEEN", "HAVING", "EXISTS", "ANY", "ALL", "SOME", "SELECT", "FROM", "JOIN", "AS",
+    "LATERAL",
+];
 
 /// The byte spans of argument lists: function calls, and keyword forms such as `CAST(…)`.
 fn call_spans(sql: &str, toks: &[Token]) -> Vec<std::ops::Range<usize>> {
@@ -652,7 +705,14 @@ fn positional_order(sql: &str, toks: &[Token]) -> Option<&'static str> {
                     continue;
                 }
                 (TokenKind::Number, _) if depth == 0 && item_start => return Some(what),
-                (TokenKind::Keyword, x) if depth == 0 && ["LIMIT", "OFFSET", "FETCH", "FOR", "HAVING", "WINDOW", "UNION", "INTERSECT", "EXCEPT", "ORDER", "RETURNING"].iter().any(|c| x.eq_ignore_ascii_case(c)) => break,
+                (TokenKind::Keyword, x)
+                    if depth == 0
+                        && ["LIMIT", "OFFSET", "FETCH", "FOR", "HAVING", "WINDOW", "UNION", "INTERSECT", "EXCEPT", "ORDER", "RETURNING"]
+                            .iter()
+                            .any(|c| x.eq_ignore_ascii_case(c)) =>
+                {
+                    break;
+                }
                 _ => {}
             }
             item_start = false;
@@ -740,7 +800,13 @@ mod tests {
         let r = rules();
         let routines: HashSet<String> = ["m_pw".to_string()].into();
         let cx = Context { rules: &r, connection: "duck", dialect: Dialect::DuckDb, tables: &tables, routines: &routines, views: &[] };
-        for sql in ["SELECT sql FROM duckdb_tables()", "SELECT * FROM duckdb_columns() WHERE table_name = 'users'", "FROM histogram(users, email)", "SELECT m_pw()", "SELECT * FROM pragma_table_info('users')"] {
+        for sql in [
+            "SELECT sql FROM duckdb_tables()",
+            "SELECT * FROM duckdb_columns() WHERE table_name = 'users'",
+            "FROM histogram(users, email)",
+            "SELECT m_pw()",
+            "SELECT * FROM pragma_table_info('users')",
+        ] {
             assert!(check(sql, false, &cx).is_err(), "{sql}");
         }
         assert!(check("SELECT name FROM users", false, &cx).is_ok());
@@ -770,7 +836,10 @@ mod tests {
         }
         assert!(run(&r, "DELETE FROM payments WHERE id = 1", true).unwrap_err().contains("not visible"));
         assert!(run(&r, "INSERT INTO audit.log (what) VALUES ('x')", true).unwrap_err().contains("not visible"));
-        let only = AgentRules { visible: Visible { mode: VisibleMode::Only, items: vec![VisibleItem { name: "public.orders".into(), kind: ItemKind::Table }] }, ..Default::default() };
+        let only = AgentRules {
+            visible: Visible { mode: VisibleMode::Only, items: vec![VisibleItem { name: "public.orders".into(), kind: ItemKind::Table }] },
+            ..Default::default()
+        };
         assert!(run(&only, "SELECT * FROM orders", false).is_ok());
         assert!(run(&only, "SELECT * FROM users", false).unwrap_err().contains("not visible"));
         assert!(run(&only, "SELECT * FROM nowhere", false).unwrap_err().contains("not a table Dataman knows"));
@@ -862,7 +931,9 @@ mod tests {
         assert!(run(&s, "INSERT INTO t VALUES (1)", true).unwrap_err().contains("structure only"));
         assert!(run(&s, "CREATE INDEX i ON t (a)", true).is_ok());
         // A read sent as a write (execute, a write tool) returns its rows all the same.
-        for sql in ["SELECT * FROM t", "CREATE TABLE x (a int); SELECT * FROM t", "TABLE t", "WITH x AS (SELECT 1) SELECT * FROM x", "EXPLAIN ANALYZE SELECT * FROM t"] {
+        for sql in
+            ["SELECT * FROM t", "CREATE TABLE x (a int); SELECT * FROM t", "TABLE t", "WITH x AS (SELECT 1) SELECT * FROM x", "EXPLAIN ANALYZE SELECT * FROM t"]
+        {
             assert!(run(&s, sql, true).unwrap_err().contains("structure only"), "{sql}");
         }
         assert!(run(&s, "EXPLAIN SELECT * FROM t", true).is_ok(), "a plan is structure");

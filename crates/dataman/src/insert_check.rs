@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::result::Phase;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::tab::QueryTab;
@@ -70,7 +70,12 @@ async fn settle(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (Option<
             let t = tab.read(cx);
             let rs = t.result().cloned();
             let queued = t.batch_items().iter().any(|b| b.state == crate::tab::ItemState::Pending);
-            (t.is_running() || queued, rs.as_ref().map(|r| r.phase()), rs.as_ref().map_or(0, |r| r.rows()), rs.and_then(|r| r.status().error.map(|e| e.message)).unwrap_or_default())
+            (
+                t.is_running() || queued,
+                rs.as_ref().map(|r| r.phase()),
+                rs.as_ref().map_or(0, |r| r.rows()),
+                rs.and_then(|r| r.status().error.map(|e| e.message)).unwrap_or_default(),
+            )
         })
         .unwrap_or((false, None, 0, String::new()))
     };
@@ -153,9 +158,11 @@ fn first_cell(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> String {
 }
 
 fn new_value(tab: &Entity<QueryTab>, i: usize, col: usize, cx: &mut AsyncWindowContext) -> Option<String> {
-    cx.update(|_, cx| tab.read(cx).edit.read(cx).model.changes.inserted().get(i).and_then(|r| r.get(col).cloned().flatten()).and_then(|v| v.as_deref().map(str::to_string)))
-        .ok()
-        .flatten()
+    cx.update(|_, cx| {
+        tab.read(cx).edit.read(cx).model.changes.inserted().get(i).and_then(|r| r.get(col).cloned().flatten()).and_then(|v| v.as_deref().map(str::to_string))
+    })
+    .ok()
+    .flatten()
 }
 
 fn discard(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
@@ -190,7 +197,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         "DROP TABLE IF EXISTS public.insert_t;\nCREATE TABLE public.insert_t (id serial PRIMARY KEY, name text NOT NULL, n int, note text DEFAULT 'none', at timestamptz NOT NULL DEFAULT now());\nINSERT INTO public.insert_t (name, n) SELECT 'row ' || g, g FROM generate_series(1, {ROWS}) g;\nSELECT count(*) FROM public.insert_t;"
     );
     let (phase, _, err) = run_sql(&tab, &setup, cx).await;
-    check(&format!("a table of {ROWS} rows"), phase == Some(Phase::Done) && first_cell(&tab, cx) == ROWS.to_string(), format!("{phase:?} {} {err}", first_cell(&tab, cx)));
+    check(
+        &format!("a table of {ROWS} rows"),
+        phase == Some(Phase::Done) && first_cell(&tab, cx) == ROWS.to_string(),
+        format!("{phase:?} {} {err}", first_cell(&tab, cx)),
+    );
 
     let (phase, rows, err) = run_sql(&tab, "SELECT * FROM public.insert_t ORDER BY id", cx).await;
     check("the result pauses after its first page", phase == Some(Phase::Paused) && rows > 0 && rows < ROWS, format!("{phase:?} {rows} {err}"));
@@ -210,7 +221,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "enter");
     draw(cx);
     let (id, name, n) = (new_value(&tab, 0, 0, cx), new_value(&tab, 0, 1, cx), new_value(&tab, 0, 2, cx));
-    check("⇥ moves along the new row; typed values land, the int takes digits only", id.is_none() && name.as_deref() == Some("novo um") && n.as_deref() == Some("4242"), format!("{id:?} {name:?} {n:?}"));
+    check(
+        "⇥ moves along the new row; typed values land, the int takes digits only",
+        id.is_none() && name.as_deref() == Some("novo um") && n.as_deref() == Some("4242"),
+        format!("{id:?} {name:?} {n:?}"),
+    );
 
     key(cx, "escape");
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
@@ -220,12 +235,20 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     pause(cx, 150).await;
     draw(cx);
     let v = view(&tab, cx);
-    check("⌘↓ fetches more; the new row follows the result", rows > page && v.pending == 1 && v.sel.map(|s| s.0) == Some(rows), format!("{phase:?} {rows} sel {:?} pending {}", v.sel, v.pending));
+    check(
+        "⌘↓ fetches more; the new row follows the result",
+        rows > page && v.pending == 1 && v.sel.map(|s| s.0) == Some(rows),
+        format!("{phase:?} {rows} sel {:?} pending {}", v.sel, v.pending),
+    );
     check("the typed values survive the fetch", new_value(&tab, 0, 1, cx).as_deref() == Some("novo um"), format!("{:?}", new_value(&tab, 0, 1, cx)));
 
     plus(&tab, cx).await;
     let v = view(&tab, cx);
-    check("a second + adds a second row after the first", v.pending == 2 && v.sel == Some((v.rows + 1, 0)) && v.editing, format!("pending {} sel {:?} rows {}", v.pending, v.sel, v.rows));
+    check(
+        "a second + adds a second row after the first",
+        v.pending == 2 && v.sel == Some((v.rows + 1, 0)) && v.editing,
+        format!("pending {} sel {:?} rows {}", v.pending, v.sel, v.rows),
+    );
     key(cx, "tab");
     typ(cx, "novo dois");
     key(cx, "enter");
@@ -233,7 +256,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let v = view(&tab, cx);
     let report = cx.update(|_, cx| tab.read(cx).edit.read(cx).report.as_ref().map(|r| format!("{:?}", r.error))).ok().flatten();
     check("⌘S commits both rows", v.pending == 0, format!("pending {} {report:?}", v.pending));
-    let (_, _, err) = run_sql(&tab, "SELECT count(*) FROM public.insert_t WHERE (name = 'novo um' AND n = 4242 AND note = 'none') OR (name = 'novo dois' AND n IS NULL)", cx).await;
+    let (_, _, err) =
+        run_sql(&tab, "SELECT count(*) FROM public.insert_t WHERE (name = 'novo um' AND n = 4242 AND note = 'none') OR (name = 'novo dois' AND n IS NULL)", cx)
+            .await;
     check("the rows are in the table, defaults filled", first_cell(&tab, cx) == "2", format!("{} {err}", first_cell(&tab, cx)));
 
     run_sql(&tab, "SELECT * FROM public.insert_t ORDER BY id", cx).await;
@@ -241,8 +266,15 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "escape");
     commit(&tab, cx).await;
     let v = view(&tab, cx);
-    let report = cx.update(|_, cx| tab.read(cx).edit.read(cx).report.as_ref().map(|r| (r.committed, r.error.clone().unwrap_or_default(), r.outcomes.len()))).ok().flatten();
-    check("an empty NOT NULL fails the commit; the row stays", v.pending == 1 && report.as_ref().is_some_and(|r| !r.0), format!("pending {} {report:?}", v.pending));
+    let report = cx
+        .update(|_, cx| tab.read(cx).edit.read(cx).report.as_ref().map(|r| (r.committed, r.error.clone().unwrap_or_default(), r.outcomes.len())))
+        .ok()
+        .flatten();
+    check(
+        "an empty NOT NULL fails the commit; the row stays",
+        v.pending == 1 && report.as_ref().is_some_and(|r| !r.0),
+        format!("pending {} {report:?}", v.pending),
+    );
     discard(&tab, cx);
     check("⌘⌫ discards the new row", view(&tab, cx).pending == 0, String::new());
 
@@ -260,20 +292,32 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     pause(cx, 150).await;
     draw(cx);
     let v = view(&tab, cx);
-    check("Fetch all: every row, the new one last", phase == Some(Phase::Done) && rows == ROWS + 2 && v.sel.map(|s| s.0) == Some(rows), format!("{phase:?} {rows} sel {:?}", v.sel));
+    check(
+        "Fetch all: every row, the new one last",
+        phase == Some(Phase::Done) && rows == ROWS + 2 && v.sel.map(|s| s.0) == Some(rows),
+        format!("{phase:?} {rows} sel {:?}", v.sel),
+    );
     discard(&tab, cx);
 
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.toggle_sort(1, cx)));
     pause(cx, 300).await;
     plus(&tab, cx).await;
     let v = view(&tab, cx);
-    check("a sorted result: + adds at the end", v.pending == 1 && v.sel == Some((v.rows, 0)) && (v.scroll - v.bottom).abs() < 1., format!("sel {:?} rows {} scroll {} bottom {}", v.sel, v.rows, v.scroll, v.bottom));
+    check(
+        "a sorted result: + adds at the end",
+        v.pending == 1 && v.sel == Some((v.rows, 0)) && (v.scroll - v.bottom).abs() < 1.,
+        format!("sel {:?} rows {} scroll {} bottom {}", v.sel, v.rows, v.scroll, v.bottom),
+    );
     discard(&tab, cx);
 
     run_sql(&tab, "SELECT * FROM public.insert_t WHERE false", cx).await;
     plus(&tab, cx).await;
     let v = view(&tab, cx);
-    check("an empty result: + opens row 1", v.pending == 1 && v.editing && v.sel == Some((0, 0)), format!("pending {} editing {} sel {:?}", v.pending, v.editing, v.sel));
+    check(
+        "an empty result: + opens row 1",
+        v.pending == 1 && v.editing && v.sel == Some((0, 0)),
+        format!("pending {} editing {} sel {:?}", v.pending, v.editing, v.sel),
+    );
     key(cx, "tab");
     typ(cx, "do vazio");
     key(cx, "enter");
@@ -286,11 +330,23 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     plus(&tab, cx).await;
     let uuid = new_value(&tab, 0, 0, cx).unwrap_or_default();
     let v = view(&tab, cx);
-    check("a UUID key without a default comes filled, and the field opens on the next column", uuid.len() == 36 && uuid.matches('-').count() == 4 && v.sel == Some((0, 1)) && v.editing, format!("{uuid:?} sel {:?}", v.sel));
+    check(
+        "a UUID key without a default comes filled, and the field opens on the next column",
+        uuid.len() == 36 && uuid.matches('-').count() == 4 && v.sel == Some((0, 1)) && v.editing,
+        format!("{uuid:?} sel {:?}", v.sel),
+    );
     let said = cx.update(|_, cx| tab.read(cx).grid.read(cx).demo_new_row(0)).unwrap_or_default();
-    let want = [(Some(uuid.clone()), false), (Some("required".to_string()), true), (None, true), (Some("default".to_string()), true), (Some("default".to_string()), true)];
+    let want = [
+        (Some(uuid.clone()), false),
+        (Some("required".to_string()), true),
+        (None, true),
+        (Some("default".to_string()), true),
+        (Some("default".to_string()), true),
+    ];
     check("each untouched cell says what the INSERT would store: required, NULL, default", said == want, format!("{said:?}"));
-    let null = |tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext| cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_cell_editor().map(|e| e.read(cx).null)).ok().flatten();
+    let null = |tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext| {
+        cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_cell_editor().map(|e| e.read(cx).null)).ok().flatten()
+    };
     key(cx, "cmd-shift-n");
     let on_required = null(&tab, cx);
     typ(cx, "u1");
@@ -299,7 +355,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let on_nullable = null(&tab, cx);
     key(cx, "cmd-shift-n");
     let back = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_cell_editor().map(|e| e.read(cx).was_default)).ok().flatten();
-    check("⌘⇧N does nothing on a NOT NULL column; on a nullable one it sets NULL, and again gives the blank back", on_required == Some(false) && on_nullable == Some(true) && back == Some(true), format!("{on_required:?} {on_nullable:?} {back:?}"));
+    check(
+        "⌘⇧N does nothing on a NOT NULL column; on a nullable one it sets NULL, and again gives the blank back",
+        on_required == Some(false) && on_nullable == Some(true) && back == Some(true),
+        format!("{on_required:?} {on_nullable:?} {back:?}"),
+    );
     key(cx, "tab");
     key(cx, "tab");
     pause(cx, 100).await;
@@ -316,7 +376,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     plus(&tab, cx).await;
     let v = view(&tab, cx);
     let said = cx.update(|_, cx| tab.read(cx).grid.read(cx).demo_new_row(0)).unwrap_or_default();
-    check("gen_random_uuid() stays: nothing is filled in", new_value(&tab, 0, 0, cx).is_none() && said.first() == Some(&(Some("default".to_string()), true)) && v.sel == Some((0, 0)), format!("{said:?} sel {:?}", v.sel));
+    check(
+        "gen_random_uuid() stays: nothing is filled in",
+        new_value(&tab, 0, 0, cx).is_none() && said.first() == Some(&(Some("default".to_string()), true)) && v.sel == Some((0, 0)),
+        format!("{said:?} sel {:?}", v.sel),
+    );
     discard(&tab, cx);
     run_sql(&tab, "DROP TABLE public.insert_u", cx).await;
 
@@ -346,7 +410,16 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
     draw(cx);
     let v = view(&tab, cx);
-    check("+ while running waits for the rows, then adds after them", running && early == 0 && v.pending == 1 && v.sel.map(|s| s.0) == Some(rows), format!("running {running} early {early} {phase:?} {rows} pending {} sel {:?} {:?}", v.pending, v.sel, cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_read_only()).ok().flatten()));
+    check(
+        "+ while running waits for the rows, then adds after them",
+        running && early == 0 && v.pending == 1 && v.sel.map(|s| s.0) == Some(rows),
+        format!(
+            "running {running} early {early} {phase:?} {rows} pending {} sel {:?} {:?}",
+            v.pending,
+            v.sel,
+            cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_read_only()).ok().flatten()
+        ),
+    );
     discard(&tab, cx);
 
     run_sql(&tab, "DROP TABLE IF EXISTS public.insert_t", cx).await;
@@ -360,7 +433,13 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     ok
 }
 
-async fn engine_round(ws: &Entity<Workspace>, prof: dataman_core::ConnectionProfile, pw: String, setup: &str, cx: &mut AsyncWindowContext) -> Result<(), String> {
+async fn engine_round(
+    ws: &Entity<Workspace>,
+    prof: dataman_core::ConnectionProfile,
+    pw: String,
+    setup: &str,
+    cx: &mut AsyncWindowContext,
+) -> Result<(), String> {
     let id = prof.id.clone();
     let _ = cx.update(|_, cx| crate::bench::connect(ws, prof, pw, cx));
     let mut conn = None;
@@ -382,7 +461,14 @@ async fn engine_round(ws: &Entity<Workspace>, prof: dataman_core::ConnectionProf
     let (phase, _, err) = run_sql(&tab, setup, cx).await;
     if phase != Some(Phase::Done) || first_cell(&tab, cx) != "15000" {
         let items = cx
-            .update(|_, cx| tab.read(cx).batch_items().iter().map(|b| format!("[{:?} {:.30} {:?}]", b.state, b.sql, b.rs.as_ref().map(|r| (r.rows(), r.status().error.map(|e| e.message))))).collect::<Vec<_>>().join(" "))
+            .update(|_, cx| {
+                tab.read(cx)
+                    .batch_items()
+                    .iter()
+                    .map(|b| format!("[{:?} {:.30} {:?}]", b.state, b.sql, b.rs.as_ref().map(|r| (r.rows(), r.status().error.map(|e| e.message)))))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default();
         return Err(format!("setup {phase:?} {} {err} {items}", first_cell(&tab, cx)));
     }

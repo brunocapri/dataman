@@ -8,20 +8,42 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+use dataman_core::config::{ConnectionProfile, Engine};
 use gpui::{AsyncWindowContext, Entity};
 use serde_json::{Value, json};
-use dataman_core::config::{ConnectionProfile, Engine};
 
 use crate::app::Workspace;
 use crate::check::*;
 
 const TOOLS: [&str; 28] = [
-    "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows",
-    "create_connection", "update_connection", "create_agent_login", "show_in_dataman",
-    "run_query", "open_query", "explain", "explain_analyze", "execute",
-    "list_favorites", "run_favorite", "add_favorite", "remove_favorite", "rename_favorite", "import_favorites",
-    "nosql_query", "nosql_execute",
-    "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
+    "list_connections",
+    "list_schemas",
+    "list_tables",
+    "search_objects",
+    "describe_table",
+    "get_ddl",
+    "sample_rows",
+    "create_connection",
+    "update_connection",
+    "create_agent_login",
+    "show_in_dataman",
+    "run_query",
+    "open_query",
+    "explain",
+    "explain_analyze",
+    "execute",
+    "list_favorites",
+    "run_favorite",
+    "add_favorite",
+    "remove_favorite",
+    "rename_favorite",
+    "import_favorites",
+    "nosql_query",
+    "nosql_execute",
+    "activity_sessions",
+    "activity_locks",
+    "cancel_backend",
+    "terminate_backend",
 ];
 
 pub(crate) struct Client {
@@ -161,12 +183,21 @@ async fn close_dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bo
 }
 
 fn agents_at(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<(crate::agents::Page, Option<String>)> {
-    cx.update(|_, cx| (ws.read(cx).view == dataman_core::layout::NavView::Agents).then(|| ws.read(cx).agents.read(cx)).map(|a| (a.page, a.conn.clone()))).ok().flatten()
+    cx.update(|_, cx| (ws.read(cx).view == dataman_core::layout::NavView::Agents).then(|| ws.read(cx).agents.read(cx)).map(|a| (a.page, a.conn.clone())))
+        .ok()
+        .flatten()
 }
 
 /// Each destination opens its place with the window brought forward, and the file of connections
 /// stays as it was until the user's click. What is closed to agents goes nowhere.
-async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &ConnectionProfile, my: &ConnectionProfile, r: &mut Report, cx: &mut AsyncWindowContext) {
+async fn show_destinations(
+    ws: &Entity<Workspace>,
+    client: &Arc<Client>,
+    pg: &ConnectionProfile,
+    my: &ConnectionProfile,
+    r: &mut Report,
+    cx: &mut AsyncWindowContext,
+) {
     use crate::agents::Page;
     let core = core(ws, cx);
     let Some(hub) = cx.update(|_, cx| crate::mcp::shared(&core, cx).hub().ok().map(|h| h.0)).ok().flatten() else {
@@ -187,16 +218,28 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     let res = call(client, "show_in_dataman", json!({"destination": "new_connection", "name": "e2e filled", "engine": "mysql", "host": "db.example.internal", "port": 3307, "user": "app", "database": "orders"}), cx).await;
     let open = until(cx, 5, |cx| dialog(ws, cx).is_some() && probed("dlg-agent-made", cx).is_some()).await;
     let shown = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).current(cx)).ok());
-    let right = shown.as_ref().is_some_and(|(p, pw)| (p.name.as_str(), p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()) == ("e2e filled", Engine::MySql, "db.example.internal", 3307, "app", "orders") && pw.is_empty());
+    let right = shown.as_ref().is_some_and(|(p, pw)| {
+        (p.name.as_str(), p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str())
+            == ("e2e filled", Engine::MySql, "db.example.internal", 3307, "app", "orders")
+            && pw.is_empty()
+    });
     let step = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).step()).ok());
     let string = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).demo_conn_str(cx)).ok()).unwrap_or_default();
     r.check("…its connection string says the TLS its fields say", string.contains("db.example.internal:3307") && string.contains("ssl-mode=REQUIRED"), &string);
-    r.check("new_connection: the dialog filled in, no password, says an agent filled it, window forward", !res.0 && open && right && step == Some(crate::conn_dialog::Step::Connection) && forward(cx) == fronted + 1, format!("{} {open} {step:?} {:?}", short(&res), shown.map(|s| s.0.name)));
+    r.check(
+        "new_connection: the dialog filled in, no password, says an agent filled it, window forward",
+        !res.0 && open && right && step == Some(crate::conn_dialog::Step::Connection) && forward(cx) == fronted + 1,
+        format!("{} {open} {step:?} {:?}", short(&res), shown.map(|s| s.0.name)),
+    );
     crate::outside_check::snap("agent-filled", cx);
     // The user's sheet is theirs: no agent replaces it or moves them away.
     let res = call(client, "show_in_dataman", show("agents_general"), cx).await;
     let still = dialog(ws, cx).and_then(|d| cx.update(|_, cx| d.read(cx).current(cx).0.name).ok());
-    r.check("…and another show_in_dataman while it is open is refused, the dialog as it was", res.0 && res.1.contains("sheet is open") && still.as_deref() == Some("e2e filled") && agents_at(ws, cx).is_none() && forward(cx) == fronted + 1, short(&res));
+    r.check(
+        "…and another show_in_dataman while it is open is refused, the dialog as it was",
+        res.0 && res.1.contains("sheet is open") && still.as_deref() == Some("e2e filled") && agents_at(ws, cx).is_none() && forward(cx) == fronted + 1,
+        short(&res),
+    );
     let closed = close_dialog(ws, cx).await;
     r.check("…closed without saving, nothing is saved", closed && file() == saved && !core.config.connections().iter().any(|p| p.name == "e2e filled"), "");
 
@@ -204,8 +247,14 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     let res = call(client, "show_in_dataman", on("connection", "e2e no password"), cx).await;
     let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
     let d = dialog(ws, cx);
-    let asks = d.as_ref().and_then(|d| cx.update(|window, cx| (d.read(cx).demo_asks_password(), d.read(cx).password_focus(cx).is_focused(window), d.read(cx).current(cx).0.name)).ok());
-    r.check("connection: its dialog at the password, for one with none saved, marked as an agent's", !res.0 && open && asks == Some((true, true, "e2e no password".into())) && probed("dlg-agent-made", cx).is_some() && forward(cx) == fronted + 2, format!("{} {asks:?}", short(&res)));
+    let asks = d.as_ref().and_then(|d| {
+        cx.update(|window, cx| (d.read(cx).demo_asks_password(), d.read(cx).password_focus(cx).is_focused(window), d.read(cx).current(cx).0.name)).ok()
+    });
+    r.check(
+        "connection: its dialog at the password, for one with none saved, marked as an agent's",
+        !res.0 && open && asks == Some((true, true, "e2e no password".into())) && probed("dlg-agent-made", cx).is_some() && forward(cx) == fronted + 2,
+        format!("{} {asks:?}", short(&res)),
+    );
     r.check("…closed, nothing saved", close_dialog(ws, cx).await && file() == saved, "");
     let res = call(client, "show_in_dataman", on("connection", "e2e renamed by agent"), cx).await;
     let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
@@ -220,10 +269,18 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     let fronted = forward(cx);
     let res = call(client, "show_in_dataman", on("agents_protection", &pg.name), cx).await;
     let there = until(cx, 5, |cx| agents_at(ws, cx) == Some((Page::Protection, Some(pg.id.clone())))).await;
-    r.check("agents_protection: Protection, on that connection, window forward", !res.0 && there && forward(cx) == fronted + 1, format!("{} {:?}", short(&res), agents_at(ws, cx)));
+    r.check(
+        "agents_protection: Protection, on that connection, window forward",
+        !res.0 && there && forward(cx) == fronted + 1,
+        format!("{} {:?}", short(&res), agents_at(ws, cx)),
+    );
     let res = call(client, "show_in_dataman", on("agent_login", &my.name), cx).await;
     let there = until(cx, 5, |cx| agents_at(ws, cx) == Some((Page::Protection, Some(my.id.clone()))) && probed("agents-login-section", cx).is_some()).await;
-    r.check("agent_login: Protection on that connection, at its agent login", !res.0 && there && forward(cx) == fronted + 2, format!("{} {:?}", short(&res), agents_at(ws, cx)));
+    r.check(
+        "agent_login: Protection on that connection, at its agent login",
+        !res.0 && there && forward(cx) == fronted + 2,
+        format!("{} {:?}", short(&res), agents_at(ws, cx)),
+    );
     let res = call(client, "show_in_dataman", show("agents_general"), cx).await;
     let there = until(cx, 5, |cx| agents_at(ws, cx).is_some_and(|a| a.0 == Page::General)).await;
     r.check("agents_general: Agents › General", !res.0 && there && forward(cx) == fronted + 3, short(&res));
@@ -235,7 +292,11 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     until(cx, 5, |cx| at(cx).is_none()).await;
     let res = call(client, "show_in_dataman", show("outside_review"), cx).await;
     let up = cx.update(|_, cx| ws.read(cx).outside_review.is_some()).unwrap_or(true);
-    r.check("outside_review with nothing waiting says so, and nothing comes forward", res.0 && res.1.contains("nothing edited") && !up && forward(cx) == fronted + 4, short(&res));
+    r.check(
+        "outside_review with nothing waiting says so, and nothing comes forward",
+        res.0 && res.1.contains("nothing edited") && !up && forward(cx) == fronted + 4,
+        short(&res),
+    );
     r.check("nothing any of these did saved anything", file() == saved, "");
 
     // Closed to agents: nowhere to go, and nothing moves.
@@ -257,15 +318,24 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
             }
         }
     }
-    r.check("MCP off, agents refused or no such name: refused everywhere, the app where it was", went.is_empty() && dialog(ws, cx).is_none() && agents_at(ws, cx) == at_before && forward(cx) == fronted, format!("{went:?}"));
+    r.check(
+        "MCP off, agents refused or no such name: refused everywhere, the app where it was",
+        went.is_empty() && dialog(ws, cx).is_none() && agents_at(ws, cx) == at_before && forward(cx) == fronted,
+        format!("{went:?}"),
+    );
 
     // A twin of a closed connection: the same answer as any other, and it starts closed. Only the
     // user's click saves it, and Skip keeps it closed.
-    let res = call(client, "show_in_dataman", json!({"destination": "new_connection", "name": "e2e twin", "host": "127.0.0.1", "port": 5999, "user": "x"}), cx).await;
+    let res =
+        call(client, "show_in_dataman", json!({"destination": "new_connection", "name": "e2e twin", "host": "127.0.0.1", "port": 5999, "user": "x"}), cx).await;
     let open = until(cx, 5, |cx| dialog(ws, cx).is_some()).await;
     let d = dialog(ws, cx);
     let tier = d.as_ref().and_then(|d| cx.update(|_, cx| d.read(cx).demo_tier()).ok());
-    r.check("the twin of a closed connection: answered like any other, MCP off in the dialog", !res.0 && open && tier == Some(dataman_core::McpAccess::Off), format!("{} {tier:?}", short(&res)));
+    r.check(
+        "the twin of a closed connection: answered like any other, MCP off in the dialog",
+        !res.0 && open && tier == Some(dataman_core::McpAccess::Off),
+        format!("{} {tier:?}", short(&res)),
+    );
     let walked = match &d {
         Some(d) => sheet_to_last_step(d, cx).await,
         None => false,
@@ -273,7 +343,11 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     let skipped = walked && click_probe("dlg-skip", cx);
     let saved_twin = until(cx, 10, |_| core.config.connections().iter().any(|p| p.name == "e2e twin")).await;
     let twin = core.config.connections().into_iter().find(|p| p.name == "e2e twin");
-    r.check("…the user's click saves it, Skip leaves agents out, and it is the user's now", skipped && saved_twin && twin.as_ref().is_some_and(|p| p.mcp_access() == dataman_core::McpAccess::Off && !p.agent_made), format!("{walked} {skipped} {:?}", twin.map(|p| (p.mcp, p.agent_made))));
+    r.check(
+        "…the user's click saves it, Skip leaves agents out, and it is the user's now",
+        skipped && saved_twin && twin.as_ref().is_some_and(|p| p.mcp_access() == dataman_core::McpAccess::Off && !p.agent_made),
+        format!("{walked} {skipped} {:?}", twin.map(|p| (p.mcp, p.agent_made))),
+    );
     until(cx, 5, |cx| dialog(ws, cx).is_none()).await;
 
     let fronted = forward(cx);
@@ -288,7 +362,11 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     hub.set_show_limit(1, std::time::Duration::from_secs(60));
     let res = call(client, "show_in_dataman", show("settings_mcp"), cx).await;
     let up = cx.update(|_, cx| ws.read(cx).settings_view.is_some()).unwrap_or(true);
-    r.check("past the limit: refused, nothing comes forward, nothing moves", res.0 && res.1.contains("came forward") && !up && agents_at(ws, cx) == at_before && forward(cx) == fronted, short(&res));
+    r.check(
+        "past the limit: refused, nothing comes forward, nothing moves",
+        res.0 && res.1.contains("came forward") && !up && agents_at(ws, cx) == at_before && forward(cx) == fronted,
+        short(&res),
+    );
     hub.set_show_limit(dataman_mcp::hub::SHOWS, dataman_mcp::hub::SHOWS_WITHIN);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::Explorer, window, cx)));
 }
@@ -355,7 +433,15 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         r.check("dataman-mcp answers tools/list", false, format!("{tools:?}"));
         return;
     };
-    r.check("the quickstart prompt, also in the instructions", prompt.as_ref().is_ok_and(|p| p["messages"][0]["content"]["text"].as_str().is_some_and(|q| q.contains("show_in_dataman") && i["instructions"].as_str().is_some_and(|s| s.contains(q)))), format!("{prompt:?}"));
+    r.check(
+        "the quickstart prompt, also in the instructions",
+        prompt.as_ref().is_ok_and(|p| {
+            p["messages"][0]["content"]["text"]
+                .as_str()
+                .is_some_and(|q| q.contains("show_in_dataman") && i["instructions"].as_str().is_some_and(|s| s.contains(q)))
+        }),
+        format!("{prompt:?}"),
+    );
     let mut names: Vec<String> = t["tools"].as_array().map(|a| a.iter().filter_map(|t| t["name"].as_str().map(str::to_string)).collect()).unwrap_or_default();
     names.sort();
     let mut want: Vec<String> = TOOLS.iter().map(|s| s.to_string()).collect();
@@ -416,7 +502,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let asked = sheet_answer(ws, false, cx).await;
     let res = rx.await.unwrap_or((true, String::new()));
     let n = sql1(&core, &pg, &pgpw, "SELECT count(*) FROM e2e_mcp.t", cx).await;
-    r.check("tier Full: a TRUNCATE waits on the sheet; Deny refuses it", asked.is_some() && res.0 && n.as_deref() == Some("1"), format!("{asked:?} {} {n:?}", short(&res)));
+    r.check(
+        "tier Full: a TRUNCATE waits on the sheet; Deny refuses it",
+        asked.is_some() && res.0 && n.as_deref() == Some("1"),
+        format!("{asked:?} {} {n:?}", short(&res)),
+    );
     // Right after a Deny the same client waits before asking again.
     pause(cx, dataman_mcp::hub::AFTER_DENY.as_millis() as u64 + 100).await;
     let rx = start(&client, "execute", json!({"connection": c, "sql": "TRUNCATE e2e_mcp.t"}));
@@ -430,13 +520,25 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 300).await;
     let agent = cx.update(|_, cx| ws.read(cx).tabs.iter().find(|t| t.read(cx).agent.is_some()).cloned()).ok().flatten();
     let shown = agent.as_ref().map(|t| cell(t, 0, 0, cx));
-    r.check("open_query runs in an agent tab the user sees", !res.0 && agent.is_some() && shown == Some(Some("agent".into())), format!("{} tabs {} → {} {shown:?}", short(&res), before, tabs(ws, cx).len()));
+    r.check(
+        "open_query runs in an agent tab the user sees",
+        !res.0 && agent.is_some() && shown == Some(Some("agent".into())),
+        format!("{} tabs {} → {} {shown:?}", short(&res), before, tabs(ws, cx).len()),
+    );
     for (e, p, _) in profiles.iter().filter(|(e, _, _)| matches!(e, Engine::MySql | Engine::Redis)) {
         let stmt = if *e == Engine::Redis { "DEL e2e:mcp" } else { "DELETE FROM customer WHERE id = 1" };
         let res = call(&client, "open_query", json!({"connection": p.name, "sql": stmt, "run": false}), cx).await;
         pause(cx, 200).await;
-        let text = cx.update(|_, cx| ws.read(cx).tabs.iter().filter(|t| t.read(cx).agent.is_some()).map(|t| t.read(cx).editor.read(cx).text().to_string()).collect::<Vec<_>>()).unwrap_or_default();
-        r.check(&format!("{}: open_query run:false drafts it in the agent tab, unrun", e.label()), !res.0 && text.iter().any(|t| t.contains(stmt)), format!("{} {text:?}", short(&res)));
+        let text = cx
+            .update(|_, cx| {
+                ws.read(cx).tabs.iter().filter(|t| t.read(cx).agent.is_some()).map(|t| t.read(cx).editor.read(cx).text().to_string()).collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        r.check(
+            &format!("{}: open_query run:false drafts it in the agent tab, unrun", e.label()),
+            !res.0 && text.iter().any(|t| t.contains(stmt)),
+            format!("{} {text:?}", short(&res)),
+        );
     }
 
     for (e, p, _) in profiles.iter().filter(|(e, _, _)| !e.is_sql()) {
@@ -469,7 +571,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let rx = start(&client, "import_favorites", json!({"paths": [file.display().to_string()]}));
     let asked = sheet_answer(ws, true, cx).await;
     let res = rx.await.unwrap_or((true, String::new()));
-    r.check("import_favorites asks, then adds the .sql file", asked.is_some() && !res.0 && core.favorites.list().iter().any(|f| f.sql.contains("'imported'")), short(&res));
+    r.check(
+        "import_favorites asks, then adds the .sql file",
+        asked.is_some() && !res.0 && core.favorites.list().iter().any(|f| f.sql.contains("'imported'")),
+        short(&res),
+    );
     let _ = std::fs::remove_file(&file);
 
     let res = call(&client, "activity_sessions", json!({"connection": pg.name}), cx).await;
@@ -488,7 +594,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         .or_else(|_| {
             let out = Command::new("docker").args(["ps", "--filter", &format!("publish={}", pg.port), "--format", "{{.Names}}"]).output()?;
             let name = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().to_string();
-            Command::new("docker").args(["exec", &name, "psql", "-U", &pg.user, "-d", &pg.database, "-c", sleep_sql]).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+            Command::new("docker")
+                .args(["exec", &name, "psql", "-U", &pg.user, "-d", &pg.database, "-c", sleep_sql])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
         })
         .ok();
     pause(cx, 1000).await;
@@ -507,7 +617,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     if let Some(c) = sleeper.as_mut() {
         let _ = c.kill();
     }
-    r.check("cancel_backend stops another program's query", !res.0 && ended.is_some_and(|s| !s.success()), format!("pid {pid:?} asked {} {} psql {ended:?}", asked.is_some(), short(&res)));
+    r.check(
+        "cancel_backend stops another program's query",
+        !res.0 && ended.is_some_and(|s| !s.success()),
+        format!("pid {pid:?} asked {} {} psql {ended:?}", asked.is_some(), short(&res)),
+    );
     let res = call(&client, "terminate_backend", json!({"connection": pg.name, "pid": 1}), cx).await;
     r.check("terminate_backend refuses a pid that is not a client backend", res.0, short(&res));
 
@@ -525,8 +639,16 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 200).await;
     let made = core.config.get(&pg.id).and_then(|p| p.agent_login);
     let pw = core.secrets.get(&dataman_core::agent_login::secret_account(&pg.id)).ok().flatten().unwrap_or_default();
-    r.check("create_agent_login waits for Allow (the sheet shows what runs), then creates the login and checks it", asked.contains("CREATE ROLE") && !res.0 && made.as_ref().is_some_and(|l| l.verified.is_some()), format!("{} {}", asked.len(), short(&res)));
-    r.check("…its password in the Keychain, never in the reply nor on the sheet", !pw.is_empty() && !res.1.contains(&pw) && !asked.contains(&pw), format!("{}", pw.len()));
+    r.check(
+        "create_agent_login waits for Allow (the sheet shows what runs), then creates the login and checks it",
+        asked.contains("CREATE ROLE") && !res.0 && made.as_ref().is_some_and(|l| l.verified.is_some()),
+        format!("{} {}", asked.len(), short(&res)),
+    );
+    r.check(
+        "…its password in the Keychain, never in the reply nor on the sheet",
+        !pw.is_empty() && !res.1.contains(&pw) && !asked.contains(&pw),
+        format!("{}", pw.len()),
+    );
     let res = call(&client, "create_agent_login", json!({"connection": pg.name}), cx).await;
     r.check("…and asking again is refused: it already has one", res.0 && res.1.contains("already has"), short(&res));
     if let Some(l) = made {

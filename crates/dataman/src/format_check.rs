@@ -3,8 +3,8 @@
 //! be formatted stays as it is, with a notice. ⌘S formats before it saves the favorite, unless
 //! File › Format on Save is off, and saves text it cannot format as written.
 
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::Engine;
+use gpui::{AsyncWindowContext, Entity};
 
 use crate::app::Workspace;
 use crate::check::{Report, active, click_probe, connect, draw, key, pause, profile, until};
@@ -25,7 +25,10 @@ async fn on(ws: &Entity<Workspace>, engine: Engine, r: &mut Report, cx: &mut Asy
         tab.update(cx, |t, cx| conn.map(|c| t.adopt(c, cx)))
     });
     let lang = (!engine.is_sql()).then_some(engine);
-    until(cx, 10, |cx| cx.update(|_, cx| tab.read(cx).connection().is_some_and(|c| c.engine() == engine) && tab.read(cx).editor.read(cx).doc_lang() == lang).unwrap_or(false)).await;
+    until(cx, 10, |cx| {
+        cx.update(|_, cx| tab.read(cx).connection().is_some_and(|c| c.engine() == engine) && tab.read(cx).editor.read(cx).doc_lang() == lang).unwrap_or(false)
+    })
+    .await;
     draw(cx);
     Some(tab)
 }
@@ -116,11 +119,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     put(&tab, messy, None, cx);
     let out = format(&tab, cx).await;
     r.check("Format is on the toolbar of a MongoDB tab", out.is_some(), "no tb-format");
-    r.check(
-        "clicking it formats the query",
-        out.as_deref() == Some("db.people.find({ age: { $gt: 30 }, name: 'Ada' }).sort({ age: -1 })"),
-        format!("{out:?}"),
-    );
+    r.check("clicking it formats the query", out.as_deref() == Some("db.people.find({ age: { $gt: 30 }, name: 'Ada' }).sort({ age: -1 })"), format!("{out:?}"));
     let back = undo(&tab, cx).await;
     r.check("one ⌘Z takes the query back", back == messy, format!("{back:?}"));
     let nested = "db.people.insertOne({\n      name: 'Ada',   // first\n  tags: ['a',  'b'],\n address: {city: 'London'}\n})";

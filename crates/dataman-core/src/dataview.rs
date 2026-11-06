@@ -34,8 +34,7 @@ pub enum Op {
 }
 
 impl Op {
-    pub const ALL: [Op; 11] =
-        [Op::Eq, Op::Ne, Op::Lt, Op::Gt, Op::Le, Op::Ge, Op::Contains, Op::StartsWith, Op::In, Op::IsNull, Op::NotNull];
+    pub const ALL: [Op; 11] = [Op::Eq, Op::Ne, Op::Lt, Op::Gt, Op::Le, Op::Ge, Op::Contains, Op::StartsWith, Op::In, Op::IsNull, Op::NotNull];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -316,10 +315,9 @@ impl Connection {
                 my::lit(schema),
                 my::lit(table)
             )),
-            Engine::SqlServer => Some(format!(
-                "SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = {} AND p.index_id IN (0, 1)",
-                ms::object_id(schema, table)
-            )),
+            Engine::SqlServer => {
+                Some(format!("SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = {} AND p.index_id IN (0, 1)", ms::object_id(schema, table)))
+            }
             _ => None,
         };
         self.spawn(async move {
@@ -615,10 +613,7 @@ mod tests {
         v.where_raw = "total > 100 OR customer = 7;".into();
         v.sort = Some(("total".into(), SortDir::Desc));
         v.page = 0;
-        assert_eq!(
-            v.sql(),
-            "SELECT * FROM public.orders\n WHERE status = 'paid'\n   AND (total > 100 OR customer = 7)\n ORDER BY total DESC\n LIMIT 1000;"
-        );
+        assert_eq!(v.sql(), "SELECT * FROM public.orders\n WHERE status = 'paid'\n   AND (total > 100 OR customer = 7)\n ORDER BY total DESC\n LIMIT 1000;");
         assert_eq!(v.count_sql(), "SELECT count(*) FROM public.orders\n WHERE status = 'paid'\n   AND (total > 100 OR customer = 7)");
         v.filters.clear();
         v.sort = Some(("Total".into(), SortDir::Asc));

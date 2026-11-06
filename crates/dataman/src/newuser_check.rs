@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
 use dataman_core::result::Phase;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::conn_dialog::ConnDialog;
@@ -79,7 +79,12 @@ async fn finished(ws: &Entity<Workspace>, secs: u64, cx: &mut AsyncWindowContext
             let t = ws.read(cx).active_tab()?.read(cx);
             let rs = t.result().cloned();
             // A script is not over between two of its statements.
-            Some((t.run_phase(), t.is_running() || t.run_continues(), rs.as_ref().map(|r| r.rows()).unwrap_or(0), rs.and_then(|r| r.status().error.map(|e| e.message)).unwrap_or_default()))
+            Some((
+                t.run_phase(),
+                t.is_running() || t.run_continues(),
+                rs.as_ref().map(|r| r.rows()).unwrap_or(0),
+                rs.and_then(|r| r.status().error.map(|e| e.message)).unwrap_or_default(),
+            ))
         })
         .ok()
         .flatten()
@@ -171,7 +176,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     pause(cx, 50).await;
     draw(cx);
     let picked = cx.update(|_, cx| d.read(cx).current(cx).0.engine).ok();
-    check("typing a name and ↩ picks PostgreSQL: its form, on the name", step(cx) == Some(crate::conn_dialog::Step::Connection) && picked == Some(Engine::Postgres) && focused(cx) == Some(0), format!("{:?} {picked:?} {:?}", step(cx), focused(cx)));
+    check(
+        "typing a name and ↩ picks PostgreSQL: its form, on the name",
+        step(cx) == Some(crate::conn_dialog::Step::Connection) && picked == Some(Engine::Postgres) && focused(cx) == Some(0),
+        format!("{:?} {picked:?} {:?}", step(cx), focused(cx)),
+    );
 
     typ(cx, "first");
     key(cx, "tab");
@@ -197,7 +206,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_engine(e, window, cx)));
         seen.push(field(2, cx));
     }
-    check("each engine brings its default port, and leaves the user to be asked", seen == ["3306", "1433", "5432"] && field(3, cx).is_empty(), format!("{seen:?} {:?}", field(3, cx)));
+    check(
+        "each engine brings its default port, and leaves the user to be asked",
+        seen == ["3306", "1433", "5432"] && field(3, cx).is_empty(),
+        format!("{seen:?} {:?}", field(3, cx)),
+    );
 
     let _ = cx.update(|window, cx| {
         d.update(cx, |d, cx| {
@@ -231,7 +244,10 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let (s, red) = tested(&d, 10, cx).await;
     snap("wrong-password", cx);
     check("a wrong password fails the test, the field red", s.starts_with("failed") && red, format!("{s} red={red}"));
-    let _ = cx.update(|window, cx| { let i = d.read(cx).demo_input(4); window.focus(&i.read(cx).focus_handle(cx), cx) });
+    let _ = cx.update(|window, cx| {
+        let i = d.read(cx).demo_input(4);
+        window.focus(&i.read(cx).focus_handle(cx), cx)
+    });
     key(cx, "cmd-a");
     typ(cx, "x");
     let (s, red) = status(&d, cx);
@@ -293,7 +309,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-.");
     let t0 = std::time::Instant::now();
     let (phase, _, err) = finished(ws, 8, cx).await;
-    check("⌘. cancels a long query", matches!(phase, Some(Phase::Cancelled | Phase::Failed)) && t0.elapsed() < Duration::from_secs(5), format!("{phase:?} {err} {:?}", t0.elapsed()));
+    check(
+        "⌘. cancels a long query",
+        matches!(phase, Some(Phase::Cancelled | Phase::Failed)) && t0.elapsed() < Duration::from_secs(5),
+        format!("{phase:?} {err} {:?}", t0.elapsed()),
+    );
 
     editor_text(ws, "SELECT FROM generate_series(1, 3)", cx);
     key(cx, "cmd-enter");
@@ -318,7 +338,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     snap("unicode", cx);
     check(
         "unicode names and values copy as they are; CSV keeps NULL apart from ''",
-        phase == Some(Phase::Done) && clip.trim_end_matches('\n') == "名前 🙂\tn\te\ncafé 😀👍🏽 日本\t\t" && csv.trim_end_matches('\n') == "café 😀👍🏽 日本,,\"\"",
+        phase == Some(Phase::Done)
+            && clip.trim_end_matches('\n') == "名前 🙂\tn\te\ncafé 😀👍🏽 日本\t\t"
+            && csv.trim_end_matches('\n') == "café 😀👍🏽 日本,,\"\"",
         format!("{phase:?} {err} {clip:?} {csv:?}"),
     );
 
@@ -387,9 +409,17 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-enter");
     let (phase, rows, err) = finished(ws, 10, cx).await;
     let name = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&id).map(|p| p.name.clone())).ok().flatten();
-    check("an edit saved mid-query: renamed, reconnected, the tab runs again", r.is_ok() && name.as_deref() == Some("renamed") && phase == Some(Phase::Done) && rows == 1, format!("{r:?} {name:?} {phase:?} {rows} {err}"));
+    check(
+        "an edit saved mid-query: renamed, reconnected, the tab runs again",
+        r.is_ok() && name.as_deref() == Some("renamed") && phase == Some(Phase::Done) && rows == 1,
+        format!("{r:?} {name:?} {phase:?} {rows} {err}"),
+    );
 
-    editor_text(ws, "CREATE TABLE IF NOT EXISTS public.newuser_t (id int PRIMARY KEY, name text);\nINSERT INTO public.newuser_t VALUES (1, 'a'), (2, 'b') ON CONFLICT (id) DO UPDATE SET name = excluded.name;\nSELECT count(*) FROM public.newuser_t;", cx);
+    editor_text(
+        ws,
+        "CREATE TABLE IF NOT EXISTS public.newuser_t (id int PRIMARY KEY, name text);\nINSERT INTO public.newuser_t VALUES (1, 'a'), (2, 'b') ON CONFLICT (id) DO UPDATE SET name = excluded.name;\nSELECT count(*) FROM public.newuser_t;",
+        cx,
+    );
     key(cx, "cmd-enter");
     let (phase, rows, err) = finished(ws, 10, cx).await;
     let items = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).batch_items().len())).ok().flatten();
@@ -413,7 +443,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     pause(cx, 100).await;
     let still = cx.update(|_, cx| ws.read(cx).tabs.contains(&tab)).unwrap_or(false);
     let pending2 = cx.update(|_, cx| edit.read(cx).pending_count()).unwrap_or(0);
-    check("⌘W on a tab with a pending edit asks first", pending == 1 && still && pending2 == 1, format!("pending {pending} → {pending2}, tab kept {still} ({n} tabs)"));
+    check(
+        "⌘W on a tab with a pending edit asks first",
+        pending == 1 && still && pending2 == 1,
+        format!("pending {pending} → {pending2}, tab kept {still} ({n} tabs)"),
+    );
     key(cx, "escape");
     pause(cx, 100).await;
     let kept = cx.update(|_, cx| ws.read(cx).tabs.contains(&tab) && edit.read(cx).pending_count() == 1).unwrap_or(false);
@@ -483,7 +517,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         let (phase, _, err) = finished(ws, 5, cx).await;
         let on = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()))).ok().flatten();
         let running = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).is_running())).ok().flatten();
-        check("switching connections mid-query stops the run", on.as_deref() == Some(other.as_str()) && running == Some(false) && t0.elapsed() < Duration::from_secs(4), format!("{on:?} {phase:?} {err} running={running:?} {:?}", t0.elapsed()));
+        check(
+            "switching connections mid-query stops the run",
+            on.as_deref() == Some(other.as_str()) && running == Some(false) && t0.elapsed() < Duration::from_secs(4),
+            format!("{on:?} {phase:?} {err} running={running:?} {:?}", t0.elapsed()),
+        );
         editor_text(ws, "SELECT 1 AS one", cx);
         key(cx, "cmd-enter");
         let (phase, rows, err) = finished(ws, 10, cx).await;
@@ -503,7 +541,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             crate::check::sheet_to_last_step(&d, cx).await;
             key(cx, "cmd-enter");
             let r = connected(ws, &dup, cx).await;
-            check("Duplicate: prefilled, saved, connects", dup != id && p.name == "copy of renamed" && !pw.is_empty() && r.is_ok(), format!("{} {} {r:?}", p.name, pw.len()));
+            check(
+                "Duplicate: prefilled, saved, connects",
+                dup != id && p.name == "copy of renamed" && !pw.is_empty() && r.is_ok(),
+                format!("{} {} {r:?}", p.name, pw.len()),
+            );
         }
         None => check("Duplicate opens the sheet", false, String::new()),
     }
@@ -514,8 +556,13 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         pause(cx, 50).await;
     }
     draw(cx);
-    let (welcome, tabs_on) = cx.update(|_, cx| (ws.read(cx).first_run(cx), ws.read(cx).tabs.iter().filter(|t| t.read(cx).connection().is_some()).count())).unwrap_or_default();
-    check("all connections deleted: the welcome screen, no tab left on one", welcome && tabs_on == 0, format!("welcome {welcome} tabs on a connection {tabs_on}"));
+    let (welcome, tabs_on) =
+        cx.update(|_, cx| (ws.read(cx).first_run(cx), ws.read(cx).tabs.iter().filter(|t| t.read(cx).connection().is_some()).count())).unwrap_or_default();
+    check(
+        "all connections deleted: the welcome screen, no tab left on one",
+        welcome && tabs_on == 0,
+        format!("welcome {welcome} tabs on a connection {tabs_on}"),
+    );
     let _ = cx.update(|window, cx| {
         let tree = ws.read(cx).tree.clone();
         window.focus(&tree.focus_handle(cx), cx);

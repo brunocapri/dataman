@@ -39,7 +39,12 @@ fn every_type() {
     let snap = rs.snapshot();
     let cols = rs.columns().unwrap();
     for (ix, col) in cols.iter().enumerate() {
-        let t = |r: usize| snap.text(r, ix).map(|s| { let s = s.into_owned(); if s.len() > 60 { format!("{}...({})", &s[..s.char_indices().nth(40).map_or(s.len(), |x| x.0)], s.len()) } else { s } });
+        let t = |r: usize| {
+            snap.text(r, ix).map(|s| {
+                let s = s.into_owned();
+                if s.len() > 60 { format!("{}...({})", &s[..s.char_indices().nth(40).map_or(s.len(), |x| x.0)], s.len()) } else { s }
+            })
+        };
         eprintln!("{:6} {:?} | {:?} | {:?} | {:?}", col.name, col.kind, t(0), t(1), t(2));
     }
     let sv = cols.iter().position(|c| c.name == "sv").unwrap();

@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Entity, EventEmitter, SharedString, Task, Window, prelude::*};
 use dataman_core::batch::{self, Key, Outcome, Views};
 use dataman_core::complete::Definition;
 use dataman_core::dataview::{Filter, Op, TableView};
@@ -10,14 +9,15 @@ use dataman_core::fknav::ForeignKeys;
 use dataman_core::guard;
 use dataman_core::result::{ErrorInfo, Phase, SortDir};
 use dataman_core::{Connection, ResultSet, Session, TxEnd, TxState, TxStatus};
+use gpui::{Context, Entity, EventEmitter, SharedString, Task, Window, prelude::*};
 
-use crate::editor::{CodeEditor, Diagnostic, EditorEvent, Mark, Stmt};
 use crate::edit_ui::{EditEvent, GridEdit};
+use crate::editor::{CodeEditor, Diagnostic, EditorEvent, Mark, Stmt};
 use crate::grid::{GridView, ResultGrid, TableMode};
 use crate::params_ui::{ParamEvent, ParamPrompt};
 use crate::plan::PlanView;
-use dataman_core::explain;
 use crate::table_view::TableData;
+use dataman_core::explain;
 
 const PARSE_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 
@@ -268,8 +268,7 @@ impl QueryTab {
     }
 
     pub fn result_tabs(&self) -> Vec<batch::Tab> {
-        let stmts: Vec<(&str, Option<Outcome>)> =
-            self.batch.iter().map(|b| (b.label.as_deref().unwrap_or(&b.sql), b.rs.as_deref().map(Outcome::of))).collect();
+        let stmts: Vec<(&str, Option<Outcome>)> = self.batch.iter().map(|b| (b.label.as_deref().unwrap_or(&b.sql), b.rs.as_deref().map(Outcome::of))).collect();
         let mut tabs = batch::tabs(&stmts);
         tabs.retain(|t| !self.closed.contains(&t.key));
         tabs
@@ -383,10 +382,14 @@ impl QueryTab {
             self.pick = Some(key);
             return;
         }
-        self.guard_edits_as("switch", move |t, cx| {
-            t.pick = Some(key);
-            t.sync_active(cx);
-        }, cx);
+        self.guard_edits_as(
+            "switch",
+            move |t, cx| {
+                t.pick = Some(key);
+                t.sync_active(cx);
+            },
+            cx,
+        );
     }
 
     pub fn cycle_result(&mut self, forward: bool, cx: &mut Context<Self>) {
@@ -493,11 +496,7 @@ impl QueryTab {
         {
             return title.clone();
         }
-        let first = text
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with("--"))
-            .map(|l| l.chars().take(28).collect::<String>());
+        let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).map(|l| l.chars().take(28).collect::<String>());
         match first {
             Some(f) => f.into(),
             None => format!("console {}", self.id).into(),
@@ -628,7 +627,9 @@ impl QueryTab {
             .doc_hints
             .collections
             .iter()
-            .filter(|c| text.contains(&format!("db.{c}.")) || text.contains(&format!("/{c}/")) || text.contains(&format!("\"{c}\"")) || text.contains(&format!("'{c}'")))
+            .filter(|c| {
+                text.contains(&format!("db.{c}.")) || text.contains(&format!("/{c}/")) || text.contains(&format!("\"{c}\"")) || text.contains(&format!("'{c}'"))
+            })
             .filter(|c| !self.doc_fields_asked.contains(*c))
             .take(4)
             .cloned()
@@ -816,7 +817,15 @@ impl QueryTab {
 
     /// Each statement of an agent's read runs as a read-only transaction of its own (the guard and
     /// the tiers checked them already).
-    pub fn run_agent(&mut self, sql: String, params: Vec<Option<String>>, client: &str, title: Option<String>, rows: usize, cx: &mut Context<Self>) -> Option<Arc<ResultSet>> {
+    pub fn run_agent(
+        &mut self,
+        sql: String,
+        params: Vec<Option<String>>,
+        client: &str,
+        title: Option<String>,
+        rows: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<ResultSet>> {
         self.put_agent_text(&sql, title, cx);
         self.agent_next = Some((client.to_string(), rows));
         self.agent_pending = None;
@@ -869,7 +878,8 @@ impl QueryTab {
         self.closed.clear();
         self.shown = None;
         self.pick = None;
-        self.batch = vec![BatchItem { at: 0, sql, state: ItemState::Running, elapsed: None, rs: Some(rs.clone()), params: Vec::new(), rollback: false, label: None }];
+        self.batch =
+            vec![BatchItem { at: 0, sql, state: ItemState::Running, elapsed: None, rs: Some(rs.clone()), params: Vec::new(), rollback: false, label: None }];
         self.queue.clear();
         self.cancel_at = None;
         self.current = Some((rs.clone(), 0));
@@ -1013,10 +1023,7 @@ impl QueryTab {
         let Some(conn) = self.conn.clone() else {
             return self.start_run(stmts, cx);
         };
-        if failed_check
-            && self.tx().status == TxStatus::Failed
-            && !stmts.first().is_some_and(|s| guard::classify_in(&s.sql, conn.dialect()).ends_failed_tx())
-        {
+        if failed_check && self.tx().status == TxStatus::Failed && !stmts.first().is_some_and(|s| guard::classify_in(&s.sql, conn.dialect()).ends_failed_tx()) {
             self.confirm = Some(TabConfirm::Failed { stmts });
             cx.emit(TabEvent::Confirm);
             cx.notify();
@@ -1116,7 +1123,16 @@ impl QueryTab {
         self.pick = None;
         self.batch = stmts
             .into_iter()
-            .map(|s| BatchItem { at: s.at, sql: s.sql, state: ItemState::Pending, elapsed: None, rs: None, params: s.params, rollback: s.rollback, label: None })
+            .map(|s| BatchItem {
+                at: s.at,
+                sql: s.sql,
+                state: ItemState::Pending,
+                elapsed: None,
+                rs: None,
+                params: s.params,
+                rollback: s.rollback,
+                label: None,
+            })
             .collect();
         self.queue = (0..self.batch.len()).collect();
         self.cancel_at = None;
@@ -1455,9 +1471,7 @@ impl QueryTab {
     fn sync_table_grid(&mut self, cx: &mut Context<Self>) {
         let mode = match (&self.table, &self.shown_rs) {
             (Some(d), Some(rs)) if rs.sql == d.stmt => {
-                let sort = d.view.sort.as_ref().and_then(|(name, dir)| {
-                    rs.columns().and_then(|c| c.iter().position(|c| &c.name == name)).map(|i| (i, *dir))
-                });
+                let sort = d.view.sort.as_ref().and_then(|(name, dir)| rs.columns().and_then(|c| c.iter().position(|c| &c.name == name)).map(|i| (i, *dir)));
                 Some(TableMode { sort, offset: d.view.offset() as usize })
             }
             _ => None,
@@ -1687,7 +1701,14 @@ impl QueryTab {
         cx.notify();
     }
 
-    pub fn restore_results(&mut self, items: Vec<dataman_core::session::RestoredItem>, shown: Option<Key>, closed: Vec<Key>, file: Option<String>, cx: &mut Context<Self>) {
+    pub fn restore_results(
+        &mut self,
+        items: Vec<dataman_core::session::RestoredItem>,
+        shown: Option<Key>,
+        closed: Vec<Key>,
+        file: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         use dataman_core::session::ItemState as S;
         if items.is_empty() {
             return;
@@ -1773,9 +1794,7 @@ pub fn floor_char(s: &str, i: usize) -> usize {
 fn diagnostic(sql: &str, at: usize, prefix: usize, err: &ErrorInfo) -> Diagnostic {
     // The server's position counts characters from 1 within the statement. Past the end
     // ("at end of input") points at the end of the statement.
-    let pos = err
-        .position
-        .map(|p| at + sql.char_indices().nth(p.saturating_sub(1) as usize).map(|(i, _)| i).unwrap_or(sql.len()).saturating_sub(prefix));
+    let pos = err.position.map(|p| at + sql.char_indices().nth(p.saturating_sub(1) as usize).map(|(i, _)| i).unwrap_or(sql.len()).saturating_sub(prefix));
     let msg = match &err.code {
         Some(c) => format!("{c} {}", err.message),
         None => err.message.clone(),

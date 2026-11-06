@@ -117,9 +117,28 @@ pub enum Returning {
 }
 
 const PG_RESERVED_EXTRA: &[&str] = &[
-    "analyse", "asymmetric", "authorization", "binary", "collation", "current_catalog", "current_role", "current_schema",
-    "current_time", "deferrable", "freeze", "initially", "localtime", "localtimestamp", "overlaps", "placing",
-    "session_user", "symmetric", "tablesample", "user", "variadic", "verbose",
+    "analyse",
+    "asymmetric",
+    "authorization",
+    "binary",
+    "collation",
+    "current_catalog",
+    "current_role",
+    "current_schema",
+    "current_time",
+    "deferrable",
+    "freeze",
+    "initially",
+    "localtime",
+    "localtimestamp",
+    "overlaps",
+    "placing",
+    "session_user",
+    "symmetric",
+    "tablesample",
+    "user",
+    "variadic",
+    "verbose",
 ];
 
 fn plain_mixed_case(name: &str, d: Dialect) -> bool {
@@ -183,13 +202,25 @@ impl Dialect {
                 super::quote_ident(name)
             }
             Dialect::MySql => {
-                if plain_mixed_case(name, self) { name.to_string() } else { format!("`{}`", name.replace('`', "``")) }
+                if plain_mixed_case(name, self) {
+                    name.to_string()
+                } else {
+                    format!("`{}`", name.replace('`', "``"))
+                }
             }
             Dialect::TSql => {
-                if plain_mixed_case(name, self) { name.to_string() } else { format!("[{}]", name.replace(']', "]]")) }
+                if plain_mixed_case(name, self) {
+                    name.to_string()
+                } else {
+                    format!("[{}]", name.replace(']', "]]"))
+                }
             }
             Dialect::Sqlite | Dialect::DuckDb => {
-                if plain_mixed_case(name, self) { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
+                if plain_mixed_case(name, self) {
+                    name.to_string()
+                } else {
+                    format!("\"{}\"", name.replace('"', "\"\""))
+                }
             }
         }
     }

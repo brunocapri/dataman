@@ -1,8 +1,6 @@
-use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, Window, actions, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::ConnectionProfile;
+use gpui::{App, Context, EventEmitter, FocusHandle, Focusable, Window, actions, div, prelude::*};
 
 use crate::theme::{ActiveTheme, BANNER};
 use crate::ui;
@@ -154,21 +152,15 @@ impl Render for Welcome {
             .on_action(cx.listener(|w, _: &Localhost, _, cx| w.choose(LOCALHOST, cx)))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|w, _, window, cx| window.focus(&w.focus, cx)))
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .pt(px(96.))
-                    .px(px(72.))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .w(px(420.))
-                            .flex()
-                            .flex_col()
-                            .child(div().font_family(BANNER).text_size(px(56.)).line_height(px(56.)).text_color(t.tx).child("DATAMAN"))
-                            .child(div().mt(px(40.)).flex().flex_col().gap(px(2.)).children(menu))
-                            .children(self.note.clone().map(|n| div().mt(px(10.)).text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child(n))),
-                    ),
+                div().flex_1().min_h_0().pt(px(96.)).px(px(72.)).overflow_hidden().child(
+                    div()
+                        .w(px(420.))
+                        .flex()
+                        .flex_col()
+                        .child(div().font_family(BANNER).text_size(px(56.)).line_height(px(56.)).text_color(t.tx).child("DATAMAN"))
+                        .child(div().mt(px(40.)).flex().flex_col().gap(px(2.)).children(menu))
+                        .children(self.note.clone().map(|n| div().mt(px(10.)).text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child(n))),
+                ),
             )
     }
 }

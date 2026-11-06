@@ -59,11 +59,7 @@ impl ServerInfo {
 
 pub fn parse_search_path(s: &str, user: &str) -> Vec<String> {
     let s = s.trim().trim_start_matches(['{', '[']).trim_end_matches(['}', ']']);
-    s.split(',')
-        .map(|p| p.trim().trim_matches('"').to_string())
-        .map(|p| if p == "$user" { user.to_string() } else { p })
-        .filter(|p| !p.is_empty())
-        .collect()
+    s.split(',').map(|p| p.trim().trim_matches('"').to_string()).map(|p| if p == "$user" { user.to_string() } else { p }).filter(|p| !p.is_empty()).collect()
 }
 
 #[cfg(test)]

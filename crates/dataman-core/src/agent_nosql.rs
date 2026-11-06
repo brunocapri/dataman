@@ -4,8 +4,8 @@
 //! held. Fail closed: what cannot be checked (scripts, cross-index searches) is refused while a
 //! connection keeps something from agents.
 
-use regex::Regex;
 use mongodb::bson::Bson;
+use regex::Regex;
 use serde_json::Value;
 use std::sync::OnceLock;
 
@@ -87,8 +87,20 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
         // Spaces read away (`drop ()`), and commands sent by name (`runCommand({drop: …})`).
         let squeezed: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
         const STRUCTURE: &[&str] = &[
-            "createindex", "dropindex", "drop(", "drop:", "\"drop\"", "'drop'", "dropdatabase", "renamecollection", "createcollection", "collmod",
-            "$out", "$merge", "runcommand", "admincommand",
+            "createindex",
+            "dropindex",
+            "drop(",
+            "drop:",
+            "\"drop\"",
+            "'drop'",
+            "dropdatabase",
+            "renamecollection",
+            "createcollection",
+            "collmod",
+            "$out",
+            "$merge",
+            "runcommand",
+            "admincommand",
         ];
         if !r.structure && STRUCTURE.iter().any(|w| squeezed.contains(w)) {
             return Err(format!("changing structure is off for agents on {conn} (Dataman › Agents › Permissions)"));
@@ -104,7 +116,12 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     let lower = decoded.to_ascii_lowercase();
     let structural = matches!(
         op,
-        mql::Op::CreateIndex { .. } | mql::Op::DropIndex { .. } | mql::Op::DropCollection { .. } | mql::Op::CreateCollection { .. } | mql::Op::RenameCollection { .. } | mql::Op::DropDatabase
+        mql::Op::CreateIndex { .. }
+            | mql::Op::DropIndex { .. }
+            | mql::Op::DropCollection { .. }
+            | mql::Op::CreateCollection { .. }
+            | mql::Op::RenameCollection { .. }
+            | mql::Op::DropDatabase
     ) || lower.contains("$out")
         || lower.contains("$merge")
         || matches!(op, mql::Op::Command { doc, .. } if doc.keys().next().is_some_and(|k| ["createindexes", "dropindexes", "drop", "create", "renamecollection", "collmod", "dropdatabase"].contains(&k.to_ascii_lowercase().as_str())));
@@ -124,7 +141,11 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
         return Err(format!("server activity is off for agents on {conn} (Dataman › Agents › Permissions)"));
     }
     if r.view == AgentView::Structure {
-        let ok = if write { structural } else { matches!(op, mql::Op::ShowDbs | mql::Op::ShowCollections | mql::Op::Use(_) | mql::Op::Indexes { .. } | mql::Op::Stats { .. }) };
+        let ok = if write {
+            structural
+        } else {
+            matches!(op, mql::Op::ShowDbs | mql::Op::ShowCollections | mql::Op::Use(_) | mql::Op::Indexes { .. } | mql::Op::Stats { .. })
+        };
         if !ok {
             return Err(format!("{conn} shows agents its structure only: documents are neither read nor written"));
         }
@@ -150,7 +171,9 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     // $merge), as written and as parsed.
     let mut read: Vec<(String, String)> = Vec::new();
     static TARGETS: OnceLock<Regex> = OnceLock::new();
-    let targets = TARGETS.get_or_init(|| Regex::new(r#"(?:\bfrom|\bcoll|\$unionWith|\$out|\binto|getCollection\(|getSiblingDB\()["']?\s*:?\s*["']([^"']+)["']"#).expect("targets"));
+    let targets = TARGETS.get_or_init(|| {
+        Regex::new(r#"(?:\bfrom|\bcoll|\$unionWith|\$out|\binto|getCollection\(|getSiblingDB\()["']?\s*:?\s*["']([^"']+)["']"#).expect("targets")
+    });
     for t in targets.captures_iter(text).filter_map(|c| c.get(1)) {
         read.push((db.to_string(), t.as_str().to_string()));
     }
@@ -186,7 +209,10 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     if r.view == AgentView::Masked {
         for s in r.sensitive.iter().filter(|s| s.on) {
             for (tdb, t) in &all {
-                let field = s.col.rsplit_once('.').map_or(s.col.as_str(), |(tp, f)| if sensitive_match(&s.col, Some(tdb), t, f, names) || glob(tp, t) { f } else { "" });
+                let field = s
+                    .col
+                    .rsplit_once('.')
+                    .map_or(s.col.as_str(), |(tp, f)| if sensitive_match(&s.col, Some(tdb), t, f, names) || glob(tp, t) { f } else { "" });
                 if !field.is_empty() && !sensitive.iter().any(|(f, _)| f == field) {
                     sensitive.push((field.to_string(), s.how));
                 }
@@ -309,7 +335,8 @@ pub fn mongo_keeps(r: &AgentRules, db: &str, coll: &str) -> bool {
     !r.visible.schema_visible(db, q)
         || !r.visible.table_visible(Some(db), coll, q)
         || !r.visible.hidden_column_patterns(Some(db), coll, q).is_empty()
-        || (r.view == AgentView::Masked && r.sensitive.iter().any(|s| s.on && s.col.rsplit_once('.').is_none_or(|(t, f)| sensitive_match(&s.col, Some(db), coll, f, q) || glob(t, coll))))
+        || (r.view == AgentView::Masked
+            && r.sensitive.iter().any(|s| s.on && s.col.rsplit_once('.').is_none_or(|(t, f)| sensitive_match(&s.col, Some(db), coll, f, q) || glob(t, coll))))
 }
 
 fn path_of(req: &console::Request) -> (String, Vec<String>) {
@@ -374,9 +401,24 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
         console::Body::Lines(l) => l.clone(),
     };
     let structural = (matches!(method.as_str(), "PUT" | "DELETE") && segs.len() == 1 && !first.starts_with('_'))
-        || ["_mapping", "_mappings", "_settings", "_alias", "_aliases", "_template", "_index_template", "_component_template", "_rollover", "_shrink", "_split", "_clone", "_open", "_close"]
-            .iter()
-            .any(|x| api(x))
+        || [
+            "_mapping",
+            "_mappings",
+            "_settings",
+            "_alias",
+            "_aliases",
+            "_template",
+            "_index_template",
+            "_component_template",
+            "_rollover",
+            "_shrink",
+            "_split",
+            "_clone",
+            "_open",
+            "_close",
+        ]
+        .iter()
+        .any(|x| api(x))
             && method != "GET";
     if !r.structure && structural {
         return Err(format!("changing structure (indices, mappings, settings) is off for agents on {conn} (Dataman › Agents › Permissions)"));
@@ -394,7 +436,11 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     }
     let listing = path.starts_with("_cat/indices") || path.starts_with("_cat/aliases") || first == "_aliases" || path.starts_with("_resolve/index");
     if r.view == AgentView::Structure {
-        let ok = if write { structural } else { listing || api("_mapping") || api("_mappings") || api("_settings") || (method == "GET" && segs.len() == 1 && !first.starts_with('_')) };
+        let ok = if write {
+            structural
+        } else {
+            listing || api("_mapping") || api("_mappings") || api("_settings") || (method == "GET" && segs.len() == 1 && !first.starts_with('_'))
+        };
         if !ok {
             return Err(format!("{conn} shows agents its structure only: documents are neither read nor written"));
         }
@@ -403,11 +449,24 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
         return Ok(Shaped { listing, ..Default::default() });
     }
     let names = Names::Flat;
-    if ["_sql", "_query", "_eql", "_esql"].iter().any(|x| api(x)) || path.starts_with("_plugins/_sql") || path.starts_with("_plugins/_ppl") || path.starts_with("_opendistro") {
+    if ["_sql", "_query", "_eql", "_esql"].iter().any(|x| api(x))
+        || path.starts_with("_plugins/_sql")
+        || path.starts_with("_plugins/_ppl")
+        || path.starts_with("_opendistro")
+    {
         return Err(format!("SQL, ES|QL, PPL and EQL are not available to agents on {conn} while some data is kept from them"));
     }
     let mut indices: Vec<String> = if first.starts_with('_') { Vec::new() } else { first.split(',').map(str::to_string).collect() };
-    let params: Vec<(String, String)> = req.path.split_once('?').map(|(_, q)| q.split('&').filter_map(|kv| kv.split_once('=').or(Some((kv, "")))).map(|(k, v)| (percent_decode(k), percent_decode(&v.replace('+', " ")))).collect()).unwrap_or_default();
+    let params: Vec<(String, String)> = req
+        .path
+        .split_once('?')
+        .map(|(_, q)| {
+            q.split('&')
+                .filter_map(|kv| kv.split_once('=').or(Some((kv, ""))))
+                .map(|(k, v)| (percent_decode(k), percent_decode(&v.replace('+', " "))))
+                .collect()
+        })
+        .unwrap_or_default();
     if indices.is_empty() && !listing && !matches!(first, "_cluster" | "_cat" | "_nodes" | "_tasks") {
         return Err(format!("name the index: some indices are kept from agents on {conn}"));
     }
@@ -493,9 +552,17 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     if !strip.is_empty() || !mask.is_empty() {
         // Code and templates read fields by names Dataman cannot follow; term vectors carry a
         // field's words as keys.
-        let code = api("_scripts") || api("template") || api("_render") || api("_termvectors") || api("_mtermvectors") || body.iter().any(|b| has_key(b, &["script", "scripted_metric", "runtime_mappings", "script_fields", "script_score"]));
+        let code = api("_scripts")
+            || api("template")
+            || api("_render")
+            || api("_termvectors")
+            || api("_mtermvectors")
+            || body.iter().any(|b| has_key(b, &["script", "scripted_metric", "runtime_mappings", "script_fields", "script_score"]));
         if code {
-            return Err(format!("scripts, templates and term vectors are not available to agents on {conn} while fields of {} are kept from them", indices.join(",")));
+            return Err(format!(
+                "scripts, templates and term vectors are not available to agents on {conn} while fields of {} are kept from them",
+                indices.join(",")
+            ));
         }
     }
     if !strip.is_empty() {
@@ -508,7 +575,9 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
             || body.iter().any(|b| has_key(b, &["query_string", "simple_query_string"]))
             || body.iter().any(|b| wide_fields(b, false));
         if by_pattern {
-            return Err(format!("searches over every field or fields by pattern are not available to agents on {conn} while some fields are hidden: name the fields"));
+            return Err(format!(
+                "searches over every field or fields by pattern are not available to agents on {conn} while some fields are hidden: name the fields"
+            ));
         }
     }
     if !mask.is_empty() {
@@ -544,7 +613,11 @@ fn wide_fields(v: &Value, in_query: bool) -> bool {
                 "field" | "default_field" if q => wild(x),
                 "fields" if q && in_query => x.as_array().is_some_and(|a| a.iter().any(wild)),
                 "multi_match" | "combined_fields" | "more_like_this" if q => x.get("fields").is_none_or(|f| f.as_array().is_none_or(|a| a.iter().any(wild))),
-                _ => wide_fields(x, q && (in_query || matches!(k.as_str(), "query" | "post_filter" | "aggs" | "aggregations" | "knn" | "rescore" | "suggest" | "sort" | "collapse"))),
+                _ => wide_fields(
+                    x,
+                    q && (in_query
+                        || matches!(k.as_str(), "query" | "post_filter" | "aggs" | "aggregations" | "knn" | "rescore" | "suggest" | "sort" | "collapse")),
+                ),
             }
         }),
         Value::Array(a) => a.iter().any(|x| wide_fields(x, in_query)),
@@ -644,7 +717,9 @@ fn redis_keys<'a>(name: &str, args: &'a [String]) -> Vec<&'a String> {
         "SCAN" | "PING" | "DBSIZE" | "INFO" | "ECHO" | "TIME" | "LASTSAVE" | "ROLE" | "LOLWUT" | "COMMAND" | "SELECT" => Vec::new(),
         f if MULTI_KEY.contains(&f) => args.iter().skip(1).collect(),
         "SINTERSTORE" | "SUNIONSTORE" | "SDIFFSTORE" | "PFMERGE" => args.iter().skip(1).collect(),
-        "RENAME" | "RENAMENX" | "COPY" | "SMOVE" | "LMOVE" | "BLMOVE" | "RPOPLPUSH" | "BRPOPLPUSH" | "GEOSEARCHSTORE" | "ZRANGESTORE" | "LCS" => args.iter().skip(1).take(2).collect(),
+        "RENAME" | "RENAMENX" | "COPY" | "SMOVE" | "LMOVE" | "BLMOVE" | "RPOPLPUSH" | "BRPOPLPUSH" | "GEOSEARCHSTORE" | "ZRANGESTORE" | "LCS" => {
+            args.iter().skip(1).take(2).collect()
+        }
         "BITOP" => args.iter().skip(2).collect(),
         "ZUNIONSTORE" | "ZINTERSTORE" | "ZDIFFSTORE" => {
             let mut k: Vec<&String> = args.get(1).into_iter().collect();
@@ -800,12 +875,19 @@ mod tests {
     #[test]
     fn mongo_visibility() {
         let r = AgentRules {
-            visible: Visible { mode: VisibleMode::Except, items: vec![item("shop.payments", ItemKind::Table), item("users.ssn", ItemKind::Column), item("analytics.*", ItemKind::Schema)] },
+            visible: Visible {
+                mode: VisibleMode::Except,
+                items: vec![item("shop.payments", ItemKind::Table), item("users.ssn", ItemKind::Column), item("analytics.*", ItemKind::Schema)],
+            },
             ..Default::default()
         };
         let c = cx(&r, Engine::MongoDb);
         assert!(check("db.payments.find({})", false, &c).unwrap_err().contains("payments is not visible"));
-        assert!(check("db.orders.aggregate([{$lookup: {from: \"payments\", localField: \"p\", foreignField: \"_id\", as: \"x\"}}])", false, &c).unwrap_err().contains("payments is not visible"));
+        assert!(
+            check("db.orders.aggregate([{$lookup: {from: \"payments\", localField: \"p\", foreignField: \"_id\", as: \"x\"}}])", false, &c)
+                .unwrap_err()
+                .contains("payments is not visible")
+        );
         assert!(check("db.users.find({ssn: \"1\"})", false, &c).unwrap_err().contains("users.ssn is hidden"));
         assert!(check("db.users.aggregate([{$group: {_id: \"$ssn\"}}])", false, &c).unwrap_err().contains("hidden"));
         assert!(check("db.users.aggregate([{$replaceRoot: {newRoot: \"$$ROOT\"}}])", false, &c).unwrap_err().contains("whole documents"));
@@ -854,7 +936,10 @@ mod tests {
 
     #[test]
     fn search_visibility() {
-        let r = AgentRules { visible: Visible { mode: VisibleMode::Except, items: vec![item("payments-*", ItemKind::Table), item("customers.card", ItemKind::Column)] }, ..Default::default() };
+        let r = AgentRules {
+            visible: Visible { mode: VisibleMode::Except, items: vec![item("payments-*", ItemKind::Table), item("customers.card", ItemKind::Column)] },
+            ..Default::default()
+        };
         let c = cx(&r, Engine::Elasticsearch);
         assert!(check("GET payments-2026/_search", false, &c).unwrap_err().contains("not visible"));
         assert!(check("GET orders,payments-1/_search", false, &c).unwrap_err().contains("not visible"));
@@ -887,7 +972,10 @@ mod tests {
         let mut off = AgentRules::default();
         off.redis.scripting = false;
         assert!(check("EVAL \"return 1\" 0", true, &cx(&off, Engine::Redis)).unwrap_err().contains("@scripting"));
-        let v = AgentRules { visible: Visible { mode: VisibleMode::Except, items: vec![item("session:*", ItemKind::Table), item("user:*.password", ItemKind::Column)] }, ..Default::default() };
+        let v = AgentRules {
+            visible: Visible { mode: VisibleMode::Except, items: vec![item("session:*", ItemKind::Table), item("user:*.password", ItemKind::Column)] },
+            ..Default::default()
+        };
         let c = cx(&v, Engine::Redis);
         assert!(check("GET session:9", false, &c).unwrap_err().contains("not visible"));
         assert!(check("MGET a session:1", false, &c).unwrap_err().contains("not visible"));

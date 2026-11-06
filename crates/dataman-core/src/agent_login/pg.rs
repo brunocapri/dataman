@@ -144,7 +144,12 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             let create = format!("CREATE VIEW {} WITH (security_barrier) AS {body}", qual(&spec.space, &name));
             grants.push(Grant::Table { schema: spec.space.clone(), name: name.clone(), privilege: "SELECT".into() });
             grants.push(Grant::View { name: name.clone(), hash: hash.clone() });
-            views.push(ViewDef { name: name.clone(), create, hash, map: ViewMap { schema: a.schema.clone(), table: a.name.clone(), view: qual(&spec.space, &name), masked: a.masked.clone() } });
+            views.push(ViewDef {
+                name: name.clone(),
+                create,
+                hash,
+                map: ViewMap { schema: a.schema.clone(), table: a.name.clone(), view: qual(&spec.space, &name), masked: a.masked.clone() },
+            });
         }
         access_ok.push(a);
     }
@@ -186,7 +191,12 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
     if !d.hidden.is_empty() {
         v.push(line(hidden_label(&d.hidden), "no grant; Postgres still lists the names", Who::Partly));
     }
-    v.extend(column_lines(&d.access, ("column grants (names still in pg_catalog)", Who::Database), (&format!("views in schema {}", spec.space), Who::Database), spec.rows));
+    v.extend(column_lines(
+        &d.access,
+        ("column grants (names still in pg_catalog)", Who::Database),
+        (&format!("views in schema {}", spec.space), Who::Database),
+        spec.rows,
+    ));
     if probe.flavor.major > 0 && probe.flavor.major < 15 {
         v.push(line("No new tables", "PUBLIC may still create in schema public (before PostgreSQL 15)", Who::Partly));
     }
@@ -221,7 +231,10 @@ fn space_steps(spec: &Spec, d: &Desired, create_schema: bool) -> Vec<Step> {
 }
 
 fn view_steps(spec: &Spec, v: &ViewDef, group: &str) -> Vec<Step> {
-    vec![Step::sql(group, v.create.clone()), Step::sql(group, format!("COMMENT ON VIEW {} IS {}", qual(&spec.space, &v.name), lit(&format!("{MARK} {}", v.hash))))]
+    vec![
+        Step::sql(group, v.create.clone()),
+        Step::sql(group, format!("COMMENT ON VIEW {} IS {}", qual(&spec.space, &v.name), lit(&format!("{MARK} {}", v.hash)))),
+    ]
 }
 
 fn grant_steps(spec: &Spec, d: &Desired, grants: &[Grant]) -> Vec<Step> {
@@ -235,7 +248,9 @@ fn grant_steps(spec: &Spec, d: &Desired, grants: &[Grant]) -> Vec<Step> {
             Grant::Sequence { .. } => "the sequences its inserts take ids from".into(),
             Grant::Column { .. } => "tables with hidden or masked columns: only the others".into(),
             Grant::Member(_) => "server activity".into(),
-            Grant::Setting { .. } | Grant::Limit(_) => format!("defaults (Dataman still enforces its own {})", time_label(spec.time_limit_s).trim_end_matches(" per call")),
+            Grant::Setting { .. } | Grant::Limit(_) => {
+                format!("defaults (Dataman still enforces its own {})", time_label(spec.time_limit_s).trim_end_matches(" per call"))
+            }
             Grant::View { .. } | Grant::Global(_) => continue,
         };
         if let Some(sql) = grant_sql(g, &spec.user, &spec.database) {
@@ -375,7 +390,8 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
     // Revoking a table's privilege revokes it on each of its columns too: those wanted are
     // granted again.
     let cascaded = |schema: &String, name: &String, privilege: &String| {
-        have.iter().any(|h| !d.grants.contains(h) && matches!(h, Grant::Table { schema: s, name: n, privilege: p } if s == schema && n == name && p == privilege))
+        have.iter()
+            .any(|h| !d.grants.contains(h) && matches!(h, Grant::Table { schema: s, name: n, privilege: p } if s == schema && n == name && p == privilege))
     };
     let g_add = "granted: the rules allow it now";
     for g in d.grants.iter().filter(|g| {
@@ -586,7 +602,12 @@ pub(crate) async fn inventory(db: &Db) -> Result<Inventory> {
     )
     .await?;
     for r in open {
-        out.open.push(Open { schema: s(&r[0]), name: s(&r[1]), whole: yes(&r[2]), columns: s(&r[3]).split('\u{2}').filter(|c| !c.is_empty()).map(str::to_string).collect() });
+        out.open.push(Open {
+            schema: s(&r[0]),
+            name: s(&r[1]),
+            whole: yes(&r[2]),
+            columns: s(&r[3]).split('\u{2}').filter(|c| !c.is_empty()).map(str::to_string).collect(),
+        });
     }
     Ok(out)
 }
@@ -598,7 +619,14 @@ pub(crate) async fn have(db: &Db, user: &str, database: &str, space: &str) -> Re
     for r in rows(db, &format!("SELECT a.privilege_type FROM pg_database d, aclexplode(d.datacl) a WHERE d.datname = {} AND a.grantee = (SELECT oid FROM pg_roles WHERE rolname = {u})", lit(database))).await? {
         out.push(Grant::Database(format!("{} ON DATABASE {}", s(&r[0]), q(database))));
     }
-    for r in rows(db, &format!("SELECT n.nspname, a.privilege_type FROM pg_namespace n, aclexplode(n.nspacl) a WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = {u})")).await? {
+    for r in rows(
+        db,
+        &format!(
+            "SELECT n.nspname, a.privilege_type FROM pg_namespace n, aclexplode(n.nspacl) a WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = {u})"
+        ),
+    )
+    .await?
+    {
         out.push(Grant::Schema { schema: s(&r[0]), privilege: s(&r[1]) });
     }
     for r in rows(db, &format!("SELECT n.nspname, c.relname, c.relkind::text, a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, aclexplode(c.relacl) a WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = {u})")).await? {
@@ -613,7 +641,12 @@ pub(crate) async fn have(db: &Db, user: &str, database: &str, space: &str) -> Re
     for r in rows(db, &format!("SELECT n.nspname, c.relname, t.attname, a.privilege_type FROM pg_attribute t JOIN pg_class c ON c.oid = t.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace, aclexplode(t.attacl) a WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = {u})")).await? {
         out.push(Grant::Column { schema: s(&r[0]), name: s(&r[1]), column: s(&r[2]), privilege: s(&r[3]) });
     }
-    for r in rows(db, &format!("SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = {u})")).await? {
+    for r in rows(
+        db,
+        &format!("SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = {u})"),
+    )
+    .await?
+    {
         out.push(Grant::Member(s(&r[0])));
     }
     for r in rows(db, &format!("SELECT unnest(setconfig) FROM pg_db_role_setting WHERE setrole = (SELECT oid FROM pg_roles WHERE rolname = {u}) AND setdatabase = (SELECT oid FROM pg_database WHERE datname = {})", lit(database))).await? {

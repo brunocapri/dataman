@@ -165,11 +165,19 @@ impl ProjectFile {
         let mut f: ProjectFile = toml::from_str(text)?;
         anyhow::ensure!(f.version == VERSION, "version {} is not one this Dataman reads (it reads {VERSION})", f.version);
         let raw: toml::Table = toml::from_str(text)?;
-        f.unread = raw.get("connection").and_then(|v| v.as_array()).into_iter().flatten().filter(|v| (*v).clone().try_into::<ConnectionProfile>().is_err()).filter_map(|v| v.as_table().cloned()).collect();
+        f.unread = raw
+            .get("connection")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|v| (*v).clone().try_into::<ConnectionProfile>().is_err())
+            .filter_map(|v| v.as_table().cloned())
+            .collect();
         // What is shown is what is dialled: no control, bidi or zero-width character.
         for p in &f.connections {
             let ssh = p.ssh.iter().flat_map(|s| [&s.host, &s.user, &s.key_file]);
-            let fields = [&p.name, &p.host, &p.user, &p.database].into_iter().chain(p.path.as_ref()).chain(ssh).chain(p.options.iter().flat_map(|(k, v)| [k, v]));
+            let fields =
+                [&p.name, &p.host, &p.user, &p.database].into_iter().chain(p.path.as_ref()).chain(ssh).chain(p.options.iter().flat_map(|(k, v)| [k, v]));
             for v in fields {
                 anyhow::ensure!(!v.chars().any(invisible), "the connection {} holds a control or invisible character ({v:?})", p.id);
             }
@@ -211,7 +219,9 @@ const PERSONAL: [&str; 5] = ["save_password", "agent_made", "from_project", "age
 /// A driver option that names a secret (a key's passphrase, a token…) stays local too.
 pub fn secret_option(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    ["pass", "pwd", "secret", "token", "credential", "apikey", "api_key", "private", "bearer", "jwt", "sas", "authmechanismproperties"].iter().any(|w| k.contains(w))
+    ["pass", "pwd", "secret", "token", "credential", "apikey", "api_key", "private", "bearer", "jwt", "sas", "authmechanismproperties"]
+        .iter()
+        .any(|w| k.contains(w))
 }
 
 fn ser_conns<S: serde::Serializer>(list: &[ConnectionProfile], s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -349,7 +359,8 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
         Some(m) => {
             p.auth = theirs.auth.with_personal(&m.auth);
             if !agents {
-                (p.mcp, p.mcp_row_limit, p.mcp_allowed, p.mcp_yolo, p.mcp_rules) = (m.mcp, m.mcp_row_limit, m.mcp_allowed.clone(), m.mcp_yolo, m.mcp_rules.clone());
+                (p.mcp, p.mcp_row_limit, p.mcp_allowed, p.mcp_yolo, p.mcp_rules) =
+                    (m.mcp, m.mcp_row_limit, m.mcp_allowed.clone(), m.mcp_yolo, m.mcp_rules.clone());
             }
             let moved = moves(m, &p, root);
             p.save_password = m.save_password && !moved;
@@ -661,7 +672,12 @@ pub fn plan(local: &Local, theirs: &ProjectFile, base: Option<&ProjectFile>, roo
     // nor one that is theirs alone (an id taken from elsewhere).
     let shared: BTreeSet<&str> = conns.iter().map(|p| p.id.as_str()).collect();
     let theirs_fav = |f: &Favorite| theirs.share.favorites && f.connection_id.as_deref().is_some_and(|id| shared.contains(id));
-    let favorites: Vec<&Favorite> = theirs.favorites.iter().filter(|f| theirs_fav(f)).filter(|f| local.favorites.iter().find(|x| x.id == f.id).is_none_or(|x| theirs_fav(x) && !x.agent_made)).collect();
+    let favorites: Vec<&Favorite> = theirs
+        .favorites
+        .iter()
+        .filter(|f| theirs_fav(f))
+        .filter(|f| local.favorites.iter().find(|x| x.id == f.id).is_none_or(|x| theirs_fav(x) && !x.agent_made))
+        .collect();
     for d in &theirs.folders {
         if favorites.iter().any(|f| f.folder.as_ref() == Some(&d.id)) && local.folders.iter().find(|x| x.id == d.id) != Some(d) {
             c.folders.push(d.clone());
@@ -885,7 +901,11 @@ impl Shared {
     pub fn of(dirs: &Dirs, settings: &Settings) -> Shared {
         let Some(root) = settings.project.as_deref().filter(|_| settings.project_enabled).map(PathBuf::from) else { return Shared::default() };
         let mut out = Shared::default();
-        let base = std::fs::read_to_string(dirs.project_base_file(&root)).ok().and_then(|t| toml::from_str::<Base>(&t).ok()).filter(|b| Path::new(&b.root) == root).map(|b| b.project);
+        let base = std::fs::read_to_string(dirs.project_base_file(&root))
+            .ok()
+            .and_then(|t| toml::from_str::<Base>(&t).ok())
+            .filter(|b| Path::new(&b.root) == root)
+            .map(|b| b.project);
         let file = read(&file_in(&root)).ok().flatten();
         for f in file.iter().chain(&base) {
             out.connections.extend(f.connection_ids());
@@ -1336,11 +1356,13 @@ mod tests {
         assert!(bob.sync().favorites);
         assert!(bob.favorites.list().is_empty());
 
-        alice.project.edit(alice.st(), |share, members| {
-            share.editor = false;
-            members.insert(personal.id.clone());
-        })
-        .unwrap();
+        alice
+            .project
+            .edit(alice.st(), |share, members| {
+                share.editor = false;
+                members.insert(personal.id.clone());
+            })
+            .unwrap();
         let f = ProjectFile::parse(&std::fs::read_to_string(file_in(&root)).unwrap()).unwrap();
         assert_eq!((f.editor, f.connections.len()), (None, 2));
         let info = alice.project.info(&alice.settings.get()).unwrap();
@@ -1458,7 +1480,10 @@ mod tests {
             ("the host's case only, then a port", |p| (p.host, p.port) = (p.host.to_uppercase(), 15432)),
             ("another user", |p| p.user = "admin".into()),
             ("another engine", |p| p.engine = Engine::MySql),
-            ("an SSH tunnel", |p| p.ssh = Some(SshSettings { host: "bastion.attacker.example".into(), port: None, user: "x".into(), auth: SshAuth::Agent, key_file: String::new() })),
+            ("an SSH tunnel", |p| {
+                p.ssh =
+                    Some(SshSettings { host: "bastion.attacker.example".into(), port: None, user: "x".into(), auth: SshAuth::Agent, key_file: String::new() })
+            }),
             ("an option", |p| _ = p.options.insert("hostaddr".into(), "203.0.113.9".into())),
             ("an Entra token instead of the password", |p| p.auth = crate::config::Auth::EntraId { tenant: None }),
             ("a Google token instead of the password", |p| p.auth = crate::config::Auth::GoogleIam { account: None }),
@@ -1587,7 +1612,13 @@ mod tests {
         let secret = outside.path().join("chat.db");
         std::fs::write(&secret, b"").unwrap();
         std::os::unix::fs::symlink(&secret, root.join("data/link.sqlite")).unwrap();
-        for path in [secret.display().to_string(), "~/Library/Messages/chat.db".into(), "data/../../chat.db".into(), "data/link.sqlite".into(), "data/x\n.sqlite".into()] {
+        for path in [
+            secret.display().to_string(),
+            "~/Library/Messages/chat.db".into(),
+            "data/../../chat.db".into(),
+            "data/link.sqlite".into(),
+            "data/x\n.sqlite".into(),
+        ] {
             let r = held(ConnectionProfile::new_file(Engine::Sqlite, path.clone()));
             assert!(r.first().is_some_and(|r| r.changes.iter().any(|c| c.what == "File" && c.loosens)), "{path}: {r:?}");
         }
@@ -1605,7 +1636,10 @@ mod tests {
         closed.options.insert("duckdb.external_access".into(), "false".into());
         let mut opened = closed.clone();
         opened.options.remove("duckdb.external_access");
-        let local2 = Local { connections: vec![ConnectionProfile { path: Some(crate::config::tilde(&root.join("data/shop.sqlite").to_string_lossy())), ..closed }], ..Local::default() };
+        let local2 = Local {
+            connections: vec![ConnectionProfile { path: Some(crate::config::tilde(&root.join("data/shop.sqlite").to_string_lossy())), ..closed }],
+            ..Local::default()
+        };
         let c = plan(&local2, &file(opened), None, &root);
         assert!(!c.review.is_empty(), "file access turned back on: {c:?}");
         // agents not shared: a new connection takes none of the file's agent rules.
@@ -1636,7 +1670,8 @@ mod tests {
         let r = held(evil);
         assert!(r.first().is_some_and(|r| r.changes.iter().any(|c| c.what == "Sign-in" && c.loosens && c.to.contains("db.attacker.example"))), "{r:?}");
         let mut tunneled = azure.clone();
-        tunneled.ssh = Some(SshSettings { host: "bastion.attacker.example".into(), port: None, user: "x".into(), auth: SshAuth::Agent, key_file: String::new() });
+        tunneled.ssh =
+            Some(SshSettings { host: "bastion.attacker.example".into(), port: None, user: "x".into(), auth: SshAuth::Agent, key_file: String::new() });
         assert!(held(tunneled).iter().any(|r| r.changes.iter().any(|c| c.what == "Sign-in")));
         // A Cloud SQL IP is nobody's in particular: asked.
         let mut gcp = conn("gcp");
@@ -1644,7 +1679,8 @@ mod tests {
         assert!(!held(gcp).is_empty());
 
         let mut rds = conn("rds");
-        (rds.host, rds.auth) = ("db.abc.eu-west-1.rds.amazonaws.com".into(), Auth::AwsIam { profile: Some("bruno-dev".into()), region: Some("eu-west-1".into()) });
+        (rds.host, rds.auth) =
+            ("db.abc.eu-west-1.rds.amazonaws.com".into(), Auth::AwsIam { profile: Some("bruno-dev".into()), region: Some("eu-west-1".into()) });
         let shared = shareable(&rds, true, &root);
         assert_eq!(shared.auth, Auth::AwsIam { profile: None, region: Some("eu-west-1".into()) });
         let text = file(shared.clone()).to_text();
@@ -1671,7 +1707,11 @@ mod tests {
         stray.connection_id = Some(mine.id.clone());
         let mut takeover = evil.clone();
         takeover.connection_id = Some(team.id.clone());
-        let file = ProjectFile { connections: vec![shareable(&team, true, root)], favorites: vec![evil, stray, takeover], ..export(&Local::default(), Share::default(), &BTreeSet::new(), root) };
+        let file = ProjectFile {
+            connections: vec![shareable(&team, true, root)],
+            favorites: vec![evil, stray, takeover],
+            ..export(&Local::default(), Share::default(), &BTreeSet::new(), root)
+        };
         let c = plan(&local, &file, None, root);
         assert!(c.favorites.is_empty(), "{:?}", c.favorites);
         // An agent's favorite and connection never join the project.

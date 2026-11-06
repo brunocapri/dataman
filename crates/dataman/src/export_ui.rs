@@ -2,14 +2,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Task,
-    Window, actions, anchored, deferred, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::export::{ExportFormat, ExportOptions, ExportProgress, ExportSummary, LineEnding, QuoteStyle, export_result, is_rerunnable};
 use dataman_core::result::{Phase, ResultSet};
 use dataman_core::{Connection, Core};
+use gpui::{App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Task, Window, actions, anchored, deferred, div, prelude::*};
 
 use crate::assets::{Icon, icon};
 use crate::grid::ui_count;
@@ -23,11 +20,7 @@ const CONTEXT: &str = "ExportDialog";
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
-    cx.bind_keys([
-        crate::keymap::kb("escape", CloseExport, c),
-        crate::keymap::kb("cmd-enter", StartExport, c),
-        crate::keymap::kb("cmd-.", StopExport, c),
-    ]);
+    cx.bind_keys([crate::keymap::kb("escape", CloseExport, c), crate::keymap::kb("cmd-enter", StartExport, c), crate::keymap::kb("cmd-.", StopExport, c)]);
 }
 
 pub enum ExportEvent {
@@ -202,7 +195,6 @@ pub fn fmt_bytes(b: u64) -> String {
         format!("{:.2} GB", b / 1024. / 1024. / 1024.)
     }
 }
-
 
 impl ExportView {
     pub fn new(core: Arc<Core>, source: Option<Source>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -578,46 +570,53 @@ impl Render for ExportView {
         let sheet = ui::modal(&t, "export-sheet").w(px(640.)).overflow_hidden().child(header);
         let Some((loaded, paused, sel)) = self.facts() else {
             let card = sheet.child(
-                div()
-                    .p(px(28.))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(10.))
-                    .gap(px(18.))
-                    .child(ui::banner("[ NO RESULT ]", 22., t.tx4))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(8.))
-                            .child(ui::button(&t, "ex-run", Btn::Primary).child("Run").child(ui::key_hint("⌘↩")).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Run))))
-                            .child(ui::button(&t, "ex-cancel", Btn::Ghost).child("Close").child(ui::key_hint("esc")).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))),
-                    ),
+                div().p(px(28.)).flex().flex_col().items_center().gap(px(10.)).gap(px(18.)).child(ui::banner("[ NO RESULT ]", 22., t.tx4)).child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(8.))
+                        .child(
+                            ui::button(&t, "ex-run", Btn::Primary)
+                                .child("Run")
+                                .child(ui::key_hint("⌘↩"))
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Run))),
+                        )
+                        .child(
+                            ui::button(&t, "ex-cancel", Btn::Ghost)
+                                .child("Close")
+                                .child(ui::key_hint("esc"))
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close))),
+                        ),
+                ),
             );
             return scrim(card.into_any_element(), cx).into_any_element();
         };
         let src = self.source.clone().unwrap();
         let ncols = src.rs.as_ref().and_then(|rs| rs.columns().map(|c| c.len())).or(src.columns);
-        let formats = div().flex().flex_col().gap(px(8.)).child(ui::caps(&t, "FORMAT")).child(div().flex().flex_row().gap(px(6.)).children(ExportFormat::ALL.into_iter().map(|f| {
-            let on = f == self.format;
-            let label = if f == ExportFormat::SqlInsert { "SQL" } else { f.label() };
-            let hov = t.prs;
-            ui::probe(format!("ex-fmt-{label}"), div()
-                .id(label)
-                .flex_1()
-                .h(px(34.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_1()
-                .when(on, |d| d.bg(t.acc_s).text_color(t.tx).border_color(t.acc))
-                .when(!on, |d| d.bg(t.hov).text_color(t.tx2).border_color(t.line).hover(move |s| s.bg(hov)))
-                .when(locked, |d| d.opacity(0.6))
-                .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(label))
-                .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx)))))
-        })));
+        let formats = div().flex().flex_col().gap(px(8.)).child(ui::caps(&t, "FORMAT")).child(div().flex().flex_row().gap(px(6.)).children(
+            ExportFormat::ALL.into_iter().map(|f| {
+                let on = f == self.format;
+                let label = if f == ExportFormat::SqlInsert { "SQL" } else { f.label() };
+                let hov = t.prs;
+                ui::probe(
+                    format!("ex-fmt-{label}"),
+                    div()
+                        .id(label)
+                        .flex_1()
+                        .h(px(34.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_1()
+                        .when(on, |d| d.bg(t.acc_s).text_color(t.tx).border_color(t.acc))
+                        .when(!on, |d| d.bg(t.hov).text_color(t.tx2).border_color(t.line).hover(move |s| s.bg(hov)))
+                        .when(locked, |d| d.opacity(0.6))
+                        .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(label))
+                        .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx)))),
+                )
+            }),
+        ));
         let menu_open = self.menu;
         let field = |v: &Self, f: Field, t: &Theme, cx: &mut Context<Self>| {
             let ix = v.field_value(f);
@@ -626,7 +625,8 @@ impl Render for ExportView {
             let open = menu_open == Some(f);
             let menu = open.then(|| {
                 deferred(
-                    anchored().child(ui::menu_in("ex-field-menu-in", 
+                    anchored().child(ui::menu_in(
+                        "ex-field-menu-in",
                         ui::popover(t)
                             .mt(px(52.))
                             .w(px(280.))
@@ -679,13 +679,19 @@ impl Render for ExportView {
                 .children(menu)
         };
         let info = |label: &'static str, value: String, t: &Theme| {
-            div().flex().flex_col().gap(px(6.)).child(ui::caps(t, label)).child(
-                div().h(px(28.)).px(px(10.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx2).child(value),
-            )
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(ui::caps(t, label))
+                .child(div().h(px(28.)).px(px(10.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx2).child(value))
         };
         let mut cells: Vec<gpui::AnyElement> = self.fields().into_iter().map(|f| field(self, f, &t, cx).into_any_element()).collect();
         if self.format == ExportFormat::SqlInsert {
-            cells.insert(0, div().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "TABLE")).child(div().h(px(30.)).child(self.table.clone())).into_any_element());
+            cells.insert(
+                0,
+                div().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "TABLE")).child(div().h(px(30.)).child(self.table.clone())).into_any_element(),
+            );
         }
         let cols_txt = match (self.scope, sel) {
             (RowScope::Selection, Some((_, c))) => format!("the selection's {c}"),
@@ -696,7 +702,9 @@ impl Render for ExportView {
         let mut it = cells.into_iter();
         while let Some(a) = it.next() {
             let b = it.next();
-            grid_rows.push(div().flex().flex_row().gap(px(16.)).child(div().flex_1().min_w_0().child(a)).child(div().flex_1().min_w_0().children(b)).into_any_element());
+            grid_rows.push(
+                div().flex().flex_row().gap(px(16.)).child(div().flex_1().min_w_0().child(a)).child(div().flex_1().min_w_0().children(b)).into_any_element(),
+            );
         }
         let table = src.rs.is_none();
         let all_desc = if table || paused { String::new() } else { ui_count(loaded) };
@@ -724,7 +732,18 @@ impl Render for ExportView {
                 .when(!on, |d| d.text_color(if enabled { t.tx2 } else { t.tx4 }))
                 .child(div().size(px(12.)).rounded(px(6.)).when(on, |d| d.border_4().border_color(t.acc)).when(!on, |d| d.border_1().border_color(t.line2)))
                 .child(div().flex_none().child(name))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(desc))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_right()
+                        .text_size(px(crate::theme::text::SMALL))
+                        .text_color(t.tx3)
+                        .child(desc),
+                )
                 .when(enabled && !locked, |d| {
                     d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                         v.scope = s;
@@ -738,7 +757,16 @@ impl Render for ExportView {
                 .flex_row()
                 .items_center()
                 .gap(px(10.))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(dataman_core::config::tilde(&self.path.to_string_lossy())))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(t.tx2)
+                        .child(dataman_core::config::tilde(&self.path.to_string_lossy())),
+                )
                 .child(
                     ui::button(&t, "ex-choose", ui::Btn::Secondary)
                         .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_path(cx))))
@@ -798,23 +826,34 @@ impl Render for ExportView {
         );
         if running {
             footer = footer
-                .child(ui::button(&t, "ex-bg", Btn::Ghost).h(px(28.)).child("Run in background").on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close))))
-                .child(ui::button(&t, "ex-stop", Btn::Danger).h(px(28.)).child("Stop").child(ui::key_hint("⌘.")).on_click(cx.listener(|v, _, _, cx| v.stop(cx))));
+                .child(
+                    ui::button(&t, "ex-bg", Btn::Ghost).h(px(28.)).child("Run in background").on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close))),
+                )
+                .child(
+                    ui::button(&t, "ex-stop", Btn::Danger).h(px(28.)).child("Stop").child(ui::key_hint("⌘.")).on_click(cx.listener(|v, _, _, cx| v.stop(cx))),
+                );
         } else {
             if let Some(p) = done_path {
-                footer = footer.child(ui::button(&t, "ex-reveal", Btn::Ghost).h(px(28.)).child(if crate::keymap::NOT_MAC { "Show in Folder" } else { "Reveal in Finder" }).on_click(move |_, _, cx| cx.reveal_path(&p)));
+                footer = footer.child(
+                    ui::button(&t, "ex-reveal", Btn::Ghost)
+                        .h(px(28.))
+                        .child(if crate::keymap::NOT_MAC { "Show in Folder" } else { "Reveal in Finder" })
+                        .on_click(move |_, _, cx| cx.reveal_path(&p)),
+                );
             }
             let close = if self.job.is_some() { "Close" } else { "Cancel" };
-            footer = footer.child(ui::button(&t, "ex-cancel", Btn::Ghost).h(px(28.)).child(close).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))).child(ui::probe(
-                "ex-start",
-                ui::button(&t, "ex-start", Btn::Primary)
-                    .h(px(28.))
-                    .px(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Export")
-                    .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
-                    .on_click(cx.listener(|v, _, _, cx| v.start(cx))),
-            ));
+            footer = footer
+                .child(ui::button(&t, "ex-cancel", Btn::Ghost).h(px(28.)).child(close).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close))))
+                .child(ui::probe(
+                    "ex-start",
+                    ui::button(&t, "ex-start", Btn::Primary)
+                        .h(px(28.))
+                        .px(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Export")
+                        .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                        .on_click(cx.listener(|v, _, _, cx| v.start(cx))),
+                ));
         }
         scrim(sheet.child(body).child(footer).into_any_element(), cx).into_any_element()
     }
@@ -943,7 +982,14 @@ mod tests {
     #[test]
     fn partial_exports_say_so() {
         let done = |complete| {
-            JobState::Done(ExportSummary { rows: 10, bytes: 100, path: PathBuf::from("/tmp/x.csv"), elapsed: Duration::from_secs(1), cancelled: false, complete })
+            JobState::Done(ExportSummary {
+                rows: 10,
+                bytes: 100,
+                path: PathBuf::from("/tmp/x.csv"),
+                elapsed: Duration::from_secs(1),
+                cancelled: false,
+                complete,
+            })
         };
         assert!(finished_line(&done(true)).starts_with("Exported 10 rows to x.csv"));
         assert!(finished_line(&done(false)).contains("not every row"), "{}", finished_line(&done(false)));

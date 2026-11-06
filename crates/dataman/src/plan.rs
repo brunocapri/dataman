@@ -3,13 +3,13 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{
-    App, Bounds, Context, Div, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, Pixels, SharedString,
-    Task, TextAlign, UniformListScrollHandle, Window, actions, canvas, div, point, prelude::*, size, uniform_list,
-};
 use crate::theme::{Pt, px};
 use dataman_core::ResultSet;
 use dataman_core::explain::{self, Format, Plan, Rule, fmt_cost, fmt_count, fmt_kb, fmt_ms};
+use gpui::{
+    App, Bounds, Context, Div, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, Pixels, SharedString, Task, TextAlign,
+    UniformListScrollHandle, Window, actions, canvas, div, point, prelude::*, size, uniform_list,
+};
 
 use crate::theme::{ActiveTheme, Theme, mono};
 use crate::ui;
@@ -143,8 +143,7 @@ impl PlanView {
         let snap = rs.snapshot();
         let task = cx.background_spawn(async move {
             let cols: Vec<String> = snap.columns.iter().map(|c| c.name.clone()).collect();
-            let rows: Vec<Vec<Option<String>>> =
-                (0..snap.rows()).map(|r| (0..cols.len()).map(|c| snap.text(r, c).map(|s| s.into_owned())).collect()).collect();
+            let rows: Vec<Vec<Option<String>>> = (0..snap.rows()).map(|r| (0..cols.len()).map(|c| snap.text(r, c).map(|s| s.into_owned())).collect()).collect();
             Plan::parse(&Plan::source_of(&cols, &rows))
         });
         self._parse = Some(cx.spawn(async move |this, cx| {
@@ -337,10 +336,13 @@ impl PlanView {
                 .text_color(t.tx3)
                 .cursor_pointer()
                 .child(ui::disclosure(("plan-chev", i), open, 9., t.tx3))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, _, cx| {
-                    cx.stop_propagation();
-                    v.toggle(i, cx);
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |v, _, _, cx| {
+                        cx.stop_propagation();
+                        v.toggle(i, cx);
+                    }),
+                )
         });
         let label = div()
             .flex_1()
@@ -374,13 +376,16 @@ impl PlanView {
             .map(|d| ui::selectable(d, t, sel, focused))
             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, cx.listener(move |v, ev: &MouseDownEvent, window, cx| {
-                window.focus(&v.focus, cx);
-                if ev.click_count == 2 {
-                    v.toggle(i, cx);
-                }
-                v.select(i, cx);
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |v, ev: &MouseDownEvent, window, cx| {
+                    window.focus(&v.focus, cx);
+                    if ev.click_count == 2 {
+                        v.toggle(i, cx);
+                    }
+                    v.select(i, cx);
+                }),
+            )
             .child(div().flex_none().w(px(8.)))
             .child(guides)
             .children(caret)
@@ -405,17 +410,13 @@ impl PlanView {
                 .children(flag(t, n.misestimate()));
             let (excl, incl) = if n.never_executed() { (String::new(), "never".to_string()) } else { (fmt_ms(n.excl_ms), fmt_ms(n.incl_ms)) };
             let loops = n.loops().filter(|&l| l != 1.).map(fmt_count).unwrap_or_default();
-            row = row
-                .child(num(TIME_W, excl, t.tx))
-                .child(num(TIME_W, incl, t.tx3))
-                .child(rows)
-                .child(num(LOOPS_W, loops, t.tx3))
-                .child(self.buffers(n, t));
+            row = row.child(num(TIME_W, excl, t.tx)).child(num(TIME_W, incl, t.tx3)).child(rows).child(num(LOOPS_W, loops, t.tx3)).child(self.buffers(n, t));
         } else if has_metrics {
-            row = row
-                .child(num(TIME_W, fmt_cost(n.excl_cost), t.tx))
-                .child(num(TIME_W, n.total_cost().map(fmt_cost).unwrap_or_default(), t.tx3))
-                .child(num(LOOPS_W + 18., n.est_rows().map(fmt_count).unwrap_or_default(), t.tx2));
+            row = row.child(num(TIME_W, fmt_cost(n.excl_cost), t.tx)).child(num(TIME_W, n.total_cost().map(fmt_cost).unwrap_or_default(), t.tx3)).child(num(
+                LOOPS_W + 18.,
+                n.est_rows().map(fmt_count).unwrap_or_default(),
+                t.tx2,
+            ));
         }
         row
     }
@@ -431,13 +432,11 @@ impl PlanView {
             .items_center()
             .justify_end()
             .gap(px(6.))
-            .child(
-                div()
-                    .w(px(56.))
-                    .h(px(6.))
-                    .bg(t.hov)
-                    .child(div().h_full().w(px(if share > 0. { fill.max(2.) } else { 0. })).bg(if c == t.tx3 { t.tx3.opacity(0.55) } else { c })),
-            )
+            .child(div().w(px(56.)).h(px(6.)).bg(t.hov).child(div().h_full().w(px(if share > 0. { fill.max(2.) } else { 0. })).bg(if c == t.tx3 {
+                t.tx3.opacity(0.55)
+            } else {
+                c
+            })))
             .child(
                 div()
                     .w(px(30.))
@@ -450,19 +449,17 @@ impl PlanView {
 
     fn buffers(&self, n: &explain::Node, t: &Theme) -> Div {
         let b = n.buffers();
-        let parts: Vec<(&str, f64)> = [("h", b.shared_hit), ("r", b.shared_read), ("t", b.temp_read + b.temp_written)].into_iter().filter(|(_, v)| *v > 0.).collect();
-        div()
-            .flex_none()
-            .w(px(BUF_W))
-            .flex()
-            .flex_row()
-            .justify_end()
-            .gap(px(5.))
-            .whitespace_nowrap()
-            .text_size(px(crate::theme::text::SMALL))
-            .children(parts.into_iter().map(|(k, v)| {
-                div().flex().flex_row().child(div().text_color(t.tx4).child(k)).child(div().text_color(if k == "t" { t.warn } else { t.tx2 }).child(fmt_count(v)))
-            }))
+        let parts: Vec<(&str, f64)> =
+            [("h", b.shared_hit), ("r", b.shared_read), ("t", b.temp_read + b.temp_written)].into_iter().filter(|(_, v)| *v > 0.).collect();
+        div().flex_none().w(px(BUF_W)).flex().flex_row().justify_end().gap(px(5.)).whitespace_nowrap().text_size(px(crate::theme::text::SMALL)).children(
+            parts.into_iter().map(|(k, v)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(div().text_color(t.tx4).child(k))
+                    .child(div().text_color(if k == "t" { t.warn } else { t.tx2 }).child(fmt_count(v)))
+            }),
+        )
     }
 
     fn render_header(&self, p: &Plan, t: &Theme) -> Div {
@@ -575,14 +572,7 @@ impl PlanView {
                                 };
                                 let r = Bounds::new(point(x, y), size(px(bw), px(FLAME_H - 2.)));
                                 let selected = sel == Some(f.node);
-                                window.paint_quad(gpui::quad(
-                                    r,
-                                    px(0.),
-                                    fill,
-                                    px(if selected { 1.5 } else { 0. }),
-                                    t.acc,
-                                    gpui::BorderStyle::Solid,
-                                ));
+                                window.paint_quad(gpui::quad(r, px(0.), fill, px(if selected { 1.5 } else { 0. }), t.acc, gpui::BorderStyle::Solid));
                                 let fits = ((bw - 8.) / (11. * crate::theme::ADVANCE)) as usize;
                                 if fits >= 4 {
                                     let v = if p2.analyzed { fmt_ms(n.excl_ms) } else { fmt_cost(n.excl_cost) };
@@ -590,7 +580,14 @@ impl PlanView {
                                     if s.chars().count() > fits {
                                         s = s.chars().take(fits.saturating_sub(1)).collect::<String>() + "…";
                                     }
-                                    let run = gpui::TextRun { len: s.len(), font: gpui::font(mono()), color: ink, background_color: None, underline: None, strikethrough: None };
+                                    let run = gpui::TextRun {
+                                        len: s.len(),
+                                        font: gpui::font(mono()),
+                                        color: ink,
+                                        background_color: None,
+                                        underline: None,
+                                        strikethrough: None,
+                                    };
                                     let line = window.text_system().shape_line(SharedString::from(s), px(11.), &[run], None);
                                     let _ = line.paint(point(x + px(4.), y + px(1.)), px(FLAME_H - 4.), TextAlign::Left, None, window, cx);
                                 }
@@ -672,23 +669,15 @@ impl PlanView {
             })
             .collect();
         let props = n.props();
-        div()
-            .id("plan-details")
-            .w(px(DETAILS_W))
-            .flex_none()
-            .h_full()
-            .border_l_1()
-            .border_color(t.pane_line)
-            .overflow_y_scroll()
-            .child(
-                body.child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).line_height(px(18.)).child(n.title.clone()))
-                    .children(n.subplan().map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string())))
-                    .child(div().h(px(6.)))
-                    .children(hints.into_iter().map(|h| h.mb(px(6.))))
-                    .children(sum.into_iter().map(|(k, v, c)| kv(k, v, c)))
-                    .child(div().my(px(8.)).h(px(1.)).bg(t.pane_line))
-                    .children(props.into_iter().map(|(k, v)| kv(k, v, t.tx2))),
-            )
+        div().id("plan-details").w(px(DETAILS_W)).flex_none().h_full().border_l_1().border_color(t.pane_line).overflow_y_scroll().child(
+            body.child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).line_height(px(18.)).child(n.title.clone()))
+                .children(n.subplan().map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string())))
+                .child(div().h(px(6.)))
+                .children(hints.into_iter().map(|h| h.mb(px(6.))))
+                .children(sum.into_iter().map(|(k, v, c)| kv(k, v, c)))
+                .child(div().my(px(8.)).h(px(1.)).bg(t.pane_line))
+                .children(props.into_iter().map(|(k, v)| kv(k, v, t.tx2))),
+        )
     }
 }
 
@@ -781,7 +770,9 @@ impl Render for PlanView {
                     uniform_list(
                         "plan-tree",
                         self.rows.len(),
-                        cx.processor(move |v, range: std::ops::Range<usize>, _window, cx| range.map(|ix| v.render_row(ix, &theme, focused, cx).into_any_element()).collect()),
+                        cx.processor(move |v, range: std::ops::Range<usize>, _window, cx| {
+                            range.map(|ix| v.render_row(ix, &theme, focused, cx).into_any_element()).collect()
+                        }),
                     )
                     .track_scroll(&self.scroll)
                     .flex_1(),
@@ -862,7 +853,9 @@ impl crate::app::Workspace {
                                 .flex_row()
                                 .items_baseline()
                                 .gap(px(5.))
-                                .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(nodes.to_string()))
+                                .child(
+                                    div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(nodes.to_string()),
+                                )
                                 .child(div().text_color(t.tx3).child(if nodes == 1 { "node" } else { "nodes" })),
                         )
                     })
@@ -876,10 +869,22 @@ impl crate::app::Workspace {
                             .child(div().text_color(t.tx).child(v))
                     }))
                     .when(rolled_back, |d| {
-                        d.child(div().h(px(18.)).px(px(6.)).flex().items_center().bg(t.info_s).text_color(t.info).text_size(px(crate::theme::text::HINT)).child("rolled back"))
+                        d.child(
+                            div()
+                                .h(px(18.))
+                                .px(px(6.))
+                                .flex()
+                                .items_center()
+                                .bg(t.info_s)
+                                .text_color(t.info)
+                                .text_size(px(crate::theme::text::HINT))
+                                .child("rolled back"),
+                        )
                     }),
             )
-            .when(has_flame, |d| d.child(ui::segmented(t).h(px(24.)).child(seg("plan-tree-mode", "Tree", Mode::Tree)).child(seg("plan-flame-mode", "Flame", Mode::Flame))))
+            .when(has_flame, |d| {
+                d.child(ui::segmented(t).h(px(24.)).child(seg("plan-tree-mode", "Tree", Mode::Tree)).child(seg("plan-flame-mode", "Flame", Mode::Flame)))
+            })
             .child(ui::vsep(t, 16.))
             .child(
                 ghost("plan-copy")
@@ -900,10 +905,12 @@ mod tests {
 
     #[test]
     fn flame_spans_nest_and_sum() {
-        let p = plan(r#"[{"Plan":{"Node Type":"Hash Join","Actual Total Time":10.0,"Actual Loops":1,"Plans":[
+        let p = plan(
+            r#"[{"Plan":{"Node Type":"Hash Join","Actual Total Time":10.0,"Actual Loops":1,"Plans":[
             {"Node Type":"Seq Scan","Parent Relationship":"Outer","Relation Name":"a","Actual Total Time":6.0,"Actual Loops":1},
             {"Node Type":"Hash","Parent Relationship":"Inner","Actual Total Time":3.0,"Actual Loops":1,"Plans":[
-              {"Node Type":"Seq Scan","Parent Relationship":"Outer","Relation Name":"b","Actual Total Time":2.0,"Actual Loops":1}]}]}}]"#);
+              {"Node Type":"Seq Scan","Parent Relationship":"Outer","Relation Name":"b","Actual Total Time":2.0,"Actual Loops":1}]}]}}]"#,
+        );
         let (boxes, depth) = flame_layout(&p);
         assert_eq!(depth, 2);
         let get = |i: usize| boxes.iter().find(|b| b.node == i).copied().unwrap();
@@ -916,9 +923,11 @@ mod tests {
 
     #[test]
     fn guides_follow_the_siblings() {
-        let p = plan(r#"[{"Plan":{"Node Type":"Append","Plans":[
+        let p = plan(
+            r#"[{"Plan":{"Node Type":"Append","Plans":[
             {"Node Type":"Hash","Parent Relationship":"Member","Plans":[{"Node Type":"Result","Parent Relationship":"Outer"}]},
-            {"Node Type":"Result","Parent Relationship":"Member"}]}}]"#);
+            {"Node Type":"Result","Parent Relationship":"Member"}]}}]"#,
+        );
         assert_eq!(PlanView::guides(&p, 1), (vec![], false));
         assert_eq!(PlanView::guides(&p, 2), (vec![true], true));
         assert_eq!(PlanView::guides(&p, 3), (vec![], true));

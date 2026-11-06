@@ -60,18 +60,23 @@ fn col(rs: &ResultSet, c: usize) -> Vec<Option<String>> {
 
 #[test]
 fn connects_and_decodes_types() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     assert_eq!((c.engine(), c.dialect()), (Engine::Sqlite, Dialect::Sqlite));
     assert!(c.info.version.starts_with("SQLite 3."), "{}", c.info.version);
     assert_eq!((c.info.database.as_str(), c.database()), ("main", "main"));
     assert!(!c.caps().schemas && !c.caps().drop_database && !c.caps().truncate && c.caps().explain);
 
     let s = c.session(None);
-    let rs = ok(e, &s, "SELECT id, name, balance, active, profile, photo, created_at, label, 1 + 1 AS two, 0.5 AS half, NULL AS empty FROM customer ORDER BY id");
+    let rs =
+        ok(e, &s, "SELECT id, name, balance, active, profile, photo, created_at, label, 1 + 1 AS two, 0.5 AS half, NULL AS empty FROM customer ORDER BY id");
     let kinds: Vec<Kind> = rs.columns().unwrap().iter().map(|c| c.kind).collect();
     assert_eq!(kinds, [Kind::Int, Kind::Text, Kind::Numeric, Kind::Bool, Kind::Json, Kind::Bytes, Kind::Text, Kind::Text, Kind::Int, Kind::Float, Kind::Other]);
     let r0 = texts(&rs, 0);
-    assert_eq!(r0[..6], [Some("1".into()), Some("Ana Lima".into()), Some("1520.5".into()), Some("true".into()), Some("{\"city\": \"Lisbon\"}".into()), Some("\\xcafe".into())]);
+    assert_eq!(
+        r0[..6],
+        [Some("1".into()), Some("Ana Lima".into()), Some("1520.5".into()), Some("true".into()), Some("{\"city\": \"Lisbon\"}".into()), Some("\\xcafe".into())]
+    );
     assert_eq!(r0[7].as_deref(), Some("Ana Lima <ana@example.com>"), "generated column");
     assert_eq!((r0[8].as_deref(), r0[9].as_deref(), r0[10].as_deref()), (Some("2"), Some("0.5"), None));
     let named = rs.named_origins().unwrap();
@@ -83,7 +88,8 @@ fn connects_and_decodes_types() {
 /// each cell as it is in the file, never a silent 0.
 #[test]
 fn mixed_storage_classes_show_as_stored() {
-    let d = open(false); let (e, c) = (&d.e, d.c.clone());
+    let d = open(false);
+    let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
     ok(e, &s, "CREATE TABLE m (n INTEGER, r REAL, b BOOLEAN, x BLOB)");
     ok(e, &s, "INSERT INTO m VALUES (1, 1.5, 1, X'00'), ('abc', 'zz', 7, 'text'), (1.5, 2, 0, NULL), (NULL, NULL, NULL, NULL)");
@@ -111,7 +117,8 @@ fn mixed_storage_classes_show_as_stored() {
 
 #[test]
 fn transactions_are_watched() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
     assert_eq!(s.tx().status, TxStatus::Idle);
     ok(e, &s, "BEGIN");
@@ -130,7 +137,10 @@ fn transactions_are_watched() {
     let rs = s.execute_opts("DELETE FROM note", Vec::new(), true);
     e.core.block_on(rs.wait_finished());
     assert_eq!(col(&ok(e, &s, "SELECT count(*) FROM note"), 0), [Some("3".into())]);
-    let rs = s.execute_with("SELECT name FROM customer WHERE id = ?1 OR email = ?2 LIMIT ?3", vec![Some("2".into()), Some("ana@example.com".into()), Some("5".into())]);
+    let rs = s.execute_with(
+        "SELECT name FROM customer WHERE id = ?1 OR email = ?2 LIMIT ?3",
+        vec![Some("2".into()), Some("ana@example.com".into()), Some("5".into())],
+    );
     rs.fetch_all();
     e.core.block_on(rs.wait_finished());
     assert_eq!(rs.rows(), 2, "{:?}", rs.status().error);
@@ -138,7 +148,8 @@ fn transactions_are_watched() {
 
 #[test]
 fn an_endless_query_is_interrupted() {
-    let d = open(false); let (e, c) = (&d.e, d.c.clone());
+    let d = open(false);
+    let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
     let rs = s.execute("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c) SELECT count(*) FROM c");
     std::thread::sleep(Duration::from_millis(300));
@@ -150,13 +161,18 @@ fn an_endless_query_is_interrupted() {
 
 #[test]
 fn catalog_and_ddl() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     let db = "main";
     assert_eq!(e.core.block_on(c.databases()).unwrap(), ["main"]);
     assert_eq!(e.core.block_on(c.schemas(db)).unwrap(), ["main"]);
     let rels = e.core.block_on(c.relations(db, db)).unwrap();
     let names: Vec<(&str, RelKind)> = rels.iter().map(|r| (r.name.as_str(), r.kind)).collect();
-    assert_eq!(names, [("customer", RelKind::Table), ("item", RelKind::Table), ("note", RelKind::Table), ("orders", RelKind::Table), ("v_order_customer", RelKind::View)], "no sqlite_sequence");
+    assert_eq!(
+        names,
+        [("customer", RelKind::Table), ("item", RelKind::Table), ("note", RelKind::Table), ("orders", RelKind::Table), ("v_order_customer", RelKind::View)],
+        "no sqlite_sequence"
+    );
     let cols = e.core.block_on(c.columns(db, db, "customer")).unwrap();
     assert!(cols[0].primary_key && cols[0].type_name == "INTEGER");
     let label = cols.iter().find(|c| c.name == "label").unwrap();
@@ -180,7 +196,12 @@ fn catalog_and_ddl() {
     let x = e.core.block_on(c.table_extras(db, db, "orders")).unwrap();
     let cons = x.constraints.unwrap();
     assert!(cons.iter().any(|k| k.kind == ConstraintKind::Primary && k.definition.as_deref() == Some("PRIMARY KEY (id)")), "{cons:?}");
-    assert!(cons.iter().any(|k| k.kind == ConstraintKind::Foreign && k.definition.as_deref() == Some("FOREIGN KEY (customer_id) REFERENCES customer(id) ON DELETE CASCADE")), "{cons:?}");
+    assert!(
+        cons.iter().any(
+            |k| k.kind == ConstraintKind::Foreign && k.definition.as_deref() == Some("FOREIGN KEY (customer_id) REFERENCES customer(id) ON DELETE CASCADE")
+        ),
+        "{cons:?}"
+    );
     assert_eq!(x.triggers.unwrap().len(), 1);
     let cons = e.core.block_on(c.table_extras(db, db, "customer")).unwrap().constraints.unwrap();
     assert!(cons.iter().any(|k| k.kind == ConstraintKind::Unique && k.definition.as_deref() == Some("UNIQUE (email)")), "{cons:?}");
@@ -198,7 +219,11 @@ fn catalog_and_ddl() {
 
     let g = e.core.block_on(c.relationships(db, db)).unwrap();
     let l = g.links.iter().find(|l| l.from_table == "item").unwrap();
-    assert_eq!((l.from_columns.clone(), l.to_table.as_str(), l.to_columns.clone()), (vec!["order_id".to_string()], "orders", vec!["id".to_string()]), "a bare REFERENCES points at the key");
+    assert_eq!(
+        (l.from_columns.clone(), l.to_table.as_str(), l.to_columns.clone()),
+        (vec!["order_id".to_string()], "orders", vec!["id".to_string()]),
+        "a bare REFERENCES points at the key"
+    );
     assert!(g.links.iter().any(|l| l.from_table == "orders" && l.to_table == "customer"));
     assert_eq!(e.core.block_on(c.primary_key(db, db, "item")).unwrap(), ["order_id", "line"]);
     assert_eq!(e.core.block_on(c.estimate_rows(db, db, "customer")).unwrap(), None);
@@ -215,7 +240,8 @@ fn catalog_and_ddl() {
 
 #[test]
 fn the_data_view_and_explain() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
     let mut v = TableView::new("main", "customer", vec!["id".into()], 2);
     v.dialect = Dialect::Sqlite;
@@ -246,7 +272,8 @@ fn the_data_view_and_explain() {
 
 #[test]
 fn edits_by_key() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
     let db = "main";
     let edit = |sql: &str, row: usize, column: &str, to: &str| -> (KeySource, Vec<Outcome>) {
@@ -297,7 +324,8 @@ fn edits_by_key() {
 
 #[test]
 fn a_write_lock_makes_others_wait_then_fail() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     let a = c.session(None);
     let b = c.session(None);
     ok(e, &a, "BEGIN IMMEDIATE");
@@ -315,18 +343,36 @@ fn a_write_lock_makes_others_wait_then_fail() {
 
 #[test]
 fn agents_read_and_write_in_bounds() {
-    let d = open(true); let (e, c) = (&d.e, d.c.clone());
+    let d = open(true);
+    let (e, c) = (&d.e, d.c.clone());
     let never = std::future::pending::<()>;
     let o = e.core.block_on(c.bounded(None, "SELECT id, name FROM customer ORDER BY id", vec![], Mode::Read, Limits::default(), never())).unwrap();
     assert_eq!(o.parts.len(), 1);
     let r = e.core.block_on(c.bounded(None, "DELETE FROM customer", vec![], Mode::Read, Limits::default(), never()));
     assert!(matches!(r, Err(Stop::Refused(_))), "{r:?}");
-    let o = e.core.block_on(c.bounded(None, "UPDATE orders SET notes = ? WHERE id = ?", vec![Some("x".into()), Some("2".into())], Mode::Write, Limits::default(), never())).unwrap();
+    let o = e
+        .core
+        .block_on(c.bounded(
+            None,
+            "UPDATE orders SET notes = ? WHERE id = ?",
+            vec![Some("x".into()), Some("2".into())],
+            Mode::Write,
+            Limits::default(),
+            never(),
+        ))
+        .unwrap();
     assert!(o.committed);
     let o = e.core.block_on(c.bounded(None, "SELECT notes FROM orders WHERE id = ?", vec![Some("2".into())], Mode::Read, Limits::default(), never())).unwrap();
     assert_eq!(o.parts.len(), 1);
     let lim = Limits { timeout: Duration::from_millis(300), ..Limits::default() };
-    let r = e.core.block_on(c.bounded(None, "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c) SELECT count(*) FROM c", vec![], Mode::Read, lim, never()));
+    let r = e.core.block_on(c.bounded(
+        None,
+        "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c) SELECT count(*) FROM c",
+        vec![],
+        Mode::Read,
+        lim,
+        never(),
+    ));
     assert!(matches!(r, Err(Stop::Timeout(_))), "{r:?}");
 }
 

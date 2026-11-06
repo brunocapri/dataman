@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point, px};
+use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, point, px};
 
 use crate::app::Workspace;
-use dataman_core::layout::NavView;
 use crate::history::HistoryPanel;
+use dataman_core::layout::NavView;
 
 pub fn is_stage(s: &str) -> bool {
     s == "history-check" || s == "folders-check"
@@ -140,8 +140,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("", window, cx)));
     rail_click(ws, NavView::Favorites, cx);
     pause(cx, 30).await;
-    let (showing, dropdown_untouched, count) =
-        cx.update(|_, cx| (history.read(cx).demo_showing_favorites(), !history.read(cx).demo_dropdown_open(), history.read(cx).demo_favorites().len())).unwrap();
+    let (showing, dropdown_untouched, count) = cx
+        .update(|_, cx| (history.read(cx).demo_showing_favorites(), !history.read(cx).demo_dropdown_open(), history.read(cx).demo_favorites().len()))
+        .unwrap();
     report(
         "the favorites listed, the status dropdown untouched",
         showing && dropdown_untouched && count == 1,
@@ -159,7 +160,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
     pause(cx, 30).await;
     let menu_open = cx.update(|_, cx| history.read(cx).demo_fav_menu_open()).unwrap_or(false);
-    report(if crate::keymap::NOT_MAC { "a right click opens the favorite's context menu" } else { "⌃-click opens the favorite's context menu" }, menu_open, String::new());
+    report(
+        if crate::keymap::NOT_MAC { "a right click opens the favorite's context menu" } else { "⌃-click opens the favorite's context menu" },
+        menu_open,
+        String::new(),
+    );
     menu_click(&history, "Rename", cx);
     pause(cx, 30).await;
     let renaming = cx.update(|_, cx| history.read(cx).demo_renaming_index()).unwrap();
@@ -204,9 +209,20 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-a");
     typ(cx, "whoops");
     key(cx, "escape");
-    let (name, side_open, renaming) =
-        cx.update(|_, cx| (history.read(cx).demo_favorites()[0].1.clone(), ws.read(cx).explorer_open && ws.read(cx).view == NavView::Favorites, history.read(cx).demo_renaming_index())).unwrap();
-    report("esc cancels the rename, keeps the old name, and the panel stays open", name == "Renamed fav" && side_open && renaming.is_none(), format!("{name:?} side_open={side_open} renaming={renaming:?}"));
+    let (name, side_open, renaming) = cx
+        .update(|_, cx| {
+            (
+                history.read(cx).demo_favorites()[0].1.clone(),
+                ws.read(cx).explorer_open && ws.read(cx).view == NavView::Favorites,
+                history.read(cx).demo_renaming_index(),
+            )
+        })
+        .unwrap();
+    report(
+        "esc cancels the rename, keeps the old name, and the panel stays open",
+        name == "Renamed fav" && side_open && renaming.is_none(),
+        format!("{name:?} side_open={side_open} renaming={renaming:?}"),
+    );
 
     let Some(row) = row_point(&history, 0, cx).await else {
         println!("FAIL the favorite row has no bounds");
@@ -266,7 +282,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-z");
     // The files are read again off the UI thread: the entry is back once that lands.
     crate::check::until(cx, 5, |cx| count(cx) == n0).await;
-    report("Remove from history takes the entry out; ⌘Z puts it back", n0 > 0 && removed == n0 - 1 && count(cx) == n0, format!("{n0} → {removed} → {}", count(cx)));
+    report(
+        "Remove from history takes the entry out; ⌘Z puts it back",
+        n0 > 0 && removed == n0 - 1 && count(cx) == n0,
+        format!("{n0} → {removed} → {}", count(cx)),
+    );
     let trash = cx.update(|_, cx| history.read(cx).demo_clear_bounds()).ok().flatten();
     if let Some(b) = trash {
         click(cx, b.center(), MouseButton::Left, Modifiers::default());
@@ -293,12 +313,19 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
 
     let dir = std::env::temp_dir().join(format!("dataman-fav-import-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    let files = [("top customers.sql", "SELECT * FROM customer ORDER BY id LIMIT 10;"), ("orders.sql", "SELECT count(*) FROM orders;"), ("again.SQL", "SELECT * FROM customer ORDER BY id LIMIT 10;")];
-    let paths: Vec<std::path::PathBuf> = files.iter().map(|(n, sql)| {
-        let p = dir.join(n);
-        let _ = std::fs::write(&p, sql);
-        p
-    }).collect();
+    let files = [
+        ("top customers.sql", "SELECT * FROM customer ORDER BY id LIMIT 10;"),
+        ("orders.sql", "SELECT count(*) FROM orders;"),
+        ("again.SQL", "SELECT * FROM customer ORDER BY id LIMIT 10;"),
+    ];
+    let paths: Vec<std::path::PathBuf> = files
+        .iter()
+        .map(|(n, sql)| {
+            let p = dir.join(n);
+            let _ = std::fs::write(&p, sql);
+            p
+        })
+        .collect();
     let before = cx.update(|_, cx| history.read(cx).demo_favorites().len()).unwrap();
     if let Some(fb) = cx.update(|_, cx| history.read(cx).demo_new_folder_bounds()).unwrap() {
         let at = point(fb.origin.x + fb.size.width / 2., fb.origin.y + fb.size.height / 2.);
@@ -366,7 +393,12 @@ async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx:
         fav_a.as_ref().is_some_and(|f| f.name == "SELECT 42 AS answer" && f.sql == "-- the answer\nSELECT 42 AS answer;") && title_a == "SELECT 42 AS answer",
         format!("{fav_a:?} title {title_a:?}"),
     );
-    report(&mut ok, "\"← added to favorites\" points at the rail's lit Favorites icon", shown.as_ref().is_some_and(|(id, l)| Some(id) == id_a.as_ref() && *l == "added to favorites"), format!("{shown:?}"));
+    report(
+        &mut ok,
+        "\"← added to favorites\" points at the rail's lit Favorites icon",
+        shown.as_ref().is_some_and(|(id, l)| Some(id) == id_a.as_ref() && *l == "added to favorites"),
+        format!("{shown:?}"),
+    );
 
     let b = tab_with(ws, "SELECT 42 AS answer;\nSELECT 1;", cx);
     key(cx, "cmd-s");
@@ -374,7 +406,12 @@ async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx:
     draw(cx);
     let (id_b, title_b) = linked(&b, cx);
     let fav_b = id_b.as_deref().and_then(|id| favorite(ws, id, cx));
-    report(&mut ok, "a name already taken gets a number", fav_b.as_ref().is_some_and(|f| f.name == "SELECT 42 AS answer 2") && title_b == "SELECT 42 AS answer 2" && id_b != id_a, format!("{fav_b:?} {title_b:?}"));
+    report(
+        &mut ok,
+        "a name already taken gets a number",
+        fav_b.as_ref().is_some_and(|f| f.name == "SELECT 42 AS answer 2") && title_b == "SELECT 42 AS answer 2" && id_b != id_a,
+        format!("{fav_b:?} {title_b:?}"),
+    );
 
     let at = cx.update(|_, cx| ws.read(cx).saved_bounds.get()).unwrap();
     match at {
@@ -386,7 +423,13 @@ async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx:
             let (side, favs, sel, focus, gone) = cx
                 .update(|window, cx| {
                     let h = history.read(cx);
-                    (ws.read(cx).explorer_open && ws.read(cx).view == NavView::Favorites, h.demo_showing_favorites(), h.demo_selected_favorite(), h.demo_has_focus(window), ws.read(cx).saved_flash.is_none())
+                    (
+                        ws.read(cx).explorer_open && ws.read(cx).view == NavView::Favorites,
+                        h.demo_showing_favorites(),
+                        h.demo_selected_favorite(),
+                        h.demo_has_focus(window),
+                        ws.read(cx).saved_flash.is_none(),
+                    )
                 })
                 .unwrap();
             report(
@@ -413,7 +456,10 @@ async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx:
     report(
         &mut ok,
         "⌘S in a favorite's tab saves its script into it, keeping its name (\"saved to favorites\")",
-        after.as_ref().is_some_and(|f| f.sql == "SELECT 43 AS answer;" && f.name == "SELECT 42 AS answer 2") && still == id_b && title == "SELECT 42 AS answer 2" && shown.is_some_and(|(_, l)| l == "saved to favorites"),
+        after.as_ref().is_some_and(|f| f.sql == "SELECT 43 AS answer;" && f.name == "SELECT 42 AS answer 2")
+            && still == id_b
+            && title == "SELECT 42 AS answer 2"
+            && shown.is_some_and(|(_, l)| l == "saved to favorites"),
         format!("{after:?} {title:?}"),
     );
 
@@ -443,7 +489,12 @@ async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx:
     }
     let written = std::fs::read_to_string(&path).ok();
     let (_, title) = linked(&c, cx);
-    report(&mut ok, "⇧⌘S writes the script to the .sql file picked, and names the tab after it", written.as_deref() == Some("SELECT 'saved' AS file;\n") && title == "report.sql", format!("{written:?} {title:?}"));
+    report(
+        &mut ok,
+        "⇧⌘S writes the script to the .sql file picked, and names the tab after it",
+        written.as_deref() == Some("SELECT 'saved' AS file;\n") && title == "report.sql",
+        format!("{written:?} {title:?}"),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     ok
 }
@@ -454,7 +505,17 @@ async fn palette_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, 
     let ids = cx
         .update(|_, cx| {
             let core = ws.read(cx).store.read(cx).core.clone();
-            (0..500).filter_map(|i| core.favorites.add(dataman_core::Favorite::new(format!("Report {i:03} {}", words[i % 5]), format!("SELECT {i} AS n, 'marker_{i:03}' AS tag FROM orders"))).ok().map(|f| f.id)).collect::<Vec<_>>()
+            (0..500)
+                .filter_map(|i| {
+                    core.favorites
+                        .add(dataman_core::Favorite::new(
+                            format!("Report {i:03} {}", words[i % 5]),
+                            format!("SELECT {i} AS n, 'marker_{i:03}' AS tag FROM orders"),
+                        ))
+                        .ok()
+                        .map(|f| f.id)
+                })
+                .collect::<Vec<_>>()
         })
         .unwrap();
     report(&mut ok, "500 favorites saved", ids.len() == 500, format!("{}", ids.len()));
@@ -480,10 +541,23 @@ async fn palette_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, 
     }
     draw(cx);
     let (_, sel, count, offset, inside, list) = state(cx);
-    report(&mut ok, "the Favorites scope lists them and ↓ scrolls the selection along", sel == 40 && count == 80 && offset > 100. && inside, format!("sel {sel} of {count}, offset {offset}, inside {inside}"));
+    report(
+        &mut ok,
+        "the Favorites scope lists them and ↓ scrolls the selection along",
+        sel == 40 && count == 80 && offset > 100. && inside,
+        format!("sel {sel} of {count}, offset {offset}, inside {inside}"),
+    );
     let at = point(list.left() + list.size.width / 2., list.top() + list.size.height / 2.);
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
-    input(cx, PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: at, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))), modifiers: Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    input(
+        cx,
+        PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        }),
+    );
     draw(cx);
     let (_, _, _, wheeled, _, _) = state(cx);
     report(&mut ok, "the wheel scrolls the list", wheeled > offset + 100., format!("{offset} → {wheeled}"));
@@ -506,7 +580,12 @@ async fn palette_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, 
     let (side, favs, sel, focus) = cx
         .update(|window, cx| {
             let h = history.read(cx);
-            (ws.read(cx).explorer_open && ws.read(cx).view == NavView::Favorites, h.demo_showing_favorites(), h.demo_selected_favorite(), h.demo_has_focus(window))
+            (
+                ws.read(cx).explorer_open && ws.read(cx).view == NavView::Favorites,
+                h.demo_showing_favorites(),
+                h.demo_selected_favorite(),
+                h.demo_has_focus(window),
+            )
         })
         .unwrap();
     let want = ids.get(497).cloned();
@@ -628,7 +707,11 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let run_sql = "SELECT 'folders-run' AS marker";
     let _ = cx.update(|_, cx| {
         let core = ws.read(cx).store.read(cx).core.clone();
-        for (name, sql) in [("Orders by day", "SELECT date_trunc('day', created) AS day, count(*) FROM orders GROUP BY 1 ORDER BY 1"), ("Top customers", "SELECT customer, count(*) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10"), ("Run marker", run_sql)] {
+        for (name, sql) in [
+            ("Orders by day", "SELECT date_trunc('day', created) AS day, count(*) FROM orders GROUP BY 1 ORDER BY 1"),
+            ("Top customers", "SELECT customer, count(*) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10"),
+            ("Run marker", run_sql),
+        ] {
             let mut f = dataman_core::Favorite::new(name, sql);
             f.connection_id = conn_id.clone();
             let _ = core.favorites.add(f);
@@ -658,7 +741,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let clicked = new_folder(cx);
     pause(cx, 30).await;
     let (naming, focused) = cx.update(|window, cx| (history.read(cx).demo_renaming_folder(), history.read(cx).demo_renaming_focused(window, cx))).unwrap();
-    report(&mut ok, "\"+ folder\" makes a folder and names it in place", clicked && naming.as_deref() == Some("New folder") && focused, format!("clicked {clicked} naming {naming:?} focused {focused}"));
+    report(
+        &mut ok,
+        "\"+ folder\" makes a folder and names it in place",
+        clicked && naming.as_deref() == Some("New folder") && focused,
+        format!("clicked {clicked} naming {naming:?} focused {focused}"),
+    );
     typ(cx, "Reports");
     key(cx, "enter");
     pause(cx, 30).await;
@@ -677,7 +765,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     click(cx, row, MouseButton::Left, Modifiers::default());
     pause(cx, 30).await;
     let (naming, focused) = cx.update(|window, cx| (history.read(cx).demo_renaming_folder(), history.read(cx).demo_renaming_focused(window, cx))).unwrap();
-    report(&mut ok, "a click on the field or on the row around it leaves it being named", naming.is_some() && focused, format!("naming {naming:?} focused {focused}"));
+    report(
+        &mut ok,
+        "a click on the field or on the row around it leaves it being named",
+        naming.is_some() && focused,
+        format!("naming {naming:?} focused {focused}"),
+    );
     typ(cx, "e");
     let Some(away) = named_point(&history, "Top customers", cx).await else {
         report(&mut ok, "the favorite has bounds", false, String::new());
@@ -686,7 +779,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     click(cx, away, MouseButton::Left, Modifiers::default());
     pause(cx, 30).await;
     let (naming, in_panel) = cx.update(|window, cx| (history.read(cx).demo_renaming_folder(), history.read(cx).demo_has_focus(window))).unwrap();
-    report(&mut ok, "a click on another row names the folder with what was typed", naming.is_none() && in_panel, format!("naming {naming:?} panel focus {in_panel}"));
+    report(
+        &mut ok,
+        "a click on another row names the folder with what was typed",
+        naming.is_none() && in_panel,
+        format!("naming {naming:?} panel focus {in_panel}"),
+    );
     let r = rows(&history, cx);
     report(
         &mut ok,
@@ -728,7 +826,9 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report(
         &mut ok,
         "dragged over the top level, it goes after the last folder (the line under it)",
-        during == Some((2, vec![(1, true)])) && r == ["▾ Reports", "▾ Archive", "Orders by day", "Top customers", "Run marker"] && stored == ["Reports", "Archive"],
+        during == Some((2, vec![(1, true)]))
+            && r == ["▾ Reports", "▾ Archive", "Orders by day", "Top customers", "Run marker"]
+            && stored == ["Reports", "Archive"],
         format!("{during:?} {r:?} stored {stored:?}"),
     );
 
@@ -742,12 +842,18 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         snap("drag", cx);
     })
     .await;
-    report(&mut ok, "a favorite dragged over a folder targets it (no line between folders)", target.as_deref() == Some("Reports") && line.is_none(), format!("{target:?} {line:?}"));
+    report(
+        &mut ok,
+        "a favorite dragged over a folder targets it (no line between folders)",
+        target.as_deref() == Some("Reports") && line.is_none(),
+        format!("{target:?} {line:?}"),
+    );
     let r = rows(&history, cx);
     report(
         &mut ok,
         "dropped there, it is filed in it and listed under it",
-        filed(&history, "Orders by day", cx) == Some(Some("Reports".into())) && r == ["▾ Reports", "  Orders by day", "▾ Archive", "Top customers", "Run marker"],
+        filed(&history, "Orders by day", cx) == Some(Some("Reports".into()))
+            && r == ["▾ Reports", "  Orders by day", "▾ Archive", "Top customers", "Run marker"],
         format!("{r:?}"),
     );
 
@@ -773,7 +879,10 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report(
         &mut ok,
         "a click shuts a folder; → opens it, ← shuts it",
-        shut.contains(&"▸ Reports".to_string()) && !shut.contains(&"  Orders by day".to_string()) && opened.contains(&"  Orders by day".to_string()) && shut_again == shut,
+        shut.contains(&"▸ Reports".to_string())
+            && !shut.contains(&"  Orders by day".to_string())
+            && opened.contains(&"  Orders by day".to_string())
+            && shut_again == shut,
         format!("{shut:?} / {opened:?} / {shut_again:?}"),
     );
 
@@ -804,7 +913,11 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report(
         &mut ok,
         "a click shutting a folder folds its favorites away, then they are gone",
-        moving && during.contains(&"▸ Reports".to_string()) && during.contains(&"  Orders by day".to_string()) && after.contains(&"▸ Reports".to_string()) && !after.contains(&"  Orders by day".to_string()),
+        moving
+            && during.contains(&"▸ Reports".to_string())
+            && during.contains(&"  Orders by day".to_string())
+            && after.contains(&"▸ Reports".to_string())
+            && !after.contains(&"  Orders by day".to_string()),
         format!("moving {moving}, {during:?} / {after:?}"),
     );
 
@@ -878,7 +991,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         }
         None => false,
     };
-    report(&mut ok, "Move to folder ▸ files a favorite in the folder picked", moved && filed(&history, "Top customers", cx) == Some(Some("Archive".into())), format!("submenu {moved}, {:?}", filed(&history, "Top customers", cx)));
+    report(
+        &mut ok,
+        "Move to folder ▸ files a favorite in the folder picked",
+        moved && filed(&history, "Top customers", cx) == Some(Some("Archive".into())),
+        format!("submenu {moved}, {:?}", filed(&history, "Top customers", cx)),
+    );
 
     let Some(p) = named_point(&history, "Run marker", cx).await else { return false };
     click(cx, p, MouseButton::Right, Modifiers::default());
@@ -893,7 +1011,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         }
     }
     let title = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).title(cx).to_string())).unwrap();
-    report(&mut ok, "Run (the favorite's menu) runs it in a tab of its own", clicked && ran && title.as_deref() == Some("Run marker"), format!("clicked {clicked} ran {ran} title {title:?}"));
+    report(
+        &mut ok,
+        "Run (the favorite's menu) runs it in a tab of its own",
+        clicked && ran && title.as_deref() == Some("Run marker"),
+        format!("clicked {clicked} ran {ran} title {title:?}"),
+    );
 
     let before = rows(&history, cx);
     let Some(p) = named_point(&history, "Archive", cx).await else { return false };

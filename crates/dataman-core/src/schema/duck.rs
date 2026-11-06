@@ -38,7 +38,10 @@ pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
 }
 
 pub(super) async fn schemas(c: &Db, db: &str) -> Result<Vec<String>> {
-    let q = format!("SELECT schema_name FROM duckdb_schemas() WHERE database_name = {} AND (NOT internal OR schema_name = 'main') ORDER BY schema_name <> 'main', schema_name", lit(db));
+    let q = format!(
+        "SELECT schema_name FROM duckdb_schemas() WHERE database_name = {} AND (NOT internal OR schema_name = 'main') ORDER BY schema_name <> 'main', schema_name",
+        lit(db)
+    );
     let mut v: Vec<String> = first_ok(c, &[&q]).await?.into_iter().filter_map(|r| get(&r, 0)).collect();
     v.sort_by_key(|s| crate::Engine::DuckDb.is_system_schema(s));
     Ok(v)
@@ -136,7 +139,9 @@ pub(super) async fn indexes(c: &Db, db: &str, schema: &str, table: &str) -> Resu
         let name = get(&r, 2).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("{table}_{}", if primary { "pkey" } else { "key" }));
         out.push(Index { name, columns: cols, unique: true, primary, definition: None });
     }
-    let q = format!("SELECT index_name, is_unique, sql FROM duckdb_indexes() WHERE database_name = {d} AND schema_name = {s} AND table_name = {t} ORDER BY index_name");
+    let q = format!(
+        "SELECT index_name, is_unique, sql FROM duckdb_indexes() WHERE database_name = {d} AND schema_name = {s} AND table_name = {t} ORDER BY index_name"
+    );
     for r in first_ok(c, &[&q]).await? {
         let Some(name) = get(&r, 0) else { continue };
         let sql = get(&r, 2);
@@ -167,7 +172,12 @@ pub(crate) fn definition_sql(kind: &str, db: &str, schema: &str, name: &str) -> 
 }
 
 pub(crate) fn index_sql(db: &str, schema: &str, table: &str) -> String {
-    format!("SELECT sql FROM duckdb_indexes() WHERE database_name = {} AND schema_name = {} AND table_name = {} AND sql IS NOT NULL ORDER BY index_name", cat(db), lit(schema), lit(table))
+    format!(
+        "SELECT sql FROM duckdb_indexes() WHERE database_name = {} AND schema_name = {} AND table_name = {} AND sql IS NOT NULL ORDER BY index_name",
+        cat(db),
+        lit(schema),
+        lit(table)
+    )
 }
 
 /// Foreign keys of a schema: table, name, column, referenced schema, table, column (one row per
@@ -228,7 +238,15 @@ pub(crate) async fn functions(c: &Db) -> Vec<super::FuncSig> {
         .into_iter()
         .filter_map(|r| {
             let name = get(&r, 0)?;
-            Some(super::FuncSig { oid: 0, schema: String::new(), name, args: String::new(), result: String::new(), kind: 'f', returns_set: get(&r, 1).as_deref() == Some("table") })
+            Some(super::FuncSig {
+                oid: 0,
+                schema: String::new(),
+                name,
+                args: String::new(),
+                result: String::new(),
+                kind: 'f',
+                returns_set: get(&r, 1).as_deref() == Some("table"),
+            })
         })
         .collect()
 }

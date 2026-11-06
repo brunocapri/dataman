@@ -9,7 +9,11 @@ pub(super) fn parse(source: &str) -> Plan {
         return p;
     }
     let pg = lines.iter().any(|l| l.contains("(cost=") || l.contains("(actual ") || l.trim_start().starts_with("->"));
-    if pg { parse_pg(&lines, &mut p) } else { parse_indented(&lines, &mut p) }
+    if pg {
+        parse_pg(&lines, &mut p)
+    } else {
+        parse_indented(&lines, &mut p)
+    }
     if !p.nodes.is_empty() {
         p.format = Format::Text;
         p.compute();
@@ -168,10 +172,34 @@ fn parse_indented(lines: &[&str], p: &mut Plan) {
 }
 
 const HEADER: &[&str] = &[
-    "Node Type", "Parent Relationship", "Subplan Name", "Parallel Aware", "Async Capable", "Disabled", "Startup Cost", "Total Cost",
-    "Plan Rows", "Plan Width", "Actual Startup Time", "Actual Total Time", "Actual Rows", "Actual Loops", "Relation Name", "Schema",
-    "Alias", "Index Name", "CTE Name", "Function Name", "Strategy", "Partial Mode", "Operation", "Join Type", "Scan Direction",
-    "Custom Plan Provider", "Command", "Workers",
+    "Node Type",
+    "Parent Relationship",
+    "Subplan Name",
+    "Parallel Aware",
+    "Async Capable",
+    "Disabled",
+    "Startup Cost",
+    "Total Cost",
+    "Plan Rows",
+    "Plan Width",
+    "Actual Startup Time",
+    "Actual Total Time",
+    "Actual Rows",
+    "Actual Loops",
+    "Relation Name",
+    "Schema",
+    "Alias",
+    "Index Name",
+    "CTE Name",
+    "Function Name",
+    "Strategy",
+    "Partial Mode",
+    "Operation",
+    "Join Type",
+    "Scan Direction",
+    "Custom Plan Provider",
+    "Command",
+    "Workers",
 ];
 
 fn n2(v: Option<f64>) -> String {
@@ -190,7 +218,10 @@ fn buffers_line(o: &Map<String, Value>) -> Option<String> {
         (!xs.is_empty()).then(|| format!("{label} {}", xs.join(" ")))
     };
     let parts: Vec<String> = [
-        part("shared", [("hit", "Shared Hit Blocks"), ("read", "Shared Read Blocks"), ("dirtied", "Shared Dirtied Blocks"), ("written", "Shared Written Blocks")]),
+        part(
+            "shared",
+            [("hit", "Shared Hit Blocks"), ("read", "Shared Read Blocks"), ("dirtied", "Shared Dirtied Blocks"), ("written", "Shared Written Blocks")],
+        ),
         part("local", [("hit", "Local Hit Blocks"), ("read", "Local Read Blocks"), ("dirtied", "Local Dirtied Blocks"), ("written", "Local Written Blocks")]),
         part("temp", [("read", "Temp Read Blocks"), ("written", "Temp Written Blocks"), ("", ""), ("", "")]),
     ]
@@ -202,8 +233,11 @@ fn buffers_line(o: &Map<String, Value>) -> Option<String> {
 
 fn wal_line(o: &Map<String, Value>) -> Option<String> {
     let n = |k: &str| o.get(k).and_then(Value::as_f64).unwrap_or(0.);
-    let xs: Vec<String> =
-        [("records", "WAL Records"), ("fpi", "WAL FPI"), ("bytes", "WAL Bytes"), ("buffers full", "WAL Buffers Full")].iter().filter(|(_, k)| n(k) > 0.).map(|(w, k)| format!("{w}={}", n(k))).collect();
+    let xs: Vec<String> = [("records", "WAL Records"), ("fpi", "WAL FPI"), ("bytes", "WAL Bytes"), ("buffers full", "WAL Buffers Full")]
+        .iter()
+        .filter(|(_, k)| n(k) > 0.)
+        .map(|(w, k)| format!("{w}={}", n(k)))
+        .collect();
     (!xs.is_empty()).then(|| format!("WAL: {}", xs.join(" ")))
 }
 
@@ -233,7 +267,12 @@ pub fn render_text(p: &Plan) -> String {
         if n.never_executed() {
             out.push_str(" (never executed)");
         } else if let Some(t) = n.act_ms() {
-            out.push_str(&format!(" (actual time={:.3}..{t:.3} rows={} loops={})", n.num("Actual Startup Time").unwrap_or(0.), rows(n.act_rows()), rows(n.loops())));
+            out.push_str(&format!(
+                " (actual time={:.3}..{t:.3} rows={} loops={})",
+                n.num("Actual Startup Time").unwrap_or(0.),
+                rows(n.act_rows()),
+                rows(n.loops())
+            ));
         }
         out.push('\n');
         for (k, v) in &n.raw {
@@ -251,7 +290,12 @@ pub fn render_text(p: &Plan) -> String {
                 let f = |k: &str| w.get(k).and_then(Value::as_f64);
                 let mut line = format!("Worker {num}: ");
                 if let Some(t) = f("Actual Total Time") {
-                    line.push_str(&format!(" actual time={:.3}..{t:.3} rows={} loops={}", f("Actual Startup Time").unwrap_or(0.), rows(f("Actual Rows")), rows(f("Actual Loops"))));
+                    line.push_str(&format!(
+                        " actual time={:.3}..{t:.3} rows={} loops={}",
+                        f("Actual Startup Time").unwrap_or(0.),
+                        rows(f("Actual Rows")),
+                        rows(f("Actual Loops"))
+                    ));
                 }
                 out.push_str(&format!("{detail}{}\n", line.trim_end()));
             }

@@ -134,9 +134,43 @@ fn console_tokens(text: &str) -> Vec<Token> {
 }
 
 const WORDS: &[&str] = &[
-    "db", "true", "false", "null", "undefined", "new", "show", "use", "NaN", "Infinity",
-    "var", "let", "const", "function", "return", "if", "else", "for", "of", "in", "while", "do", "break", "continue", "try",
-    "catch", "finally", "throw", "typeof", "instanceof", "this", "class", "switch", "case", "default", "delete", "void",
+    "db",
+    "true",
+    "false",
+    "null",
+    "undefined",
+    "new",
+    "show",
+    "use",
+    "NaN",
+    "Infinity",
+    "var",
+    "let",
+    "const",
+    "function",
+    "return",
+    "if",
+    "else",
+    "for",
+    "of",
+    "in",
+    "while",
+    "do",
+    "break",
+    "continue",
+    "try",
+    "catch",
+    "finally",
+    "throw",
+    "typeof",
+    "instanceof",
+    "this",
+    "class",
+    "switch",
+    "case",
+    "default",
+    "delete",
+    "void",
 ];
 
 fn shell_tokens(text: &str) -> Vec<Token> {
@@ -170,9 +204,14 @@ fn shell_tokens(text: &str) -> Vec<Token> {
                 i = text[i + 2..].find("*/").map_or(b.len(), |j| i + 2 + j + 2);
                 TokenKind::BlockComment
             }
-            b'/' if out.iter().rev().find(|t: &&Token| !matches!(t.kind, TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment)).is_some_and(|t| {
-                matches!(t.kind, TokenKind::Ident | TokenKind::Number) || (t.kind == TokenKind::Punct && matches!(b[t.start], b')' | b']'))
-            }) => {
+            b'/' if out
+                .iter()
+                .rev()
+                .find(|t: &&Token| !matches!(t.kind, TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment))
+                .is_some_and(|t| {
+                    matches!(t.kind, TokenKind::Ident | TokenKind::Number) || (t.kind == TokenKind::Punct && matches!(b[t.start], b')' | b']'))
+                }) =>
+            {
                 i += 1;
                 TokenKind::Operator
             }
@@ -302,26 +341,86 @@ const CURSOR_METHODS: &[(&str, &str)] =
     &[("sort", "(spec)"), ("limit", "(n)"), ("skip", "(n)"), ("projection", "(spec)"), ("count", "()"), ("explain", "(verbosity)"), ("toArray", "()")];
 
 const OPERATORS: &[&str] = &[
-    "$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$in", "$nin", "$and", "$or", "$nor", "$not", "$exists", "$type", "$regex",
-    "$options", "$elemMatch", "$size", "$all", "$expr", "$text", "$search", "$mod", "$where", "$set", "$unset", "$inc",
-    "$push", "$pull", "$addToSet", "$pop", "$rename", "$min", "$max", "$mul", "$currentDate", "$setOnInsert", "$each",
+    "$eq",
+    "$ne",
+    "$gt",
+    "$gte",
+    "$lt",
+    "$lte",
+    "$in",
+    "$nin",
+    "$and",
+    "$or",
+    "$nor",
+    "$not",
+    "$exists",
+    "$type",
+    "$regex",
+    "$options",
+    "$elemMatch",
+    "$size",
+    "$all",
+    "$expr",
+    "$text",
+    "$search",
+    "$mod",
+    "$where",
+    "$set",
+    "$unset",
+    "$inc",
+    "$push",
+    "$pull",
+    "$addToSet",
+    "$pop",
+    "$rename",
+    "$min",
+    "$max",
+    "$mul",
+    "$currentDate",
+    "$setOnInsert",
+    "$each",
 ];
 
 const STAGES: &[&str] = &[
-    "$match", "$group", "$project", "$sort", "$limit", "$skip", "$unwind", "$lookup", "$addFields", "$set", "$unset",
-    "$count", "$facet", "$bucket", "$sample", "$replaceRoot", "$sortByCount", "$out", "$merge", "$unionWith",
-    "$sum", "$avg", "$first", "$last", "$push", "$addToSet", "$concat", "$cond", "$ifNull", "$dateToString", "$toString",
-    "$size", "$map", "$filter", "$arrayElemAt",
+    "$match",
+    "$group",
+    "$project",
+    "$sort",
+    "$limit",
+    "$skip",
+    "$unwind",
+    "$lookup",
+    "$addFields",
+    "$set",
+    "$unset",
+    "$count",
+    "$facet",
+    "$bucket",
+    "$sample",
+    "$replaceRoot",
+    "$sortByCount",
+    "$out",
+    "$merge",
+    "$unionWith",
+    "$sum",
+    "$avg",
+    "$first",
+    "$last",
+    "$push",
+    "$addToSet",
+    "$concat",
+    "$cond",
+    "$ifNull",
+    "$dateToString",
+    "$toString",
+    "$size",
+    "$map",
+    "$filter",
+    "$arrayElemAt",
 ];
 
-const CONSTRUCTORS: &[(&str, &str)] = &[
-    ("ObjectId", "(\"\")"),
-    ("ISODate", "(\"\")"),
-    ("NumberLong", "()"),
-    ("NumberInt", "()"),
-    ("NumberDecimal", "(\"\")"),
-    ("UUID", "(\"\")"),
-];
+const CONSTRUCTORS: &[(&str, &str)] =
+    &[("ObjectId", "(\"\")"), ("ISODate", "(\"\")"), ("NumberLong", "()"), ("NumberInt", "()"), ("NumberDecimal", "(\"\")"), ("UUID", "(\"\")")];
 
 fn call(name: &str, args: &str, kind: CandidateKind) -> Candidate {
     let caret = if args.starts_with("(\"") { name.len() + 2 } else { name.len() + 1 };
@@ -501,22 +600,72 @@ pub fn complete(engine: Engine, src: &str, cursor: usize, hints: &Hints) -> Comp
         }
     }
     let lower = partial.to_ascii_lowercase();
-    let mut items: Vec<Candidate> = items.into_iter().filter(|c| c.label.to_ascii_lowercase().starts_with(&lower) || (lower.len() >= 3 && c.label.to_ascii_lowercase().contains(&lower))).collect();
+    let mut items: Vec<Candidate> = items
+        .into_iter()
+        .filter(|c| c.label.to_ascii_lowercase().starts_with(&lower) || (lower.len() >= 3 && c.label.to_ascii_lowercase().contains(&lower)))
+        .collect();
     items.sort_by_key(|c| !c.label.to_ascii_lowercase().starts_with(&lower));
     items.truncate(MAX_ITEMS);
     Completion { replace: start..cursor, items }
 }
 
 const ENDPOINTS: &[&str] = &[
-    "_search", "_count", "_doc/", "_mapping", "_settings", "_bulk", "_update_by_query", "_delete_by_query", "_cat/indices?v",
-    "_cat/health?v", "_cat/shards?v", "_cluster/health", "_cluster/stats", "_nodes/stats", "_aliases", "_refresh",
+    "_search",
+    "_count",
+    "_doc/",
+    "_mapping",
+    "_settings",
+    "_bulk",
+    "_update_by_query",
+    "_delete_by_query",
+    "_cat/indices?v",
+    "_cat/health?v",
+    "_cat/shards?v",
+    "_cluster/health",
+    "_cluster/stats",
+    "_nodes/stats",
+    "_aliases",
+    "_refresh",
 ];
 
 const DSL: &[&str] = &[
-    "query", "match", "match_all", "match_phrase", "multi_match", "term", "terms", "range", "bool", "must", "should", "filter",
-    "must_not", "exists", "prefix", "wildcard", "regexp", "fuzzy", "ids", "nested", "query_string", "simple_query_string",
-    "size", "from", "sort", "_source", "aggs", "highlight", "track_total_hits", "gte", "lte", "gt", "lt", "order", "fields",
-    "minimum_should_match", "boost",
+    "query",
+    "match",
+    "match_all",
+    "match_phrase",
+    "multi_match",
+    "term",
+    "terms",
+    "range",
+    "bool",
+    "must",
+    "should",
+    "filter",
+    "must_not",
+    "exists",
+    "prefix",
+    "wildcard",
+    "regexp",
+    "fuzzy",
+    "ids",
+    "nested",
+    "query_string",
+    "simple_query_string",
+    "size",
+    "from",
+    "sort",
+    "_source",
+    "aggs",
+    "highlight",
+    "track_total_hits",
+    "gte",
+    "lte",
+    "gt",
+    "lt",
+    "order",
+    "fields",
+    "minimum_should_match",
+    "boost",
 ];
 
 fn complete_console(src: &str, cursor: usize, hints: &Hints) -> Completion {
@@ -531,7 +680,8 @@ fn complete_console(src: &str, cursor: usize, hints: &Hints) -> Completion {
             let in_index = !rest.trim_start().trim_start_matches('/').contains('/');
             let mut items: Vec<Candidate> = Vec::new();
             if in_index && !typed.starts_with('_') {
-                items.extend(hints.collections.iter().filter(|c| !c.starts_with('.') || typed.starts_with('.')).map(|c| word(c, CandidateKind::Table, "index")));
+                items
+                    .extend(hints.collections.iter().filter(|c| !c.starts_with('.') || typed.starts_with('.')).map(|c| word(c, CandidateKind::Table, "index")));
             }
             items.extend(ENDPOINTS.iter().map(|e| word(e, CandidateKind::Keyword, "")));
             items.retain(|c| c.label.starts_with(typed));
@@ -580,14 +730,42 @@ mod tests {
         assert_eq!(
             kinds("db.users.find({name: 'a', \"x\": /b+/i, n: {$gt: -1.5}}) // hi"),
             vec![
-                ("db", Keyword), (".", Punct), ("users", Ident), (".", Punct), ("find", Ident), ("(", Punct), ("{", Punct),
-                ("name", QuotedIdent), (":", Punct), ("'a'", String), (",", Punct), ("\"x\"", QuotedIdent), (":", Punct),
-                ("/b+/i", String), (",", Punct), ("n", QuotedIdent), (":", Punct), ("{", Punct), ("$gt", Keyword), (":", Punct),
-                ("-1.5", Number), ("}", Punct), ("}", Punct), (")", Punct), ("// hi", LineComment),
+                ("db", Keyword),
+                (".", Punct),
+                ("users", Ident),
+                (".", Punct),
+                ("find", Ident),
+                ("(", Punct),
+                ("{", Punct),
+                ("name", QuotedIdent),
+                (":", Punct),
+                ("'a'", String),
+                (",", Punct),
+                ("\"x\"", QuotedIdent),
+                (":", Punct),
+                ("/b+/i", String),
+                (",", Punct),
+                ("n", QuotedIdent),
+                (":", Punct),
+                ("{", Punct),
+                ("$gt", Keyword),
+                (":", Punct),
+                ("-1.5", Number),
+                ("}", Punct),
+                ("}", Punct),
+                (")", Punct),
+                ("// hi", LineComment),
             ]
         );
         let k = kinds("const n = total / 2; let r = /a/ \nprint(`${n}`)");
-        assert!(k.contains(&("const", Keyword)) && k.contains(&("let", Keyword)) && k.contains(&("/", Operator)) && k.contains(&("/a/", String)) && k.contains(&("`${n}`", String)), "{k:?}");
+        assert!(
+            k.contains(&("const", Keyword))
+                && k.contains(&("let", Keyword))
+                && k.contains(&("/", Operator))
+                && k.contains(&("/a/", String))
+                && k.contains(&("`${n}`", String)),
+            "{k:?}"
+        );
         let s = "db.é.find({a: \"open";
         let t = tokenize(Engine::MongoDb, s);
         assert_eq!(t.first().unwrap().start, 0);
@@ -625,9 +803,13 @@ mod tests {
     fn the_console_colors_and_completes() {
         use TokenKind::*;
         let s = "GET /orders/_search\n{\"query\": {match: {status: 'paid'}}, size: 10}";
-        let k: Vec<(&str, TokenKind)> = tokenize(Engine::Elasticsearch, s).into_iter().filter(|t| t.kind != Whitespace).map(|t| (&s[t.start..t.end], t.kind)).collect();
+        let k: Vec<(&str, TokenKind)> =
+            tokenize(Engine::Elasticsearch, s).into_iter().filter(|t| t.kind != Whitespace).map(|t| (&s[t.start..t.end], t.kind)).collect();
         assert_eq!(&k[..2], &[("GET", Keyword), ("/orders/_search", Ident)]);
-        assert!(k.contains(&("\"query\"", QuotedIdent)) && k.contains(&("match", QuotedIdent)) && k.contains(&("'paid'", String)) && k.contains(&("10", Number)), "{k:?}");
+        assert!(
+            k.contains(&("\"query\"", QuotedIdent)) && k.contains(&("match", QuotedIdent)) && k.contains(&("'paid'", String)) && k.contains(&("10", Number)),
+            "{k:?}"
+        );
         let t = tokenize(Engine::Elasticsearch, "POST _bulk\n{\"index\": {}}\nDELETE x");
         assert!(t.windows(2).all(|w| w[0].end == w[1].start));
         let mut h = Hints { collections: vec!["orders".into(), "logs".into()], ..Default::default() };

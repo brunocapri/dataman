@@ -38,29 +38,57 @@ pub struct Completion {
 pub const MAX_ITEMS: usize = 50;
 
 const START: &[&str] = &[
-    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK",
-    "SET", "SHOW", "TRUNCATE", "GRANT", "REVOKE", "VACUUM", "ANALYZE", "COPY", "CALL", "DO", "VALUES", "TABLE", "LISTEN",
-    "NOTIFY",
+    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK", "SET", "SHOW", "TRUNCATE", "GRANT",
+    "REVOKE", "VACUUM", "ANALYZE", "COPY", "CALL", "DO", "VALUES", "TABLE", "LISTEN", "NOTIFY",
 ];
 const AFTER_SOURCE: &[&str] = &[
-    "WHERE", "JOIN", "LEFT", "INNER", "RIGHT", "FULL", "CROSS", "NATURAL", "ON", "USING", "GROUP", "ORDER", "LIMIT", "AS",
-    "UNION", "OFFSET", "HAVING", "WINDOW", "FOR", "LATERAL",
+    "WHERE", "JOIN", "LEFT", "INNER", "RIGHT", "FULL", "CROSS", "NATURAL", "ON", "USING", "GROUP", "ORDER", "LIMIT", "AS", "UNION", "OFFSET", "HAVING",
+    "WINDOW", "FOR", "LATERAL",
 ];
-const EXPR_START: &[&str] = &[
-    "NOT", "EXISTS", "CASE", "NULL", "TRUE", "FALSE", "DISTINCT", "CAST", "INTERVAL", "ARRAY", "CURRENT_DATE",
-    "CURRENT_TIMESTAMP", "CURRENT_USER", "SELECT",
-];
+const EXPR_START: &[&str] =
+    &["NOT", "EXISTS", "CASE", "NULL", "TRUE", "FALSE", "DISTINCT", "CAST", "INTERVAL", "ARRAY", "CURRENT_DATE", "CURRENT_TIMESTAMP", "CURRENT_USER", "SELECT"];
 const OBJECTS: &[&str] = &[
-    "TABLE", "VIEW", "INDEX", "FUNCTION", "SCHEMA", "SEQUENCE", "TYPE", "MATERIALIZED", "EXTENSION", "TRIGGER", "PROCEDURE",
-    "ROLE", "DATABASE", "OR", "UNIQUE", "TEMP", "TEMPORARY", "IF",
+    "TABLE",
+    "VIEW",
+    "INDEX",
+    "FUNCTION",
+    "SCHEMA",
+    "SEQUENCE",
+    "TYPE",
+    "MATERIALIZED",
+    "EXTENSION",
+    "TRIGGER",
+    "PROCEDURE",
+    "ROLE",
+    "DATABASE",
+    "OR",
+    "UNIQUE",
+    "TEMP",
+    "TEMPORARY",
+    "IF",
 ];
 
 fn follow(clause: Clause) -> &'static [&'static str] {
     match clause {
         Clause::Select => &["FROM", "AS", "AND", "OR", "IS", "NOT", "IN", "LIKE", "ILIKE", "BETWEEN", "OVER", "FILTER", "INTO"],
         Clause::Where | Clause::Having => &[
-            "AND", "OR", "IS", "NOT", "IN", "LIKE", "ILIKE", "BETWEEN", "GROUP", "ORDER", "LIMIT", "OFFSET", "UNION", "RETURNING",
-            "SIMILAR", "ISNULL", "NOTNULL",
+            "AND",
+            "OR",
+            "IS",
+            "NOT",
+            "IN",
+            "LIKE",
+            "ILIKE",
+            "BETWEEN",
+            "GROUP",
+            "ORDER",
+            "LIMIT",
+            "OFFSET",
+            "UNION",
+            "RETURNING",
+            "SIMILAR",
+            "ISNULL",
+            "NOTNULL",
         ],
         Clause::On => &["AND", "OR", "IS", "NOT", "IN", "JOIN", "LEFT", "INNER", "WHERE", "GROUP", "ORDER", "LIMIT"],
         Clause::GroupBy => &["HAVING", "ORDER", "LIMIT", "OFFSET", "UNION"],
@@ -168,7 +196,10 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
                 }
                 done = true;
             }
-            if !done && qs.is_none() && let Some(s) = schema.is_schema(&name) {
+            if !done
+                && qs.is_none()
+                && let Some(s) = schema.is_schema(&name)
+            {
                 for r in schema.relations.iter().filter(|r| r.schema == s) {
                     push(table_candidate(d, r, false), 0);
                 }
@@ -298,9 +329,7 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
         }
     }
 
-    items.sort_by(|a, b| {
-        a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then_with(|| a.2.label.len().cmp(&b.2.label.len())).then_with(|| a.2.label.cmp(&b.2.label))
-    });
+    items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then_with(|| a.2.label.len().cmp(&b.2.label.len())).then_with(|| a.2.label.cmp(&b.2.label)));
     let mut out: Vec<Candidate> = Vec::with_capacity(MAX_ITEMS);
     let mut seen: HashSet<(String, CandidateKind)> = HashSet::new();
     for (_, _, c) in items {
@@ -525,7 +554,13 @@ fn context(src: &str, before: &[&Token], d: Dialect) -> Ctx {
         || last.text(src) == "*"
         || (last.kind == TokenKind::Keyword && ["NULL", "TRUE", "FALSE", "END"].contains(&lw.as_str()));
     if clause == Clause::From && operand {
-        return if clause_kw == "INTO" { Ctx::Keywords(&["VALUES", "SELECT", "DEFAULT", "OVERRIDING"]) } else if clause_kw == "UPDATE" { Ctx::Keywords(&["SET", "AS"]) } else { Ctx::AfterSource };
+        return if clause_kw == "INTO" {
+            Ctx::Keywords(&["VALUES", "SELECT", "DEFAULT", "OVERRIDING"])
+        } else if clause_kw == "UPDATE" {
+            Ctx::Keywords(&["SET", "AS"])
+        } else {
+            Ctx::AfterSource
+        };
     }
     let clause = if clause == Clause::From { Clause::On } else { clause };
     Ctx::Expr { clause, operand, in_case: cases > 0 }
@@ -674,7 +709,13 @@ pub fn signature_help(src: &str, tokens: &[Token], cursor: usize, snap: &SchemaS
                     .min_by_key(|f| f.params().len())
                     .or_else(|| all.iter().copied().max_by_key(|f| f.params().len()))?;
                 let params = pick.params();
-                let active = if commas < params.len() { Some(commas) } else if pick.variadic() { Some(params.len() - 1) } else { None };
+                let active = if commas < params.len() {
+                    Some(commas)
+                } else if pick.variadic() {
+                    Some(params.len() - 1)
+                } else {
+                    None
+                };
                 return Some(SignatureHelp { function: (*pick).clone(), params, active, overloads: all.len(), paren: t.start });
             }
             (TokenKind::Punct, ",") if depth == 0 => commas += 1,
@@ -694,7 +735,9 @@ pub enum Definition {
 
 pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<Definition> {
     let tokens = tokenize_in(src, snap.dialect);
-    let i = tokens.iter().position(|t| t.start <= cursor && cursor <= t.end && is_name(t) || t.start <= cursor && cursor < t.end && t.kind == TokenKind::Keyword)?;
+    let i = tokens
+        .iter()
+        .position(|t| t.start <= cursor && cursor <= t.end && is_name(t) || t.start <= cursor && cursor < t.end && t.kind == TokenKind::Keyword)?;
     let t = tokens[i];
     let next = tokens[i + 1..].iter().find(|t| !t.kind.is_trivia());
     let stmt = statement_tokens(src, &tokens, t.start, snap.dialect);
@@ -718,7 +761,8 @@ pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<
     };
     for (si, s) in a.scopes.iter().enumerate() {
         for src_ in &s.sources {
-            if src_.name_range.start <= t.start && t.end <= src_.name_range.end
+            if src_.name_range.start <= t.start
+                && t.end <= src_.name_range.end
                 && let SourceKind::Table { schema, name: n } = &src_.kind
             {
                 if schema.is_none()
@@ -751,9 +795,7 @@ pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<
             None => {
                 for s in a.chain(r.scope) {
                     let hits: Vec<usize> = (0..a.scopes[s].sources.len())
-                        .filter(|&idx| {
-                            a.source_columns(s, &a.scopes[s].sources[idx], snap).is_some_and(|c| c.iter().any(|(n, _)| a.col_eq(n, &r.name)))
-                        })
+                        .filter(|&idx| a.source_columns(s, &a.scopes[s].sources[idx], snap).is_some_and(|c| c.iter().any(|(n, _)| a.col_eq(n, &r.name))))
                         .collect();
                     if hits.len() == 1 {
                         return to_def(s, hits[0], Some(r.name.clone()));
@@ -773,8 +815,8 @@ pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<
 mod tests {
     use super::*;
     use crate::schema::catalog::{Catalog, TypeEntry};
-    use crate::sql::tokenize;
     use crate::schema::{Column, RelKind, Relation};
+    use crate::sql::tokenize;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -980,7 +1022,10 @@ mod tests {
             Some(Definition::Relation { schema: "public".into(), name: "orders".into(), column: Some("total".into()) })
         );
         assert_eq!(at("select |p.total from orders p"), Some(Definition::Relation { schema: "public".into(), name: "orders".into(), column: None }));
-        assert_eq!(at("select na|me from customer"), Some(Definition::Relation { schema: "public".into(), name: "customer".into(), column: Some("name".into()) }));
+        assert_eq!(
+            at("select na|me from customer"),
+            Some(Definition::Relation { schema: "public".into(), name: "customer".into(), column: Some("name".into()) })
+        );
         let src = "with big as (select 1) select * from bi|g";
         let text = src.replace('|', "");
         assert_eq!(at(src), Some(Definition::Local(5..8)));

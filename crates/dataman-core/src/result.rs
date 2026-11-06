@@ -723,11 +723,7 @@ impl ResultSet {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            columns: self.columns().unwrap_or_default(),
-            chunks: self.chunks.read().clone(),
-            order: self.order.read().as_ref().map(|o| o.2.clone()),
-        }
+        Snapshot { columns: self.columns().unwrap_or_default(), chunks: self.chunks.read().clone(), order: self.order.read().as_ref().map(|o| o.2.clone()) }
     }
 
     pub fn rows(&self) -> usize {
@@ -838,7 +834,15 @@ impl ResultSet {
         rs
     }
 
-    pub fn finish_with(&self, columns: Option<Vec<ColumnInfo>>, chunk: Option<Chunk>, affected: Option<u64>, messages: Vec<String>, error: Option<ErrorInfo>, elapsed: Duration) {
+    pub fn finish_with(
+        &self,
+        columns: Option<Vec<ColumnInfo>>,
+        chunk: Option<Chunk>,
+        affected: Option<u64>,
+        messages: Vec<String>,
+        error: Option<ErrorInfo>,
+        elapsed: Duration,
+    ) {
         if let Some(c) = columns {
             self.set_columns_once(c);
         }
@@ -942,7 +946,14 @@ impl ResultSet {
 
     /// `over` gives what a cell shows when that is not what is stored (a pending edit, a row not
     /// inserted yet: the rows past the result have only this).
-    pub fn copy<'a>(&self, rows: impl IntoIterator<Item = usize>, cols: &[usize], fmt: CopyFormat, header: bool, over: impl Fn(usize, usize) -> Option<Option<&'a str>>) -> String {
+    pub fn copy<'a>(
+        &self,
+        rows: impl IntoIterator<Item = usize>,
+        cols: &[usize],
+        fmt: CopyFormat,
+        header: bool,
+        over: impl Fn(usize, usize) -> Option<Option<&'a str>>,
+    ) -> String {
         let snap = self.snapshot();
         let mut out = String::new();
         let sep = match fmt {
@@ -1019,12 +1030,8 @@ mod tests {
         let rs = ResultSet::new("select");
         rs.set_columns(cols());
         let mut b = ChunkBuilder::new(&cols());
-        let data: &[(i64, Option<&str>, Option<&str>)] = &[
-            (3, Some("c"), Some("10")),
-            (1, None, Some("9.5")),
-            (2, Some(""), None),
-            (4, Some("a\tb"), Some("-1")),
-        ];
+        let data: &[(i64, Option<&str>, Option<&str>)] =
+            &[(3, Some("c"), Some("10")), (1, None, Some("9.5")), (2, Some(""), None), (4, Some("a\tb"), Some("-1"))];
         for (i, (id, name, amount)) in data.iter().enumerate() {
             b.push_i64(0, *id);
             match name {
@@ -1076,7 +1083,11 @@ mod tests {
         b.push_text(1, "\\N");
         b.end_row();
         rs.push_chunk(b.finish());
-        assert_eq!(rs.copy(0..1, &[0, 1], CopyFormat::Tsv, false, |_, _| None), "C:\\New\\tfolder\t\\N\n", "values keep their backslashes; only a tab or a line break is written out");
+        assert_eq!(
+            rs.copy(0..1, &[0, 1], CopyFormat::Tsv, false, |_, _| None),
+            "C:\\New\\tfolder\t\\N\n",
+            "values keep their backslashes; only a tab or a line break is written out"
+        );
     }
 
     #[test]
@@ -1194,7 +1205,12 @@ mod tests {
         push(&[("item10", 0), ("Item2", 1), ("b", 2), ("item2", 3), ("B", 4), ("a", 5)]);
         let order = |rs: &ResultSet| {
             let s = rs.snapshot();
-            (0..s.rows()).map(|r| match s.cell(r, 1) { Cell::Int(n) => n, _ => -1 }).collect::<Vec<_>>()
+            (0..s.rows())
+                .map(|r| match s.cell(r, 1) {
+                    Cell::Int(n) => n,
+                    _ => -1,
+                })
+                .collect::<Vec<_>>()
         };
         rs.sort(Some((0, SortDir::Asc)));
         assert_eq!(order(&rs), [5, 4, 2, 1, 3, 0]);

@@ -800,8 +800,42 @@ mod tests {
                 Some("{}"),
                 Some("f"),
             ]),
-            row(&[Some("31"), None, None, Some(""), None, None, Some("Activity"), Some("BgwriterMain"), None, None, None, Some("9"), Some("background writer"), Some(""), Some("{}"), Some("f")]),
-            row(&[Some("77"), Some("app"), Some("shop"), Some("Dataman"), Some("local"), Some("active"), Some("Lock"), Some("transactionid"), Some("5"), Some("400"), Some("400"), Some("60"), Some("client backend"), Some("UPDATE orders SET paid = false WHERE id = 1"), Some("{4242,12}"), Some("t")]),
+            row(&[
+                Some("31"),
+                None,
+                None,
+                Some(""),
+                None,
+                None,
+                Some("Activity"),
+                Some("BgwriterMain"),
+                None,
+                None,
+                None,
+                Some("9"),
+                Some("background writer"),
+                Some(""),
+                Some("{}"),
+                Some("f"),
+            ]),
+            row(&[
+                Some("77"),
+                Some("app"),
+                Some("shop"),
+                Some("Dataman"),
+                Some("local"),
+                Some("active"),
+                Some("Lock"),
+                Some("transactionid"),
+                Some("5"),
+                Some("400"),
+                Some("400"),
+                Some("60"),
+                Some("client backend"),
+                Some("UPDATE orders SET paid = false WHERE id = 1"),
+                Some("{4242,12}"),
+                Some("t"),
+            ]),
             row(&[Some("not a pid")]),
         ];
         let s = parse_sessions(&rows);
@@ -826,7 +860,12 @@ mod tests {
         assert_eq!(hidden.visible_query(), None);
         assert!(is_withheld(" <insufficient privilege> "));
         assert_eq!(State::of(Some("idle in transaction (aborted)")), State::Aborted);
-        let aborted = SessionRow { state: Some("idle in transaction (aborted)".into()), backend_type: Some("client backend".into()), state_age: Some(301), ..Default::default() };
+        let aborted = SessionRow {
+            state: Some("idle in transaction (aborted)".into()),
+            backend_type: Some("client backend".into()),
+            state_age: Some(301),
+            ..Default::default()
+        };
         assert_eq!(aborted.severity(&Thresholds::default()), Some(Severity::Err));
     }
 
@@ -841,7 +880,21 @@ mod tests {
         assert_eq!(e[0].held.as_deref(), Some("ExclusiveLock, RowExclusiveLock"));
 
         let mut t = parse_tables(&[
-            row(&[Some("public"), Some("orders"), Some("900"), Some("100"), Some("40"), None, Some("3600"), Some("7200"), None, Some("30"), Some("70"), Some("819200"), Some("16384")]),
+            row(&[
+                Some("public"),
+                Some("orders"),
+                Some("900"),
+                Some("100"),
+                Some("40"),
+                None,
+                Some("3600"),
+                Some("7200"),
+                None,
+                Some("30"),
+                Some("70"),
+                Some("819200"),
+                Some("16384"),
+            ]),
             row(&[Some("public"), Some("empty"), Some("0"), Some("0"), Some("0"), None, None, None, None, Some("0"), None, None, None]),
         ]);
         assert_eq!(t[0].dead_ratio(), Some(0.1));
@@ -849,10 +902,13 @@ mod tests {
         assert_eq!(t[0].last_vacuum(), Some(3600));
         assert_eq!(t[0].last_analyze(), Some(7200));
         assert_eq!((t[1].dead_ratio(), t[1].seq_ratio(), t[1].last_vacuum()), (None, None, None));
-        merge_bloat(&mut t, &[
-            row(&[Some("public"), Some("orders"), Some("163840"), Some("20.0"), Some("f")]),
-            row(&[Some("public"), Some("empty"), Some("0"), Some("0"), Some("t")]),
-        ]);
+        merge_bloat(
+            &mut t,
+            &[
+                row(&[Some("public"), Some("orders"), Some("163840"), Some("20.0"), Some("f")]),
+                row(&[Some("public"), Some("empty"), Some("0"), Some("0"), Some("t")]),
+            ],
+        );
         assert_eq!((t[0].bloat_bytes, t[0].bloat_pct), (Some(163_840), Some(20.0)));
         assert_eq!(t[1].bloat_bytes, None, "not applicable: no estimate");
 
@@ -886,7 +942,10 @@ mod tests {
     #[test]
     fn tree_chain_and_fan_out() {
         let t = blocking_tree(&[edge(20, 10), edge(30, 10), edge(40, 30), edge(60, 50)]);
-        assert_eq!(shape(&t), vec![(10, 0, false, false), (20, 1, false, false), (30, 1, false, false), (40, 2, false, false), (50, 0, false, false), (60, 1, false, false)]);
+        assert_eq!(
+            shape(&t),
+            vec![(10, 0, false, false), (20, 1, false, false), (30, 1, false, false), (40, 2, false, false), (50, 0, false, false), (60, 1, false, false)]
+        );
         assert_eq!(t[0].behind, 3, "three sessions behind 10");
         assert_eq!(t[2].behind, 1);
         assert_eq!(t[1].edge.as_ref().map(|e| (e.waiter, e.blocker)), Some((20, 10)));

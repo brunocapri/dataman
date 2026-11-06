@@ -139,7 +139,12 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             }
             grants.push(Grant::Table { schema: a.schema.clone(), name: a.name.clone(), privilege: "DELETE".into() });
         }
-        views.push(ViewDef { name: name.clone(), create, hash, map: ViewMap { schema: a.schema.clone(), table: a.name.clone(), view: qual(&spec.space, &name), masked: a.masked.clone() } });
+        views.push(ViewDef {
+            name: name.clone(),
+            create,
+            hash,
+            map: ViewMap { schema: a.schema.clone(), table: a.name.clone(), view: qual(&spec.space, &name), masked: a.masked.clone() },
+        });
         ok.push(a);
     }
     if !spec.write {
@@ -173,12 +178,19 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
     }
     v.extend(column_lines(
         &d.access,
-        (if writes_cols { "views; writes need column grants, which show the names" } else { "views in their own schema" }, if writes_cols { Who::Partly } else { Who::Database }),
+        (
+            if writes_cols { "views; writes need column grants, which show the names" } else { "views in their own schema" },
+            if writes_cols { Who::Partly } else { Who::Database },
+        ),
         (&format!("views in schema {}", spec.space), Who::Database),
         spec.rows,
     ));
     v.push(line(if spec.code { "Procedures after your Allow" } else { "Run code off" }, "EXECUTE is never granted", Who::Database));
-    v.push(line(if spec.activity { "Server activity" } else { "No server activity" }, if spec.activity { "VIEW SERVER STATE" } else { "no VIEW SERVER STATE" }, Who::Database));
+    v.push(line(
+        if spec.activity { "Server activity" } else { "No server activity" },
+        if spec.activity { "VIEW SERVER STATE" } else { "no VIEW SERVER STATE" },
+        Who::Database,
+    ));
     v.push(line(time_label(spec.time_limit_s), "no time limit per login (Resource Governor only)", Who::Dataman));
     if spec.conn_limit.is_some() {
         v.push(line("Sessions at once", "no cap per login", Who::Dataman));
@@ -202,7 +214,10 @@ fn view_steps(spec: &Spec, d: &Desired, fresh: &[&ViewDef], create_schema: bool)
     let mut steps = Vec::new();
     if create_schema {
         steps.push(Step::sql(&g, format!("CREATE SCHEMA {} AUTHORIZATION [dbo]", q(&spec.space))));
-        steps.push(Step::sql(&g, format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'SCHEMA', @level0name = {}", lit(MARK), lit(&spec.space))));
+        steps.push(Step::sql(
+            &g,
+            format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'SCHEMA', @level0name = {}", lit(MARK), lit(&spec.space)),
+        ));
     }
     for v in fresh {
         steps.push(Step::sql(&g, v.create.clone()));
@@ -218,22 +233,40 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
     let mut steps = Vec::new();
     if probe.flavor.azure {
         let sql = format!("CREATE USER {u} WITH PASSWORD = {{}}, DEFAULT_SCHEMA = [dbo]");
-        steps.push(Step::secret_sql("the login (a contained user: Azure SQL Database takes its password in clear)", sql.replace("{}", &lit(password)), sql.replace("{}", "N'<password from the Keychain>'")));
+        steps.push(Step::secret_sql(
+            "the login (a contained user: Azure SQL Database takes its password in clear)",
+            sql.replace("{}", &lit(password)),
+            sql.replace("{}", "N'<password from the Keychain>'"),
+        ));
     } else {
         let sql = format!("CREATE LOGIN {u} WITH PASSWORD = {{}} HASHED, CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF, DEFAULT_DATABASE = {}", q(&spec.database));
         steps.push(Step::secret_sql(g, sql.replace("{}", &hash::mssql_hash(password)), sql.replace("{}", "0x0200…")));
         steps.push(Step::sql(g, format!("ALTER LOGIN {u} DISABLE")));
         steps.push(Step::sql(g, format!("CREATE USER {u} FOR LOGIN {u} WITH DEFAULT_SCHEMA = [dbo]")));
     }
-    steps.push(Step::sql(g, format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'USER', @level0name = {}", lit(&mark_for(&spec.conn)), lit(&spec.user))));
+    steps.push(Step::sql(
+        g,
+        format!(
+            "EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'USER', @level0name = {}",
+            lit(&mark_for(&spec.conn)),
+            lit(&spec.user)
+        ),
+    ));
     let fresh: Vec<&ViewDef> = d.views.iter().collect();
     if !fresh.is_empty() {
         steps.extend(view_steps(spec, &d, &fresh, true));
     }
     // SQL Server takes column lists and whole-table permissions in separate GRANTs.
-    let (cols, whole): (Vec<Grant>, Vec<Grant>) = d.grants.iter().filter(|g| matches!(g, Grant::Table { .. } | Grant::Column { .. })).cloned().partition(|g| matches!(g, Grant::Column { .. }));
+    let (cols, whole): (Vec<Grant>, Vec<Grant>) =
+        d.grants.iter().filter(|g| matches!(g, Grant::Table { .. } | Grant::Column { .. })).cloned().partition(|g| matches!(g, Grant::Column { .. }));
     for (s, n, has_cols) in granted_objects(&d.grants) {
-        let group = if s == spec.space { "the views".to_string() } else if has_cols { "writes on tables read through a view: only the visible columns".to_string() } else { format!("tables the agent may use ({})", d.access.len()) };
+        let group = if s == spec.space {
+            "the views".to_string()
+        } else if has_cols {
+            "writes on tables read through a view: only the visible columns".to_string()
+        } else {
+            format!("tables the agent may use ({})", d.access.len())
+        };
         for list in [&cols, &whole] {
             let privs = privilege_list(list, &s, &n, &q);
             if !privs.is_empty() {
@@ -301,7 +334,8 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
         steps.extend(view_steps(spec, &d, &fresh, !schema_exists));
     }
     let remade: Vec<&String> = fresh.iter().map(|v| &v.name).collect();
-    for g in d.grants.iter().filter(|g| !have.contains(g) || matches!(g, Grant::Table { schema, name, .. } if *schema == spec.space && remade.contains(&name))) {
+    for g in d.grants.iter().filter(|g| !have.contains(g) || matches!(g, Grant::Table { schema, name, .. } if *schema == spec.space && remade.contains(&name)))
+    {
         if let Some(sql) = grant_sql(g, &spec.user) {
             steps.push(Step::sql("granted: the rules allow it now", sql));
         }
@@ -372,7 +406,13 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
     let tls = s(&row[8]).eq_ignore_ascii_case("TRUE");
     let entra_only = one(&row[9]);
     let mut p = Probe { login: login.clone(), version: format!("SQL Server {}", s(&row[1])), tls, ..Default::default() };
-    p.flavor = Flavor { major: s(&row[1]).split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0), azure, superuser: sysadmin || dbo, activity: true, ..Default::default() };
+    p.flavor = Flavor {
+        major: s(&row[1]).split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0),
+        azure,
+        superuser: sysadmin || dbo,
+        activity: true,
+        ..Default::default()
+    };
     p.can_create = any_user && (azure || any_login) && !entra_only;
     if entra_only {
         p.lacks.push("this server takes Microsoft Entra logins only: a SQL password can't be created until SQL authentication is allowed on it".into());
@@ -412,7 +452,13 @@ pub fn drop_orphan_steps(user: &str) -> Vec<Step> {
     let u = q(user);
     vec![
         Step::sql(g, format!("ALTER LOGIN {u} DISABLE")),
-        Step::sql(g, format!("DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = {} AND session_id <> @@SPID; EXEC (@k)", lit(user))),
+        Step::sql(
+            g,
+            format!(
+                "DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = {} AND session_id <> @@SPID; EXEC (@k)",
+                lit(user)
+            ),
+        ),
         Step::sql(g, format!("DROP LOGIN {u}")),
     ]
 }
@@ -459,7 +505,15 @@ pub(crate) async fn inventory(db: &Db) -> Result<Inventory> {
         let (sch, name) = (s(&r[0]), s(&r[1]));
         if out.objects.last().is_none_or(|o: &Obj| o.schema != sch || o.name != name) {
             let view = s(&r[2]).trim() == "V";
-            out.objects.push(Obj { schema: sch, name, kind: if view { ObjKind::View } else { ObjKind::Table }, columns: Vec::new(), grantable: one(&r[6]), owner: s(&r[5]), sequences: Vec::new() });
+            out.objects.push(Obj {
+                schema: sch,
+                name,
+                kind: if view { ObjKind::View } else { ObjKind::Table },
+                columns: Vec::new(),
+                grantable: one(&r[6]),
+                owner: s(&r[5]),
+                sequences: Vec::new(),
+            });
         }
         out.objects.last_mut().expect("pushed").columns.push(Col { name: s(&r[3]), generated: one(&r[4]) });
     }

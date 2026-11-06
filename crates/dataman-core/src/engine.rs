@@ -65,7 +65,8 @@ pub struct Nouns {
 
 const TABLES: Nouns = Nouns { one: "table", many: "tables" };
 
-const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database", scheme: "postgres" };
+const SERVER: Form =
+    Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database", scheme: "postgres" };
 const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false, database_label: "Database", scheme: "" };
 const NO_FILES: &[&str] = &[];
 

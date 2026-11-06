@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use common::*;
 use dataman_core::config::{ConnectionProfile, SslMode};
-use dataman_core::import::{
-    self, ColumnMap, ImportOptions, ImportReport, Method, OnError, Outcome, PgType, Preview, auto_map,
-};
+use dataman_core::import::{self, ColumnMap, ImportOptions, ImportReport, Method, OnError, Outcome, PgType, Preview, auto_map};
 
 fn import_into(e: &Env, c: &Arc<Connection>, path: &Path, opts: ImportOptions) -> ImportReport {
     let imp = c.import(None, path, opts);
@@ -74,7 +72,16 @@ fn big_csv(dir: &Path, n: u64, bad: Option<u64>) -> PathBuf {
             writeln!(w, "x{i},bad,1,true,2024-01-01 00:00:00+00,{{}}").unwrap();
             continue;
         }
-        writeln!(w, "{i},\"name {i}, with comma\",{}.{:02},{},2024-01-{:02} 10:{:02}:00+00,\"{{\"\"k\"\": {i}}}\"", i % 1000, i % 100, i % 2 == 0, 1 + i % 28, i % 60).unwrap();
+        writeln!(
+            w,
+            "{i},\"name {i}, with comma\",{}.{:02},{},2024-01-{:02} 10:{:02}:00+00,\"{{\"\"k\"\": {i}}}\"",
+            i % 1000,
+            i % 100,
+            i % 2 == 0,
+            1 + i % 28,
+            i % 60
+        )
+        .unwrap();
     }
     w.flush().unwrap();
     p
@@ -98,11 +105,15 @@ fn pg_profile(read_only: bool) -> ConnectionProfile {
 fn files_into_postgres() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    exec(&e, &c, &[
-        "DROP SCHEMA IF EXISTS dataman_import CASCADE",
-        "CREATE SCHEMA dataman_import",
-        "CREATE TABLE dataman_import.people (id int PRIMARY KEY, name text NOT NULL, born date, score numeric(6,2), note text, created timestamptz DEFAULT now())",
-    ]);
+    exec(
+        &e,
+        &c,
+        &[
+            "DROP SCHEMA IF EXISTS dataman_import CASCADE",
+            "CREATE SCHEMA dataman_import",
+            "CREATE TABLE dataman_import.people (id int PRIMARY KEY, name text NOT NULL, born date, score numeric(6,2), note text, created timestamptz DEFAULT now())",
+        ],
+    );
     let dir = tempfile::tempdir().unwrap();
 
     let mut csv = b"id;Name;born;score;note;extra\n1;\"Smith; Zo\xeb\";1990-05-01;9.5;\"two\nlines\";x\n2;Ana;;;\"\";y\n".to_vec();
@@ -131,20 +142,26 @@ fn files_into_postgres() {
     o.truncate = true;
     let r = import_into(&e, &c, &p, o);
     assert_eq!((r.outcome.clone(), r.rows), (Outcome::Done, 2), "{r:?}");
-    assert_eq!(rows(&e, &c, "SELECT id, note FROM dataman_import.people ORDER BY id"), vec![
-        vec![Some("7".into()), Some("back\\slash".into())],
-        vec![Some("8".into()), None]
-    ]);
+    assert_eq!(
+        rows(&e, &c, "SELECT id, note FROM dataman_import.people ORDER BY id"),
+        vec![vec![Some("7".into()), Some("back\\slash".into())], vec![Some("8".into()), None]]
+    );
 
     let nd = "{\"id\": 1, \"name\": \"a\", \"tags\": [\"x\", \"y\"], \"at\": \"2024-03-01T10:00:00Z\", \"ok\": true, \"u\": \"0f8fad5b-d9cb-469f-a165-70867728950e\"}\n\
               {\"id\": 2, \"name\": \"b\", \"tags\": {\"k\": 1}, \"at\": null, \"ok\": false, \"u\": null, \"price\": 2.5}\n";
     let p = write(dir.path(), "events.ndjson", nd.as_bytes());
     let pv = preview(&p);
-    assert_eq!(pv.columns.iter().map(|c| c.ty).collect::<Vec<_>>(), [PgType::Int8, PgType::Text, PgType::Jsonb, PgType::TimestampTz, PgType::Bool, PgType::Uuid, PgType::Numeric]);
+    assert_eq!(
+        pv.columns.iter().map(|c| c.ty).collect::<Vec<_>>(),
+        [PgType::Int8, PgType::Text, PgType::Jsonb, PgType::TimestampTz, PgType::Bool, PgType::Uuid, PgType::Numeric]
+    );
     let r = import_into(&e, &c, &p, new_table(&pv, "dataman_import", "events"));
     assert_eq!((r.outcome.clone(), r.rows), (Outcome::Done, 2), "{r:?}");
     assert_eq!(one(&e, &c, "SELECT tags->>1 FROM dataman_import.events WHERE id = 1"), "y");
-    assert_eq!(one(&e, &c, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'dataman_import.events'::regclass AND attname = 'at'"), "timestamp with time zone");
+    assert_eq!(
+        one(&e, &c, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'dataman_import.events'::regclass AND attname = 'at'"),
+        "timestamp with time zone"
+    );
     assert_eq!(one(&e, &c, "SELECT (tags->>'k')::int + price FROM dataman_import.events WHERE id = 2"), "3.5");
 
     let p = write(dir.path(), "arr.json", b"[{\"a\": 1, \"b\": \"it's\"}, {\"a\": 2, \"b\": null}]");
@@ -198,7 +215,15 @@ fn parquet_file(dir: &Path) -> PathBuf {
 fn bad_rows_cancel_and_read_only_on_postgres() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    exec(&e, &c, &["DROP SCHEMA IF EXISTS dataman_import_err CASCADE", "CREATE SCHEMA dataman_import_err", "CREATE TABLE dataman_import_err.t (id int PRIMARY KEY, v text)"]);
+    exec(
+        &e,
+        &c,
+        &[
+            "DROP SCHEMA IF EXISTS dataman_import_err CASCADE",
+            "CREATE SCHEMA dataman_import_err",
+            "CREATE TABLE dataman_import_err.t (id int PRIMARY KEY, v text)",
+        ],
+    );
     let dir = tempfile::tempdir().unwrap();
     let p = write(dir.path(), "bad.csv", b"id,v\n1,a\n2,b\nthree,c\n4,d\n2,dup\n6,f\n");
     let pv = preview(&p);
@@ -288,7 +313,10 @@ fn throughput_on_postgres() {
     let p = big_csv(dir.path(), 1_000_000, None);
     let mb = std::fs::metadata(&p).unwrap().len() as f64 / 1e6;
     let pv = preview(&p);
-    assert_eq!(pv.columns.iter().map(|c| c.ty).collect::<Vec<_>>(), [PgType::Int8, PgType::Text, PgType::Numeric, PgType::Bool, PgType::TimestampTz, PgType::Jsonb]);
+    assert_eq!(
+        pv.columns.iter().map(|c| c.ty).collect::<Vec<_>>(),
+        [PgType::Int8, PgType::Text, PgType::Numeric, PgType::Bool, PgType::TimestampTz, PgType::Jsonb]
+    );
     let r = import_into(&e, &c, &p, new_table(&pv, "dataman_import_big", "copy1m"));
     assert_eq!((r.outcome.clone(), r.rows), (Outcome::Done, 1_000_000), "{r:?}");
     let s = r.elapsed.as_secs_f64();

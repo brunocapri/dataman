@@ -3,14 +3,14 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{Datelike, Local, NaiveDate};
-use gpui::{
-    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState,
-    Pixels, Point, SharedString, Window, actions, div, list, point, prelude::*,
-};
 use crate::theme::px;
+use chrono::{Datelike, Local, NaiveDate};
 use dataman_core::favorites::{Folder, RemovedFolder};
 use dataman_core::{Favorite, HistoryEntry, Outcome};
+use gpui::{
+    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, Pixels, Point, SharedString, Window, actions,
+    div, list, point, prelude::*,
+};
 
 use crate::assets::{Icon, icon};
 use crate::conns::ConnStore;
@@ -19,8 +19,8 @@ use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, Theme};
 use crate::tree_menu::{ITEM_H, PAD, SEP_H};
 use crate::ui;
-use crate::undo::{Entry, Op};
 use crate::ui::Tipped;
+use crate::undo::{Entry, Op};
 
 actions!(history_panel, [Prev, Next, Insert, OpenInTab, RunEntry, Close, Collapse, Expand]);
 
@@ -103,13 +103,22 @@ pub(crate) struct DraggedFav(pub(crate) String);
 /// The favorites list: each folder, then what it holds that is in scope and matches `q` (all of
 /// it when the folder's name does), then the favorites in no folder; and how many favorites that
 /// is. While filtered (by `q` or a connection) a folder left with nothing to show goes.
-fn fav_items(folders: &[Folder], favorites: &[Favorite], q: &str, scoped: bool, in_scope: impl Fn(&Favorite) -> bool, open: impl Fn(&str) -> bool) -> (Vec<Item>, usize) {
+fn fav_items(
+    folders: &[Folder],
+    favorites: &[Favorite],
+    q: &str,
+    scoped: bool,
+    in_scope: impl Fn(&Favorite) -> bool,
+    open: impl Fn(&str) -> bool,
+) -> (Vec<Item>, usize) {
     let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(q) || f.sql.to_lowercase().contains(q);
     let filtered = !q.is_empty() || scoped;
     let (mut items, mut shown) = (Vec::new(), 0);
     for (ix, d) in folders.iter().enumerate() {
         let named = !q.is_empty() && d.name.to_lowercase().contains(q);
-        let found: Vec<usize> = (0..favorites.len()).filter(|&i| favorites[i].folder.as_deref() == Some(d.id.as_str()) && in_scope(&favorites[i]) && (named || hit(&favorites[i]))).collect();
+        let found: Vec<usize> = (0..favorites.len())
+            .filter(|&i| favorites[i].folder.as_deref() == Some(d.id.as_str()) && in_scope(&favorites[i]) && (named || hit(&favorites[i])))
+            .collect();
         if filtered && found.is_empty() {
             continue;
         }
@@ -144,7 +153,12 @@ fn day_label(d: NaiveDate, today: NaiveDate) -> String {
 /// The history list: each day with a match, then its matches unless it is shut; and how many
 /// matches there are, a shut day's too. One pass over the entries (at most `HISTORY_MAX`, newest
 /// first) when the list changes; drawing only reads the result, for the rows in view.
-fn day_items(entries: &[(String, HistoryEntry)], today: NaiveDate, shut: &HashSet<NaiveDate>, hit: impl Fn(&(String, HistoryEntry)) -> bool) -> (Vec<Item>, usize) {
+fn day_items(
+    entries: &[(String, HistoryEntry)],
+    today: NaiveDate,
+    shut: &HashSet<NaiveDate>,
+    hit: impl Fn(&(String, HistoryEntry)) -> bool,
+) -> (Vec<Item>, usize) {
     let (mut items, mut shown) = (Vec::new(), 0);
     let mut day = None;
     let mut open = true;
@@ -528,10 +542,12 @@ impl HistoryPanel {
         if m.shift {
             let from = self.pick_anchor.as_deref().and_then(|a| self.fav_item(a)).or(self.selected).unwrap_or(ix);
             let (lo, hi) = (from.min(ix), from.max(ix));
-            self.picked = (lo..=hi).filter_map(|j| match self.items[j] {
-                Item::Fav(f) => Some(self.favorites[f].id.clone()),
-                _ => None,
-            }).collect();
+            self.picked = (lo..=hi)
+                .filter_map(|j| match self.items[j] {
+                    Item::Fav(f) => Some(self.favorites[f].id.clone()),
+                    _ => None,
+                })
+                .collect();
         } else if m.platform {
             if self.picked.is_empty()
                 && let Some(Item::Fav(cur)) = self.selected.and_then(|s| self.items.get(s))
@@ -906,7 +922,8 @@ impl HistoryPanel {
             Chip::Cancelled => e.outcome == Outcome::Cancelled,
         };
         let scoped = self.scope.as_ref().is_none_or(|(c, d)| c == conn && d.as_ref().is_none_or(|d| *d == e.database));
-        chip && scoped && (q.is_empty() || e.sql.to_lowercase().contains(q) || names.get(conn).is_some_and(|n| n.contains(q)) || e.database.to_lowercase().contains(q))
+        chip && scoped
+            && (q.is_empty() || e.sql.to_lowercase().contains(q) || names.get(conn).is_some_and(|n| n.contains(q)) || e.database.to_lowercase().contains(q))
     }
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
@@ -1172,7 +1189,9 @@ impl HistoryPanel {
         let src = if body.is_empty() { e.sql.clone() } else { body.join("\n") };
         let flat = excerpt(&src.split_whitespace().collect::<Vec<_>>().join(" "), &self.query, SQL_MAX);
         let (verb, rest) = match flat.split_once(' ') {
-            Some((v, r)) if !v.starts_with('…') && ui::find_ci(&flat, &self.query).is_none_or(|h| h.start >= v.len()) => (Some(v.to_string()), format!(" {r}")),
+            Some((v, r)) if !v.starts_with('…') && ui::find_ci(&flat, &self.query).is_none_or(|h| h.start >= v.len()) => {
+                (Some(v.to_string()), format!(" {r}"))
+            }
             _ => (None, flat.clone()),
         };
         let time = e.ts.with_timezone(&Local).format("%H:%M:%S").to_string();
@@ -1204,20 +1223,26 @@ impl HistoryPanel {
                         }
                         cx.notify();
                     }))
-                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        h.selected = Some(ix);
-                        window.focus(&h.focus, cx);
-                        h.open_menu(MenuOn::Entry(entry_i), ev.position, cx);
-                    }))
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
-                        if crate::keymap::menu_click(&ev.modifiers) {
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
                             cx.stop_propagation();
                             h.selected = Some(ix);
                             window.focus(&h.focus, cx);
                             h.open_menu(MenuOn::Entry(entry_i), ev.position, cx);
-                        }
-                    }))
+                        }),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
+                            if crate::keymap::menu_click(&ev.modifiers) {
+                                cx.stop_propagation();
+                                h.selected = Some(ix);
+                                window.focus(&h.focus, cx);
+                                h.open_menu(MenuOn::Entry(entry_i), ev.position, cx);
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
@@ -1228,11 +1253,16 @@ impl HistoryPanel {
                             .child(div().w(px(12.)).flex_none().text_center().text_color(gcolor).child(glyph))
                             .child(div().flex_none().text_color(t.tx).child(time))
                             .child(div().flex_none().text_color(t.tx3).child(crate::fmt::ms(e.duration_ms)))
-                            .when(e.source.as_deref() == Some(dataman_core::history::AGENT), |d| {
-                                d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3))
-                            })
+                            .when(e.source.as_deref() == Some(dataman_core::history::AGENT), |d| d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3)))
                             .child(div().flex_1())
-                            .child(div().id(("hist-result", ix)).flex_none().text_color(rcolor).when_some(e.error.clone().filter(|_| e.outcome == Outcome::Error), |d, full| d.tip(ui::error_tip(full))).child(result)),
+                            .child(
+                                div()
+                                    .id(("hist-result", ix))
+                                    .flex_none()
+                                    .text_color(rcolor)
+                                    .when_some(e.error.clone().filter(|_| e.outcome == Outcome::Error), |d, full| d.tip(ui::error_tip(full)))
+                                    .child(result),
+                            ),
                     )
                     .child(
                         div()
@@ -1315,18 +1345,24 @@ impl HistoryPanel {
                     // The row is the field's while it is named: the panel would take the focus.
                     .when(is_renaming, |d| d.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                     .when(!is_renaming && reorder, |d| d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), None, cx)))
-                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        h.selected = Some(ix);
-                        h.open_menu(MenuOn::Folder(menu_id.clone()), ev.position, cx);
-                    }))
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                        if crate::keymap::menu_click(&ev.modifiers) {
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                             cx.stop_propagation();
                             h.selected = Some(ix);
-                            h.open_menu(MenuOn::Folder(ctrl_id.clone()), ev.position, cx);
-                        }
-                    }))
+                            h.open_menu(MenuOn::Folder(menu_id.clone()), ev.position, cx);
+                        }),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                            if crate::keymap::menu_click(&ev.modifiers) {
+                                cx.stop_propagation();
+                                h.selected = Some(ix);
+                                h.open_menu(MenuOn::Folder(ctrl_id.clone()), ev.position, cx);
+                            }
+                        }),
+                    )
                     .child(div().w(px(10.)).flex_none().flex().justify_center().child(chevron))
                     .child(self.folder_icon(&id_for_icon, open, dropping, t))
                     .child(name)
@@ -1400,16 +1436,22 @@ impl HistoryPanel {
                     .when(is_renaming, |d| d.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                     // Not while its name is edited: a drag there selects text.
                     .when(!is_renaming, |d| d.on_drag(DraggedFav(fav_id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), chip, cx)))
-                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        h.menu_on_fav(ix, fav_i, ev.position, cx);
-                    }))
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                        if crate::keymap::menu_click(&ev.modifiers) {
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                             cx.stop_propagation();
                             h.menu_on_fav(ix, fav_i, ev.position, cx);
-                        }
-                    }))
+                        }),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                            if crate::keymap::menu_click(&ev.modifiers) {
+                                cx.stop_propagation();
+                                h.menu_on_fav(ix, fav_i, ev.position, cx);
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .flex()
@@ -1441,16 +1483,7 @@ impl HistoryPanel {
                             .children(chip.map(|c| ui::chip(c, 7.)))
                             .child(ui::marked(t, clip(&place, NAME_MAX), &self.query))
                     }))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_row()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_color(t.tx2)
-                            .child(ui::marked(t, flat, &self.query)),
-                    ),
+                    .child(div().min_w_0().flex().flex_row().overflow_hidden().whitespace_nowrap().text_color(t.tx2).child(ui::marked(t, flat, &self.query))),
             )
             .children(line.map(|after| crate::dnd::drop_line(t, false, after).mx(px(6.))))
             .into_any_element()
@@ -1485,7 +1518,11 @@ impl HistoryPanel {
                     E::item(Act::Run, Icon::Run, "Run", Some("⌘↩")),
                     E::item(Act::Open, Icon::Tab, "Open in new tab", Some("⌥↩")),
                     E::Sep,
-                    if saved { E::item(Act::ToggleFavorite, Icon::StarFill, "Remove from favorites", None) } else { E::item(Act::ToggleFavorite, Icon::Star, "Add to favorites", None) },
+                    if saved {
+                        E::item(Act::ToggleFavorite, Icon::StarFill, "Remove from favorites", None)
+                    } else {
+                        E::item(Act::ToggleFavorite, Icon::Star, "Add to favorites", None)
+                    },
                     E::Sep,
                     E::item(Act::RemoveEntry, Icon::Trash, "Remove from history", None),
                 ]
@@ -1678,7 +1715,8 @@ impl HistoryPanel {
         if let (Some((i, items)), Some(mb)) = (sub, self.menu_bounds.get()) {
             let top = mb.top() + px(entries[..i].iter().map(MenuEntry::h).sum::<f32>());
             let right = mb.right() + px(SUB_W + 8.) <= window.viewport_size().width;
-            let (at, corner) = if right { (point(mb.right() - px(2.), top), gpui::Anchor::TopLeft) } else { (point(mb.left() + px(2.), top), gpui::Anchor::TopRight) };
+            let (at, corner) =
+                if right { (point(mb.right() - px(2.), top), gpui::Anchor::TopLeft) } else { (point(mb.left() + px(2.), top), gpui::Anchor::TopRight) };
             let sub_rows: Vec<AnyElement> = items
                 .iter()
                 .enumerate()
@@ -1808,13 +1846,17 @@ impl HistoryPanel {
                 .collect();
             div().absolute().left_0().top(px(26.)).child(
                 gpui::deferred(
-                    gpui::anchored()
-                        .snap_to_window_with_margin(px(8.))
-                        .child(ui::menu_in("chip-menu-in", ui::popover(t).w(px(140.)).on_mouse_down_out(cx.listener(|h, _, _, cx| {
-                            h.chip_menu = false;
-                            ui::menu_shut("history-chip");
-                            cx.notify();
-                        })).children(rows))),
+                    gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in(
+                        "chip-menu-in",
+                        ui::popover(t)
+                            .w(px(140.))
+                            .on_mouse_down_out(cx.listener(|h, _, _, cx| {
+                                h.chip_menu = false;
+                                ui::menu_shut("history-chip");
+                                cx.notify();
+                            }))
+                            .children(rows),
+                    )),
                 )
                 .priority(3),
             )
@@ -1897,7 +1939,14 @@ impl HistoryPanel {
                 })
             };
             let mut rows: Vec<AnyElement> = vec![
-                ui::selectable(ui::menu_item(t, SharedString::from(format!("{item}:all")), "All connections", scope.is_none().then_some("✓"), true), t, scope.is_none(), true).on_click(pick(None)).into_any_element(),
+                ui::selectable(
+                    ui::menu_item(t, SharedString::from(format!("{item}:all")), "All connections", scope.is_none().then_some("✓"), true),
+                    t,
+                    scope.is_none(),
+                    true,
+                )
+                .on_click(pick(None))
+                .into_any_element(),
             ];
             let all: Vec<_> = store.profiles.iter().collect();
             if !all.is_empty() {
@@ -1907,33 +1956,43 @@ impl HistoryPanel {
                 let mut rows: Vec<AnyElement> = Vec::new();
                 let whole = Some((p.id.clone(), None));
                 rows.push(
-                    ui::selectable(ui::menu_item(t, SharedString::from(format!("{item}:{}", p.id)), "", (*scope == whole).then_some("✓"), true), t, *scope == whole, true)
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(10. + indent))
-                                .top_0()
-                                .bottom_0()
-                                .right(px(28.))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
-                                .children(crate::assets::small_logo(p.engine, 12.))
-                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone())),
-                        )
-                        .relative()
-                        .on_click(pick(whole))
-                        .into_any_element(),
+                    ui::selectable(
+                        ui::menu_item(t, SharedString::from(format!("{item}:{}", p.id)), "", (*scope == whole).then_some("✓"), true),
+                        t,
+                        *scope == whole,
+                        true,
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(10. + indent))
+                            .top_0()
+                            .bottom_0()
+                            .right(px(28.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
+                            .children(crate::assets::small_logo(p.engine, 12.))
+                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone())),
+                    )
+                    .relative()
+                    .on_click(pick(whole))
+                    .into_any_element(),
                 );
                 for d in dbs.get(p.id.as_str()).into_iter().flatten().filter(|d| !d.is_empty()) {
                     let this = Some((p.id.clone(), Some(d.to_string())));
                     rows.push(
-                        ui::selectable(ui::menu_item(t, SharedString::from(format!("{item}:{}:{d}", p.id)), db_label(p, d), (*scope == this).then_some("✓"), true), t, *scope == this, true)
-                            .pl(px(25. + indent))
-                            .on_click(pick(this))
-                            .into_any_element(),
+                        ui::selectable(
+                            ui::menu_item(t, SharedString::from(format!("{item}:{}:{d}", p.id)), db_label(p, d), (*scope == this).then_some("✓"), true),
+                            t,
+                            *scope == this,
+                            true,
+                        )
+                        .pl(px(25. + indent))
+                        .on_click(pick(this))
+                        .into_any_element(),
                     );
                 }
                 rows
@@ -2049,7 +2108,10 @@ impl HistoryPanel {
         self.set_favorites(favorites, cx);
         if favorites {
             let core = self.store.read(cx).core.clone();
-            for (name, sql) in [("Orders by day", "SELECT date_trunc('day', p.created) AS day, count(*) FROM orders p GROUP BY 1 ORDER BY 1;"), ("Top customers", "SELECT c.name, count(*) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY 1 ORDER BY 2 DESC LIMIT 10;")] {
+            for (name, sql) in [
+                ("Orders by day", "SELECT date_trunc('day', p.created) AS day, count(*) FROM orders p GROUP BY 1 ORDER BY 1;"),
+                ("Top customers", "SELECT c.name, count(*) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY 1 ORDER BY 2 DESC LIMIT 10;"),
+            ] {
                 let mut f = dataman_core::Favorite::new(name, sql);
                 f.connection_id = self.store.read(cx).profiles.first().map(|p| p.id.clone());
                 let _ = core.favorites.add(f);
@@ -2427,10 +2489,13 @@ impl Render for HistoryPanel {
                     .gap(px(8.))
                     .child(div().flex_1().child(ui::caps(&t, if favs { "FAVORITES" } else { "HISTORY" })))
                     .when(favs, |d| {
-                        d.child(self.render_new_folder(&t, cx)).on_mouse_down(gpui::MouseButton::Right, cx.listener(|h, ev: &gpui::MouseDownEvent, _, cx| {
-                            h.open_menu(MenuOn::Panel, ev.position, cx);
-                            cx.stop_propagation();
-                        }))
+                        d.child(self.render_new_folder(&t, cx)).on_mouse_down(
+                            gpui::MouseButton::Right,
+                            cx.listener(|h, ev: &gpui::MouseDownEvent, _, cx| {
+                                h.open_menu(MenuOn::Panel, ev.position, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
                     }),
             )
             .child(
@@ -2450,7 +2515,11 @@ impl Render for HistoryPanel {
                     .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                     .when(!self.query.is_empty(), |d| {
-                        d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
+                        d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(format!(
+                            "{} of {}",
+                            ui_count(self.shown),
+                            ui_count(total)
+                        )))
                     }),
             )
             .child(
@@ -2476,7 +2545,15 @@ mod tests {
     use super::*;
 
     fn fav(name: &str, conn: &str, folder: Option<&str>) -> Favorite {
-        Favorite { id: name.into(), name: name.into(), sql: format!("select '{name}'"), connection_id: Some(conn.into()), database: None, folder: folder.map(Into::into), agent_made: false }
+        Favorite {
+            id: name.into(),
+            name: name.into(),
+            sql: format!("select '{name}'"),
+            connection_id: Some(conn.into()),
+            database: None,
+            folder: folder.map(Into::into),
+            agent_made: false,
+        }
     }
 
     fn folder(id: &str) -> Folder {
@@ -2497,7 +2574,18 @@ mod tests {
         let day = |d: NaiveDate, label: &str, open: bool| Item::Day { day: d, label: label.to_string().into(), open };
 
         let (items, shown) = day_items(&entries, today, &HashSet::new(), |_| true);
-        assert_eq!(items, vec![day(today, "TODAY", true), Item::Entry(0), Item::Entry(1), day(yesterday, "YESTERDAY", true), Item::Entry(2), day(older, "09 MAR 2025", true), Item::Entry(3)]);
+        assert_eq!(
+            items,
+            vec![
+                day(today, "TODAY", true),
+                Item::Entry(0),
+                Item::Entry(1),
+                day(yesterday, "YESTERDAY", true),
+                Item::Entry(2),
+                day(older, "09 MAR 2025", true),
+                Item::Entry(3)
+            ]
+        );
         assert_eq!(shown, 4);
 
         let shut = HashSet::from([today]);

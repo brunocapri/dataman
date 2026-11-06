@@ -1,17 +1,15 @@
 use std::sync::Arc;
 
-use gpui::{
-    App, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Subscription, Task, Window, actions, div, prelude::*,
-};
 use crate::theme::px;
-use dataman_core::edit::{
-    Blank,
-    ApplyReport, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, Outcome, PlannedChange,
-};
+use dataman_core::Connection;
+use dataman_core::edit::{ApplyReport, Blank, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, Outcome, PlannedChange};
 use dataman_core::result::{Phase, ResultSet, Snapshot};
 use dataman_core::sql::lexer::{TokenKind, tokenize};
 use dataman_core::value::Kind;
-use dataman_core::Connection;
+use gpui::{
+    App, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Subscription, Task, Window,
+    actions, div, prelude::*,
+};
 
 use crate::grid::{CellDecor, CellOverlay, Decorations, GridEvent, OverlayRow, ResultGrid, RowDecor, Tone, VirtualRow};
 use crate::input::{InputEvent, TextInput};
@@ -211,7 +209,9 @@ impl EditModel {
         for vals in self.changes.inserted() {
             let cells = (0..self.ncols)
                 .map(|c| match vals.get(c).cloned().flatten() {
-                    None => CellDecor { text: Some(blanks.get(c).map_or(Some("—"), |b| blank_text(*b)).map(str::to_string)), ghost: true, ..Default::default() },
+                    None => {
+                        CellDecor { text: Some(blanks.get(c).map_or(Some("—"), |b| blank_text(*b)).map(str::to_string)), ghost: true, ..Default::default() }
+                    }
                     Some(CellValue::Null) => CellDecor { text: Some(None), ..Default::default() },
                     Some(CellValue::Text(t)) => CellDecor { text: Some(Some(t)), ..Default::default() },
                 })
@@ -529,7 +529,11 @@ impl GridEdit {
         let had = self.model.pending() > 0 || self.review_open;
         self.conn = conn;
         self.db = db;
-        self.target = if rs.as_ref().is_some_and(|r| r.is_restored()) { TargetState::ReadOnly("a saved result: run it again to edit".into()) } else { TargetState::Unknown };
+        self.target = if rs.as_ref().is_some_and(|r| r.is_restored()) {
+            TargetState::ReadOnly("a saved result: run it again to edit".into())
+        } else {
+            TargetState::Unknown
+        };
         self.rs = rs;
         self.key_override = None;
         self.model = EditModel::default();
@@ -731,7 +735,9 @@ impl GridEdit {
                     return;
                 }
                 let at = self.row_ref(&snap, row);
-                if let RowRef::Stored(s) = at && self.model.changes.is_deleted(s) {
+                if let RowRef::Stored(s) = at
+                    && self.model.changes.is_deleted(s)
+                {
                     self.card = Some(Card::Note("Marked for deletion".into()));
                     cx.notify();
                     return;
@@ -760,7 +766,9 @@ impl GridEdit {
         }
         let blank = target.blank(col);
         let at = self.row_ref(&snap, row);
-        if let RowRef::Stored(s) = at && self.model.changes.is_deleted(s) {
+        if let RowRef::Stored(s) = at
+            && self.model.changes.is_deleted(s)
+        {
             self.card = Some(Card::Note("Marked for deletion".into()));
             cx.notify();
             return;
@@ -794,7 +802,8 @@ impl GridEdit {
             });
             self.grid.update(cx, |g, cx| g.select_cell(row, col, cx));
             let b = self.grid.read(cx).cell_bounds(row, col).unwrap_or_default();
-            self.editing = Some(Editing { at, row_hint: row, col, orig, editor: CellEdit::Value(editor), keeps_default, at_point: (b.0, b.1 + b.3 + 2.), _blur: blur });
+            self.editing =
+                Some(Editing { at, row_hint: row, col, orig, editor: CellEdit::Value(editor), keeps_default, at_point: (b.0, b.1 + b.3 + 2.), _blur: blur });
             cx.notify();
             return;
         }
@@ -1018,7 +1027,8 @@ impl GridEdit {
             let v = v?;
             let tsql = self.conn.as_ref().is_some_and(|c| c.dialect() == dataman_core::sql::Dialect::TSql);
             let kind = if tsql { dataman_core::value::tsql_date_kind(c.kind, &c.type_name) } else { c.kind };
-            (!crate::value_edit::date_text_ok(kind, v)).then(|| format!("{}: \u{201c}{v}\u{201d} is not a valid value: write it as {}", c.name, crate::value_edit::date_format(kind)))
+            (!crate::value_edit::date_text_ok(kind, v))
+                .then(|| format!("{}: \u{201c}{v}\u{201d} is not a valid value: write it as {}", c.name, crate::value_edit::date_format(kind)))
         };
         let changes = &self.model.changes;
         for (row, edits) in changes.edited_rows() {
@@ -1043,7 +1053,13 @@ impl GridEdit {
         let key_text = |row: usize| {
             t.key
                 .iter()
-                .map(|k| format!("{} {}", k.name, dataman_core::result::format_cell(cols[k.result_col].kind, snap.source_cell(row, k.result_col)).unwrap_or_default()))
+                .map(|k| {
+                    format!(
+                        "{} {}",
+                        k.name,
+                        dataman_core::result::format_cell(cols[k.result_col].kind, snap.source_cell(row, k.result_col)).unwrap_or_default()
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(" ")
         };
@@ -1057,7 +1073,11 @@ impl GridEdit {
             if self.model.changes.is_deleted(row) {
                 continue;
             }
-            let what = edits.iter().map(|(c, e)| format!("{}  {} → {}", cols[*c].name, short(e.old.as_deref()), short(e.new.as_deref()))).collect::<Vec<_>>().join(" · ");
+            let what = edits
+                .iter()
+                .map(|(c, e)| format!("{}  {} → {}", cols[*c].name, short(e.old.as_deref()), short(e.new.as_deref())))
+                .collect::<Vec<_>>()
+                .join(" · ");
             out.push(('~', Tone::Warn, key_text(row), what, RowRef::Stored(row)));
         }
         for row in self.model.changes.deleted_rows() {
@@ -1263,7 +1283,6 @@ impl GridEdit {
             self.begin_edit(3, price, window, cx);
         }
     }
-
 }
 
 fn capitalize(s: &str) -> String {
@@ -1367,33 +1386,44 @@ impl Render for ReviewPanel {
             .border_b_1()
             .border_color(t.line)
             .child(ui::caps(&t, "REVIEW"))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{n} change{} · {table}", if n == 1 { "" } else { "s" })))
-            .children(pill.map(|(label, fg, bg)| div().h(px(18.)).px(px(6.)).flex().items_center().bg(bg).text_color(fg).text_size(px(crate::theme::text::HINT)).child(label)));
-        let changes = div().px(px(14.)).py(px(12.)).flex().flex_col().gap(px(4.)).children(lines.into_iter().enumerate().map(|(i, (g, tone, key, what, at))| {
-            let c = crate::grid::tone_strong(&t, tone);
-            let edit = edit.clone();
-            div()
-                .h(px(26.))
-                .px(px(8.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .bg(t.hov)
-                .child(div().w(px(14.)).text_center().text_color(c).child(g.to_string()))
-                .child(div().flex_none().text_color(t.tx3).child(key))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(what))
-                .child(
-                    div()
-                        .id(("undo", i))
-                        .text_size(px(crate::theme::text::SMALL))
-                        .text_color(t.tx3)
-                        .hover(|s| s.text_color(gpui::white().opacity(0.9)))
-                        .cursor_pointer()
-                        .child("undo")
-                        .on_click(move |_, _, cx| edit.update(cx, |e, cx| e.undo(at, cx))),
-                )
-        }));
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(format!("{n} change{} · {table}", if n == 1 { "" } else { "s" })),
+            )
+            .children(pill.map(|(label, fg, bg)| {
+                div().h(px(18.)).px(px(6.)).flex().items_center().bg(bg).text_color(fg).text_size(px(crate::theme::text::HINT)).child(label)
+            }));
+        let changes =
+            div().px(px(14.)).py(px(12.)).flex().flex_col().gap(px(4.)).children(lines.into_iter().enumerate().map(|(i, (g, tone, key, what, at))| {
+                let c = crate::grid::tone_strong(&t, tone);
+                let edit = edit.clone();
+                div()
+                    .h(px(26.))
+                    .px(px(8.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .bg(t.hov)
+                    .child(div().w(px(14.)).text_center().text_color(c).child(g.to_string()))
+                    .child(div().flex_none().text_color(t.tx3).child(key))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(what))
+                    .child(
+                        div()
+                            .id(("undo", i))
+                            .text_size(px(crate::theme::text::SMALL))
+                            .text_color(t.tx3)
+                            .hover(|s| s.text_color(gpui::white().opacity(0.9)))
+                            .cursor_pointer()
+                            .child("undo")
+                            .on_click(move |_, _, cx| edit.update(cx, |e, cx| e.undo(at, cx))),
+                    )
+            }));
         let total_lines = sql.lines().count();
         let code = div()
             .mx(px(14.))
@@ -1442,7 +1472,16 @@ impl Render for ReviewPanel {
                         .child(div().flex_1().min_w_0().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
                         .when(!copied.is_empty(), |d| d.child(ui::copy_error(&t, "rv-error-copy", copied))),
                 )
-                .children(r.error.clone().filter(|e| !r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))).map(|e| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx).child(e)))
+                .children(
+                    r.error
+                        .clone()
+                        .filter(|e| {
+                            !r.outcomes
+                                .iter()
+                                .any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))
+                        })
+                        .map(|e| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx).child(e)),
+                )
                 .children(r.outcomes.iter().map(|o| {
                     let (g, c, what): (&str, Hsla, String) = match &o.outcome {
                         Outcome::Applied { rows } => ("✓", t.ok, format!("{rows} row")),
@@ -1470,7 +1509,12 @@ impl Render for ReviewPanel {
                             .flex()
                             .flex_row()
                             .gap(px(6.))
-                            .child(ui::probe("cf-discard", ui::button(&t, "cf-discard", Btn::Ghost).child("Discard mine").on_click(move |_, window, cx| e2.update(cx, |e, cx| e.discard(window, cx)))))
+                            .child(ui::probe(
+                                "cf-discard",
+                                ui::button(&t, "cf-discard", Btn::Ghost)
+                                    .child("Discard mine")
+                                    .on_click(move |_, window, cx| e2.update(cx, |e, cx| e.discard(window, cx))),
+                            ))
                             .child(ui::probe(
                                 "cf-over",
                                 ui::button(&t, "cf-over", Btn::Ghost)
@@ -1542,9 +1586,12 @@ impl Render for ReviewPanel {
             .border_color(t.line)
             .child(ui::probe(
                 "rv-discard",
-                ui::button(&t, "rv-discard", Btn::Ghost).h(px(28.)).text_color(t.err).child("Discard all").when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k))).on_click(move |_, window, cx| {
-                    e_discard.update(cx, |e, cx| e.discard(window, cx))
-                }),
+                ui::button(&t, "rv-discard", Btn::Ghost)
+                    .h(px(28.))
+                    .text_color(t.err)
+                    .child("Discard all")
+                    .when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k)))
+                    .on_click(move |_, window, cx| e_discard.update(cx, |e, cx| e.discard(window, cx))),
             ))
             .child(div().flex_1())
             .child(ui::probe(
@@ -1555,7 +1602,9 @@ impl Render for ReviewPanel {
                     .font_weight(FontWeight::SEMIBOLD)
                     .when(applying || plan.is_err(), |d| d.opacity(0.6))
                     .child(if applying { "Committing…".to_string() } else { format!("Commit {n} change{}", if n == 1 { "" } else { "s" }) })
-                    .when_some(crate::keymap::key("review_changes"), |d, k| d.child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(k)))
+                    .when_some(crate::keymap::key("review_changes"), |d, k| {
+                        d.child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(k))
+                    })
                     .on_click(move |_, _, cx| e_commit.update(cx, |e, cx| e.apply(cx))),
             ));
         div()
@@ -1674,7 +1723,11 @@ mod tests {
         m.insert();
         let d = m.decorations(&[Blank::Computed, Blank::Default, Blank::Null, Blank::Required]);
         let said: Vec<_> = d.virtual_rows[0].cells.iter().map(|c| c.text.clone().flatten()).collect();
-        assert_eq!(said, [Some("—".to_string()), Some("default".to_string()), None, Some("required".to_string())], "an untouched cell says what the INSERT would store");
+        assert_eq!(
+            said,
+            [Some("—".to_string()), Some("default".to_string()), None, Some("required".to_string())],
+            "an untouched cell says what the INSERT would store"
+        );
         assert!(d.virtual_rows[0].cells.iter().all(|c| c.ghost));
     }
 

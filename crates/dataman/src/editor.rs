@@ -2,17 +2,7 @@ use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, DispatchPhase, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font, GlobalElementId,
-    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollWheelEvent, ShapedLine, SharedString, Style,
-    Subscription, Task, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div,
-    fill, font, point, prelude::*, relative, size,
-};
 use crate::theme::{Pt, px};
-use gpui::FontWeight;
-use std::collections::HashSet;
 use dataman_core::complete::{Candidate, CandidateKind, Definition, SignatureHelp, complete, definition_at, signature_help};
 use dataman_core::find::{Matcher, nearest_index, next_index, prev_index};
 use dataman_core::format::{FormatOptions, KeywordCase};
@@ -21,6 +11,14 @@ use dataman_core::lint::{Lint, LintContext, Severity, lint};
 use dataman_core::schema::SchemaSnapshot;
 use dataman_core::sql::split::{split_tokens_in, statement_at_in};
 use dataman_core::sql::{Dialect, Token, TokenKind, split_in, tokenize, tokenize_in};
+use gpui::FontWeight;
+use gpui::{
+    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    EventEmitter, FocusHandle, Focusable, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ScrollWheelEvent, ShapedLine, SharedString, Style, Subscription, Task,
+    TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, actions, anchored, deferred, div, fill, font, point, prelude::*, relative, size,
+};
+use std::collections::HashSet;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::find::{self, Count, FindBar, FindBarEvent};
@@ -355,11 +353,8 @@ impl Buffer {
             let complete = end == self.text.len();
             let fresh = lex(&self.text[r..end], self.dialect, self.doc);
             // Without the rest of the text only tokens up to a terminated whitespace are certain.
-            let valid = if complete {
-                fresh.len()
-            } else {
-                fresh.iter().rposition(|t| t.kind == TokenKind::Whitespace && t.end < end - r).map_or(0, |w| w + 1)
-            };
+            let valid =
+                if complete { fresh.len() } else { fresh.iter().rposition(|t| t.kind == TokenKind::Whitespace && t.end < end - r).map_or(0, |w| w + 1) };
             for (j, t) in fresh[..valid].iter().enumerate() {
                 let s = r + t.start;
                 if s < new_end {
@@ -512,11 +507,7 @@ pub(crate) fn word_at(text: &str, offset: usize) -> Range<usize> {
     };
     let same = |c: char| c != '\n' && class(c) == k;
     let start = text[..offset].char_indices().rev().take_while(|&(_, c)| same(c)).last().map_or(offset, |(i, _)| i);
-    let end = text[offset..]
-        .char_indices()
-        .take_while(|&(_, c)| same(c))
-        .last()
-        .map_or(offset, |(i, c)| offset + i + c.len_utf8());
+    let end = text[offset..].char_indices().take_while(|&(_, c)| same(c)).last().map_or(offset, |(i, c)| offset + i + c.len_utf8());
     start..end
 }
 
@@ -541,8 +532,7 @@ pub(crate) fn outdent_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits
         .filter_map(|l| {
             let s = buf.line_start(l);
             let line = buf.line(l);
-            let n =
-                if line.starts_with('\t') { 1 } else { line.bytes().take(INDENT).take_while(|&b| b == b' ').count() };
+            let n = if line.starts_with('\t') { 1 } else { line.bytes().take(INDENT).take_while(|&b| b == b' ').count() };
             (n > 0).then(|| (s..s + n, String::new()))
         })
         .collect()
@@ -647,14 +637,7 @@ impl History {
         self.sealed = true;
     }
 
-    pub(crate) fn push(
-        &mut self,
-        edits: Vec<Edit>,
-        kind: EditKind,
-        before: Range<usize>,
-        after: Range<usize>,
-        now: Instant,
-    ) {
+    pub(crate) fn push(&mut self, edits: Vec<Edit>, kind: EditKind, before: Range<usize>, after: Range<usize>, now: Instant) {
         self.redo.clear();
         if let [e] = edits.as_slice()
             && !self.sealed
@@ -882,17 +865,32 @@ fn outline_corners(above: Option<(f32, f32)>, run: (f32, f32), below: Option<(f3
     let (x0, x1) = run;
     let touch = |n: Option<(f32, f32)>| n.filter(|n| n.0 < x1 && n.1 > x0);
     let (above, below) = (touch(above), touch(below));
-    [
-        !above.is_some_and(|n| n.0 <= x0),
-        !above.is_some_and(|n| n.1 >= x1),
-        !below.is_some_and(|n| n.1 >= x1),
-        !below.is_some_and(|n| n.0 <= x0),
-    ]
+    [!above.is_some_and(|n| n.0 <= x0), !above.is_some_and(|n| n.1 >= x1), !below.is_some_and(|n| n.1 >= x1), !below.is_some_and(|n| n.0 <= x0)]
 }
 
 const TYPE_WORDS: &[&str] = &[
-    "bigint", "bool", "boolean", "bytea", "date", "float4", "float8", "int", "int2", "int4", "int8", "integer",
-    "interval", "json", "jsonb", "numeric", "text", "timestamp", "timestamptz", "uuid", "varchar", "vector",
+    "bigint",
+    "bool",
+    "boolean",
+    "bytea",
+    "date",
+    "float4",
+    "float8",
+    "int",
+    "int2",
+    "int4",
+    "int8",
+    "integer",
+    "interval",
+    "json",
+    "jsonb",
+    "numeric",
+    "text",
+    "timestamp",
+    "timestamptz",
+    "uuid",
+    "varchar",
+    "vector",
 ];
 
 fn token_color(t: &Theme, kind: TokenKind, word: &str, next_is_paren: bool) -> Hsla {
@@ -1143,15 +1141,11 @@ impl CodeEditor {
         let rev = self.rev;
         self.lint_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LINT_DELAY).await;
-            let Ok(Some((text, schema, known))) =
-                this.update(cx, |e, _| (e.rev == rev).then(|| (e.buf.text.clone(), e.schema.clone(), e.known.clone())))
+            let Ok(Some((text, schema, known))) = this.update(cx, |e, _| (e.rev == rev).then(|| (e.buf.text.clone(), e.schema.clone(), e.known.clone())))
             else {
                 return;
             };
-            let found = cx
-                .background_executor()
-                .spawn(async move { lint(&text, &LintContext { schema: Some(&schema), known: Some(&known) }) })
-                .await;
+            let found = cx.background_executor().spawn(async move { lint(&text, &LintContext { schema: Some(&schema), known: Some(&known) }) }).await;
             let _ = this.update(cx, |e, cx| {
                 if e.rev == rev && e.local_lints != found {
                     e.local_lints = found;
@@ -1382,9 +1376,7 @@ impl CodeEditor {
         let at = d.at.unwrap_or(d.stmt.start).min(self.buf.len());
         let target = self.error.clone().unwrap_or_else(|| {
             let toks = &self.buf.tokens;
-            (self.buf.token_at(at)..toks.len())
-                .find(|&i| toks[i].kind != TokenKind::Whitespace)
-                .map_or(at..at, |i| toks[i].start..toks[i].end)
+            (self.buf.token_at(at)..toks.len()).find(|&i| toks[i].kind != TokenKind::Whitespace).map_or(at..at, |i| toks[i].start..toks[i].end)
         });
         self.set_cursor(at, cx);
         self.find_pop(target, cx);
@@ -1553,13 +1545,7 @@ impl CodeEditor {
         self.shift_lints(&range, new.len());
         let caret = range.start + new.len();
         self.set_sel(caret, caret);
-        self.history.push(
-            vec![Edit { at: range.start, old, new: new.to_string() }],
-            kind,
-            before,
-            self.sel.clone(),
-            Instant::now(),
-        );
+        self.history.push(vec![Edit { at: range.start, old, new: new.to_string() }], kind, before, self.sel.clone(), Instant::now());
         self.after_edit(cx);
     }
 
@@ -1624,11 +1610,7 @@ impl CodeEditor {
         let c = self.sel.start;
         let ls = self.buf.line_start(self.buf.line_of(c));
         let before = &self.buf.text[ls..c];
-        let start = if !before.is_empty() && before.bytes().all(|b| b == b' ') {
-            c - ((before.len() - 1) % INDENT + 1)
-        } else {
-            self.buf.prev_boundary(c)
-        };
+        let start = if !before.is_empty() && before.bytes().all(|b| b == b' ') { c - ((before.len() - 1) % INDENT + 1) } else { self.buf.prev_boundary(c) };
         self.delete_range(start..c, EditKind::Delete, cx);
     }
 
@@ -1641,18 +1623,13 @@ impl CodeEditor {
     }
 
     fn delete_word_left(&mut self, _: &DeleteWordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        let r =
-            if self.sel.is_empty() { word_left(self.text(), self.sel.start)..self.sel.start } else { self.sel.clone() };
+        let r = if self.sel.is_empty() { word_left(self.text(), self.sel.start)..self.sel.start } else { self.sel.clone() };
         self.history.seal();
         self.delete_range(r, EditKind::Other, cx);
     }
 
     fn delete_word_right(&mut self, _: &DeleteWordRight, _: &mut Window, cx: &mut Context<Self>) {
-        let r = if self.sel.is_empty() {
-            self.sel.start..word_right(self.text(), self.sel.start)
-        } else {
-            self.sel.clone()
-        };
+        let r = if self.sel.is_empty() { self.sel.start..word_right(self.text(), self.sel.start) } else { self.sel.clone() };
         self.history.seal();
         self.delete_range(r, EditKind::Other, cx);
     }
@@ -1767,14 +1744,7 @@ impl CodeEditor {
 
     fn shape_plain(&self, line: usize, window: &mut Window) -> ShapedLine {
         let text = display_text(self.buf.line(line));
-        let run = TextRun {
-            len: text.len(),
-            font: mono(),
-            color: gpui::black(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
+        let run = TextRun { len: text.len(), font: mono(), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
         window.text_system().shape_line(text, code_size(), &[run], None)
     }
 
@@ -1981,9 +1951,7 @@ impl CodeEditor {
 
     pub fn open_find(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
         let bar = self.find_bar(window, cx);
-        let picked = (!self.sel.is_empty())
-            .then(|| self.buf.text[self.sel.clone()].to_string())
-            .filter(|s| !s.contains('\n') && s.len() <= 512);
+        let picked = (!self.sel.is_empty()).then(|| self.buf.text[self.sel.clone()].to_string()).filter(|s| !s.contains('\n') && s.len() <= 512);
         bar.update(cx, |b, cx| {
             if let Some(s) = &picked {
                 b.set_query(s, cx);
@@ -2252,7 +2220,10 @@ impl CodeEditor {
             let all = self.buf.statements();
             statement_at_in(text, &all, self.sel.start).map(|s| s.range)
         } else {
-            split_in(&text[self.sel.clone()], self.buf.dialect).into_iter().find(|s| !text[self.sel.start + s.range.start..self.sel.start + s.range.end].trim().is_empty()).map(|s| self.sel.start + s.range.start..self.sel.start + s.range.end)
+            split_in(&text[self.sel.clone()], self.buf.dialect)
+                .into_iter()
+                .find(|s| !text[self.sel.start + s.range.start..self.sel.start + s.range.end].trim().is_empty())
+                .map(|s| self.sel.start + s.range.start..self.sel.start + s.range.end)
         }?;
         let sql = text[range.clone()].to_string();
         if sql.trim().is_empty() || self.plain {
@@ -2582,20 +2553,16 @@ impl CodeEditor {
         let mut runs = Vec::new();
         let mut i = self.buf.token_at(start);
         let mut pos = start;
-        let base =
-            TextRun { len: 0, font: mono(), color: t.tx, background_color: None, underline: None, strikethrough: None };
+        let base = TextRun { len: 0, font: mono(), color: t.tx, background_color: None, underline: None, strikethrough: None };
         while pos < end {
-            let (kind, tstart, tend) =
-                toks.get(i).map_or((TokenKind::Unknown, pos, end), |t| (t.kind, t.start, t.end.min(end)));
+            let (kind, tstart, tend) = toks.get(i).map_or((TokenKind::Unknown, pos, end), |t| (t.kind, t.start, t.end.min(end)));
             let tend = tend.max(pos + 1).min(end);
             let color = if self.plain {
                 t.tx
             } else if matches!(kind, TokenKind::Keyword | TokenKind::Ident) {
                 let word = &text[tstart.max(start)..tend];
-                let paren = toks
-                    .get(i + 1..)
-                    .and_then(|rest| rest.iter().find(|t| t.kind != TokenKind::Whitespace))
-                    .is_some_and(|t| &text[t.start..t.end] == "(");
+                let paren =
+                    toks.get(i + 1..).and_then(|rest| rest.iter().find(|t| t.kind != TokenKind::Whitespace)).is_some_and(|t| &text[t.start..t.end] == "(");
                 token_color(t, kind, word, paren)
             } else {
                 token_color(t, kind, "", false)
@@ -2704,9 +2671,11 @@ impl CodeEditor {
                         .font_family(crate::theme::mono())
                         .text_size(px(crate::theme::text::BODY))
                         .line_height(px(18.))
-                        .child(div().flex().flex_row().flex_wrap().text_color(t.tx2).children(parts.into_iter().map(|(text, on)| {
-                            div().when(on, |d| d.text_color(t.acc).font_weight(FontWeight::BOLD)).child(text)
-                        })))
+                        .child(
+                            div().flex().flex_row().flex_wrap().text_color(t.tx2).children(
+                                parts.into_iter().map(|(text, on)| div().when(on, |d| d.text_color(t.acc).font_weight(FontWeight::BOLD)).child(text)),
+                            ),
+                        )
                         .children(result.map(|r| div().text_color(t.typ).child(r)))
                         .when(s.overloads > 1, |d| d.child(div().text_color(t.tx4).child(format!("+{}", s.overloads - 1)))),
                 ),
@@ -2715,15 +2684,7 @@ impl CodeEditor {
         )
     }
 
-    fn range_quads(
-        &self,
-        range: &Range<usize>,
-        lines: &[(usize, ShapedLine)],
-        color: Hsla,
-        radius: f32,
-        g: &Geometry,
-        out: &mut Vec<PaintQuad>,
-    ) {
+    fn range_quads(&self, range: &Range<usize>, lines: &[(usize, ShapedLine)], color: Hsla, radius: f32, g: &Geometry, out: &mut Vec<PaintQuad>) {
         let lh = line_height();
         let x = g.origin_x - self.scroll.x;
         let mut runs: Vec<(usize, Pixels, Pixels)> = Vec::new();
@@ -2733,8 +2694,7 @@ impl CodeEditor {
                 continue;
             }
             let x0 = if range.start > ls { shaped.x_for_index(range.start - ls) } else { px(0.) };
-            let x1 =
-                if range.end <= le { shaped.x_for_index(range.end - ls) } else { shaped.width() + g.char_width * 0.6 };
+            let x1 = if range.end <= le { shaped.x_for_index(range.end - ls) } else { shaped.width() + g.char_width * 0.6 };
             if x1 <= x0 {
                 continue;
             }
@@ -2762,14 +2722,7 @@ impl CodeEditor {
         let lh = line_height();
         let fs = code_size();
         let ts = window.text_system().clone();
-        let run = |len: usize, color: Hsla| TextRun {
-            len,
-            font: mono(),
-            color,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
+        let run = |len: usize, color: Hsla| TextRun { len, font: mono(), color, background_color: None, underline: None, strikethrough: None };
         let cw = ts.shape_line("0".into(), fs, &[run(1, t.tx)], None).width();
         let digits = self.buf.line_count().to_string().len();
         // The same gutter with folding or without (SQL or a document language): its chevrons sit
@@ -2778,13 +2731,7 @@ impl CodeEditor {
         let gutter_w = self.gutter.as_ref().map_or(need, |g| px(g.editor(need.pt())));
         let text_bounds = Bounds::from_corners(point(bounds.left() + gutter_w, bounds.top()), bounds.bottom_right());
         let origin_x = text_bounds.left() + px(12.);
-        let g = Geometry {
-            bounds,
-            origin_x,
-            gutter_w,
-            text_width: text_bounds.size.width - px(12.),
-            char_width: cw,
-        };
+        let g = Geometry { bounds, origin_x, gutter_w, text_width: text_bounds.size.width - px(12.), char_width: cw };
         let z = crate::theme::zoom();
         if (z - self.zoom_at).abs() > 1e-4 {
             let k = z / self.zoom_at;
@@ -2808,9 +2755,7 @@ impl CodeEditor {
         let row_of = |l: usize| if fold_rows.is_empty() { l } else { fold_rows.partition_point(|&x| x <= l).saturating_sub(1) };
         let y_of = |l: usize| bounds.top() + px(TOP_PAD) + lh * row_of(l) as f32 - self.scroll.y;
         let seen = |l: usize| (fold_rows.is_empty() || fold_rows.get(row_of(l)) == Some(&l)) && (first..last).contains(&row_of(l));
-        let full_row = |l: usize, color: Hsla| {
-            fill(Bounds::from_corners(point(bounds.left(), y_of(l)), point(bounds.right(), y_of(l) + lh)), color)
-        };
+        let full_row = |l: usize, color: Hsla| fill(Bounds::from_corners(point(bounds.left(), y_of(l)), point(bounds.right(), y_of(l) + lh)), color);
         let bar = |l: usize, color: Hsla| fill(Bounds::new(point(bounds.left(), y_of(l)), size(px(2.), lh)), color);
 
         let num_size = px(11.5);
@@ -2853,9 +2798,7 @@ impl CodeEditor {
             }
             err_lines = Some(ls);
         }
-        let highlighted = |l: usize| {
-            flash_lines.as_ref().is_some_and(|r| r.contains(&l)) || err_lines.as_ref().is_some_and(|r| r.contains(&l))
-        };
+        let highlighted = |l: usize| flash_lines.as_ref().is_some_and(|r| r.contains(&l)) || err_lines.as_ref().is_some_and(|r| r.contains(&l));
         if self.sel.is_empty() && seen(cursor_line) && !highlighted(cursor_line) {
             rows.insert(0, full_row(cursor_line, t.cur_line));
         }
@@ -2959,23 +2902,21 @@ impl CodeEditor {
         let fold_boxes = fold_hits.iter().map(|(b, _)| window.insert_hitbox(*b, HitboxBehavior::Normal)).collect();
         self.fold_hits = fold_hits;
 
-        let cursor_quad = (focused && self.blink_on && seen(cursor_line)).then(|| {
-            let shaped = &lines.iter().find(|(l, _)| *l == cursor_line)?.1;
-            let x = origin_x - self.scroll.x + shaped.x_for_index(cursor - self.buf.line_start(cursor_line));
-            let color = if self.diagnostic.is_some() { t.err } else { t.acc };
-            Some(fill(Bounds::new(point(x, y_of(cursor_line) + px(1.)), size(px(2.), lh - px(2.))), color))
-        }).flatten();
+        let cursor_quad = (focused && self.blink_on && seen(cursor_line))
+            .then(|| {
+                let shaped = &lines.iter().find(|(l, _)| *l == cursor_line)?.1;
+                let x = origin_x - self.scroll.x + shaped.x_for_index(cursor - self.buf.line_start(cursor_line));
+                let color = if self.diagnostic.is_some() { t.err } else { t.acc };
+                Some(fill(Bounds::new(point(x, y_of(cursor_line) + px(1.)), size(px(2.), lh - px(2.))), color))
+            })
+            .flatten();
 
         let lines = lines.into_iter().map(|(l, s)| (point(origin_x - self.scroll.x, y_of(l)), s)).collect();
         let gutter = Bounds::new(bounds.origin, size(gutter_w, bounds.size.height));
         let gutter_line = fill(Bounds::new(point(bounds.left() + gutter_w - px(1.), bounds.top()), size(px(1.), bounds.size.height)), t.pane_line);
         self.bars = self.layout_bars(text_bounds.left());
         let (vbar, hbar) = self.bars;
-        let bars = [vbar, hbar]
-            .into_iter()
-            .flatten()
-            .map(|b| (fill(b.thumb, t.line2), window.insert_hitbox(b.track, HitboxBehavior::Normal)))
-            .collect();
+        let bars = [vbar, hbar].into_iter().flatten().map(|b| (fill(b.thumb, t.line2), window.insert_hitbox(b.track, HitboxBehavior::Normal))).collect();
         Prepainted {
             bars,
             hitbox,
@@ -3054,24 +2995,14 @@ impl CodeEditor {
                         cx.stop_propagation();
                     }),
                 )
+                .child(div().flex_none().w(px(30.)).h(px(16.)).flex().items_center().justify_center().text_size(px(9.5)).text_color(fg).bg(bg).child(label))
                 .child(
-                    div()
-                        .flex_none()
-                        .w(px(30.))
-                        .h(px(16.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(9.5))
-                        .text_color(fg)
-                        .bg(bg)
-                        .child(label),
+                    div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().flex().flex_row().children(
+                        parts
+                            .into_iter()
+                            .map(|(s, hit)| div().when(hit, |d| d.text_color(t.tx).font_weight(FontWeight::BOLD).border_b_1().border_color(t.acc)).child(s)),
+                    ),
                 )
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().flex().flex_row().children(
-                    parts.into_iter().map(|(s, hit)| {
-                        div().when(hit, |d| d.text_color(t.tx).font_weight(FontWeight::BOLD).border_b_1().border_color(t.acc)).child(s)
-                    }),
-                ))
                 .child(div().flex_none().text_color(t.tx3).text_size(px(crate::theme::text::SMALL)).child(c.detail))
         });
         let detail = current.map(|c| {
@@ -3344,7 +3275,8 @@ impl CodeEditor {
             return;
         }
         let (buf, regions) = (&self.buf, &self.regions);
-        let around: Vec<usize> = buf.folded.iter().copied().filter(|o| regions.iter().any(|r| r.open == *o && buf.line_of(r.open) < l && l < buf.line_of(r.close))).collect();
+        let around: Vec<usize> =
+            buf.folded.iter().copied().filter(|o| regions.iter().any(|r| r.open == *o && buf.line_of(r.open) < l && l < buf.line_of(r.close))).collect();
         for o in around {
             self.set_fold(o, false);
         }
@@ -3375,23 +3307,14 @@ impl CodeEditor {
 }
 
 impl EntityInputHandler for CodeEditor {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        actual_range: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
+    fn text_for_range(&mut self, range_utf16: Range<usize>, actual_range: &mut Option<Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> {
         let range = self.clamp_range(self.buf.from_utf16(range_utf16.start)..self.buf.from_utf16(range_utf16.end));
         actual_range.replace(self.buf.to_utf16(range.start)..self.buf.to_utf16(range.end));
         Some(self.buf.text[range].to_string())
     }
 
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: self.buf.to_utf16(self.sel.start)..self.buf.to_utf16(self.sel.end),
-            reversed: self.reversed,
-        })
+        Some(UTF16Selection { range: self.buf.to_utf16(self.sel.start)..self.buf.to_utf16(self.sel.end), reversed: self.reversed })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
@@ -3402,17 +3325,8 @@ impl EntityInputHandler for CodeEditor {
         self.marked = None;
     }
 
-    fn replace_text_in_range(
-        &mut self,
-        range_utf16: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let range = range_utf16
-            .map(|r| self.buf.from_utf16(r.start)..self.buf.from_utf16(r.end))
-            .or(self.marked.clone())
-            .unwrap_or(self.sel.clone());
+    fn replace_text_in_range(&mut self, range_utf16: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+        let range = range_utf16.map(|r| self.buf.from_utf16(r.start)..self.buf.from_utf16(r.end)).or(self.marked.clone()).unwrap_or(self.sel.clone());
         let range = self.clamp_range(range);
         self.insert_typed(range, &normalize_newlines(text), cx);
     }
@@ -3425,10 +3339,7 @@ impl EntityInputHandler for CodeEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let range = range_utf16
-            .map(|r| self.buf.from_utf16(r.start)..self.buf.from_utf16(r.end))
-            .or(self.marked.clone())
-            .unwrap_or(self.sel.clone());
+        let range = range_utf16.map(|r| self.buf.from_utf16(r.start)..self.buf.from_utf16(r.end)).or(self.marked.clone()).unwrap_or(self.sel.clone());
         let range = self.clamp_range(range);
         self.menu = None;
         self.replace(range.clone(), text, EditKind::Type, cx);
@@ -3450,13 +3361,7 @@ impl EntityInputHandler for CodeEditor {
         }
     }
 
-    fn bounds_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        _: Bounds<Pixels>,
-        window: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
+    fn bounds_for_range(&mut self, range_utf16: Range<usize>, _: Bounds<Pixels>, window: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let g = self.geo?;
         let start = self.buf.from_utf16(range_utf16.start);
         let l = self.buf.line_of(start);
@@ -3465,12 +3370,7 @@ impl EntityInputHandler for CodeEditor {
         Some(Bounds::new(point(x, y), size(g.char_width, line_height())))
     }
 
-    fn character_index_for_point(
-        &mut self,
-        point: Point<Pixels>,
-        window: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
+    fn character_index_for_point(&mut self, point: Point<Pixels>, window: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         let off = self.offset_at(point, window);
         Some(self.buf.to_utf16(off))
     }
@@ -3611,13 +3511,7 @@ impl Element for EditorElement {
         None
     }
 
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = relative(1.).into();
@@ -4004,14 +3898,7 @@ mod tests {
 
     #[test]
     fn underline_splits_runs() {
-        let run = TextRun {
-            len: 6,
-            font: mono(),
-            color: gpui::black(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
+        let run = TextRun { len: 6, font: mono(), color: gpui::black(), background_color: None, underline: None, strikethrough: None };
         let mut runs = vec![run.clone(), TextRun { len: 4, ..run }];
         let u = UnderlineStyle { thickness: px(1.), color: None, wavy: true };
         underline_runs(&mut runs, 10, &(14..17), u);

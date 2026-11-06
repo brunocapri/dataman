@@ -59,10 +59,44 @@ pub enum Kind {
 const DML: &[&str] = &["INSERT", "UPDATE", "DELETE", "MERGE", "COPY"];
 
 const COMMANDS: &[&str] = &[
-    "CREATE", "DROP", "ALTER", "TRUNCATE", "SET", "RESET", "BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT",
-    "RELEASE", "PREPARE", "DEALLOCATE", "GRANT", "REVOKE", "COMMENT", "VACUUM", "ANALYZE", "CLUSTER", "REINDEX", "LOCK",
-    "DISCARD", "LISTEN", "UNLISTEN", "NOTIFY", "DO", "REFRESH", "SECURITY", "DECLARE", "CLOSE", "MOVE", "CHECKPOINT", "LOAD",
-    "IMPORT", "REASSIGN",
+    "CREATE",
+    "DROP",
+    "ALTER",
+    "TRUNCATE",
+    "SET",
+    "RESET",
+    "BEGIN",
+    "START",
+    "COMMIT",
+    "END",
+    "ROLLBACK",
+    "ABORT",
+    "SAVEPOINT",
+    "RELEASE",
+    "PREPARE",
+    "DEALLOCATE",
+    "GRANT",
+    "REVOKE",
+    "COMMENT",
+    "VACUUM",
+    "ANALYZE",
+    "CLUSTER",
+    "REINDEX",
+    "LOCK",
+    "DISCARD",
+    "LISTEN",
+    "UNLISTEN",
+    "NOTIFY",
+    "DO",
+    "REFRESH",
+    "SECURITY",
+    "DECLARE",
+    "CLOSE",
+    "MOVE",
+    "CHECKPOINT",
+    "LOAD",
+    "IMPORT",
+    "REASSIGN",
 ];
 
 fn first_word(verb: &str) -> &str {
@@ -155,12 +189,7 @@ pub fn default_active(tabs: &[Tab]) -> Option<Key> {
     if let Some(t) = tabs.iter().find(|t| t.kind == Kind::Error) {
         return Some(t.key);
     }
-    tabs.iter()
-        .rev()
-        .find(|t| matches!(t.key, Key::Stmt(_)))
-        .or_else(|| tabs.iter().find(|t| t.key == Key::Messages))
-        .or_else(|| tabs.first())
-        .map(|t| t.key)
+    tabs.iter().rev().find(|t| matches!(t.key, Key::Stmt(_))).or_else(|| tabs.iter().find(|t| t.key == Key::Messages)).or_else(|| tabs.first()).map(|t| t.key)
 }
 
 pub fn active(tabs: &[Tab], pick: Option<Key>) -> Option<Key> {

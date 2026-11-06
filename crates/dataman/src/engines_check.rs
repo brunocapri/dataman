@@ -5,9 +5,9 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
 use dataman_core::nosql::{Body, Output};
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -87,10 +87,14 @@ fn value_text(o: &Result<Output, String>) -> String {
     match o {
         Ok(Output::Value(Body::Json(v))) => v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()),
         Ok(Output::Value(b)) => b.inline(),
-        Ok(Output::Docs(d)) => d.docs.first().map(|d| match &d.body {
-            Body::Json(v) => v["value"].as_str().map(str::to_string).unwrap_or_else(|| v.to_string()),
-            b => b.inline(),
-        }).unwrap_or_default(),
+        Ok(Output::Docs(d)) => d
+            .docs
+            .first()
+            .map(|d| match &d.body {
+                Body::Json(v) => v["value"].as_str().map(str::to_string).unwrap_or_else(|| v.to_string()),
+                b => b.inline(),
+            })
+            .unwrap_or_default(),
         Ok(o) => format!("{o:?}"),
         Err(e) => e.clone(),
     }
@@ -106,7 +110,15 @@ async fn redis(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowConte
     let (mut p, pw) = profile(Engine::Redis);
     p.database = "8".into();
     let core = core(ws, cx);
-    for cmd in ["FLUSHDB", "SET s:greeting hello", "RPUSH l:queue a b c", "SADD set:tags x y z", "ZADD z:scores 1 ann 2 bob", "XADD st:events * kind login", "SET bin \"\\xff\\x00\""] {
+    for cmd in [
+        "FLUSHDB",
+        "SET s:greeting hello",
+        "RPUSH l:queue a b c",
+        "SADD set:tags x y z",
+        "ZADD z:scores 1 ann 2 bob",
+        "XADD st:events * kind login",
+        "SET bin \"\\xff\\x00\"",
+    ] {
         if let Err(e) = nosql(&core, &p, &pw, "8", cmd, cx).await {
             r.check("Redis: the test keys are written", false, format!("{cmd}: {e}"));
             return;
@@ -121,7 +133,11 @@ async fn redis(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowConte
     let db = format!("c:{}/d:8", p.id);
     until(cx, 10, |cx| cx.update(|_, cx| tree.read(cx).demo_children(&db)).unwrap_or_default().len() >= 6).await;
     let keys = cx.update(|_, cx| tree.read(cx).demo_children(&db)).unwrap_or_default();
-    r.check("Redis: every type of key lists in the explorer", ["bin", "l:queue", "s:greeting", "set:tags", "st:events", "z:scores"].iter().all(|k| keys.iter().any(|l| l == k)), format!("{keys:?}"));
+    r.check(
+        "Redis: every type of key lists in the explorer",
+        ["bin", "l:queue", "s:greeting", "set:tags", "st:events", "z:scores"].iter().all(|k| keys.iter().any(|l| l == k)),
+        format!("{keys:?}"),
+    );
 
     for (key, kind, n) in [("l:queue", "list", 3usize), ("set:tags", "set", 3), ("z:scores", "sorted set", 2)] {
         let stmt = open(ws, &p.id, "8", key, cx).await.unwrap_or_default();
@@ -162,7 +178,16 @@ async fn opensearch(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     for i in 1..=30 {
         bulk.push_str(&format!("{{\"index\": {{\"_id\": \"{i}\"}}}}\n{{\"n\": {i}, \"kind\": \"{}\"}}\n", ["a", "b", "c"][i % 3]));
     }
-    let seeded = nosql(&core, &p, &pw, "", &format!("PUT /{INDEX}\n{{\"mappings\": {{\"properties\": {{\"n\": {{\"type\": \"integer\"}}, \"kind\": {{\"type\": \"keyword\"}}}}}}}}"), cx).await.and(nosql(&core, &p, &pw, "", &bulk, cx).await);
+    let seeded = nosql(
+        &core,
+        &p,
+        &pw,
+        "",
+        &format!("PUT /{INDEX}\n{{\"mappings\": {{\"properties\": {{\"n\": {{\"type\": \"integer\"}}, \"kind\": {{\"type\": \"keyword\"}}}}}}}}"),
+        cx,
+    )
+    .await
+    .and(nosql(&core, &p, &pw, "", &bulk, cx).await);
     if !r.check("OpenSearch: the test index is written", seeded.is_ok(), format!("{seeded:?}")) {
         return;
     }
@@ -172,7 +197,8 @@ async fn opensearch(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     }
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.expand_id(&format!("c:{}", p.id), cx)));
-    let listed = until(cx, 10, |cx| cx.update(|_, cx| tree.read(cx).demo_row_ids(&format!("c:{}", p.id))).unwrap_or_default().iter().any(|i| i.ends_with(INDEX))).await;
+    let listed =
+        until(cx, 10, |cx| cx.update(|_, cx| tree.read(cx).demo_row_ids(&format!("c:{}", p.id))).unwrap_or_default().iter().any(|i| i.ends_with(INDEX))).await;
     r.check("OpenSearch: its indices list in the explorer", listed, "");
     let stmt = open(ws, &p.id, "", INDEX, cx).await.unwrap_or_default();
     let n = docs(ws, cx);
@@ -182,10 +208,18 @@ async fn opensearch(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     let last = shown(ws, cx).map(|s| (s.0, s.1.map(|o| format!("{o:?}").chars().take(200).collect::<String>())));
     let body = detail(ws, cx).map(|d| d.1).unwrap_or_default();
     let count = value_text(&nosql(&core, &p, &pw, "", &format!("GET /{INDEX}/_count?q=kind:edited"), cx).await);
-    r.check("OpenSearch: a hit edited and saved is in the index", saved && count.contains("\"count\":1"), format!("saved {saved} {note:?} {last:?} {count} {body}"));
+    r.check(
+        "OpenSearch: a hit edited and saved is in the index",
+        saved && count.contains("\"count\":1"),
+        format!("saved {saved} {note:?} {last:?} {count} {body}"),
+    );
     let out = console(ws, &format!("POST /{INDEX}/_search\n{{\"size\": 0, \"aggs\": {{\"kinds\": {{\"terms\": {{\"field\": \"kind\"}}}}}}}}"), cx).await;
     let text = detail(ws, cx).map(|d| d.1).unwrap_or_default();
-    r.check("OpenSearch: an aggregation typed in the console runs; its buckets come first", text.trim_start().starts_with("{\n  \"aggregations\"") && text.contains("\"buckets\""), format!("{:?} {}", out.map(|o| o.0), text.chars().take(120).collect::<String>()));
+    r.check(
+        "OpenSearch: an aggregation typed in the console runs; its buckets come first",
+        text.trim_start().starts_with("{\n  \"aggregations\"") && text.contains("\"buckets\""),
+        format!("{:?} {}", out.map(|o| o.0), text.chars().take(120).collect::<String>()),
+    );
 }
 
 async fn elastic_and_mongo(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
@@ -215,7 +249,11 @@ async fn elastic_and_mongo(ws: &Entity<Workspace>, r: &mut Report, cx: &mut Asyn
         })
     });
     let out = console(ws, "db.people.find({ age: })", cx).await;
-    r.check("MongoDB: a statement the shell cannot read says why", out.as_ref().is_some_and(|o| o.1.as_ref().is_err_and(|e| !e.is_empty())), format!("{out:?}"));
+    r.check(
+        "MongoDB: a statement the shell cannot read says why",
+        out.as_ref().is_some_and(|o| o.1.as_ref().is_err_and(|e| !e.is_empty())),
+        format!("{out:?}"),
+    );
     let tab = active(ws, cx).unwrap();
     let _ = cx.update(|window, cx| {
         let e = tab.read(cx).editor.clone();
@@ -231,5 +269,9 @@ async fn elastic_and_mongo(ws: &Entity<Workspace>, r: &mut Report, cx: &mut Asyn
     let t0 = Instant::now();
     key(cx, "cmd-.");
     let stopped = until(cx, 5, |cx| idle(&tab, cx)).await;
-    r.check("MongoDB: ⌘. stops a running script at once", running && stopped && t0.elapsed() < Duration::from_secs(3), format!("running {running} stopped {stopped} after {:?}", t0.elapsed()));
+    r.check(
+        "MongoDB: ⌘. stops a running script at once",
+        running && stopped && t0.elapsed() < Duration::from_secs(3),
+        format!("running {running} stopped {stopped} after {:?}", t0.elapsed()),
+    );
 }

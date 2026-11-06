@@ -61,7 +61,11 @@ pub struct Unavailable(pub String);
 
 impl std::fmt::Display for Unavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "no keyring to save passwords in: start GNOME Keyring, KWallet or KeePassXC's Secret Service, or connect without saving the password ({})", self.0)
+        write!(
+            f,
+            "no keyring to save passwords in: start GNOME Keyring, KWallet or KeePassXC's Secret Service, or connect without saving the password ({})",
+            self.0
+        )
     }
 }
 
@@ -158,8 +162,8 @@ impl SecretStore for Keychain {
 mod windows {
     use anyhow::{Context as _, Result};
     use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{CreateMutexW, INFINITE, ReleaseMutex, WaitForSingleObject};
     use windows_sys::Win32::Security::Credentials::{CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW};
+    use windows_sys::Win32::System::Threading::{CreateMutexW, INFINITE, ReleaseMutex, WaitForSingleObject};
 
     use super::SERVICE;
 
@@ -189,7 +193,11 @@ mod windows {
             return Err(last_error()).with_context(|| format!("reading {target} in the Credential Manager"));
         }
         let c = unsafe { &*p };
-        let blob = if c.CredentialBlob.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize) }.to_vec() };
+        let blob = if c.CredentialBlob.is_null() {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize) }.to_vec()
+        };
         let comment = if c.Comment.is_null() {
             String::new()
         } else {

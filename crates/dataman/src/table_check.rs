@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point, point, px};
 use dataman_core::dataview::{Filter, Op};
 use dataman_core::result::{Phase, SortDir};
 use dataman_core::value::Kind;
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Point, point, px};
 
 use crate::app::Workspace;
 use crate::tab::QueryTab;
@@ -110,10 +110,7 @@ async fn page(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
 }
 
 fn col(tab: &Entity<QueryTab>, name: &str, cx: &mut AsyncWindowContext) -> usize {
-    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.columns()).and_then(|c| c.iter().position(|c| c.name == name)))
-        .ok()
-        .flatten()
-        .unwrap_or(0)
+    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.columns()).and_then(|c| c.iter().position(|c| c.name == name))).ok().flatten().unwrap_or(0)
 }
 
 fn sql(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> String {
@@ -178,7 +175,15 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
         }
         "json" | "datetime" | "enum" => {
             let tab = open(ws, conn, db, "dataman_demo", "tickets", cx).await;
-            let c = col(&tab, match stage { "json" => "meta", "datetime" => "opened_at", _ => "state" }, cx);
+            let c = col(
+                &tab,
+                match stage {
+                    "json" => "meta",
+                    "datetime" => "opened_at",
+                    _ => "state",
+                },
+                cx,
+            );
             let (grid, edit) = cx.update(|_, cx| (tab.read(cx).grid.clone(), tab.read(cx).edit.clone())).unwrap();
             let _ = cx.update(|window, cx| {
                 grid.update(cx, |g, cx| g.select_cells(1..=1, c, cx));
@@ -417,7 +422,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         report("the JSON edit lands in the change set", pending == 1 && valid, format!("{pending} {cur:?}"));
         let plan = cx.update(|_, cx| e2.read(cx).plan()).ok();
         let plan_sql = plan.and_then(|p| p.ok()).map(|p| dataman_core::edit::preview(&p)).unwrap_or_default();
-        report("the commit path is the usual UPDATE", plan_sql.contains("UPDATE dataman_demo.tickets SET meta = '") && plan_sql.contains("\"sms\""), plan_sql.clone());
+        report(
+            "the commit path is the usual UPDATE",
+            plan_sql.contains("UPDATE dataman_demo.tickets SET meta = '") && plan_sql.contains("\"sms\""),
+            plan_sql.clone(),
+        );
         let _ = cx.update(|_, cx| e2.update(cx, |e, cx| e.discard_all(cx)));
     }
 

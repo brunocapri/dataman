@@ -106,7 +106,13 @@ pub(crate) async fn connect(
     }
 }
 
-async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, watch: Option<&Arc<TxWatch>>) -> Result<Arc<Client>> {
+async fn open(
+    p: &ConnectionProfile,
+    password: Option<&str>,
+    database: Option<&str>,
+    via: Option<SocketAddr>,
+    watch: Option<&Arc<TxWatch>>,
+) -> Result<Arc<Client>> {
     super::install_tls_provider();
     let mode = if p.is_socket() && via.is_none() { SslMode::Disable } else { p.tls_mode() };
     let plain = || opts(p, password, database, via, None);
@@ -323,7 +329,11 @@ enum Msg {
     Fail(MyError),
 }
 
-async fn stream<P: Protocol>(mut qr: QueryResult<'_, 'static, P>, first: &mut Option<oneshot::Sender<FirstMsg>>, tx: &mpsc::Sender<Msg>) -> Result<u64, MyError> {
+async fn stream<P: Protocol>(
+    mut qr: QueryResult<'_, 'static, P>,
+    first: &mut Option<oneshot::Sender<FirstMsg>>,
+    tx: &mpsc::Sender<Msg>,
+) -> Result<u64, MyError> {
     let mut affected = qr.affected_rows();
     let mut n = 0;
     let mut shown = false;
@@ -493,12 +503,7 @@ pub(crate) async fn search_path(client: &Client) -> Vec<String> {
 
 pub(crate) fn error_info(e: &MyError) -> ErrorInfo {
     match e {
-        MyError::Server(se) => ErrorInfo {
-            code: Some(se.code.to_string()),
-            message: se.message.clone(),
-            severity: Some("ERROR".into()),
-            ..Default::default()
-        },
+        MyError::Server(se) => ErrorInfo { code: Some(se.code.to_string()), message: se.message.clone(), severity: Some("ERROR".into()), ..Default::default() },
         e => {
             let mut message = e.to_string();
             let mut src = std::error::Error::source(e);

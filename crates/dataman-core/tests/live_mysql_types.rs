@@ -53,7 +53,14 @@ fn every_type() {
             }
         }
     }
-    let ck: Vec<_> = via_call.columns().unwrap().iter().zip(cols.iter()).filter(|(x, y)| x.kind != y.kind).map(|(x, y)| format!("{}: {:?} vs {:?}", x.name, x.kind, y.kind)).collect();
+    let ck: Vec<_> = via_call
+        .columns()
+        .unwrap()
+        .iter()
+        .zip(cols.iter())
+        .filter(|(x, y)| x.kind != y.kind)
+        .map(|(x, y)| format!("{}: {:?} vs {:?}", x.name, x.kind, y.kind))
+        .collect();
     exec_quiet(&e, &c0, &["DROP DATABASE dataman_sw5"]);
     assert!(bad.is_empty() && ck.is_empty(), "{bad:#?} {ck:#?}");
 }

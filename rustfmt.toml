@@ -1,0 +1,4 @@
+# The code is written wide: 99% of its lines already fit in 160, and a tighter limit would
+# rewrite most of it. "Max" keeps what fits on one line on one line, as it is written today.
+max_width = 160
+use_small_heuristics = "Max"

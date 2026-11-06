@@ -3,13 +3,12 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, ScrollHandle, SharedString,
-    Window, actions, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::format::KeywordCase;
 use dataman_core::{Core, Settings, ThemePref, Translucency, UiFont};
+use gpui::{
+    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, ScrollHandle, SharedString, Window, actions, div, prelude::*,
+};
 
 use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
@@ -23,11 +22,7 @@ const CONTEXT: &str = "SettingsSheet";
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
-    cx.bind_keys([
-        crate::keymap::kb("escape", Close, c),
-        crate::keymap::kb("down", NextSection, c),
-        crate::keymap::kb("up", PrevSection, c),
-    ]);
+    cx.bind_keys([crate::keymap::kb("escape", Close, c), crate::keymap::kb("down", NextSection, c), crate::keymap::kb("up", PrevSection, c)]);
 }
 
 pub enum SettingsEvent {
@@ -50,8 +45,17 @@ enum Section {
     About,
 }
 
-const SECTIONS: [Section; 9] =
-    [Section::Appearance, Section::Connections, Section::Editor, Section::Grid, Section::Export, Section::Mcp, Section::Project, Section::Keyboard, Section::About];
+const SECTIONS: [Section; 9] = [
+    Section::Appearance,
+    Section::Connections,
+    Section::Editor,
+    Section::Grid,
+    Section::Export,
+    Section::Mcp,
+    Section::Project,
+    Section::Keyboard,
+    Section::About,
+];
 
 impl Section {
     fn label(self) -> &'static str {
@@ -138,7 +142,12 @@ pub(crate) fn places(core: &Core, cx: &App) -> Vec<Place> {
     let settings = core.settings.get();
     let project = core.project.info(&settings);
     let sections = SECTIONS.iter().map(|s| Place { label: s.label(), sub: "", section: s.label(), words: "" });
-    let rows = ROWS.iter().filter(|(row, ..)| row.shows(&settings, project.as_ref(), cx)).map(|&(_, section, label, words)| Place { label, sub: section.label(), section: section.label(), words });
+    let rows = ROWS.iter().filter(|(row, ..)| row.shows(&settings, project.as_ref(), cx)).map(|&(_, section, label, words)| Place {
+        label,
+        sub: section.label(),
+        section: section.label(),
+        words,
+    });
     sections.chain(rows).collect()
 }
 
@@ -159,17 +168,22 @@ impl Row {
             Row::McpAccess => "Lets AI agents (Claude Code, Claude Desktop, any MCP client) use your connections. Off blocks every agent.",
             Row::McpClaude => "Copies the command that adds Dataman to Claude Code.",
             Row::McpAgents => "What agents ran, and per connection what they may do and see.",
-            Row::Projects => "File › Open Project keeps settings in a folder's .dataman/project.toml, for a team to version. Passwords and secrets never go there.",
+            Row::Projects => {
+                "File › Open Project keeps settings in a folder's .dataman/project.toml, for a team to version. Passwords and secrets never go there."
+            }
             Row::ProjectShare => "Where both sides changed, the project wins. Each person's passwords stay in their own keychain.",
             Row::ProjectConnections => "Connections created while the project is open join it.",
-            Row::ExplorerView => "Simple lists each database's tables. Advanced adds schemas, routines, extensions, roles and sizes. The eye in the explorer switches the window you are in.",
-            Row::AutoConnect => "Every saved connection connects when Dataman opens, and those added later when they appear. One that fails shows why in the explorer; nothing asks for a password until you pick it. DuckDB files are left closed: open, they are locked for other programs.",
+            Row::ExplorerView => {
+                "Simple lists each database's tables. Advanced adds schemas, routines, extensions, roles and sizes. The eye in the explorer switches the window you are in."
+            }
+            Row::AutoConnect => {
+                "Every saved connection connects when Dataman opens, and those added later when they appear. One that fails shows why in the explorer; nothing asks for a password until you pick it. DuckDB files are left closed: open, they are locked for other programs."
+            }
             Row::FormatOnSave => "⌘S and Save As… format the tab's text first, as Format Query does. Text that cannot be formatted is saved as written.",
             _ => return None,
         })
     }
 }
-
 
 pub const PREFETCH_CHOICES: [(usize, &str); 4] = [(5_000, "5k"), (10_000, "10k"), (50_000, "50k"), (100_000, "100k")];
 pub const PAGE_CHOICES: [(usize, &str); 4] = [(200, "200"), (1_000, "1k"), (5_000, "5k"), (10_000, "10k")];
@@ -177,8 +191,7 @@ pub const PAGE_CHOICES: [(usize, &str); 4] = [(200, "200"), (1_000, "1k"), (5_00
 const MAX_SHOWN_FONTS: usize = 8;
 
 fn rank_fonts<'a>(query: &str, fonts: &'a [String], max: usize) -> Vec<&'a str> {
-    let mut matches: Vec<(i32, &str)> =
-        fonts.iter().filter_map(|n| crate::palette::fuzzy(query, n).map(|m| (m.score, n.as_str()))).collect();
+    let mut matches: Vec<(i32, &str)> = fonts.iter().filter_map(|n| crate::palette::fuzzy(query, n).map(|m| (m.score, n.as_str()))).collect();
     matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
     matches.truncate(max);
     matches.into_iter().map(|(_, n)| n).collect()
@@ -585,12 +598,7 @@ impl SettingsView {
         if self.system_font_open {
             if self.system_fonts.is_none() {
                 let embedded: Vec<&str> = UiFont::ALL.iter().map(|f| f.family()).collect();
-                let names: Vec<String> = cx
-                    .text_system()
-                    .all_font_names()
-                    .into_iter()
-                    .filter(|n| !embedded.contains(&n.as_str()))
-                    .collect();
+                let names: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|n| !embedded.contains(&n.as_str())).collect();
                 self.system_fonts = Some(names.into());
             }
             self.system_font_query.update(cx, |i, cx| i.set_text("", cx));
@@ -645,12 +653,7 @@ impl SettingsView {
     }
 
     fn choose_export_dir(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Use this folder".into()),
-        });
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Use this folder".into()) });
         cx.spawn(async move |this, cx| {
             let Some(paths) = crate::sql_picker::picked(rx.await, cx) else { return };
             let Some(p) = paths.into_iter().next() else { return };
@@ -720,7 +723,10 @@ impl SettingsView {
             .absolute()
             .right_0()
             .top(px(28.))
-            .child(gpui::deferred(gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("font-system-in", menu))).priority(3))
+            .child(
+                gpui::deferred(gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("font-system-in", menu)))
+                    .priority(3),
+            )
             .into_any_element()
     }
 
@@ -774,8 +780,7 @@ impl SettingsView {
                 let cur = s.editor_font_size;
                 ui::segmented(t)
                     .children([12u8, 13, 14].into_iter().map(|pt| {
-                        ui::segment(t, ("fs", pt as usize), pt.to_string(), cur == pt)
-                            .on_click(cx.listener(move |v, _, _, cx| v.set_font_size(pt, cx)))
+                        ui::segment(t, ("fs", pt as usize), pt.to_string(), cur == pt).on_click(cx.listener(move |v, _, _, cx| v.set_font_size(pt, cx)))
                     }))
                     .into_any_element()
             }
@@ -787,7 +792,13 @@ impl SettingsView {
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .when(system && !on, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC { "on in the desktop" } else { "on in macOS" })))
+                    .when(system && !on, |d| {
+                        d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC {
+                            "on in the desktop"
+                        } else {
+                            "on in macOS"
+                        }))
+                    })
                     .child(ui::switch(t, "rm", on).on_click(cx.listener(move |v, _, _, cx| v.set_reduce_motion(!on, cx))))
                     .into_any_element()
             }
@@ -827,17 +838,21 @@ impl SettingsView {
             Row::Prefetch => {
                 let cur = s.prefetch_rows;
                 ui::segmented(t)
-                    .children(PREFETCH_CHOICES.into_iter().map(|(n, label)| {
-                        ui::segment(t, ("pf", n), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.set_prefetch(n, cx)))
-                    }))
+                    .children(
+                        PREFETCH_CHOICES
+                            .into_iter()
+                            .map(|(n, label)| ui::segment(t, ("pf", n), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.set_prefetch(n, cx)))),
+                    )
                     .into_any_element()
             }
             Row::PageSize => {
                 let cur = s.page_size;
                 ui::segmented(t)
-                    .children(PAGE_CHOICES.into_iter().map(|(n, label)| {
-                        ui::segment(t, ("pg", n), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.page_size = n, cx)))
-                    }))
+                    .children(
+                        PAGE_CHOICES.into_iter().map(|(n, label)| {
+                            ui::segment(t, ("pg", n), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.page_size = n, cx)))
+                        }),
+                    )
                     .into_any_element()
             }
             Row::AutoConnect => {
@@ -856,7 +871,13 @@ impl SettingsView {
                 ui::switch(t, "cc", on).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.confirm_commit = !on, cx))).into_any_element()
             }
             Row::ExportDir => {
-                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_else(|| "~/Downloads".into())).into();
+                let dir: SharedString = s
+                    .export_dir
+                    .clone()
+                    .unwrap_or_else(|| {
+                        dataman_core::os::downloads_dir().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_else(|| "~/Downloads".into())
+                    })
+                    .into();
                 div()
                     .flex()
                     .flex_row()
@@ -877,9 +898,16 @@ impl SettingsView {
                             .text_ellipsis()
                             .child(dir),
                     )
-                    .child(ui::button(t, "ed-choose", ui::Btn::Secondary).h(px(28.)).child("Choose…").on_click(cx.listener(|v, _, _, cx| v.choose_export_dir(cx))))
+                    .child(
+                        ui::button(t, "ed-choose", ui::Btn::Secondary).h(px(28.)).child("Choose…").on_click(cx.listener(|v, _, _, cx| v.choose_export_dir(cx))),
+                    )
                     .when(s.export_dir.is_some(), |d| {
-                        d.child(ui::button(t, "ed-reset", ui::Btn::Ghost).h(px(28.)).child("Reset").on_click(cx.listener(|v, _, _, cx| v.save(|s| s.export_dir = None, cx))))
+                        d.child(
+                            ui::button(t, "ed-reset", ui::Btn::Ghost)
+                                .h(px(28.))
+                                .child("Reset")
+                                .on_click(cx.listener(|v, _, _, cx| v.save(|s| s.export_dir = None, cx))),
+                        )
                     })
                     .into_any_element()
             }
@@ -986,14 +1014,22 @@ impl SettingsView {
                                     .when(info.is_none(), |d| d.text_color(t.tx3))
                                     .child(shown),
                             )
-                            .child(ui::button(t, "project-open", ui::Btn::Secondary).h(px(28.)).child("Open…").on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(crate::app::OpenProject), cx)
-                            }))
+                            .child(
+                                ui::button(t, "project-open", ui::Btn::Secondary)
+                                    .h(px(28.))
+                                    .child("Open…")
+                                    .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::OpenProject), cx)),
+                            )
                             .when_some(dir, |d, dir| {
-                                d.child(ui::button(t, "project-show", ui::Btn::Ghost).h(px(28.)).child("Show").on_click(move |_, _, cx| cx.open_with_system(&dir)))
-                                    .child(ui::button(t, "project-close", ui::Btn::Ghost).h(px(28.)).child("Close").on_click(|_, window, cx| {
-                                        window.dispatch_action(Box::new(crate::app::CloseProject), cx)
-                                    }))
+                                d.child(
+                                    ui::button(t, "project-show", ui::Btn::Ghost).h(px(28.)).child("Show").on_click(move |_, _, cx| cx.open_with_system(&dir)),
+                                )
+                                .child(
+                                    ui::button(t, "project-close", ui::Btn::Ghost)
+                                        .h(px(28.))
+                                        .child("Close")
+                                        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::CloseProject), cx)),
+                                )
                             }),
                     )
                     .children(problem.map(|p| ui::error_block(t, "project-problem", p).max_w(px(520.)).text_size(px(crate::theme::text::SMALL))))
@@ -1003,8 +1039,19 @@ impl SettingsView {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().max_w(px(340.)).text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")))
-                            .child(ui::button(t, "project-review", ui::Btn::Secondary).h(px(24.)).child("Review…").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::ReviewProject), cx)))
+                            .child(
+                                div()
+                                    .max_w(px(340.))
+                                    .text_size(px(crate::theme::text::SMALL))
+                                    .text_color(t.warn)
+                                    .child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")),
+                            )
+                            .child(
+                                ui::button(t, "project-review", ui::Btn::Secondary)
+                                    .h(px(24.))
+                                    .child("Review…")
+                                    .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::ReviewProject), cx)),
+                            )
                     }))
                     .into_any_element()
             }
@@ -1027,16 +1074,9 @@ impl SettingsView {
             .pb(px(14.))
             .border_b_1()
             .border_color(t.line)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .child(div().text_color(t.tx).child(label))
-                    .children(row.help().map(|h| div().text_size(px(crate::theme::text::HINT)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
-            )
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(3.)).child(div().text_color(t.tx).child(label)).children(
+                row.help().map(|h| div().text_size(px(crate::theme::text::HINT)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h))),
+            ))
             .child(control)
             .into_any_element()
     }
@@ -1095,25 +1135,17 @@ impl SettingsView {
                 .child(div().text_color(if on { t.tx } else { t.tx3 }).child(label))
                 .on_click(cx.listener(move |v, _, _, cx| v.set_theme(pref, cx)))
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .pb(px(14.))
-            .border_b_1()
-            .border_color(t.line)
-            .child(ui::caps(t, "THEME"))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(12.))
-                    .child(card("th-dark", "Dark", ThemePref::Dark))
-                    .child(card("th-black", "Black", ThemePref::Black))
-                    .child(card("th-light", "Light", ThemePref::Light))
-                    .child(card("th-solarized", "Solarized", ThemePref::Solarized))
-                    .child(card("th-system", "Match system", ThemePref::System)),
-            )
+        div().flex().flex_col().gap(px(8.)).pb(px(14.)).border_b_1().border_color(t.line).child(ui::caps(t, "THEME")).child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(12.))
+                .child(card("th-dark", "Dark", ThemePref::Dark))
+                .child(card("th-black", "Black", ThemePref::Black))
+                .child(card("th-light", "Light", ThemePref::Light))
+                .child(card("th-solarized", "Solarized", ThemePref::Solarized))
+                .child(card("th-system", "Match system", ThemePref::System)),
+        )
     }
 
     fn matching_commands(q: &str) -> Vec<&'static crate::keymap::Command> {
@@ -1194,17 +1226,9 @@ impl SettingsView {
         }
         let reset_all = (!searching && !overrides.is_empty()).then(|| {
             let bounds = self.reset_all_bounds.clone();
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b)
-                .child(
-                    ui::button(t, "keys-reset-all", ui::Btn::Secondary)
-                        .h(px(26.))
-                        .child("Reset all")
-                        .on_click(cx.listener(|v, _, _, cx| v.set_key("", None, cx))),
-                )
+            div().flex().flex_row().justify_end().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b).child(
+                ui::button(t, "keys-reset-all", ui::Btn::Secondary).h(px(26.)).child("Reset all").on_click(cx.listener(|v, _, _, cx| v.set_key("", None, cx))),
+            )
         });
         let mut ix = 0usize;
         let mut sections: Vec<gpui::AnyElement> = Vec::new();
@@ -1218,7 +1242,13 @@ impl SettingsView {
                 let changed = overrides.contains_key(id);
                 let shown = crate::keymap::key_label(id);
                 let shown_label = shown.clone();
-                let text: SharedString = if rec { "…".into() } else if shown.is_empty() { "—".into() } else { shown.into() };
+                let text: SharedString = if rec {
+                    "…".into()
+                } else if shown.is_empty() {
+                    "—".into()
+                } else {
+                    shown.into()
+                };
                 let bounds = self.key_bounds.clone();
                 let cap = ui::keycap(t, text)
                     .id(("key", ix))
@@ -1251,7 +1281,11 @@ impl SettingsView {
                         .border_b_1()
                         .border_color(t.line)
                         .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::BODY)).text_color(t.tx2).child(c.label))
-                        .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("also {k}"))))
+                        .children(
+                            also.as_ref()
+                                .filter(|k| **k != shown_label)
+                                .map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("also {k}"))),
+                        )
                         .child(
                             div()
                                 .flex_none()
@@ -1368,37 +1402,40 @@ impl Render for SettingsView {
         let q = self.query(cx);
         let keys = self.key_search;
         let searching = !q.is_empty() && !keys;
-        let nav = SECTIONS.iter().map(|&s| {
-            let on = if keys { s == Section::Keyboard } else { !searching && s == self.section };
-            let hov = t.hov;
-            div()
-                .children(ui::here(&s.label().into()))
-                .id(s.label())
-                .h(px(30.))
-                .mx(px(8.))
-                .px(px(10.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .cursor_pointer()
-                .map(|d| ui::selectable(d, &t, on, true))
-                .when(on, |d| d.text_color(t.tx))
-                .when(!on, |d| d.text_color(t.tx2).hover(move |st| st.bg(hov)))
-                .child(div().flex_1().child(s.label()))
-                .on_click(cx.listener(move |v, _, window, cx| {
-                    if v.key_search {
-                        v.set_key_search(false, window, cx);
-                    }
-                    v.section = s;
-                    v.search.update(cx, |i, cx| i.set_text("", cx));
-                    if s == Section::Keyboard {
-                        window.focus(&v.key_filter.focus_handle(cx), cx);
-                    }
-                    v.scroll_to_top();
-                    cx.notify();
-                }))
-        }).collect::<Vec<_>>();
+        let nav = SECTIONS
+            .iter()
+            .map(|&s| {
+                let on = if keys { s == Section::Keyboard } else { !searching && s == self.section };
+                let hov = t.hov;
+                div()
+                    .children(ui::here(&s.label().into()))
+                    .id(s.label())
+                    .h(px(30.))
+                    .mx(px(8.))
+                    .px(px(10.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .cursor_pointer()
+                    .map(|d| ui::selectable(d, &t, on, true))
+                    .when(on, |d| d.text_color(t.tx))
+                    .when(!on, |d| d.text_color(t.tx2).hover(move |st| st.bg(hov)))
+                    .child(div().flex_1().child(s.label()))
+                    .on_click(cx.listener(move |v, _, window, cx| {
+                        if v.key_search {
+                            v.set_key_search(false, window, cx);
+                        }
+                        v.section = s;
+                        v.search.update(cx, |i, cx| i.set_text("", cx));
+                        if s == Section::Keyboard {
+                            window.focus(&v.key_filter.focus_handle(cx), cx);
+                        }
+                        v.scroll_to_top();
+                        cx.notify();
+                    }))
+            })
+            .collect::<Vec<_>>();
         let mut page: Vec<gpui::AnyElement> = Vec::new();
         let key_label = self.key_query.as_deref().map(crate::keymap::label);
         let title: SharedString = match &key_label {
@@ -1441,11 +1478,15 @@ impl Render for SettingsView {
         if page.is_empty() {
             let empty = match key_label {
                 Some(k) => ui::empty_state(&t, "[ NO MATCH ]", 20., Some(format!("No command uses {k}.").into())),
-                None => ui::no_match(&t, "settings-reset", cx.listener(|v, _, _, cx| {
-                    v.search.update(cx, |i, cx| i.set_text("", cx));
-                    v.key_filter.update(cx, |i, cx| i.set_text("", cx));
-                    cx.notify();
-                })),
+                None => ui::no_match(
+                    &t,
+                    "settings-reset",
+                    cx.listener(|v, _, _, cx| {
+                        v.search.update(cx, |i, cx| i.set_text("", cx));
+                        v.key_filter.update(cx, |i, cx| i.set_text("", cx));
+                        cx.notify();
+                    }),
+                ),
             };
             page.push(div().pt(px(80.)).flex().justify_center().child(empty).into_any_element());
         }

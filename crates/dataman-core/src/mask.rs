@@ -47,7 +47,11 @@ fn sql(text: &str, dialect: Dialect) -> Cow<'_, str> {
     for (i, t) in toks.iter().enumerate() {
         let word = t.text(text);
         match t.kind {
-            TokenKind::Keyword | TokenKind::Ident | TokenKind::QuotedIdent if ARMS.iter().any(|a| word.trim_matches(['"', '`', '[', ']']).eq_ignore_ascii_case(a)) => armed = true,
+            TokenKind::Keyword | TokenKind::Ident | TokenKind::QuotedIdent
+                if ARMS.iter().any(|a| word.trim_matches(['"', '`', '[', ']']).eq_ignore_ascii_case(a)) =>
+            {
+                armed = true
+            }
             TokenKind::Punct if word == ";" => armed = false,
             TokenKind::String | TokenKind::DollarString if armed => {
                 let prev = i.checked_sub(1).map(|p| toks[p].text(text).to_ascii_uppercase()).unwrap_or_default();
@@ -126,8 +130,9 @@ fn redis(text: &str) -> Cow<'_, str> {
 static KEYED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(["']?\b(?:pwd|password|passwd|secret|requirepass|masterauth)["']?\s*:\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap()
 });
-static CHANGE_PW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)(changeUserPassword\s*\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*,\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap());
+static CHANGE_PW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(changeUserPassword\s*\(\s*(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*,\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap()
+});
 static KV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(\b(?:password|pwd)\s*=\s*)([^\s;'"&,)]+)"#).unwrap());
 static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(\b[a-z][a-z0-9+.-]*://[^:/@\s'"]+:)([^@\s'"/]+)(@)"#).unwrap());
 
@@ -172,13 +177,25 @@ mod tests {
         let m = |e: Engine, s: &str| statement(e, s).into_owned();
         for (e, sql, want) in [
             (Postgres, "CREATE USER bob PASSWORD 'hunter2'", "CREATE USER bob PASSWORD '••••••'"),
-            (Postgres, "ALTER ROLE bob WITH ENCRYPTED PASSWORD 'p''w' VALID UNTIL '2030-01-01'", "ALTER ROLE bob WITH ENCRYPTED PASSWORD '••••••' VALID UNTIL '2030-01-01'"),
+            (
+                Postgres,
+                "ALTER ROLE bob WITH ENCRYPTED PASSWORD 'p''w' VALID UNTIL '2030-01-01'",
+                "ALTER ROLE bob WITH ENCRYPTED PASSWORD '••••••' VALID UNTIL '2030-01-01'",
+            ),
             (Postgres, "create role x login password $$s3cr$t$$", "create role x login password $$••••••$$"),
-            (Postgres, "CREATE USER MAPPING FOR bob SERVER s OPTIONS (user 'bob', password 'pw1')", "CREATE USER MAPPING FOR bob SERVER s OPTIONS (user 'bob', password '••••••')"),
+            (
+                Postgres,
+                "CREATE USER MAPPING FOR bob SERVER s OPTIONS (user 'bob', password 'pw1')",
+                "CREATE USER MAPPING FOR bob SERVER s OPTIONS (user 'bob', password '••••••')",
+            ),
             (Postgres, "SELECT dblink_connect('host=db user=u password=pw2 dbname=x')", "SELECT dblink_connect('host=db user=u password=•••••• dbname=x')"),
             (Postgres, "SELECT * FROM users WHERE password = 'not a secret? still masked'", "SELECT * FROM users WHERE password = '••••••'"),
             (MySql, "CREATE USER 'app'@'%' IDENTIFIED BY 'pw3'", "CREATE USER 'app'@'%' IDENTIFIED BY '••••••'"),
-            (MySql, "ALTER USER 'app'@'%' IDENTIFIED WITH caching_sha2_password BY 'p\\'w4'", "ALTER USER 'app'@'%' IDENTIFIED WITH caching_sha2_password BY '••••••'"),
+            (
+                MySql,
+                "ALTER USER 'app'@'%' IDENTIFIED WITH caching_sha2_password BY 'p\\'w4'",
+                "ALTER USER 'app'@'%' IDENTIFIED WITH caching_sha2_password BY '••••••'",
+            ),
             (MySql, "SET PASSWORD FOR 'app'@'%' = 'pw5'", "SET PASSWORD FOR 'app'@'%' = '••••••'"),
             (SqlServer, "CREATE LOGIN app WITH PASSWORD = N'pw6', CHECK_POLICY = OFF", "CREATE LOGIN app WITH PASSWORD = N'••••••', CHECK_POLICY = OFF"),
             (SqlServer, "ALTER LOGIN app WITH PASSWORD = 'new7' OLD_PASSWORD = 'old7'", "ALTER LOGIN app WITH PASSWORD = '••••••' OLD_PASSWORD = '••••••'"),
@@ -204,7 +221,10 @@ mod tests {
         assert_eq!(m(Redis, "GET password"), "GET password");
         assert_eq!(m(MongoDb, "db.createUser({user: 'bob', pwd: 'pw', roles: []})"), "db.createUser({user: 'bob', pwd: '••••••', roles: []})");
         assert_eq!(m(MongoDb, r#"db.changeUserPassword("bob", "pw")"#), r#"db.changeUserPassword("bob", "••••••")"#);
-        assert_eq!(m(Elasticsearch, "PUT _security/user/bob\n{\"password\": \"pw\", \"roles\": []}"), "PUT _security/user/bob\n{\"password\": \"••••••\", \"roles\": []}");
+        assert_eq!(
+            m(Elasticsearch, "PUT _security/user/bob\n{\"password\": \"pw\", \"roles\": []}"),
+            "PUT _security/user/bob\n{\"password\": \"••••••\", \"roles\": []}"
+        );
         assert_eq!(any("ALTER USER x PASSWORD 'pw'"), "ALTER USER x PASSWORD '••••••'");
         assert_eq!(any("SELECT 1"), "SELECT 1");
     }

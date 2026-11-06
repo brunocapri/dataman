@@ -120,7 +120,9 @@ pub fn generated_exprs(create: &str) -> HashMap<String, String> {
             continue;
         }
         let name = crate::sql::ident_value_in(create, first, Dialect::Sqlite).to_lowercase();
-        let Some(as_at) = (seg.start + 1..seg.end).find(|&i| toks[i].text(create).eq_ignore_ascii_case("AS") && toks.get(i + 1).is_some_and(|n| n.text(create) == "(")) else {
+        let Some(as_at) =
+            (seg.start + 1..seg.end).find(|&i| toks[i].text(create).eq_ignore_ascii_case("AS") && toks.get(i + 1).is_some_and(|n| n.text(create) == "("))
+        else {
             continue;
         };
         let mut d = 0;
@@ -180,11 +182,58 @@ pub(super) async fn columns_of_schemas(c: &Db, _list: &str) -> Result<Vec<Vec<Op
 
 /// SQLite's built-in functions, when `pragma_function_list` is not compiled in.
 const BUILTINS: &[&str] = &[
-    "abs", "avg", "changes", "char", "coalesce", "count", "date", "datetime", "format", "glob", "group_concat", "hex", "ifnull", "iif",
-    "instr", "json", "json_array", "json_extract", "json_group_array", "json_group_object", "json_object", "julianday", "last_insert_rowid",
-    "length", "like", "lower", "ltrim", "max", "min", "nullif", "printf", "quote", "random", "randomblob", "replace", "round", "rtrim",
-    "sign", "strftime", "string_agg", "substr", "substring", "sum", "time", "total", "trim", "typeof", "unhex", "unicode", "unixepoch",
-    "upper", "zeroblob",
+    "abs",
+    "avg",
+    "changes",
+    "char",
+    "coalesce",
+    "count",
+    "date",
+    "datetime",
+    "format",
+    "glob",
+    "group_concat",
+    "hex",
+    "ifnull",
+    "iif",
+    "instr",
+    "json",
+    "json_array",
+    "json_extract",
+    "json_group_array",
+    "json_group_object",
+    "json_object",
+    "julianday",
+    "last_insert_rowid",
+    "length",
+    "like",
+    "lower",
+    "ltrim",
+    "max",
+    "min",
+    "nullif",
+    "printf",
+    "quote",
+    "random",
+    "randomblob",
+    "replace",
+    "round",
+    "rtrim",
+    "sign",
+    "strftime",
+    "string_agg",
+    "substr",
+    "substring",
+    "sum",
+    "time",
+    "total",
+    "trim",
+    "typeof",
+    "unhex",
+    "unicode",
+    "unixepoch",
+    "upper",
+    "zeroblob",
 ];
 
 pub(crate) async fn functions(c: &Db) -> Vec<super::FuncSig> {
@@ -289,11 +338,8 @@ pub(crate) struct ForeignKey {
 }
 
 pub(crate) async fn foreign_keys(c: &Db, schema: &str, table: &str) -> Vec<ForeignKey> {
-    let q = format!(
-        "SELECT id, \"table\", \"from\", \"to\", on_update, on_delete FROM pragma_foreign_key_list({}, {}) ORDER BY id, seq",
-        lit(table),
-        lit(schema)
-    );
+    let q =
+        format!("SELECT id, \"table\", \"from\", \"to\", on_update, on_delete FROM pragma_foreign_key_list({}, {}) ORDER BY id, seq", lit(table), lit(schema));
     let mut out: Vec<ForeignKey> = Vec::new();
     for r in first_ok(c, &[&q]).await.unwrap_or_default() {
         let id = get(&r, 0).unwrap_or_default();
@@ -348,7 +394,9 @@ mod tests {
         assert_eq!(trigger_events("CREATE TRIGGER t AFTER UPDATE OF a ON x BEGIN SELECT 1; END"), "after update");
         assert_eq!(trigger_events("CREATE TEMP TRIGGER IF NOT EXISTS t INSTEAD OF DELETE ON v BEGIN SELECT 1; END"), "instead of delete");
         assert_eq!(trigger_events("CREATE TRIGGER t INSERT ON x BEGIN SELECT 1; END"), "before insert");
-        let v = view_tables("CREATE VIEW v AS WITH c AS (SELECT * FROM orders) SELECT * FROM c JOIN \"Customers\" k ON k.id = c.customer WHERE c.id IN (SELECT id FROM items)");
+        let v = view_tables(
+            "CREATE VIEW v AS WITH c AS (SELECT * FROM orders) SELECT * FROM c JOIN \"Customers\" k ON k.id = c.customer WHERE c.id IN (SELECT id FROM items)",
+        );
         // Names as the analyzer folds them; the caller matches them to relations whatever the case.
         for t in ["orders", "customers", "items"] {
             assert!(v.iter().any(|x| x.eq_ignore_ascii_case(t)), "{t} in {v:?}");

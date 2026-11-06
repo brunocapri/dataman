@@ -159,7 +159,11 @@ mod tests {
         assert!(!estimable("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", pg));
         use crate::server::{Flavor, ServerInfo};
         let my = |f: Flavor, raw: &str| ServerInfo::of(Engine::MySql, f, String::new(), raw);
-        assert!(mysql_explains_safely(&my(Flavor::Standard, "8.4.3")) && mysql_explains_safely(&my(Flavor::Standard, "5.7.44")) && mysql_explains_safely(&my(Flavor::MariaDb, "10.11.6")));
+        assert!(
+            mysql_explains_safely(&my(Flavor::Standard, "8.4.3"))
+                && mysql_explains_safely(&my(Flavor::Standard, "5.7.44"))
+                && mysql_explains_safely(&my(Flavor::MariaDb, "10.11.6"))
+        );
         assert!(!mysql_explains_safely(&my(Flavor::Standard, "5.6.51")));
     }
 }

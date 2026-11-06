@@ -1,25 +1,22 @@
 use std::sync::Arc;
 
-use gpui::{
-    AnyElement, App, ClipboardItem, Context, Div, EntityId, Focusable, FontWeight, Hsla, MouseButton, SharedString, Stateful, Window, div,
-    prelude::*,
-};
 use crate::theme::{Pt, px};
 use dataman_core::batch::{self, Key};
 use dataman_core::groups::Pane;
 use dataman_core::result::{CopyFormat, Phase};
 use dataman_core::{Connection, TxState, TxStatus};
+use gpui::{AnyElement, App, ClipboardItem, Context, Div, EntityId, Focusable, FontWeight, Hsla, MouseButton, SharedString, Stateful, Window, div, prelude::*};
 
 use crate::app::{Drag, Region, Workspace};
-use crate::fmt::dur as fmt_dur;
 use crate::assets::{Icon, icon};
+use crate::fmt::dur as fmt_dur;
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
 use crate::result_bar::{ResultState, role_color};
 use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, Theme, metrics};
-use crate::ui::{self, Btn};
 use crate::ui::Tipped;
+use crate::ui::{self, Btn};
 
 const COMPACT_W: f32 = 440.;
 
@@ -163,13 +160,15 @@ impl Workspace {
         marks.borrow_mut().clear();
         let mark = move |name: &'static str, el: AnyElement| {
             let marks = marks.clone();
-            div().flex_none().on_children_prepainted(move |b, _, _| {
-                if let Some(b) = b.first() {
-                    marks.borrow_mut().insert(name, *b);
-                }
-            })
-            .child(el)
-            .into_any_element()
+            div()
+                .flex_none()
+                .on_children_prepainted(move |b, _, _| {
+                    if let Some(b) = b.first() {
+                        marks.borrow_mut().insert(name, *b);
+                    }
+                })
+                .child(el)
+                .into_any_element()
         };
         let first_run = self.first_run(cx);
         // The Agents area takes the whole work surface: no tabs over it.
@@ -417,15 +416,12 @@ impl Workspace {
             }))
             .on_drop(cx.listener(|w, d: &crate::app::DraggedTab, window, cx| w.drop_tab(d.0, window, cx)))
             .child(strip_tabs)
-            .child(
-                ui::icon_button(t, "new-tab", Icon::Plus, 26., 14.)
-                    .ml(px(6.))
-                    .on_mouse_down(MouseButton::Left, stop)
-                    .on_click(cx.listener(move |w, _, window, cx| {
-                        w.focus_pane(pane, window, cx);
-                        w.new_tab(window, cx);
-                    })),
-            )
+            .child(ui::icon_button(t, "new-tab", Icon::Plus, 26., 14.).ml(px(6.)).on_mouse_down(MouseButton::Left, stop).on_click(cx.listener(
+                move |w, _, window, cx| {
+                    w.focus_pane(pane, window, cx);
+                    w.new_tab(window, cx);
+                },
+            )))
             .child(div().flex_1())
             .children(control)
             .into_any_element()
@@ -551,20 +547,12 @@ impl Workspace {
                         .group_hover(group.clone(), |s| s.invisible())
                         .child(ui::glyph_el(&s, ind_color)),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .invisible()
-                        .group_hover(group.clone(), |s| s.visible())
-                        .child(close.text_color(tx3)),
-                )
+                .child(div().absolute().inset_0().invisible().group_hover(group.clone(), |s| s.visible()).child(close.text_color(tx3)))
                 .into_any_element(),
             Some(s) => div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(ind_color).child(s).into_any_element(),
-            None => close
-                .text_color(if active { tx3 } else { gpui::transparent_black() })
-                .group_hover(group.clone(), move |s| s.text_color(tx3))
-                .into_any_element(),
+            None => {
+                close.text_color(if active { tx3 } else { gpui::transparent_black() }).group_hover(group.clone(), move |s| s.text_color(tx3)).into_any_element()
+            }
         };
         let activate = entity.clone();
         let middle = entity.clone();
@@ -589,18 +577,24 @@ impl Workspace {
             .when(other_front, |d| d.bg(t.hov).text_color(t.tx2))
             .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
             .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
-                cx.stop_propagation();
-                if crate::keymap::menu_click(&ev.modifiers) {
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if crate::keymap::menu_click(&ev.modifiers) {
+                        w.tab_menu = Some((drag_id, ev.position));
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
                     w.tab_menu = Some((drag_id, ev.position));
                     cx.notify();
-                }
-            }))
-            .on_mouse_down(MouseButton::Right, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
-                cx.stop_propagation();
-                w.tab_menu = Some((drag_id, ev.position));
-                cx.notify();
-            }))
+                }),
+            )
             .on_drag(crate::app::DraggedTab(drag_id), move |_, _, _, cx| crate::dnd::ghost(ghost_label.clone(), None, cx))
             .on_click(cx.listener(move |w, ev: &gpui::ClickEvent, window, cx| {
                 if !crate::keymap::menu_click(&ev.modifiers()) {
@@ -608,12 +602,15 @@ impl Workspace {
                 }
             }))
             .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(MouseButton::Middle, cx.listener(move |w, _, window, cx| {
-                cx.stop_propagation();
-                if let Some(ix) = w.tabs.iter().position(|t| *t == middle) {
-                    w.close_tab(ix, window, cx);
-                }
-            }))
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |w, _, window, cx| {
+                    cx.stop_propagation();
+                    if let Some(ix) = w.tabs.iter().position(|t| *t == middle) {
+                        w.close_tab(ix, window, cx);
+                    }
+                }),
+            )
             .when(agent, |d| d.child(icon(Icon::Agent).size(px(11.)).ml(px(-2.)).text_color(if active { t.tx2 } else { t.tx3 })))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
             .when(show_tx, |d| d.child(tx_chip(t, &tx, true)))
@@ -668,29 +665,25 @@ impl Workspace {
                 w.close_tabs(close, window, cx)
             }))
             .child(ui::menu_sep(t))
-            .child(
-                ui::menu_item(t, "tm-fav", fav_label, crate::keymap::key("save_favorite").as_deref(), fav_ok).when(fav_ok, |d| {
-                    d.on_click(cx.listener(move |w, _, _, cx| {
-                        w.tab_menu = None;
-                        if let Some(tab) = w.tabs.iter().find(|t| t.entity_id() == id).cloned() {
-                            w.save_favorite_of(&tab, cx);
-                        }
-                        cx.notify();
-                    }))
-                }),
-            )
+            .child(ui::menu_item(t, "tm-fav", fav_label, crate::keymap::key("save_favorite").as_deref(), fav_ok).when(fav_ok, |d| {
+                d.on_click(cx.listener(move |w, _, _, cx| {
+                    w.tab_menu = None;
+                    if let Some(tab) = w.tabs.iter().find(|t| t.entity_id() == id).cloned() {
+                        w.save_favorite_of(&tab, cx);
+                    }
+                    cx.notify();
+                }))
+            }))
             .child(ui::menu_sep(t))
-            .child(
-                ui::menu_item(t, "tm-side", "Open to the Side", crate::keymap::key("open_to_side").as_deref(), side_ok).when(side_ok, |d| {
-                    d.on_click(cx.listener(move |w, _, window, cx| {
-                        w.tab_menu = None;
-                        if let Some(tab) = w.tabs.iter().find(|t| t.entity_id() == id).cloned() {
-                            w.open_to_side(&tab, window, cx);
-                        }
-                        cx.notify();
-                    }))
-                }),
-            )
+            .child(ui::menu_item(t, "tm-side", "Open to the Side", crate::keymap::key("open_to_side").as_deref(), side_ok).when(side_ok, |d| {
+                d.on_click(cx.listener(move |w, _, window, cx| {
+                    w.tab_menu = None;
+                    if let Some(tab) = w.tabs.iter().find(|t| t.entity_id() == id).cloned() {
+                        w.open_to_side(&tab, window, cx);
+                    }
+                    cx.notify();
+                }))
+            }))
             .child(item("tm-move", move_label, !alone, |w, ix, window, cx| {
                 let id = w.tabs[ix].entity_id();
                 let to = w.pane_of(id).other();
@@ -734,7 +727,15 @@ impl Workspace {
                 .capture_any_mouse_down(cx.listener(move |w, _, window, cx| w.focus_pane(pane, window, cx)))
                 .children(body.map(|b| {
                     if clip {
-                        div().absolute().top_0().bottom_0().w(px(full)).when(pane == Pane::Right, |d| d.left_0()).when(pane == Pane::Left, |d| d.right_0()).child(b).into_any_element()
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(full))
+                            .when(pane == Pane::Right, |d| d.left_0())
+                            .when(pane == Pane::Left, |d| d.right_0())
+                            .child(b)
+                            .into_any_element()
                     } else {
                         b.into_any_element()
                     }
@@ -825,7 +826,14 @@ impl Workspace {
             };
             if !covered {
                 main = main
-                    .child(div().h(px(metrics::TOOLBAR_H * rest)).flex_none().overflow_hidden().when(zoom > 0., |d| d.opacity(rest * rest)).child(self.render_toolbar(&view, &t, cx)))
+                    .child(
+                        div()
+                            .h(px(metrics::TOOLBAR_H * rest))
+                            .flex_none()
+                            .overflow_hidden()
+                            .when(zoom > 0., |d| d.opacity(rest * rest))
+                            .child(self.render_toolbar(&view, &t, cx)),
+                    )
                     .child(
                         div()
                             .h(px(editor_h * rest))
@@ -858,36 +866,28 @@ impl Workspace {
                     .children(gutter_line.map(|x| div().absolute().left(x).top_0().bottom_0().w(px(1.)).bg(t.pane_line)))
                     // The grip shows under the pointer and while dragged.
                     .child(div().w(px(32.)).h(px(3.)).when(splitting, |d| d.bg(t.line2)).group_hover("splitter", move |s| s.bg(grip)))
-                    .child(
-                        div()
-                            .id("splitter")
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px(-3.))
-                            .h(px(metrics::DIVIDER_HIT))
-                            .cursor_row_resize()
-                            .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| {
-                                w.drag = Some(Drag::Split(split_tab));
-                                cx.stop_propagation();
-                            })),
-                    ),
+                    .child(div().id("splitter").absolute().left_0().right_0().top(px(-3.)).h(px(metrics::DIVIDER_HIT)).cursor_row_resize().on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |w, _, _, cx| {
+                            w.drag = Some(Drag::Split(split_tab));
+                            cx.stop_propagation();
+                        }),
+                    )),
             );
             let bounds = focused.then(|| self.result_bounds.clone());
             main = main.child(
-                div().flex_1().min_h_0().flex().flex_col().on_children_prepainted(move |b, _, _| {
-                    if let Some(bounds) = &bounds {
-                        bounds.set(b.first().copied());
-                    }
-                })
-                .child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .children(strip)
-                        .child(bar)
-                        .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .on_children_prepainted(move |b, _, _| {
+                        if let Some(bounds) = &bounds {
+                            bounds.set(b.first().copied());
+                        }
+                    })
+                    .child(
+                        div().size_full().flex().flex_col().children(strip).child(bar).child(
                             div()
                                 .flex_1()
                                 .min_h(px(metrics::GRID_MIN))
@@ -897,7 +897,7 @@ impl Workspace {
                                 .when(doc.is_none(), |d| d.child(tab.read(cx).edit.clone()))
                                 .children((region == Some(Region::Grid)).then(|| focus_ring(&t))),
                         ),
-                ),
+                    ),
             );
         }
         div().size_full().flex().flex_row().child(main)
@@ -980,14 +980,7 @@ impl Workspace {
                 .child("Rollback")
                 .when_some(crate::keymap::key("rollback_tx"), |d, k| d.child(ui::key_hint(k)))
                 .on_click(cx.listener(|w, _, _, cx| w.end_active_tx(false, cx)));
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.))
-                .child(tx_chip(t, &v.tx, false))
-                .child(commit)
-                .child(rollback)
+            div().flex().flex_row().items_center().gap(px(6.)).child(tx_chip(t, &v.tx, false)).child(commit).child(rollback)
         });
         let parts = self.panes[v.pane.index()].toolbar_parts.clone();
         div()
@@ -1090,11 +1083,7 @@ impl Workspace {
                 .unwrap_or_else(|| vec![conn.database().to_string()]);
                 for d in dbs {
                     let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
-                    let label = if d.is_empty() {
-                        "all indices".to_string()
-                    } else {
-                        p.engine.db_label(&d)
-                    };
+                    let label = if d.is_empty() { "all indices".to_string() } else { p.engine.db_label(&d) };
                     let (id, pick) = (p.id.clone(), d.clone());
                     rows.push(ui::probe(
                         format!("pick:{}:{d}", p.id),
@@ -1107,7 +1096,8 @@ impl Workspace {
             });
             div().absolute().left_0().top(px(26.)).child(
                 gpui::deferred(
-                    gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in("conn-menu-in", 
+                    gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in(
+                        "conn-menu-in",
                         ui::popover(t)
                             .w(px(240.))
                             .on_mouse_down_out(cx.listener(|w, _, _, cx| {
@@ -1200,7 +1190,9 @@ impl Workspace {
             ResultState::Idle | ResultState::Error => None,
             ResultState::Paused => Some(format!("{}+", ui_count(rows))),
             // What a batch that only printed left in @@ROWCOUNT means nothing.
-            ResultState::Affected if rs.as_ref().is_some_and(|r| crate::messages::shows_log(r) && batch::tag(&r.sql, Some(0)) == statement_verb(&r.sql)) => None,
+            ResultState::Affected if rs.as_ref().is_some_and(|r| crate::messages::shows_log(r) && batch::tag(&r.sql, Some(0)) == statement_verb(&r.sql)) => {
+                None
+            }
             ResultState::Affected => status.as_ref().and_then(|s| s.affected).map(|a| ui_count(a as usize)),
             ResultState::Running if rows == 0 => None,
             _ => Some(ui_count(rows)),
@@ -1240,9 +1232,7 @@ impl Workspace {
                 };
                 (format!("{code}{tail}"), true)
             }
-            ResultState::ErrPartial => {
-                (status.as_ref().and_then(|s| s.error.as_ref()).and_then(|e| e.code.clone()).unwrap_or_else(|| "error".into()), true)
-            }
+            ResultState::ErrPartial => (status.as_ref().and_then(|s| s.error.as_ref()).and_then(|e| e.code.clone()).unwrap_or_else(|| "error".into()), true),
             _ => (String::new(), false),
         };
         let note_full = status.as_ref().and_then(|s| s.error.as_ref()).filter(|_| note_err).map(|e| e.to_string());
@@ -1250,7 +1240,10 @@ impl Workspace {
         let pager = {
             let tr = tab.read(cx);
             let finished = rs.as_ref().is_some_and(|r| r.phase().is_finished());
-            tr.table.as_ref().filter(|_| tr.shows_table() && !matches!(state, ResultState::Error | ResultState::Idle)).map(|d| crate::table_view::pager(d, rows, finished))
+            tr.table
+                .as_ref()
+                .filter(|_| tr.shows_table() && !matches!(state, ResultState::Error | ResultState::Idle))
+                .map(|d| crate::table_view::pager(d, rows, finished))
         };
         let pager_el = pager.as_ref().map(|p| {
             rows_text = None;
@@ -1264,27 +1257,29 @@ impl Workspace {
                 .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.range()))
                 .children(p.of().map(|o| {
                     let hov = t.tx;
-                    div()
-                        .id("rb-total")
-                        .text_color(t.tx3)
-                        .when(!exact || counting, |d| d.cursor_pointer().hover(move |s| s.text_color(hov)))
-                        .child(o)
-                        .on_click(cx.listener(move |w, _, _, cx| {
+                    div().id("rb-total").text_color(t.tx3).when(!exact || counting, |d| d.cursor_pointer().hover(move |s| s.text_color(hov))).child(o).on_click(
+                        cx.listener(move |w, _, _, cx| {
                             if let Some(tab) = w.active_tab().cloned() {
-                                tab.update(cx, |t, cx| if counting { t.stop_count(cx) } else if !exact { t.start_count(cx) });
+                                tab.update(cx, |t, cx| {
+                                    if counting {
+                                        t.stop_count(cx)
+                                    } else if !exact {
+                                        t.start_count(cx)
+                                    }
+                                });
                             }
-                        }))
+                        }),
+                    )
                 }))
                 .when(counting, |d| d.child(div().text_color(t.tx4).child("counting")))
         });
         if let Some(p) = &pager {
             let arrow = |id: &'static str, ic: Icon, on: bool| {
-                ui::button(t, id, Btn::Ghost)
-                    .h(px(24.))
-                    .w(px(24.))
-                    .px(px(0.))
-                    .justify_center()
-                    .child(icon(ic).size(px(13.)).text_color(if on { t.tx2 } else { t.tx4 }))
+                ui::button(t, id, Btn::Ghost).h(px(24.)).w(px(24.)).px(px(0.)).justify_center().child(icon(ic).size(px(13.)).text_color(if on {
+                    t.tx2
+                } else {
+                    t.tx4
+                }))
             };
             actions.insert(
                 0,
@@ -1309,7 +1304,11 @@ impl Workspace {
         let copy_open = self.copy_menu && v.focused;
         let printed = copy_open && {
             let tr = tab.read(cx);
-            if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
+            if tr.shown_key() == Some(Key::Messages) {
+                tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages()))
+            } else {
+                rs.as_ref().is_some_and(|r| r.has_messages())
+            }
         };
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         let copy_menu = copy_open.then(|| self.render_copy_menu(has_rows, printed, t, cx));
@@ -1327,30 +1326,49 @@ impl Workspace {
             .border_color(t.pane_line)
             .text_color(t.tx2)
             .whitespace_nowrap()
-            .child(div().flex_1().min_w_0().overflow_hidden().flex().flex_row().items_center().gap(px(10.))
-            .child(ui::status(spec.glyph, label, fg))
-            .children(pager_el)
-            .children(rows_text.map(|r| {
-                let rl = spec.rows_label;
-                let what = if r == "1" { rl.replacen("rows", "row", 1) } else { rl.to_string() };
+            .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
                     .flex()
                     .flex_row()
-                    .items_baseline()
-                    .gap(px(5.))
-                    .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(r))
-                    .child(div().text_color(t.tx3).child(what))
-            }))
-            .children(metrics_.into_iter().map(|(k, v)| {
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(5.))
-                    .child(div().text_color(t.tx4).child("·"))
-                    .child(div().text_color(t.tx3).child(k))
-                    .child(div().text_color(t.tx).child(v))
-            }))
-            .child(div().id("rb-note").children(ui::here(&"rb-note".into())).min_w_0().overflow_hidden().text_ellipsis().text_color(if note_err { t.err } else { t.tx3 }).when_some(note_full, |d, e| d.tip(ui::error_tip(e))).child(note)))
+                    .items_center()
+                    .gap(px(10.))
+                    .child(ui::status(spec.glyph, label, fg))
+                    .children(pager_el)
+                    .children(rows_text.map(|r| {
+                        let rl = spec.rows_label;
+                        let what = if r == "1" { rl.replacen("rows", "row", 1) } else { rl.to_string() };
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_baseline()
+                            .gap(px(5.))
+                            .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(r))
+                            .child(div().text_color(t.tx3).child(what))
+                    }))
+                    .children(metrics_.into_iter().map(|(k, v)| {
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(5.))
+                            .child(div().text_color(t.tx4).child("·"))
+                            .child(div().text_color(t.tx3).child(k))
+                            .child(div().text_color(t.tx).child(v))
+                    }))
+                    .child(
+                        div()
+                            .id("rb-note")
+                            .children(ui::here(&"rb-note".into()))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_color(if note_err { t.err } else { t.tx3 })
+                            .when_some(note_full, |d, e| d.tip(ui::error_tip(e)))
+                            .child(note),
+                    ),
+            )
             .children(actions)
             .child(ui::vsep(t, 16.))
             .when(can_insert, |d| {
@@ -1443,32 +1461,45 @@ impl Workspace {
         let mut actions: Vec<AnyElement> = Vec::new();
         match state {
             ResultState::Paused => {
-                actions.push(action("rb-more", format!("Fetch next {}", crate::grid::fetch_step()).into(), "fetch_more").on_click(cx.listener(|w, _, _, cx| {
-                    if let Some(t) = w.active_tab().cloned() {
-                        t.update(cx, |t, cx| t.fetch_more(cx));
-                    }
-                })).into_any_element());
-                actions.push(action("rb-all", fetch_all_label(rs), "fetch_all").on_click(cx.listener(|w, _, _, cx| {
-                    if let Some(t) = w.active_tab().cloned() {
-                        t.update(cx, |t, cx| t.fetch_all(cx));
-                    }
-                })).into_any_element());
+                actions.push(
+                    action("rb-more", format!("Fetch next {}", crate::grid::fetch_step()).into(), "fetch_more")
+                        .on_click(cx.listener(|w, _, _, cx| {
+                            if let Some(t) = w.active_tab().cloned() {
+                                t.update(cx, |t, cx| t.fetch_more(cx));
+                            }
+                        }))
+                        .into_any_element(),
+                );
+                actions.push(
+                    action("rb-all", fetch_all_label(rs), "fetch_all")
+                        .on_click(cx.listener(|w, _, _, cx| {
+                            if let Some(t) = w.active_tab().cloned() {
+                                t.update(cx, |t, cx| t.fetch_all(cx));
+                            }
+                        }))
+                        .into_any_element(),
+                );
             }
             ResultState::Cancelled => {
-                actions.push(action("rb-rerun", "Re-run".into(), "run_all").on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx))).into_any_element());
+                actions
+                    .push(action("rb-rerun", "Re-run".into(), "run_all").on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx))).into_any_element());
             }
             ResultState::Error | ResultState::ErrPartial => {
                 let label = if state == ResultState::Error { "Show in editor" } else { "Show error" };
-                actions.push(action("rb-show", label.into(), "jump_to_error").on_click(cx.listener(|w, _, window, cx| {
-                    if let Some(tab) = w.active_tab().cloned() {
-                        if tab.read(cx).zoomed {
-                            w.toggle_result_zoom(window, cx);
-                        }
-                        let e = tab.read(cx).editor.clone();
-                        e.update(cx, |e, cx| e.jump_to_error(cx));
-                        window.focus(&e.focus_handle(cx), cx);
-                    }
-                })).into_any_element());
+                actions.push(
+                    action("rb-show", label.into(), "jump_to_error")
+                        .on_click(cx.listener(|w, _, window, cx| {
+                            if let Some(tab) = w.active_tab().cloned() {
+                                if tab.read(cx).zoomed {
+                                    w.toggle_result_zoom(window, cx);
+                                }
+                                let e = tab.read(cx).editor.clone();
+                                e.update(cx, |e, cx| e.jump_to_error(cx));
+                                window.focus(&e.focus_handle(cx), cx);
+                            }
+                        }))
+                        .into_any_element(),
+                );
             }
             ResultState::Sorting => {
                 actions.push(action("rb-stop", "Stop".into(), "cancel").on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx))).into_any_element());
@@ -1504,8 +1535,10 @@ impl Workspace {
     }
 
     fn render_copy_menu(&self, has_rows: bool, printed: bool, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        div().absolute().right_0().top(px(26.)).child(gpui::deferred(
-                gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("copy-menu-in", 
+        div().absolute().right_0().top(px(26.)).child(
+            gpui::deferred(
+                gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in(
+                    "copy-menu-in",
                     ui::popover(t)
                         .w(px(236.))
                         .on_mouse_down_out(cx.listener(|w, _, _, cx| {
@@ -1513,14 +1546,30 @@ impl Workspace {
                             ui::menu_shut("copy-menu");
                             cx.notify();
                         }))
-                        .child(ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))))
-                        .child(ui::menu_item(t, "cp-tsv-hdr", "Copy as TSV with Headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))))
-                        .child(ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))))
-                        .child(ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))))
-                        .when(printed, |d| d.child(ui::menu_sep(t)).child(ui::menu_item(t, "cp-msg", "Copy Messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))),
+                        .child(
+                            ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows)
+                                .on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))),
+                        )
+                        .child(
+                            ui::menu_item(t, "cp-tsv-hdr", "Copy as TSV with Headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows)
+                                .on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))),
+                        )
+                        .child(
+                            ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows)
+                                .on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))),
+                        )
+                        .child(
+                            ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows)
+                                .on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))),
+                        )
+                        .when(printed, |d| {
+                            d.child(ui::menu_sep(t))
+                                .child(ui::menu_item(t, "cp-msg", "Copy Messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))
+                        }),
                 )),
             )
-            .priority(3))
+            .priority(3),
+        )
     }
 
     fn render_result_strip(&self, id: EntityId, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1585,10 +1634,13 @@ impl Workspace {
                     .child(close)
                     .on_click(cx.listener(move |w, _, _, cx| w.select_result(key, cx)))
                     .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_up(MouseButton::Middle, cx.listener(move |w, _, _, cx| {
-                        cx.stop_propagation();
-                        w.close_result(key, cx);
-                    }))
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(move |w, _, _, cx| {
+                            cx.stop_propagation();
+                            w.close_result(key, cx);
+                        }),
+                    )
             };
             els.push(tab.into_any_element());
             is_tab.push(true);
@@ -1599,7 +1651,8 @@ impl Workspace {
         div()
             .on_children_prepainted(move |b, _, _| {
                 if let Some(bounds) = &bounds {
-                    *bounds.borrow_mut() = b.into_iter().zip(is_tab.iter().copied().chain(std::iter::repeat(true))).filter(|(_, t)| *t).map(|(b, _)| b).collect();
+                    *bounds.borrow_mut() =
+                        b.into_iter().zip(is_tab.iter().copied().chain(std::iter::repeat(true))).filter(|(_, t)| *t).map(|(b, _)| b).collect();
                 }
             })
             .id("result-strip")
@@ -1631,13 +1684,9 @@ impl Workspace {
 
     fn render_message_list(&self, id: &'static str, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = t.clone();
-        div()
-            .id(id)
-            .size_full()
-            .px(px(20.))
-            .py(px(14.))
-            .text_size(px(crate::theme::text::BODY))
-            .child(gpui::list(self.messages_of(pane).list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(pane, ix, &theme, cx))).size_full())
+        div().id(id).size_full().px(px(20.)).py(px(14.)).text_size(px(crate::theme::text::BODY)).child(
+            gpui::list(self.messages_of(pane).list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(pane, ix, &theme, cx))).size_full(),
+        )
     }
 
     fn render_message_row(&mut self, pane: Pane, ix: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1738,24 +1787,17 @@ impl Workspace {
         let conn = tab.and_then(|t| t.connection().cloned());
         let notice = tab.and_then(|t| t.notice.clone());
         let badge = conn.as_ref().map(|c| {
-            div()
-                .h(px(17.))
-                .px(px(6.))
-                .flex()
-                .items_center()
-                .bg(t.hov)
-                .border_1()
-                .border_color(t.edge)
-                .text_color(t.tx2)
-                .child(c.profile.engine.badge())
+            div().h(px(17.)).px(px(6.)).flex().items_center().bg(t.hov).border_1().border_color(t.edge).text_color(t.tx2).child(c.profile.engine.badge())
         });
         let version: SharedString = match &conn {
             Some(c) => c.info.short_version().into(),
             None => "not connected".into(),
         };
-        let env = conn.as_ref().map(|c| c.profile.env).filter(|e| !e.is_none()).map(|e| {
-            div().text_color(if e.is_production() { t.err } else { t.tx2 }).child(e.label())
-        });
+        let env = conn
+            .as_ref()
+            .map(|c| c.profile.env)
+            .filter(|e| !e.is_none())
+            .map(|e| div().text_color(if e.is_production() { t.err } else { t.tx2 }).child(e.label()));
         let db = tab.map(|t| t.database().to_string()).unwrap_or_default();
         let read_only = conn.as_ref().filter(|c| c.read_only_for(&db)).map(|_| div().text_color(t.tx2).child("read-only"));
         div()
@@ -1785,12 +1827,7 @@ impl Workspace {
                 }
             }))
             .children(self.export.as_ref().filter(|e| !e.read(cx).visible).and_then(|e| e.read(cx).status_line()).map(|l| {
-                div()
-                    .id("export-status")
-                    .text_color(t.acc_t)
-                    .cursor_pointer()
-                    .child(l)
-                    .on_click(cx.listener(|w, _, window, cx| w.open_export(window, cx)))
+                div().id("export-status").text_color(t.acc_t).cursor_pointer().child(l).on_click(cx.listener(|w, _, window, cx| w.open_export(window, cx)))
             }))
             .children(self.data_import.as_ref().filter(|v| !v.read(cx).visible).and_then(|v| v.read(cx).status_line()).map(|l| {
                 div()
@@ -1804,9 +1841,7 @@ impl Workspace {
     }
 
     fn error_view_needed(&self, tab: &gpui::Entity<QueryTab>, cx: &gpui::App) -> bool {
-        tab.read(cx)
-            .result()
-            .is_some_and(|r| r.phase() == Phase::Failed && r.rows() == 0 && r.columns().is_none_or(|c| c.is_empty()))
+        tab.read(cx).result().is_some_and(|r| r.phase() == Phase::Failed && r.rows() == 0 && r.columns().is_none_or(|c| c.is_empty()))
     }
 
     fn render_error_view(&self, tab: &gpui::Entity<QueryTab>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1838,9 +1873,11 @@ impl Workspace {
         if let Some((l, c, _)) = place {
             where_.push(format!("line {l}, col {c}"));
         }
-        let message = err.message.split('"').enumerate().map(|(i, part)| {
-            if i % 2 == 1 { div().text_color(t.err).child(format!("\"{part}\"")) } else { div().child(part.to_string()) }
-        });
+        let message = err
+            .message
+            .split('"')
+            .enumerate()
+            .map(|(i, part)| if i % 2 == 1 { div().text_color(t.err).child(format!("\"{part}\"")) } else { div().child(part.to_string()) });
         let grid_rows: Vec<(&str, String)> =
             [("DETAIL", err.detail.clone()), ("HINT", err.hint.clone())].into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect();
         let excerpt = place.map(|(line, _, at)| {
@@ -1848,7 +1885,15 @@ impl Workspace {
             let mut out: Vec<AnyElement> = Vec::new();
             let num = |n: usize, c: Hsla| div().w(px(40.)).flex_none().text_right().text_color(c).child(n.to_string());
             if line >= 2 {
-                out.push(div().flex().flex_row().gap(px(16.)).child(num(line - 1, t.tx4)).child(div().text_color(t.tx2).child(lines[line - 2].to_string())).into_any_element());
+                out.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(16.))
+                        .child(num(line - 1, t.tx4))
+                        .child(div().text_color(t.tx2).child(lines[line - 2].to_string()))
+                        .into_any_element(),
+                );
             }
             let ltxt = lines.get(line - 1).copied().unwrap_or("");
             let lstart = at - text[..at].rsplit('\n').next().map(|s| s.len()).unwrap_or(0);
@@ -1897,7 +1942,12 @@ impl Workspace {
         let suggestion = err.hint.as_deref().and_then(|h| h.split('"').nth(1)).map(str::to_string).filter(|_| token.is_some());
         let err_copy = err.to_string();
         let btn = |id: &'static str, label: &'static str, key: Option<String>| {
-            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(crate::ui::keys_text(k))))
+            ui::button(t, id, Btn::Secondary)
+                .h(px(28.))
+                .px(px(10.))
+                .gap(px(8.))
+                .child(label)
+                .children(key.map(|k| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(crate::ui::keys_text(k))))
         };
         let left = div()
             .flex_1()
@@ -1924,12 +1974,7 @@ impl Workspace {
             .child(div().flex().flex_row().flex_wrap().text_size(px(18.)).line_height(px(24.)).text_color(t.tx).children(message))
             .when(!grid_rows.is_empty(), |d| {
                 d.child(div().flex().flex_col().gap(px(7.)).line_height(px(18.)).children(grid_rows.into_iter().map(|(k, v)| {
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap(px(14.))
-                        .child(div().w(px(96.)).flex_none().text_color(t.tx3).child(k))
-                        .child(div().flex_1().min_w_0().child(v))
+                    div().flex().flex_row().gap(px(14.)).child(div().w(px(96.)).flex_none().text_color(t.tx3).child(k)).child(div().flex_1().min_w_0().child(v))
                 })))
             })
             .children(excerpt)
@@ -1939,7 +1984,10 @@ impl Workspace {
                     .flex_row()
                     .gap(px(8.))
                     .when(place.is_some(), |d| {
-                        d.child(btn("ev-jump", "Jump to error", crate::keymap::key("jump_to_error")).on_click(cx.listener(|w, _, window, cx| w.jump_to_error_pub(window, cx))))
+                        d.child(
+                            btn("ev-jump", "Jump to error", crate::keymap::key("jump_to_error"))
+                                .on_click(cx.listener(|w, _, window, cx| w.jump_to_error_pub(window, cx))),
+                        )
                     })
                     .children(suggestion.map(|s| {
                         btn("ev-hint", "Apply hint", None).on_click(cx.listener(move |w, _, window, cx| {
@@ -2046,7 +2094,12 @@ impl Workspace {
                             .gap(px(6.))
                             .text_size(px(crate::theme::text::UI))
                             .line_height(px(17.))
-                            .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(format!("Cancel sent · {:.1} s ago", at.elapsed().as_secs_f64())))
+                            .child(
+                                div()
+                                    .text_color(t.tx)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("Cancel sent · {:.1} s ago", at.elapsed().as_secs_f64())),
+                            )
                             .child(
                                 div().mt(px(4.)).flex().flex_row().gap(px(8.)).child(
                                     ui::button(&t, "toast-hide", Btn::Ghost)
@@ -2088,7 +2141,10 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.resolve_pending_run(false, window, cx)))
-                .child(ui::esc_closes(Some("ConfirmDiscard"), cx.listener(|w, _: &crate::app::CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx))))
+                .child(ui::esc_closes(
+                    Some("ConfirmDiscard"),
+                    cx.listener(|w, _: &crate::app::CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx)),
+                ))
                 .child(
                     ui::modal(&t, "confirm-discard-card")
                         .w(px(440.))
@@ -2126,9 +2182,8 @@ impl Workspace {
         use crate::tab::{ConfirmChoice, TabConfirm};
         let t = cx.theme();
         let answer = |c: ConfirmChoice| cx.listener(move |w: &mut Workspace, _: &gpui::ClickEvent, window, cx| w.sheet_answer(c, window, cx));
-        let btn = |id: &'static str, kind: Btn, label: SharedString, key: &'static str| {
-            ui::button(&t, id, kind).h(px(28.)).child(label).child(ui::key_hint(key))
-        };
+        let btn =
+            |id: &'static str, kind: Btn, label: SharedString, key: &'static str| ui::button(&t, id, kind).h(px(28.)).child(label).child(ui::key_hint(key));
         let cancel = btn("tx-cancel", Btn::Secondary, "Cancel".into(), "esc").on_click(answer(ConfirmChoice::Cancel)).into_any_element();
         let mut body: Vec<AnyElement> = Vec::new();
         let mut buttons = vec![cancel];
@@ -2159,7 +2214,9 @@ impl Workspace {
                 body.push(ui::error_block(&t, "tx-prompt-error", e.clone()).pt(px(4.)).line_height(px(17.)).into_any_element());
             }
             let verb = p.then.verb();
-            buttons.push(btn("tx-rollback", Btn::Secondary, format!("Rollback & {verb}").into(), "⌘⌫").on_click(answer(ConfirmChoice::Rollback)).into_any_element());
+            buttons.push(
+                btn("tx-rollback", Btn::Secondary, format!("Rollback & {verb}").into(), "⌘⌫").on_click(answer(ConfirmChoice::Rollback)).into_any_element(),
+            );
             let commit: SharedString = if p.busy { "Committing…".into() } else { format!("Commit & {verb}").into() };
             buttons.push(
                 btn("tx-commit", if p.busy { Btn::Ghost } else { Btn::Primary }, commit, "⌘↩")
@@ -2203,16 +2260,15 @@ impl Workspace {
                         body.push(div().text_color(t.tx3).child(format!("+{}", n - 4)).into_any_element());
                     }
                     buttons.push(
-                        btn("tx-run", Btn::Danger, "Run".into(), "⌘↩").font_weight(FontWeight::SEMIBOLD).on_click(answer(ConfirmChoice::Run)).into_any_element(),
+                        btn("tx-run", Btn::Danger, "Run".into(), "⌘↩")
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .on_click(answer(ConfirmChoice::Run))
+                            .into_any_element(),
                     );
                 }
                 TabConfirm::Failed { .. } => {
                     title = "Transaction failed".into();
-                    let err = tab
-                        .batch_items()
-                        .iter()
-                        .rev()
-                        .find_map(|b| b.rs.as_ref().filter(|r| r.phase() == Phase::Failed).and_then(|r| r.status().error));
+                    let err = tab.batch_items().iter().rev().find_map(|b| b.rs.as_ref().filter(|r| r.phase() == Phase::Failed).and_then(|r| r.status().error));
                     body.push(
                         div()
                             .flex()
@@ -2240,8 +2296,11 @@ impl Workspace {
                         Pending::Signal { signal, session, own } => {
                             let on_prod = production && *signal == Signal::Terminate;
                             title = format!("{} pid {}{}", signal.label(), session.pid, if on_prod { " on production" } else { "" }).into();
-                            let facts: Vec<String> =
-                                [session.user.clone(), session.app.clone(), session.db.clone(), session.state.clone()].into_iter().flatten().filter(|s| !s.is_empty()).collect();
+                            let facts: Vec<String> = [session.user.clone(), session.app.clone(), session.db.clone(), session.state.clone()]
+                                .into_iter()
+                                .flatten()
+                                .filter(|s| !s.is_empty())
+                                .collect();
                             body.push(
                                 div()
                                     .flex()
@@ -2259,12 +2318,22 @@ impl Workspace {
                                 Signal::Cancel => (Btn::Primary, "Cancel query"),
                                 Signal::Terminate => (Btn::Danger, "Terminate session"),
                             };
-                            buttons.push(btn("tx-run", kind, label.into(), "⌘↩").font_weight(FontWeight::SEMIBOLD).on_click(answer(ConfirmChoice::Run)).into_any_element());
+                            buttons.push(
+                                btn("tx-run", kind, label.into(), "⌘↩")
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .on_click(answer(ConfirmChoice::Run))
+                                    .into_any_element(),
+                            );
                         }
                         Pending::Reset => {
                             title = "Reset pg_stat_statements".into();
                             body.push(code_block(&t, dataman_core::activity::RESET_PGSS, None).into_any_element());
-                            buttons.push(btn("tx-run", Btn::Danger, "Reset".into(), "⌘↩").font_weight(FontWeight::SEMIBOLD).on_click(answer(ConfirmChoice::Run)).into_any_element());
+                            buttons.push(
+                                btn("tx-run", Btn::Danger, "Reset".into(), "⌘↩")
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .on_click(answer(ConfirmChoice::Run))
+                                    .into_any_element(),
+                            );
                         }
                     }
                 }
@@ -2297,18 +2366,16 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.sheet_answer(ConfirmChoice::Cancel, window, cx)))
-                .child(ui::esc_closes(Some(crate::app::SHEET_CONTEXT), cx.listener(|w, _: &crate::app::SheetCancel, window, cx| w.sheet_answer(ConfirmChoice::Cancel, window, cx))))
+                .child(ui::esc_closes(
+                    Some(crate::app::SHEET_CONTEXT),
+                    cx.listener(|w, _: &crate::app::SheetCancel, window, cx| w.sheet_answer(ConfirmChoice::Cancel, window, cx)),
+                ))
                 .child(
                     ui::modal(&t, "tx-sheet-card")
                         .w(px(520.))
                         .child(ui::modal_header(&t, None, title, ui::modal_close(&t, "tx-close").on_click(answer(ConfirmChoice::Cancel))))
                         .when(!body.is_empty(), |d| d.child(div().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(10.)).children(body)))
-                        .child(
-                            ui::modal_footer(&t)
-                                .children(footer)
-                                .child(div().flex_1())
-                                .children(buttons),
-                        ),
+                        .child(ui::modal_footer(&t).children(footer).child(div().flex_1()).children(buttons)),
                 )
                 .into_any_element(),
         )
@@ -2350,12 +2417,7 @@ fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
 }
 
 pub(crate) fn focus_ring(t: &Theme) -> Div {
-    div()
-        .absolute()
-        .inset_0()
-        .border_1()
-        .border_color(t.focus)
-        .child(div().absolute().inset_0().border_2().border_color(t.focus_s))
+    div().absolute().inset_0().border_1().border_color(t.focus).child(div().absolute().inset_0().border_2().border_color(t.focus_s))
 }
 
 pub(crate) fn code_block(t: &Theme, sql: &str, target: Option<&str>) -> Div {

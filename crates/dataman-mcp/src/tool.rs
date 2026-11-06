@@ -11,9 +11,9 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use dataman_core::audit::{AllowedBy, ApprovalNote, Decision};
 use crate::hub::{Approval, DRAFTS_NEED_APP, Drafted, Front, Hub, TabDraft, TabRead, TabWrite, WriteShown};
 use crate::policy::{self, Need, Target, Verdict};
+use dataman_core::audit::{AllowedBy, ApprovalNote, Decision};
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -100,8 +100,11 @@ impl Schema {
     }
 
     pub fn conn(self) -> Schema {
-        self.prop("connection", true, json!({"type": "string", "description": "Connection name (or id) from list_connections."}))
-            .prop("database", false, json!({"type": "string", "description": "Database on that server; default: the connection's own."}))
+        self.prop("connection", true, json!({"type": "string", "description": "Connection name (or id) from list_connections."})).prop(
+            "database",
+            false,
+            json!({"type": "string", "description": "Database on that server; default: the connection's own."}),
+        )
     }
 
     pub fn properties(&self) -> &Map<String, Value> {
@@ -441,7 +444,15 @@ impl Call {
         self.hub.front().filter(|f| f.tabs())
     }
 
-    pub async fn read(&self, args: &Args, sql: &str, params: Vec<Option<String>>, limits: Limits, front: Option<Arc<dyn Front>>, title: Option<String>) -> Result<bounded::Outcome, ToolError> {
+    pub async fn read(
+        &self,
+        args: &Args,
+        sql: &str,
+        params: Vec<Option<String>>,
+        limits: Limits,
+        front: Option<Arc<dyn Front>>,
+        title: Option<String>,
+    ) -> Result<bounded::Outcome, ToolError> {
         let Some(f) = front else {
             let o = self.open(args, Need::Read).await?;
             return self.run(&o, sql, params, Mode::Read, limits).await;
@@ -460,7 +471,17 @@ impl Call {
             dataman_core::Engine::Sqlite => Some(self.open(args, Need::Read).await?.profile.mcp_rules),
             _ => None,
         };
-        let req = TabRead { client: self.client.clone(), connection_id: p.id.clone(), database, sql: sql.to_string(), params, title, limits, cancel: self.cancel.clone(), rules };
+        let req = TabRead {
+            client: self.client.clone(),
+            connection_id: p.id.clone(),
+            database,
+            sql: sql.to_string(),
+            params,
+            title,
+            limits,
+            cancel: self.cancel.clone(),
+            rules,
+        };
         tokio::select! {
             r = f.run_read(req) => r.map_err(ToolError::from),
             _ = self.cancel.cancelled() => Err(ToolError::Cancelled),
@@ -493,7 +514,15 @@ impl Call {
         self.note.lock().approval = Some(ApprovalNote { decision, by, reasons, rows });
     }
 
-    fn approval(&self, o: &Opened, sql: &str, reasons: Vec<String>, affected: Option<u64>, preview: Option<(Vec<String>, Vec<Vec<String>>)>, tab: Option<u64>) -> Approval {
+    fn approval(
+        &self,
+        o: &Opened,
+        sql: &str,
+        reasons: Vec<String>,
+        affected: Option<u64>,
+        preview: Option<(Vec<String>, Vec<Vec<String>>)>,
+        tab: Option<u64>,
+    ) -> Approval {
         Approval {
             client: self.client.clone(),
             tool: self.tool.clone(),
@@ -539,7 +568,13 @@ impl Call {
 
     /// The user's Allow for a change that is not a statement (`what` is shown as the text).
     pub async fn ask_about(&self, p: &ConnectionProfile, what: &str, reasons: Vec<String>) -> Result<(), ToolError> {
-        let a = Approval { connection: p.name.clone(), connection_id: p.id.clone(), database: p.database.clone(), env: p.env, ..self.plain_approval(what, &reasons) };
+        let a = Approval {
+            connection: p.name.clone(),
+            connection_id: p.id.clone(),
+            database: p.database.clone(),
+            env: p.env,
+            ..self.plain_approval(what, &reasons)
+        };
         self.decide(a, reasons).await
     }
 
@@ -550,7 +585,14 @@ impl Call {
     }
 
     fn plain_approval(&self, what: &str, reasons: &[String]) -> Approval {
-        Approval { client: self.client.clone(), tool: self.tool.clone(), sql: what.to_string(), reasons: reasons.to_vec(), destructive: true, ..Approval::default() }
+        Approval {
+            client: self.client.clone(),
+            tool: self.tool.clone(),
+            sql: what.to_string(),
+            reasons: reasons.to_vec(),
+            destructive: true,
+            ..Approval::default()
+        }
     }
 
     async fn decide(&self, a: Approval, reasons: Vec<String>) -> Result<(), ToolError> {
@@ -618,7 +660,13 @@ impl Call {
         let o = self.open(args, Need::Read).await?;
         let tab = match front.as_ref().filter(|f| w.visible && f.tabs()) {
             Some(f) => {
-                let req = TabWrite { client: self.client.clone(), connection_id: p.id.clone(), database: o.database.clone(), sql: w.sql.to_string(), title: w.title.clone() };
+                let req = TabWrite {
+                    client: self.client.clone(),
+                    connection_id: p.id.clone(),
+                    database: o.database.clone(),
+                    sql: w.sql.to_string(),
+                    title: w.title.clone(),
+                };
                 f.show_write(req).await
             }
             None => None,
@@ -738,7 +786,9 @@ impl Call {
             }
             Ok(out) => {
                 let e = match grew.lock().take() {
-                    Some(n) => ToolError::Refused(format!("by the time it ran it changed {n} rows, {allowed} were allowed in Dataman; rolled back, call again to ask anew")),
+                    Some(n) => ToolError::Refused(format!(
+                        "by the time it ran it changed {n} rows, {allowed} were allowed in Dataman; rolled back, call again to ask anew"
+                    )),
                     None => ToolError::Failed("the write was not committed".into()),
                 };
                 show(WriteShown::Ran { outcome: out, note: Some(e.message()) });
@@ -757,14 +807,27 @@ impl Call {
         // Rows per read and the cell length bound a read; the reply's size too (with Rows per
         // read ∞, several statements or a large document would otherwise be one String here, in
         // the app's process).
-        Limits { max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize, timeout: self.time_limit(args), max_bytes: MAX_REPLY_BYTES, ..Limits::default() }
+        Limits {
+            max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize,
+            timeout: self.time_limit(args),
+            max_bytes: MAX_REPLY_BYTES,
+            ..Limits::default()
+        }
     }
 
     pub async fn run(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits) -> Result<bounded::Outcome, ToolError> {
         self.run_held(o, sql, params, mode, limits, None).await
     }
 
-    pub async fn run_held(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits, decide: Option<bounded::Decide>) -> Result<bounded::Outcome, ToolError> {
+    pub async fn run_held(
+        &self,
+        o: &Opened,
+        sql: &str,
+        params: Vec<Option<String>>,
+        mode: Mode,
+        limits: Limits,
+        decide: Option<bounded::Decide>,
+    ) -> Result<bounded::Outcome, ToolError> {
         if self.note.lock().sql.is_none() {
             self.note_sql(sql);
         }
@@ -873,7 +936,8 @@ impl Registry {
             Ok(text) => {
                 // The tools file sits next to connections.toml: each tool's SQL is read in its
                 // connection's dialect.
-                let profiles = file.parent().and_then(|d| dataman_core::ConfigStore::open(&dataman_core::Dirs::at(d)).ok()).map(|s| s.connections()).unwrap_or_default();
+                let profiles =
+                    file.parent().and_then(|d| dataman_core::ConfigStore::open(&dataman_core::Dirs::at(d)).ok()).map(|s| s.connections()).unwrap_or_default();
                 let dialect_of = |c: &str| profiles.iter().find(|p| p.name == c || p.id == c).filter(|p| p.engine.is_sql()).map(|p| p.engine.dialect());
                 crate::user::load(&text, &self.builtin_names(), &dialect_of)
             }
@@ -882,8 +946,10 @@ impl Registry {
         for e in &errors {
             log::warn!("{}: {e}", file.display());
         }
-        let before: Vec<String> = g.tools.iter().map(|t| format!("{}\n{}\n{}", t.name(), t.description(), serde_json::Value::Object(t.schema().0.clone()))).collect();
-        let after: Vec<String> = tools.iter().map(|t| format!("{}\n{}\n{}", t.name(), t.description(), serde_json::Value::Object(t.schema().0.clone()))).collect();
+        let before: Vec<String> =
+            g.tools.iter().map(|t| format!("{}\n{}\n{}", t.name(), t.description(), serde_json::Value::Object(t.schema().0.clone()))).collect();
+        let after: Vec<String> =
+            tools.iter().map(|t| format!("{}\n{}\n{}", t.name(), t.description(), serde_json::Value::Object(t.schema().0.clone()))).collect();
         g.tools = tools;
         g.errors = errors;
         before != after

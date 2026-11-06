@@ -3,8 +3,8 @@
 //! delete and undo), a connection string, SSH through the compose bastion, a connection from the
 //! clipboard, and importing pgpass/service entries.
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton};
 use dataman_core::config::{Engine, Environment, McpAccess};
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -113,7 +113,11 @@ async fn file_engine(ws: &Entity<Workspace>, e: Engine, search: &str, r: &mut Re
     let (step, picked) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0.engine)).unwrap();
     let shown = |p: &str, cx: &mut AsyncWindowContext| probed(&format!("field-{p}"), cx).is_some();
     let shape = shown("FILE", cx) && !shown("HOST", cx) && !shown("USER", cx) && !shown("PASSWORD", cx) && probed("file-new", cx).is_some();
-    r.check(&format!("{label}: typing \"{search}\" picks it, and its form is a file"), step == Step::Connection && picked == e && shape, format!("{step:?} {picked:?} {shape}"));
+    r.check(
+        &format!("{label}: typing \"{search}\" picks it, and its form is a file"),
+        step == Step::Connection && picked == e && shape,
+        format!("{step:?} {picked:?} {shape}"),
+    );
     let dir = std::env::temp_dir().join(format!("dataman-conns-{}-{}", e.slug(), std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let missing = dir.join(format!("missing.{}", e.file_extensions()[0]));
@@ -229,7 +233,13 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
         &format!("{label}: Save & connect keeps its environment, MCP tier and color, and lists it"),
         gone && up.is_ok()
             && in_tree
-            && p.as_ref().is_some_and(|p| p.name == name && p.engine == e && p.env == Environment::Staging && p.mcp == Some(McpAccess::Read) && p.color.as_deref() == Some(crate::theme::SWATCHES[3])),
+            && p.as_ref().is_some_and(|p| {
+                p.name == name
+                    && p.engine == e
+                    && p.env == Environment::Staging
+                    && p.mcp == Some(McpAccess::Read)
+                    && p.color.as_deref() == Some(crate::theme::SWATCHES[3])
+            }),
         format!("{up:?} sheet gone {gone} in tree {in_tree} {:?}", p.map(|p| (p.name, p.env, p.mcp, p.color))),
     );
 
@@ -283,7 +293,11 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
     key(cx, "cmd-z");
     pause(cx, 150).await;
     let back = saved(ws, &id, cx).is_some();
-    r.check(&format!("{label}: Delete in the sheet takes a second click; ⌘Z brings it back"), first && !second && back, format!("after one click {first}, after two {second}, after ⌘Z {back}"));
+    r.check(
+        &format!("{label}: Delete in the sheet takes a second click; ⌘Z brings it back"),
+        first && !second && back,
+        format!("after one click {first}, after two {second}, after ⌘Z {back}"),
+    );
 }
 
 async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
@@ -292,7 +306,9 @@ async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContex
         let url = match e {
             Engine::Postgres => format!("postgresql://{}:{pw}@{}:{}/{}", p.user, p.host, p.port, p.database),
             Engine::MySql => format!("mysql://{}:{pw}@{}:{}/{}", p.user, p.host, p.port, p.database),
-            Engine::SqlServer => format!("Server=tcp:{},{};Database={};User Id={};Password={pw};TrustServerCertificate=True", p.host, p.port, p.database, p.user),
+            Engine::SqlServer => {
+                format!("Server=tcp:{},{};Database={};User Id={};Password={pw};TrustServerCertificate=True", p.host, p.port, p.database, p.user)
+            }
             Engine::MongoDb => format!("mongodb://{}:{pw}@{}:{}/{}", p.user, p.host, p.port, p.database),
             Engine::Elasticsearch => format!("http://{}:{pw}@{}:{}", p.user, p.host, p.port),
             Engine::OpenSearch => format!("http://{}:{}", p.host, p.port),
@@ -333,7 +349,11 @@ async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContex
         let bad = cx.update(|_, cx| d.read(cx).conn_str_invalid(cx)).unwrap_or(true);
         let text = cx.update(|_, cx| d.read(cx).demo_conn_str(cx)).unwrap_or_default();
         let s = test(&d, cx).await;
-        r.check("the fields of a filled Elasticsearch sheet write its own http URL, without the password", !bad && s == "ok" && text.starts_with("http://") && !text.contains(&pw), format!("flagged {bad} {text} → {s}"));
+        r.check(
+            "the fields of a filled Elasticsearch sheet write its own http URL, without the password",
+            !bad && s == "ok" && text.starts_with("http://") && !text.contains(&pw),
+            format!("flagged {bad} {text} → {s}"),
+        );
         key(cx, "escape");
     }
 
@@ -346,7 +366,11 @@ async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContex
         click_probe("dlg-save", cx);
         pause(cx, 100).await;
         let (bad, step) = cx.update(|_, cx| (d.read(cx).conn_str_invalid(cx), d.read(cx).step())).unwrap();
-        r.check("a malformed string says so under its field and Continue stays", bad && step == Step::Connection && probed("string-bad", cx).is_some(), format!("flagged {bad} {step:?}"));
+        r.check(
+            "a malformed string says so under its field and Continue stays",
+            bad && step == Step::Connection && probed("string-bad", cx).is_some(),
+            format!("flagged {bad} {step:?}"),
+        );
         key(cx, "escape");
     }
 }
@@ -428,7 +452,11 @@ async fn clipboard_and_import(ws: &Entity<Workspace>, r: &mut Report, cx: &mut A
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::NewConnectionFromClipboard), cx));
     pause(cx, 100).await;
     let notice = cx.update(|_, cx| ws.read(cx).flash_notice.as_ref().map(|n| n.0.clone())).ok().flatten();
-    r.check("…and words that are no connection string only say so", dialog(ws, cx).is_none() && notice.as_deref().is_some_and(|n| n.contains("No connection string")), format!("{notice:?}"));
+    r.check(
+        "…and words that are no connection string only say so",
+        dialog(ws, cx).is_none() && notice.as_deref().is_some_and(|n| n.contains("No connection string")),
+        format!("{notice:?}"),
+    );
     set_clipboard("", cx);
 
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::ImportConnections), cx));
@@ -463,5 +491,9 @@ async fn clipboard_and_import(ws: &Entity<Workspace>, r: &mut Report, cx: &mut A
     };
     let after = core(ws, cx).config.connections().len();
     let names: Vec<String> = core(ws, cx).config.connections().into_iter().map(|p| p.name).collect();
-    r.check("…the picked service is imported and connects with the pgpass password", after == before + 1 && up.is_ok(), format!("{before} → {after} {up:?} {items:?} {names:?}"));
+    r.check(
+        "…the picked service is imported and connects with the pgpass password",
+        after == before + 1 && up.is_ok(),
+        format!("{before} → {after} {up:?} {items:?} {names:?}"),
+    );
 }

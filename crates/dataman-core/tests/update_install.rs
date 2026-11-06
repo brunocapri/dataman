@@ -5,8 +5,8 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ring::signature::{Ed25519KeyPair, KeyPair};
 use dataman_core::update::{self, Feed, UpdateConfig};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 
 fn app(dir: &Path, version: &str) -> PathBuf {
     let app = dir.join("Dataman.app");

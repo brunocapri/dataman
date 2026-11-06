@@ -10,13 +10,7 @@ use gpui::{Context, Entity, EntityId, Focusable, InteractiveElement, KeyBindingC
 use crate::app::{Region, Workspace};
 use crate::tab::QueryTab;
 
-actions!(
-    undo,
-    [
-        Undo,
-        Redo,
-    ]
-);
+actions!(undo, [Undo, Redo,]);
 
 pub const KEYS: &str = "Workspace && !Modal && !CodeEditor && !TextInput && !GridCellEditor && !ValueEditor";
 
@@ -54,20 +48,61 @@ pub(crate) struct Sizes {
 
 #[derive(Clone)]
 pub(crate) enum Op {
-    Favorite { fav: Favorite, ix: usize, added: bool },
-    FavoriteName { id: String, from: String, to: String },
-    FavoriteFolder { id: String, from: Option<String>, to: Option<String> },
-    Folder { removed: RemovedFolder, added: bool },
-    FolderName { id: String, from: String, to: String },
-    FolderOrder { from: Vec<String>, to: Vec<String> },
-    ConnOrder { from: Vec<String>, to: Vec<String> },
+    Favorite {
+        fav: Favorite,
+        ix: usize,
+        added: bool,
+    },
+    FavoriteName {
+        id: String,
+        from: String,
+        to: String,
+    },
+    FavoriteFolder {
+        id: String,
+        from: Option<String>,
+        to: Option<String>,
+    },
+    Folder {
+        removed: RemovedFolder,
+        added: bool,
+    },
+    FolderName {
+        id: String,
+        from: String,
+        to: String,
+    },
+    FolderOrder {
+        from: Vec<String>,
+        to: Vec<String>,
+    },
+    ConnOrder {
+        from: Vec<String>,
+        to: Vec<String>,
+    },
     /// The explorer's folders, as a whole (made, renamed, colored, deleted, a connection moved).
-    ConnFolders { from: Vec<ConnFolder>, to: Vec<ConnFolder> },
+    ConnFolders {
+        from: Vec<ConnFolder>,
+        to: Vec<ConnFolder>,
+    },
     ConnDeleted(Box<DeletedConn>),
-    Pins { conn: String, from: Vec<Pin>, to: Vec<Pin> },
-    Sizes { from: Sizes, to: Sizes },
-    Tabs { closed: Vec<ClosedTab>, reopened: Vec<EntityId> },
-    History { entry: Option<(String, dataman_core::HistoryEntry)>, taken: Vec<(String, Vec<u8>)> },
+    Pins {
+        conn: String,
+        from: Vec<Pin>,
+        to: Vec<Pin>,
+    },
+    Sizes {
+        from: Sizes,
+        to: Sizes,
+    },
+    Tabs {
+        closed: Vec<ClosedTab>,
+        reopened: Vec<EntityId>,
+    },
+    History {
+        entry: Option<(String, dataman_core::HistoryEntry)>,
+        taken: Vec<(String, Vec<u8>)>,
+    },
     Many(Vec<Op>),
 }
 
@@ -313,11 +348,8 @@ impl Workspace {
         let store = self.store.read(cx);
         let profile = store.profile(id).cloned().ok_or_else(|| anyhow::anyhow!("no connection {id}"))?;
         let order: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
-        let (password, ssh_secret) = if profile.save_password {
-            (core.secrets.get(id).ok().flatten(), core.secrets.get(&profile.ssh_secret_id()).ok().flatten())
-        } else {
-            (None, None)
-        };
+        let (password, ssh_secret) =
+            if profile.save_password { (core.secrets.get(id).ok().flatten(), core.secrets.get(&profile.ssh_secret_id()).ok().flatten()) } else { (None, None) };
         let pins = core.pins.of(id);
         let agent_account = dataman_core::agent_login::secret_account(id);
         let agent_password = core.secrets.get(&agent_account).ok().flatten();
@@ -365,12 +397,7 @@ impl Workspace {
     }
 
     pub(crate) fn sizes_now(&self) -> Sizes {
-        Sizes {
-            explorer_w: self.explorer_w,
-            side_w: self.side_w,
-            editor_frac: self.editor_frac,
-            ratio: self.split.as_ref().map(|s| s.ratio),
-        }
+        Sizes { explorer_w: self.explorer_w, side_w: self.side_w, editor_frac: self.editor_frac, ratio: self.split.as_ref().map(|s| s.ratio) }
     }
 
     fn set_sizes(&mut self, s: &Sizes) {
@@ -489,7 +516,9 @@ mod tests {
     fn a_new_folder_and_its_name_are_one_step() {
         let mut s = UndoStack::default();
         let folder = Folder { id: "d1".into(), name: "New folder".into() };
-        let made = || Entry::new("New folder 'New folder'", Op::Folder { removed: RemovedFolder { index: 0, folder: folder.clone(), favorites: vec![] }, added: true });
+        let made = || {
+            Entry::new("New folder 'New folder'", Op::Folder { removed: RemovedFolder { index: 0, folder: folder.clone(), favorites: vec![] }, added: true })
+        };
         let named = |to: &str| Entry::new("Rename folder", Op::FolderName { id: "d1".into(), from: "New folder".into(), to: to.into() });
         s.push(made());
         s.push(named("Reports"));

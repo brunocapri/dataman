@@ -187,9 +187,7 @@ pub fn verify(bytes: &[u8], feed: &Feed, key: &[u8; 32]) -> Result<()> {
         bail!("size mismatch: {} bytes, the feed says {}", bytes.len(), feed.size);
     }
     let sig = data_encoding::BASE64.decode(feed.ed25519.trim().as_bytes()).context("signature is not base64")?;
-    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
-        .verify(bytes, &sig)
-        .map_err(|_| anyhow!("signature mismatch"))
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key).verify(bytes, &sig).map_err(|_| anyhow!("signature mismatch"))
 }
 
 #[cfg(target_os = "macos")]
@@ -890,7 +888,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn signing_team() {
-        assert_eq!(team_of("Executable=/A.app/Contents/MacOS/a\nAuthority=Developer ID Application: B (ABCDE12345)\nTeamIdentifier=ABCDE12345\n").as_deref(), Some("ABCDE12345"));
+        assert_eq!(
+            team_of("Executable=/A.app/Contents/MacOS/a\nAuthority=Developer ID Application: B (ABCDE12345)\nTeamIdentifier=ABCDE12345\n").as_deref(),
+            Some("ABCDE12345")
+        );
         assert_eq!(team_of("Signature=adhoc\nTeamIdentifier=not set\n"), None);
         assert_eq!(team_of("/x.app: code object is not signed at all\n"), None);
         assert_eq!(team_id(Path::new("/System/Applications/Calculator.app")), None, "Apple's own apps have no team");
@@ -1033,7 +1034,10 @@ mod tests {
     #[test]
     fn the_installer_gets_the_scope_and_folder() {
         let a = installer_args(Path::new(r"C:\Users\u\AppData\Local\Programs\Dataman"), false, Path::new(r"C:\t\install.log"));
-        assert_eq!(a, r#"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /CURRENTUSER /DIR="C:\Users\u\AppData\Local\Programs\Dataman" /LOG="C:\t\install.log""#);
+        assert_eq!(
+            a,
+            r#"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /CURRENTUSER /DIR="C:\Users\u\AppData\Local\Programs\Dataman" /LOG="C:\t\install.log""#
+        );
         assert!(installer_args(Path::new(r"C:\Program Files\Dataman"), true, Path::new("l")).contains("/ALLUSERS /DIR=\"C:\\Program Files\\Dataman\""));
     }
 }

@@ -1,8 +1,8 @@
 //! `welcome-check`: the first-run screen's items, clicked or reached with ↓ ↩. `palette-check`:
 //! ⌘K and its scopes (commands, tables, tabs, favorites, connections, settings) and ⌘P.
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -40,7 +40,11 @@ pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
 
     click_probe("welcome-3", cx);
     let got = dialog(ws, cx).map(|d| cx.update(|_, cx| d.read(cx).current(cx).0).unwrap());
-    r.check("Connect to localhost:5432 prefills that", got.as_ref().is_some_and(|p| p.host == "localhost" && p.port == 5432 && p.engine == Engine::Postgres), format!("{:?}", got.map(|p| (p.host, p.port))));
+    r.check(
+        "Connect to localhost:5432 prefills that",
+        got.as_ref().is_some_and(|p| p.host == "localhost" && p.port == 5432 && p.engine == Engine::Postgres),
+        format!("{:?}", got.map(|p| (p.host, p.port))),
+    );
     close_dialog(ws, cx);
 
     let file = std::env::temp_dir().join(format!("dataman-e2e-{}.sql", std::process::id()));
@@ -149,7 +153,11 @@ pub async fn run_palette(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
         draw(cx);
         let at = section_of(cx);
         let closed = !palette_open(ws, cx);
-        r.check(&format!("⌘K, {why}: {query:?}, ↩ opens Settings on {section}"), label == want && at == Some(section) && closed, format!("{label:?} {at:?} closed {closed}"));
+        r.check(
+            &format!("⌘K, {why}: {query:?}, ↩ opens Settings on {section}"),
+            label == want && at == Some(section) && closed,
+            format!("{label:?} {at:?} closed {closed}"),
+        );
         key(cx, "escape");
     }
     r.check("esc closes Settings after a jump", section_of(cx).is_none(), format!("{:?}", section_of(cx)));

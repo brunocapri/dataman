@@ -149,7 +149,27 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 super::rules::summary(p),
             ]);
         }
-        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "version", "row_limit", "allowed", "yolo", "engine", "language", "agents"], rows))
+        Ok(table(
+            &[
+                "name",
+                "env",
+                "mcp",
+                "read_only",
+                "host",
+                "port",
+                "database",
+                "user",
+                "ssh",
+                "version",
+                "row_limit",
+                "allowed",
+                "yolo",
+                "engine",
+                "language",
+                "agents",
+            ],
+            rows,
+        ))
     })
 }
 
@@ -180,7 +200,8 @@ fn list_schemas(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             if !super::rules::schema_visible(&o.profile, &s) {
                 continue;
             }
-            let rels: Vec<Relation> = o.conn.relations(&o.database, &s).await.map_err(failed)?.into_iter().filter(|r| super::rules::table_visible(&o.profile, &s, &r.name)).collect();
+            let rels: Vec<Relation> =
+                o.conn.relations(&o.database, &s).await.map_err(failed)?.into_iter().filter(|r| super::rules::table_visible(&o.profile, &s, &r.name)).collect();
             let tables = rels.iter().filter(|r| !r.kind.is_view()).count();
             rows.push(vec![json!(s), json!(tables), json!(rels.len() - tables)]);
         }
@@ -237,7 +258,9 @@ fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         // shows a login only what it was granted (SQL Server, MySQL), listed under their names.
         if let Some(l) = o.profile.agent_login.as_ref().filter(|_| kind != "view") {
             for m in &l.views {
-                let listed = rows.iter().any(|r| r[0].as_str().is_some_and(|s| s.eq_ignore_ascii_case(&m.schema)) && r[1].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&m.table)));
+                let listed = rows.iter().any(|r| {
+                    r[0].as_str().is_some_and(|s| s.eq_ignore_ascii_case(&m.schema)) && r[1].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&m.table))
+                });
                 let wanted = a.opt_str("schema").is_none_or(|s| s.eq_ignore_ascii_case(&m.schema));
                 if !listed && wanted && rows.len() < limit && super::rules::table_visible(&o.profile, &m.schema, &m.table) {
                     rows.push(vec![json!(m.schema), json!(m.table), json!("table"), Value::Null, Value::Null]);
@@ -544,7 +567,12 @@ fn hide_details(o: &Opened, hidden: &[String], out: &mut Map<String, Value>) {
     for k in ["referenced_by", "foreign_keys"] {
         if let Some(Value::Array(a)) = out.get_mut(k) {
             for x in a.iter_mut() {
-                let target = x.get(1).and_then(Value::as_str).or_else(|| x.get("from").and_then(Value::as_str)).or_else(|| x.get("references").and_then(Value::as_str)).map(str::to_string);
+                let target = x
+                    .get(1)
+                    .and_then(Value::as_str)
+                    .or_else(|| x.get("from").and_then(Value::as_str))
+                    .or_else(|| x.get("references").and_then(Value::as_str))
+                    .map(str::to_string);
                 if let Some(t) = target
                     && !shown(&t)
                 {
@@ -564,7 +592,9 @@ async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, V
             .iter()
             .map(|i| match &i.definition {
                 Some(d) => json!([i.name, d]),
-                None => json!([i.name, format!("{}{}({})", if i.primary { "PRIMARY " } else { "" }, if i.unique { "UNIQUE " } else { "" }, i.columns.join(", "))]),
+                None => {
+                    json!([i.name, format!("{}{}({})", if i.primary { "PRIMARY " } else { "" }, if i.unique { "UNIQUE " } else { "" }, i.columns.join(", "))])
+                }
             })
             .collect();
         out.insert("indexes".into(), Value::Array(v));
@@ -607,7 +637,11 @@ async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, V
 
 async fn ddl_of(c: &Arc<Connection>, db: &str, r: &Relation) -> Result<String, ToolError> {
     if r.kind.is_view() {
-        return Ok(c.view_definition(db, &r.schema, &r.name).await.map_err(failed)?.unwrap_or_else(|| "-- the server does not report the view's definition".into()));
+        return Ok(c
+            .view_definition(db, &r.schema, &r.name)
+            .await
+            .map_err(failed)?
+            .unwrap_or_else(|| "-- the server does not report the view's definition".into()));
     }
     c.table_ddl(db, &r.schema, &r.name).await.map_err(failed)
 }
@@ -639,7 +673,10 @@ fn get_ddl(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let schemas = schemas_of(&o, schema.as_deref(), true).await?;
         // A function's body can read anything: not shown while something is kept from agents.
         if super::rules::restricted(&o.profile.mcp_rules) {
-            return Err(ToolError::Refused(format!("definitions of functions and types are not shown to agents on {} while some data is kept from them", o.profile.name)));
+            return Err(ToolError::Refused(format!(
+                "definitions of functions and types are not shown to agents on {} while some data is kept from them",
+                o.profile.name
+            )));
         }
         if kind.is_none_or(|k| k == "function") {
             for s in &schemas {

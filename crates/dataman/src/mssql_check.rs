@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point};
 use dataman_core::batch::Key;
 use dataman_core::edit::CellValue;
 use dataman_core::result::Phase;
 use dataman_core::sql::Dialect;
 use dataman_core::tx::TxStatus;
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Point};
 
 use crate::app::Workspace;
 use crate::messages::{Of, Row as MessageRow};
@@ -72,10 +72,7 @@ fn sql(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> String {
 }
 
 fn col(tab: &Entity<QueryTab>, name: &str, cx: &mut AsyncWindowContext) -> usize {
-    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.columns()).and_then(|c| c.iter().position(|c| c.name == name)))
-        .ok()
-        .flatten()
-        .unwrap_or(0)
+    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.columns()).and_then(|c| c.iter().position(|c| c.name == name))).ok().flatten().unwrap_or(0)
 }
 
 fn cell(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindowContext) -> Option<String> {
@@ -160,7 +157,8 @@ async fn explore(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWin
 
 const SCRIPT: &str = "-- two batches, three result sets\nCREATE TABLE #chk (a int, b nvarchar(10));\nINSERT #chk VALUES (1, N'one'), (2, N'two');\nSELECT a, b FROM #chk ORDER BY a;\nSELECT COUNT(*) AS n FROM #chk\nGO\nSELECT N'café' AS c, SYSDATETIMEOFFSET() AS now_at\nGO";
 
-const PRINTS: &str = "DECLARE @i int = 1;\nWHILE @i <= 5\nBEGIN\n    PRINT CONCAT(N'Batch ', @i, N' of 5: ', @i * 200, N' rows');\n    SET @i += 1;\nEND\nPRINT N'Done.';";
+const PRINTS: &str =
+    "DECLARE @i int = 1;\nWHILE @i <= 5\nBEGIN\n    PRINT CONCAT(N'Batch ', @i, N' of 5: ', @i * 200, N' rows');\n    SET @i += 1;\nEND\nPRINT N'Done.';";
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
     match stage {
@@ -181,7 +179,13 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
             if stage == "mssql-print" {
                 run_in(&tab, PRINTS, true, cx).await;
             } else {
-                run_in(&tab, "PRINT N'Reading customers…'\nSELECT id, name, balance FROM dbo.customer ORDER BY id\nPRINT CONCAT(@@ROWCOUNT, ' customers')", true, cx).await;
+                run_in(
+                    &tab,
+                    "PRINT N'Reading customers…'\nSELECT id, name, balance FROM dbo.customer ORDER BY id\nPRINT CONCAT(@@ROWCOUNT, ' customers')",
+                    true,
+                    cx,
+                )
+                .await;
                 let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.select_result(Key::Messages, cx)));
             }
             true
@@ -207,7 +211,12 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         ok &= pass;
     };
     // The edit and transaction checks below commit changes to customers 2 and 3: start from the seed's values.
-    direct(ws, "UPDATE dbo.customer SET name = CASE id WHEN 2 THEN N'Ben Lewis' ELSE name END, balance = CASE id WHEN 3 THEN 0.00 ELSE balance END WHERE id IN (2, 3)", cx).await;
+    direct(
+        ws,
+        "UPDATE dbo.customer SET name = CASE id WHEN 2 THEN N'Ben Lewis' ELSE name END, balance = CASE id WHEN 3 THEN 0.00 ELSE balance END WHERE id IN (2, 3)",
+        cx,
+    )
+    .await;
     let tab = active(ws, cx);
     let info = cx.update(|_, cx| tab.read(cx).connection().map(|c| (c.engine(), c.info.version.clone(), c.dialect()))).ok().flatten();
     report(
@@ -252,7 +261,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     );
     draw(cx);
     let menu_caps = cx.update(|_, cx| cx.try_global::<crate::MenuCaps>().map(|m| m.0)).ok().flatten();
-    report("the menu bar leaves out Explain and the activity monitor", menu_caps.is_some_and(|c| !c.explain && !c.activity && !c.import), format!("{menu_caps:?}"));
+    report(
+        "the menu bar leaves out Explain and the activity monitor",
+        menu_caps.is_some_and(|c| !c.explain && !c.activity && !c.import),
+        format!("{menu_caps:?}"),
+    );
 
     let t = open(ws, conn, db, "dbo", "customer", cx).await;
     let s = sql(&t, cx);
@@ -298,7 +311,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     key(cx, "cmd-alt-right");
     page(&p, cx).await;
     let s = sql(&p, cx);
-    report("⌥⌘→ pages with OFFSET … FETCH", s.ends_with("OFFSET 1000 ROWS FETCH NEXT 1000 ROWS ONLY;") && cell(&p, 0, 0, cx).as_deref() == Some("1001"), s.clone());
+    report(
+        "⌥⌘→ pages with OFFSET … FETCH",
+        s.ends_with("OFFSET 1000 ROWS FETCH NEXT 1000 ROWS ONLY;") && cell(&p, 0, 0, cx).as_deref() == Some("1001"),
+        s.clone(),
+    );
     let mut total = None;
     let _ = cx.update(|_, cx| p.update(cx, |t, cx| t.start_count(cx)));
     for _ in 0..200 {
@@ -366,12 +383,21 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let landed = active(ws, cx);
     finished(&landed, cx).await;
     let s = sql(&landed, cx);
-    report("⌘-click jumps to the referenced row", s == "SELECT * FROM dbo.customer WHERE id = 2;" && cell(&landed, 0, 0, cx).as_deref() == Some("2"), s.clone());
+    report(
+        "⌘-click jumps to the referenced row",
+        s == "SELECT * FROM dbo.customer WHERE id = 2;" && cell(&landed, 0, 0, cx).as_deref() == Some("2"),
+        s.clone(),
+    );
 
     run_in(&landed, SCRIPT, true, cx).await;
     let items = cx
         .update(|_, cx| {
-            landed.read(cx).batch_items().iter().map(|b| (b.label.clone().unwrap_or_else(|| b.sql.clone()), b.rs.as_ref().map(|r| (r.phase(), r.rows())))).collect::<Vec<_>>()
+            landed
+                .read(cx)
+                .batch_items()
+                .iter()
+                .map(|b| (b.label.clone().unwrap_or_else(|| b.sql.clone()), b.rs.as_ref().map(|r| (r.phase(), r.rows()))))
+                .collect::<Vec<_>>()
         })
         .unwrap();
     let fine = items.len() == 3
@@ -408,7 +434,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     key(cx, "cmd-.");
     finished(&landed, cx).await;
     let phase = cx.update(|_, cx| landed.read(cx).run_phase()).ok().flatten();
-    report("⌘. stops WAITFOR DELAY '00:00:30' at once", phase == Some(Phase::Cancelled) && t0.elapsed() < Duration::from_secs(3), format!("{phase:?} {:?}", t0.elapsed()));
+    report(
+        "⌘. stops WAITFOR DELAY '00:00:30' at once",
+        phase == Some(Phase::Cancelled) && t0.elapsed() < Duration::from_secs(3),
+        format!("{phase:?} {:?}", t0.elapsed()),
+    );
     run_in(&landed, "SELECT 41 + 1", false, cx).await;
     report("the tab runs on after the cancel", cell(&landed, 0, 0, cx).as_deref() == Some("42"), format!("{:?}", cell(&landed, 0, 0, cx)));
 
@@ -440,16 +470,19 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let log = cx
         .update(|_, cx| (ws.read(cx).panes[0].messages.of(), landed.read(cx).result().map(|r| r.messages().0.to_vec()), landed.read(cx).result_tabs().len()))
         .ok();
-    report(
-        "PRINT shows in the grid's place",
-        matches!(&log, Some((Some(Of::Log(_)), Some(m), 1)) if m == &["hello", "step 2"]),
-        format!("{log:?}"),
-    );
+    report("PRINT shows in the grid's place", matches!(&log, Some((Some(Of::Log(_)), Some(m), 1)) if m == &["hello", "step 2"]), format!("{log:?}"));
     run_in(&landed, "PRINT 'before'; SELECT 7 AS n; PRINT 'after'", true, cx).await;
     let tabs = cx.update(|_, cx| landed.read(cx).result_tabs().into_iter().map(|t| t.key).collect::<Vec<_>>()).unwrap_or_default();
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.select_result(Key::Messages, cx)));
     draw(cx);
-    let shown = cx.update(|_, cx| (ws.read(cx).panes[0].messages.of().is_some_and(|o| matches!(o, Of::Tab(_))), (0..4).map(|i| ws.read(cx).panes[0].messages.row(i)).collect::<Vec<_>>())).ok();
+    let shown = cx
+        .update(|_, cx| {
+            (
+                ws.read(cx).panes[0].messages.of().is_some_and(|o| matches!(o, Of::Tab(_))),
+                (0..4).map(|i| ws.read(cx).panes[0].messages.row(i)).collect::<Vec<_>>(),
+            )
+        })
+        .ok();
     report(
         "beside rows, PRINT goes to the messages tab",
         tabs == [Key::Stmt(0), Key::Messages]
@@ -484,14 +517,14 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         }
         (got, t0.elapsed())
     };
-    let (bad, took) = settled("SELECT * FRM dbo.orders",&|m| m.iter().any(|x| x.contains("Incorrect syntax")), cx).await;
+    let (bad, took) = settled("SELECT * FRM dbo.orders", &|m| m.iter().any(|x| x.contains("Incorrect syntax")), cx).await;
     report(
         "a syntax error gets the server's message as a squiggle (PARSEONLY)",
         bad.iter().any(|x| x.contains("Incorrect syntax near 'FRM'")),
         format!("{bad:?} after {took:?}"),
     );
     println!("     server syntax check: squiggle {} ms after the last edit (600 ms pause included)", took.as_millis());
-    let (fixed, _) = settled("SELECT * FROM dbo.orders",&|m| m.is_empty(), cx).await;
+    let (fixed, _) = settled("SELECT * FROM dbo.orders", &|m| m.is_empty(), cx).await;
     pause(cx, 900).await;
     let fixed2 = cx.update(|_, cx| editor.read(cx).lints().len()).unwrap_or(1);
     report("fixed, the squiggle goes", fixed.is_empty() && fixed2 == 0, format!("{fixed:?} {fixed2}"));

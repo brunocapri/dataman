@@ -88,7 +88,33 @@ fn connects_and_decodes_every_type() {
     use Kind::*;
     assert_eq!(
         kinds,
-        [Int, Int, Int, Int, Numeric, Text, Int, Float4, Float, Numeric, Bool, Text, Bytes, Date, Time, Timestamp, Timestamp, TimestampTz, Other, Text, Json, Json, Json, Text, Int]
+        [
+            Int,
+            Int,
+            Int,
+            Int,
+            Numeric,
+            Text,
+            Int,
+            Float4,
+            Float,
+            Numeric,
+            Bool,
+            Text,
+            Bytes,
+            Date,
+            Time,
+            Timestamp,
+            Timestamp,
+            TimestampTz,
+            Other,
+            Text,
+            Json,
+            Json,
+            Json,
+            Text,
+            Int
+        ]
     );
     let r = texts(&rs, 0);
     assert_eq!(r[..4], [s("1"), s("2"), s("3"), s("4")]);
@@ -287,15 +313,25 @@ fn agents_stay_in_bounds() {
     let d = open(true);
     let (e, c) = (&d.e, &d.c);
     let never = std::future::pending::<()>;
-    let o = e.core.block_on(c.bounded(None, "SELECT id, name, tags, profile FROM customer ORDER BY id", vec![], Mode::Read, Limits::default(), never())).unwrap();
+    let o =
+        e.core.block_on(c.bounded(None, "SELECT id, name, tags, profile FROM customer ORDER BY id", vec![], Mode::Read, Limits::default(), never())).unwrap();
     assert_eq!(o.parts.len(), 1);
-    for sql in ["DELETE FROM customer", "SELECT * FROM read_csv('/etc/hosts')", "SELECT * FROM '/etc/hosts'", "COPY customer TO '/tmp/x.csv'", "ATTACH '/tmp/y.duckdb'", "INSTALL httpfs", "SET enable_external_access = true"] {
+    for sql in [
+        "DELETE FROM customer",
+        "SELECT * FROM read_csv('/etc/hosts')",
+        "SELECT * FROM '/etc/hosts'",
+        "COPY customer TO '/tmp/x.csv'",
+        "ATTACH '/tmp/y.duckdb'",
+        "INSTALL httpfs",
+        "SET enable_external_access = true",
+    ] {
         let r = e.core.block_on(c.bounded(None, sql, vec![], Mode::Read, Limits::default(), never()));
         assert!(matches!(r, Err(Stop::Refused(_))), "{sql}: {r:?}");
     }
     let r = e.core.block_on(c.bounded(None, "COPY customer TO '/tmp/dataman-x.csv'", vec![], Mode::Write, Limits::default(), never()));
     assert!(matches!(r, Err(Stop::Refused(_))), "files at any level: {r:?}");
-    let o = e.core.block_on(c.bounded(None, "UPDATE orders SET notes = $1 WHERE id = $2", vec![s("x"), s("2")], Mode::Write, Limits::default(), never())).unwrap();
+    let o =
+        e.core.block_on(c.bounded(None, "UPDATE orders SET notes = $1 WHERE id = $2", vec![s("x"), s("2")], Mode::Write, Limits::default(), never())).unwrap();
     assert!(o.committed);
     assert_eq!(col(&ok(e, &c.session(None), "SELECT notes FROM orders WHERE id = 2"), 0), [s("x")]);
     let lim = Limits { timeout: Duration::from_millis(300), ..Limits::default() };
@@ -347,4 +383,3 @@ fn file_access_can_be_turned_off() {
     assert_eq!(run(&e, &sess, "SET enable_external_access = true").phase(), Phase::Failed, "locked");
     ok(&e, &sess, "CREATE TABLE t (a INT); INSERT INTO t VALUES (1)");
 }
-

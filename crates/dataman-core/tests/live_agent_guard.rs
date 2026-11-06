@@ -34,12 +34,16 @@ fn postgres_strings_without_standard_conforming() {
     let Some(admin) = pg(&e) else { return };
     // A role whose sessions read strings with backslash escapes (no database to drop after).
     exec_quiet(&e, &admin, &["DROP SCHEMA IF EXISTS dataman_guard CASCADE", "DROP ROLE IF EXISTS dataman_guard"]);
-    exec(&e, &admin, &[
-        "CREATE ROLE dataman_guard LOGIN PASSWORD 'guard'",
-        "CREATE SCHEMA dataman_guard AUTHORIZATION dataman_guard",
-        "ALTER ROLE dataman_guard SET standard_conforming_strings = off",
-        "ALTER ROLE dataman_guard SET search_path = dataman_guard",
-    ]);
+    exec(
+        &e,
+        &admin,
+        &[
+            "CREATE ROLE dataman_guard LOGIN PASSWORD 'guard'",
+            "CREATE SCHEMA dataman_guard AUTHORIZATION dataman_guard",
+            "ALTER ROLE dataman_guard SET standard_conforming_strings = off",
+            "ALTER ROLE dataman_guard SET search_path = dataman_guard",
+        ],
+    );
     let mut p = admin.profile.clone();
     p.user = "dataman_guard".into();
     let c = e.core.block_on(e.core.connect(p, Some("guard".into()))).unwrap();
@@ -108,7 +112,11 @@ fn postgres_explain_analyze_options() {
     let Some(c) = pg(&e) else { return };
     exec(&e, &c, &["DROP TABLE IF EXISTS guard_explain", "CREATE TABLE guard_explain (n int)", "INSERT INTO guard_explain VALUES (1), (2)"]);
     let db = c.database().to_string();
-    for sql in ["EXPLAIN (ANALYZE, COSTS OFF) DELETE FROM guard_explain", "EXPLAIN (ANALYZE TRUE, TIMING FALSE) DELETE FROM guard_explain", "EXPLAIN (FORMAT JSON, ANALYZE) DELETE FROM guard_explain"] {
+    for sql in [
+        "EXPLAIN (ANALYZE, COSTS OFF) DELETE FROM guard_explain",
+        "EXPLAIN (ANALYZE TRUE, TIMING FALSE) DELETE FROM guard_explain",
+        "EXPLAIN (FORMAT JSON, ANALYZE) DELETE FROM guard_explain",
+    ] {
         let class = agent_write_class(sql, c.dialect());
         if !class.is_destructive() {
             let _ = e.core.block_on(c.bounded(Some(&db), sql, vec![], Mode::Write, Limits::default(), std::future::pending()));

@@ -4,14 +4,21 @@
 //! typed as text in the cell (no calendar), a bad one stopped at commit with the column and the
 //! format, good ones written on PostgreSQL and SQL Server.
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::{ConnectionProfile, Engine};
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::check::*;
 use crate::tab::QueryTab;
 
-async fn open_table(ws: &Entity<Workspace>, p: &ConnectionProfile, schema: &str, table: &str, rows: usize, cx: &mut AsyncWindowContext) -> Option<Entity<QueryTab>> {
+async fn open_table(
+    ws: &Entity<Workspace>,
+    p: &ConnectionProfile,
+    schema: &str,
+    table: &str,
+    rows: usize,
+    cx: &mut AsyncWindowContext,
+) -> Option<Entity<QueryTab>> {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_relation(&p.id, &p.database, schema, table, window, cx)));
     let tab = active(ws, cx)?;
     until(cx, 15, |cx| result(&tab, cx).1 >= rows).await;
@@ -95,7 +102,11 @@ pub async fn run_json(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWind
     let Some(at) = eye(&tab, 0, body, cx).await else { return };
     let (opened, error) = edit_in_viewer(ws, at, "{\"order\": 1001, \"customer\": ", cx).await;
     let still = cx.update(|_, cx| ws.read(cx).value_view.is_some()).unwrap_or(false);
-    r.check("the eye opens the viewer; broken JSON in its editor is refused and said", opened && error.is_some() && still && pending(&tab, cx) == 0, format!("{opened} {error:?} open {still}"));
+    r.check(
+        "the eye opens the viewer; broken JSON in its editor is refused and said",
+        opened && error.is_some() && still && pending(&tab, cx) == 0,
+        format!("{opened} {error:?} open {still}"),
+    );
     key(cx, "escape");
     let at = eye(&tab, 0, body, cx).await.unwrap_or(at);
     let edited = "{\n  \"order\": 1001,\n  \"customer\": {\"name\": \"Ana Souza\", \"city\": \"São Paulo\", \"tags\": [\"vip\", \"early\"]},\n  \"items\": [],\n  \"paid\": true\n}";
@@ -190,7 +201,11 @@ pub async fn run_dates(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWin
     commit(&tab, cx).await;
     let note = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_card()).ok().flatten().unwrap_or_default();
     let kept = sql1(&core, &pg, &ppw, "SELECT due::text FROM dataman_scratch.documents WHERE id = 1", cx).await;
-    r.check("an impossible date is stopped at commit: the column, the value, the format", note.contains("due") && note.contains("2026-02-30") && note.contains("YYYY-MM-DD") && kept.as_deref() == Some("2026-10-15"), format!("{note:?} {kept:?}"));
+    r.check(
+        "an impossible date is stopped at commit: the column, the value, the format",
+        note.contains("due") && note.contains("2026-02-30") && note.contains("YYYY-MM-DD") && kept.as_deref() == Some("2026-10-15"),
+        format!("{note:?} {kept:?}"),
+    );
 
     let edit = cx.update(|_, cx| tab.read(cx).edit.clone()).unwrap();
     let _ = cx.update(|window, cx| edit.update(cx, |e, cx| e.discard(window, cx)));
@@ -198,7 +213,9 @@ pub async fn run_dates(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWin
     type_cell(&tab, 0, due, "2026-11-20", cx).await;
     type_cell(&tab, 0, upd, "2026-10-20 08:30:00-03:00", cx).await;
     commit(&tab, cx).await;
-    let got = sql(&core, &pg, &ppw, "SELECT due::text, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') FROM dataman_scratch.documents WHERE id = 1", cx).await;
+    let got =
+        sql(&core, &pg, &ppw, "SELECT due::text, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') FROM dataman_scratch.documents WHERE id = 1", cx)
+            .await;
     r.check(
         "dates typed freely are written (a timestamptz with its offset)",
         got.as_ref().ok().and_then(|g| g.first().cloned()) == Some(vec![Some("2026-11-20".into()), Some("2026-10-20 11:30".into())]),

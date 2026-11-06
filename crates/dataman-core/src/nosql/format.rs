@@ -244,7 +244,9 @@ fn word_byte(c: u8) -> bool {
 fn regex_after(t: Option<&Tok>) -> bool {
     t.is_none_or(|t| match t.k {
         K::Open(_) | K::Comma | K::Semi | K::Colon | K::Op => true,
-        K::Word => matches!(t.s, "return" | "typeof" | "case" | "do" | "else" | "in" | "of" | "new" | "delete" | "void" | "throw" | "instanceof" | "yield" | "await"),
+        K::Word => {
+            matches!(t.s, "return" | "typeof" | "case" | "do" | "else" | "in" | "of" | "new" | "delete" | "void" | "throw" | "instanceof" | "yield" | "await")
+        }
         _ => false,
     })
 }
@@ -690,7 +692,10 @@ mod tests {
 
     #[test]
     fn redis_one_command_a_line() {
-        assert_eq!(f(Engine::Redis, "set   foo   \"a   b\"  \n\n\n  get foo\n# c\nconfig get maxmemory"), "SET foo \"a   b\"\n\nGET foo\n# c\nCONFIG GET maxmemory");
+        assert_eq!(
+            f(Engine::Redis, "set   foo   \"a   b\"  \n\n\n  get foo\n# c\nconfig get maxmemory"),
+            "SET foo \"a   b\"\n\nGET foo\n# c\nCONFIG GET maxmemory"
+        );
         assert_eq!(f(Engine::Redis, "hset h 'it\\'s  x' \"say \\\"hi\\\"\""), "HSET h 'it\\'s  x' \"say \\\"hi\\\"\"");
         assert_eq!(f(Engine::Redis, "SET get  set"), "SET get set");
         let lower = format(Engine::Redis, "GET a", &FormatOptions { keyword_case: KeywordCase::Lower, ..Default::default() }).unwrap();

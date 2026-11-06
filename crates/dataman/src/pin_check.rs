@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point};
+use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point};
 
 use crate::app::Workspace;
 use crate::tree::{SchemaTree, pin_id};
@@ -151,7 +151,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     let cols = format!("{}/cols", pinned("orders"));
     let opened = row(&tree, &cols, cx).await;
     let schema_row_shut = !cx.update(|_, cx| tree.read(cx).has_row(&format!("{}/cols", rel("orders")))).unwrap();
-    report("a click opens a pinned table's columns (its schema's row stays shut)", opened && schema_row_shut, format!("opened={opened} schema_row_shut={schema_row_shut}"));
+    report(
+        "a click opens a pinned table's columns (its schema's row stays shut)",
+        opened && schema_row_shut,
+        format!("opened={opened} schema_row_shut={schema_row_shut}"),
+    );
     let col = format!("{cols}/id");
     report("its columns are there", row(&tree, &col, cx).await, String::new());
 
@@ -189,10 +193,18 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     draw(cx);
 
     let acts = menu_choose(&tree, &pinned("orders"), Act::Unpin, cx).await;
-    report("a pinned table has its table menu, with Unpin", acts.contains(&Act::Unpin) && acts.contains(&Act::SelectTop) && acts.contains(&Act::DropTable), format!("{acts:?}"));
+    report(
+        "a pinned table has its table menu, with Unpin",
+        acts.contains(&Act::Unpin) && acts.contains(&Act::SelectTop) && acts.contains(&Act::DropTable),
+        format!("{acts:?}"),
+    );
     let (shown, sel) = cx.update(|_, cx| (tree.read(cx).demo_pinned(conn), tree.read(cx).selected_id().map(str::to_string))).unwrap();
     let sel_exists = sel.as_ref().is_some_and(|id| cx.update(|_, cx| tree.read(cx).has_row(id)).unwrap());
-    report("unpinned: out of the group, the selection on a row still there", shown.len() == 1 && shown[0].0 == "customer" && sel_exists, format!("{shown:?} selected={sel:?}"));
+    report(
+        "unpinned: out of the group, the selection on a row still there",
+        shown.len() == 1 && shown[0].0 == "customer" && sel_exists,
+        format!("{shown:?} selected={sel:?}"),
+    );
     menu_choose(&tree, &pinned("customer"), Act::Unpin, cx).await;
     let gone = !cx.update(|_, cx| tree.read(cx).has_row(&group)).unwrap();
     report("the last unpin takes the group and the file along", gone && !core.dirs.pins_file().exists(), format!("group gone={gone}"));

@@ -157,7 +157,9 @@ pub(crate) async fn databases(c: &Client) -> Result<Vec<Item>> {
     let admin = c.client.database("admin");
     let r = match admin.run_command(doc! { "listDatabases": 1 }).await {
         Ok(r) => r,
-        Err(_) => admin.run_command(doc! { "listDatabases": 1, "authorizedDatabases": true, "nameOnly": true }).await.map_err(|e| anyhow!(message(&e.into())))?,
+        Err(_) => {
+            admin.run_command(doc! { "listDatabases": 1, "authorizedDatabases": true, "nameOnly": true }).await.map_err(|e| anyhow!(message(&e.into())))?
+        }
     };
     let mut out: Vec<Item> = r
         .get_array("databases")
@@ -185,7 +187,9 @@ pub(crate) async fn collections(c: &Client, db: &str) -> Result<Vec<Item>> {
     // the name and type are all that is read here.
     let r = match d.run_command(doc! { "listCollections": 1, "authorizedCollections": true, "nameOnly": false }).await {
         Ok(r) => r,
-        Err(_) => d.run_command(doc! { "listCollections": 1, "authorizedCollections": true, "nameOnly": true }).await.map_err(|e| anyhow!(message(&e.into())))?,
+        Err(_) => {
+            d.run_command(doc! { "listCollections": 1, "authorizedCollections": true, "nameOnly": true }).await.map_err(|e| anyhow!(message(&e.into())))?
+        }
     };
     let batch = r.get_document("cursor").and_then(|c| c.get_array("firstBatch")).cloned().unwrap_or_default();
     let mut items: Vec<Item> = batch
@@ -236,19 +240,12 @@ async fn close_cursor(d: &mongodb::Database, coll: &str, r: &Document) {
 }
 
 fn first_batch(r: &Document) -> Vec<Document> {
-    r.get_document("cursor")
-        .and_then(|c| c.get_array("firstBatch"))
-        .map(|a| a.iter().filter_map(Bson::as_document).cloned().collect())
-        .unwrap_or_default()
+    r.get_document("cursor").and_then(|c| c.get_array("firstBatch")).map(|a| a.iter().filter_map(Bson::as_document).cloned().collect()).unwrap_or_default()
 }
 
 fn docs_of(found: Vec<Document>, page: Page, source: Option<Source>, total: Option<u64>) -> Docs {
     let more = found.len() > page.limit;
-    let docs = found
-        .into_iter()
-        .take(page.limit)
-        .map(|d| Doc { id: d.get("_id").cloned().map(Body::Bson), index: None, body: Body::doc(d) })
-        .collect();
+    let docs = found.into_iter().take(page.limit).map(|d| Doc { id: d.get("_id").cloned().map(Body::Bson), index: None, body: Body::doc(d) }).collect();
     Docs { docs, source, total, skip: page.skip, more }
 }
 
@@ -336,7 +333,11 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                 None => Bson::Int32(1),
             };
             // `$currentOp` (and the cluster's own stages) run on admin.
-            let on = if coll.is_none() && pipeline.first().is_some_and(|s| s.contains_key("$currentOp") || s.contains_key("$listSessions")) { c.client.database("admin") } else { d.clone() };
+            let on = if coll.is_none() && pipeline.first().is_some_and(|s| s.contains_key("$currentOp") || s.contains_key("$listSessions")) {
+                c.client.database("admin")
+            } else {
+                d.clone()
+            };
             let cmd = doc! { "aggregate": target, "pipeline": stages, "cursor": { "batchSize": page.limit as i64 + 1 } };
             let r = on.run_command(cmd).await.map_err(cmd_err)?;
             Output::Docs(docs_of(first_batch(&r), page, None, None))
@@ -375,7 +376,11 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
             if let Some(id) = r.upserted_id {
                 detail.insert("upsertedId", id);
             }
-            Output::Written { affected: r.modified + r.upserted, summary: format!("{} matched, {} replaced", r.matched, r.modified), detail: Some(Body::doc(detail)) }
+            Output::Written {
+                affected: r.modified + r.upserted,
+                summary: format!("{} matched, {} replaced", r.matched, r.modified),
+                detail: Some(Body::doc(detail)),
+            }
         }
         Op::Delete { coll, filter, many, options } => {
             let mut del = doc! { "q": filter.clone(), "limit": if *many { 0 } else { 1 } };
@@ -420,7 +425,11 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                 Some(_) => "updated",
             };
             let value = r.get("value").cloned().filter(|v| *v != Bson::Null);
-            Output::Written { affected: n, summary: if value.is_some() { plural(n.max(1), "document", verb) } else { "no document matched".into() }, detail: value.map(Body::Bson) }
+            Output::Written {
+                affected: n,
+                summary: if value.is_some() { plural(n.max(1), "document", verb) } else { "no document matched".into() },
+                detail: value.map(Body::Bson),
+            }
         }
         Op::BulkWrite { coll, ops } => {
             let (mut inserted, mut matched, mut modified, mut deleted, mut upserted) = (0u64, 0u64, 0u64, 0u64, 0u64);
@@ -447,13 +456,21 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                     "deleteOne" | "deleteMany" => {
                         let mut del = doc! { "q": filter, "limit": if kind == "deleteMany" { 0 } else { 1 } };
                         del.extend(opts);
-                        let n = write_cmd(&d, doc! { "delete": coll.clone(), "deletes": [del] }).await.map_err(at)?.get("n").and_then(|n| number(Some(n))).unwrap_or(0.) as u64;
+                        let n = write_cmd(&d, doc! { "delete": coll.clone(), "deletes": [del] })
+                            .await
+                            .map_err(at)?
+                            .get("n")
+                            .and_then(|n| number(Some(n)))
+                            .unwrap_or(0.) as u64;
                         deleted += n;
                     }
                     _ => {}
                 }
             }
-            let summary = format!("{inserted} inserted, {matched} matched, {modified} modified, {deleted} deleted{}", if upserted > 0 { format!(", {upserted} upserted") } else { String::new() });
+            let summary = format!(
+                "{inserted} inserted, {matched} matched, {modified} modified, {deleted} deleted{}",
+                if upserted > 0 { format!(", {upserted} upserted") } else { String::new() }
+            );
             let detail = doc! {
                 "insertedCount": inserted as i64, "matchedCount": matched as i64, "modifiedCount": modified as i64,
                 "deletedCount": deleted as i64, "upsertedCount": upserted as i64,

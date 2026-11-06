@@ -11,7 +11,11 @@ fn conn_only() -> Schema {
 }
 
 fn pid_schema() -> Schema {
-    confirm_prop(conn_only().prop("pid", true, json!({"type": "integer", "minimum": 1, "maximum": i32::MAX, "description": "The backend's process id (from activity_sessions)."})))
+    confirm_prop(conn_only().prop(
+        "pid",
+        true,
+        json!({"type": "integer", "minimum": 1, "maximum": i32::MAX, "description": "The backend's process id (from activity_sessions)."}),
+    ))
 }
 
 pub fn tools() -> Vec<Builtin> {
@@ -19,9 +23,11 @@ pub fn tools() -> Vec<Builtin> {
         Builtin {
             name: "activity_sessions",
             description: "PostgreSQL only. Server sessions (pg_stat_activity). Rows: [pid, user, database, application, client, state, wait, xact_age_s, query_age_s, blocked_by, query] with ages in seconds and the query cut to 500 characters; this server's own MCP backends are left out. Idle sessions only with include_idle, background processes only with include_background.",
-            schema: conn_only()
-                .prop("include_idle", false, json!({"type": "boolean", "description": "Also idle sessions."}))
-                .prop("include_background", false, json!({"type": "boolean", "description": "Also background processes (autovacuum, walwriter…)."})),
+            schema: conn_only().prop("include_idle", false, json!({"type": "boolean", "description": "Also idle sessions."})).prop(
+                "include_background",
+                false,
+                json!({"type": "boolean", "description": "Also background processes (autovacuum, walwriter…)."}),
+            ),
             need: Some(Need::Read),
             run: sessions,
         },

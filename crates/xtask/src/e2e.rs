@@ -173,10 +173,8 @@ pub fn run(args: &[String]) -> Result<()> {
             bail!("no stage {n} (`xtask e2e --list`)");
         }
     }
-    let stages: Vec<&Stage> = STAGES
-        .iter()
-        .filter(|s| (o.only.is_empty() || o.only.iter().any(|n| n == s.name)) && !o.skip.iter().any(|n| n == s.name))
-        .collect();
+    let stages: Vec<&Stage> =
+        STAGES.iter().filter(|s| (o.only.is_empty() || o.only.iter().any(|n| n == s.name)) && !o.skip.iter().any(|n| n == s.name)).collect();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     // Windows canonicalizes to `\\?\C:\...`: docker compose resolves its bind mounts against
     // the working directory, and takes that prefix's colons for mount separators.
@@ -188,7 +186,10 @@ pub fn run(args: &[String]) -> Result<()> {
     if o.build {
         step("build");
         // The stages live behind the `checks` feature: the app as shipped has none of them.
-        let st = Command::new("cargo").args(["build", "--release", "-p", "dataman", "-p", "dataman-mcp", "--features", "dataman/checks"]).current_dir(&root).status()?;
+        let st = Command::new("cargo")
+            .args(["build", "--release", "-p", "dataman", "-p", "dataman-mcp", "--features", "dataman/checks"])
+            .current_dir(&root)
+            .status()?;
         if !st.success() {
             bail!("the build failed");
         }
@@ -216,7 +217,14 @@ pub fn run(args: &[String]) -> Result<()> {
     for s in &stages {
         let r = run_stage(&root, &app, s, &dir, o.verbose)?;
         let mark = if r.ok() { "✓" } else { "✗" };
-        println!("{mark} {:<18} {:>4}/{:<4} {:>6.1}s{}", s.name, r.pass, r.pass + r.fail.len(), r.secs, r.note.as_deref().map(|n| format!("  {n}")).unwrap_or_default());
+        println!(
+            "{mark} {:<18} {:>4}/{:<4} {:>6.1}s{}",
+            s.name,
+            r.pass,
+            r.pass + r.fail.len(),
+            r.secs,
+            r.note.as_deref().map(|n| format!("  {n}")).unwrap_or_default()
+        );
         for f in &r.fail {
             println!("    FAIL {f}");
         }
@@ -224,12 +232,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let failed: Vec<&str> = rows.iter().filter(|(_, r)| !r.ok()).map(|(n, _)| *n).collect();
     let (pass, total) = rows.iter().fold((0, 0), |(p, t), (_, r)| (p + r.pass, t + r.pass + r.fail.len()));
-    let mut summary = format!(
-        "E2E: {}/{} stages passed, {pass}/{total} checks, {:.0}s",
-        rows.len() - failed.len(),
-        rows.len(),
-        t0.elapsed().as_secs_f64()
-    );
+    let mut summary = format!("E2E: {}/{} stages passed, {pass}/{total} checks, {:.0}s", rows.len() - failed.len(), rows.len(), t0.elapsed().as_secs_f64());
     if !failed.is_empty() {
         summary.push_str(&format!(" — failed: {}", failed.join(", ")));
     }
@@ -310,7 +313,11 @@ fn password(db: Db) -> String {
 /// The container that publishes `port` (a compose service or one made by hand).
 fn container(port: u16) -> Result<String> {
     let out = Command::new("docker").args(["ps", "--filter", &format!("publish={port}"), "--format", "{{.Names}}"]).output()?;
-    String::from_utf8_lossy(&out.stdout).lines().next().map(str::to_string).with_context(|| format!("no container publishes port {port}: the seeds load through `docker exec`"))
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(str::to_string)
+        .with_context(|| format!("no container publishes port {port}: the seeds load through `docker exec`"))
 }
 
 fn exec(container: &str, cmd: &[&str], input: Option<&Path>) -> Result<String> {

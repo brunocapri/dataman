@@ -48,7 +48,11 @@ pub fn type_shape(engine: crate::config::Engine, type_name: &str) -> TypeShape {
 /// [`type_shape`] where the engine is not at hand: the engines' names for these do not collide.
 pub fn type_shape_any(type_name: &str) -> TypeShape {
     use crate::config::Engine;
-    [Engine::Postgres, Engine::SqlServer, Engine::MySql, Engine::DuckDb].into_iter().map(|e| type_shape(e, type_name)).find(|s| *s != TypeShape::Plain).unwrap_or(TypeShape::Plain)
+    [Engine::Postgres, Engine::SqlServer, Engine::MySql, Engine::DuckDb]
+        .into_iter()
+        .map(|e| type_shape(e, type_name))
+        .find(|s| *s != TypeShape::Plain)
+        .unwrap_or(TypeShape::Plain)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,8 +190,7 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
         Type::FLOAT4 => format_float(pt::float4_from_sql(raw)? as f64, true, out),
         Type::FLOAT8 => format_float(pt::float8_from_sql(raw)?, false, out),
         Type::NUMERIC => format_numeric(raw, out)?,
-        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN | Type::XML
-        | Type::JSON => out.push_str(pt::text_from_sql(raw)?),
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN | Type::XML | Type::JSON => out.push_str(pt::text_from_sql(raw)?),
         Type::JSONB => {
             let (&ver, rest) = raw.split_first().ok_or("empty jsonb")?;
             if ver != 1 {
@@ -347,9 +350,7 @@ fn format_array(ty: &Type, raw: &[u8], out: &mut String, sep: &str, braces: bool
 }
 
 fn needs_array_quotes(s: &str) -> bool {
-    s.is_empty()
-        || s.eq_ignore_ascii_case("null")
-        || s.chars().any(|c| matches!(c, '{' | '}' | ',' | '"' | '\\' | ' ' | '\t' | '\n'))
+    s.is_empty() || s.eq_ignore_ascii_case("null") || s.chars().any(|c| matches!(c, '{' | '}' | ',' | '"' | '\\' | ' ' | '\t' | '\n'))
 }
 
 fn format_record(raw: &[u8], out: &mut String, fields: Option<&[tokio_postgres::types::Field]>) -> Result<(), BoxErr> {
@@ -535,9 +536,7 @@ const ODD_DATE: i64 = i64::MIN + 1;
 const ODD_SPAN: i64 = 10_000 * 13 * 32 * 24 * 60 * 60 * 1_000_000;
 
 pub fn odd_date(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8, us: u32) -> i64 {
-    let parts = ((((((y.min(9999) as i64) * 13 + m.min(12) as i64) * 32 + d.min(31) as i64) * 24 + h.min(23) as i64) * 60
-        + mi.min(59) as i64)
-        * 60
+    let parts = ((((((y.min(9999) as i64) * 13 + m.min(12) as i64) * 32 + d.min(31) as i64) * 24 + h.min(23) as i64) * 60 + mi.min(59) as i64) * 60
         + s.min(59) as i64)
         * 1_000_000
         + us.min(999_999) as i64;
@@ -621,9 +620,8 @@ pub fn format_timestamptz(micros: i64, out: &mut String) {
     if micros == i64::MAX || micros == i64::MIN {
         return format_timestamp(micros, out);
     }
-    let utc = NaiveDate::from_ymd_opt(2000, 1, 1)
-        .map(|d| d.and_time(NaiveTime::MIN))
-        .and_then(|b| b.checked_add_signed(chrono::Duration::microseconds(micros)));
+    let utc =
+        NaiveDate::from_ymd_opt(2000, 1, 1).map(|d| d.and_time(NaiveTime::MIN)).and_then(|b| b.checked_add_signed(chrono::Duration::microseconds(micros)));
     let Some(utc) = utc else {
         format_timestamp(micros, out);
         out.push_str("+00");
@@ -700,9 +698,7 @@ pub fn cmp_decimal(a: &str, b: &str) -> std::cmp::Ordering {
     }
     let (ca, cb) = (class(a), class(b));
     if ca != 0 || cb != 0 {
-        let rank = |c: i8, s: &str| -> (i8, bool) {
-            if c != 0 { (c, false) } else { (if s.starts_with('-') { -1 } else { 1 }, true) }
-        };
+        let rank = |c: i8, s: &str| -> (i8, bool) { if c != 0 { (c, false) } else { (if s.starts_with('-') { -1 } else { 1 }, true) } };
         let (ra, fa) = rank(ca, a);
         let (rb, fb) = rank(cb, b);
         if fa && fb {

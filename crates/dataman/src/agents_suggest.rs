@@ -236,7 +236,10 @@ impl AgentsPage {
                     // Columns whose own name fits, from tables already read.
                     for (s, t) in &tables {
                         for c in conn.schema.cached_columns(&db, s, t).unwrap_or_default() {
-                            push(rank(&c.name, tail).map(|r| r + 2), Choice { text: format!("{t}.{}", c.name), kind: ItemKind::Column, detail: c.type_name.clone() });
+                            push(
+                                rank(&c.name, tail).map(|r| r + 2),
+                                Choice { text: format!("{t}.{}", c.name), kind: ItemKind::Column, detail: c.type_name.clone() },
+                            );
                         }
                     }
                 }
@@ -350,14 +353,27 @@ impl AgentsPage {
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(glyph).size(px(13.)).text_color(t.tx3))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(c.text.clone()))
-                .child(div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(c.detail.clone()))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |v, _, window, cx| {
-                    v.suggest.sel = k;
-                    v.accept_suggest(cx);
-                    let input = v.input_of(w).clone();
-                    window.focus(&input.read(cx).focus_handle(cx), cx);
-                    cx.stop_propagation();
-                }))
+                .child(
+                    div()
+                        .flex_none()
+                        .max_w(px(120.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(crate::theme::text::SMALL))
+                        .text_color(t.tx3)
+                        .child(c.detail.clone()),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |v, _, window, cx| {
+                        v.suggest.sel = k;
+                        v.accept_suggest(cx);
+                        let input = v.input_of(w).clone();
+                        window.focus(&input.read(cx).focus_handle(cx), cx);
+                        cx.stop_propagation();
+                    }),
+                )
         });
         // Below the field when the list fits there (or fits better than above), scrolling when
         // it doesn't fit either way.

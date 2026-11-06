@@ -1,10 +1,7 @@
-use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Window,
-    actions, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::dataview::{CountStop, Filter, Op, TableView};
 use dataman_core::value::Kind;
+use gpui::{App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
 use crate::grid::ui_count;
@@ -18,11 +15,7 @@ pub const POPOVER_CONTEXT: &str = "FilterPopover";
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(POPOVER_CONTEXT);
-    cx.bind_keys([
-        crate::keymap::kb("escape", CloseFilter, c),
-        crate::keymap::kb("tab", NextOp, c),
-        crate::keymap::kb("shift-tab", PrevOp, c),
-    ]);
+    cx.bind_keys([crate::keymap::kb("escape", CloseFilter, c), crate::keymap::kb("tab", NextOp, c), crate::keymap::kb("shift-tab", PrevOp, c)]);
 }
 
 pub struct TableData {
@@ -309,13 +302,15 @@ impl Workspace {
         let (pop, at) = self.filter_pop.clone()?;
         Some(
             gpui::deferred(
-                gpui::anchored()
-                    .position(gpui::point(px(at.0), px(at.1)))
-                    .snap_to_window_with_margin(px(8.))
-                    .child(ui::menu_in("filter-pop-in", div().on_mouse_down_out(cx.listener(|w, _, _, cx| {
-                        w.filter_pop = None;
-                        cx.notify();
-                    })).child(pop))),
+                gpui::anchored().position(gpui::point(px(at.0), px(at.1))).snap_to_window_with_margin(px(8.)).child(ui::menu_in(
+                    "filter-pop-in",
+                    div()
+                        .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                            w.filter_pop = None;
+                            cx.notify();
+                        }))
+                        .child(pop),
+                )),
             )
             .priority(3)
             .into_any_element(),
@@ -341,7 +336,7 @@ mod tests {
     use super::*;
 
     fn data(page: u64, size: u64, filtered: bool) -> TableView {
-        let mut v = TableView::new("public", "orders",vec!["id".into()], size);
+        let mut v = TableView::new("public", "orders", vec!["id".into()], size);
         v.page = page;
         if filtered {
             v.filters.push(Filter::new("status", Kind::Text, Op::Eq, "paid"));

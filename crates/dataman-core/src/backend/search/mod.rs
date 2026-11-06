@@ -185,10 +185,37 @@ pub(crate) async fn fields(c: &Client, index: &str) -> Result<Vec<(String, Vec<&
 
 fn known_type(t: &str) -> &'static str {
     const TYPES: &[&str] = &[
-        "text", "keyword", "long", "integer", "short", "byte", "double", "float", "half_float", "scaled_float", "date", "date_nanos",
-        "boolean", "binary", "object", "nested", "geo_point", "geo_shape", "ip", "completion", "dense_vector", "knn_vector",
-        "flattened", "flat_object", "wildcard", "constant_keyword", "match_only_text", "search_as_you_type", "unsigned_long",
-        "version", "alias",
+        "text",
+        "keyword",
+        "long",
+        "integer",
+        "short",
+        "byte",
+        "double",
+        "float",
+        "half_float",
+        "scaled_float",
+        "date",
+        "date_nanos",
+        "boolean",
+        "binary",
+        "object",
+        "nested",
+        "geo_point",
+        "geo_shape",
+        "ip",
+        "completion",
+        "dense_vector",
+        "knn_vector",
+        "flattened",
+        "flat_object",
+        "wildcard",
+        "constant_keyword",
+        "match_only_text",
+        "search_as_you_type",
+        "unsigned_long",
+        "version",
+        "alias",
     ];
     TYPES.iter().find(|x| **x == t).copied().unwrap_or("other")
 }
@@ -283,7 +310,11 @@ async fn search(c: &Client, req: &Request, page: Page) -> Result<Output> {
                     m.insert("_sort".into(), v.clone());
                 }
             }
-            Doc { id: h["_id"].as_str().map(|s| Body::Json(Value::String(s.to_string()))), index: h["_index"].as_str().map(str::to_string), body: Body::Json(body) }
+            Doc {
+                id: h["_id"].as_str().map(|s| Body::Json(Value::String(s.to_string()))),
+                index: h["_index"].as_str().map(str::to_string),
+                body: Body::Json(body),
+            }
         })
         .collect();
     let source = (!partial).then(|| Source::Search { index: req.index().filter(|i| !i.contains(['*', ','])).unwrap_or("").to_string() });
@@ -357,6 +388,9 @@ mod tests {
         assert_eq!(s(json!({"items": [{"index": {"status": 201}}, {"index": {"error": {"type": "x"}}}]})), (1, "1 done, 1 failed".into()));
         assert_eq!(enc("logs-2024.01"), "logs-2024.01");
         assert_eq!(enc("a b/c"), "a%20b%2Fc");
-        assert_eq!(error_message(&json!({"error": {"root_cause": [{"type": "index_not_found_exception", "reason": "no such index [x]"}]}}), ""), "index_not_found_exception: no such index [x]");
+        assert_eq!(
+            error_message(&json!({"error": {"root_cause": [{"type": "index_not_found_exception", "reason": "no such index [x]"}]}}), ""),
+            "index_not_found_exception: no such index [x]"
+        );
     }
 }

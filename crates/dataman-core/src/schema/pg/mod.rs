@@ -102,9 +102,8 @@ pub(super) async fn columns(client: &Db, oid: u32) -> Option<Vec<Column>> {
 pub(super) async fn indexes(client: &Db, oid: u32, cols: &[Column]) -> Result<Vec<Index>> {
     // Column numbers → names, from the catalog (attnum is not the list position when columns
     // were dropped).
-    let nums = first_ok(client, &[&format!("SELECT attnum, attname FROM pg_catalog.pg_attribute WHERE attrelid = {oid} AND attnum > 0")])
-        .await
-        .unwrap_or_default();
+    let nums =
+        first_ok(client, &[&format!("SELECT attnum, attname FROM pg_catalog.pg_attribute WHERE attrelid = {oid} AND attnum > 0")]).await.unwrap_or_default();
     let name_of = |n: i64| -> String {
         nums.iter()
             .find(|r| r.first().cloned().flatten().and_then(|x| x.parse::<i64>().ok()) == Some(n))

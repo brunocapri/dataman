@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::result::Phase;
 use dataman_core::session::SessionStore;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::restore::Sessions;
@@ -44,7 +44,11 @@ async fn run(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, sql: &str, script: 
     });
     draw(cx);
     crate::editor::dispatch(cx, if script { Box::new(crate::editor::RunScript) } else { Box::new(crate::editor::RunStatement) });
-    wait(cx, |cx| cx.update(|_, cx| !tab.read(cx).is_running() && !tab.read(cx).run_continues() && tab.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true)).await;
+    wait(cx, |cx| {
+        cx.update(|_, cx| !tab.read(cx).is_running() && !tab.read(cx).run_continues() && tab.read(cx).run_phase().is_some_and(|p| p.is_finished()))
+            .unwrap_or(true)
+    })
+    .await;
     draw(cx);
 }
 
@@ -116,7 +120,11 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         .unwrap();
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.save_session(true, cx)));
     let written = store.load();
-    report("the session is written (tabs and results files)", written.as_ref().is_some_and(|s| s.tabs.len() == before.0.len() && s.tabs.iter().all(|t| t.results.is_some())), format!("{written:?}"));
+    report(
+        "the session is written (tabs and results files)",
+        written.as_ref().is_some_and(|s| s.tabs.len() == before.0.len() && s.tabs.iter().all(|t| t.results.is_some())),
+        format!("{written:?}"),
+    );
 
     let ws2 = relaunch(ws, cx);
     let back = wait(cx, |cx| {
@@ -138,12 +146,24 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
             (tabs, w.active)
         })
         .unwrap();
-    report("the tabs come back with their SQL, selection and the tab in front", back && after.0 == before.0.iter().map(|t| (t.0.clone(), t.1)).collect::<Vec<_>>() && after.1 == before.1, format!("{after:?}"));
+    report(
+        "the tabs come back with their SQL, selection and the tab in front",
+        back && after.0 == before.0.iter().map(|t| (t.0.clone(), t.1)).collect::<Vec<_>>() && after.1 == before.1,
+        format!("{after:?}"),
+    );
     let (ew, view) = cx.update(|_, cx| (ws2.read(cx).explorer_w, ws2.read(cx).view)).unwrap_or_default();
-    report("the sidebar's width and its view (the history) come back", ew == 300. && view == dataman_core::layout::NavView::History, format!("sidebar {ew}, view {view:?}"));
+    report(
+        "the sidebar's width and its view (the history) come back",
+        ew == 300. && view == dataman_core::layout::NavView::History,
+        format!("sidebar {ew}, view {view:?}"),
+    );
     let (t1, t2) = cx.update(|_, cx| (ws2.read(cx).tabs[0].clone(), ws2.read(cx).tabs[1].clone())).unwrap();
     let link = cx.update(|_, cx| (t2.read(cx).favorite.as_ref().map(|(id, _)| id.clone()), t2.read(cx).title(cx).to_string())).unwrap();
-    report("a tab linked to a favorite comes back linked, titled with its name", fav.is_some() && link.0 == fav && link.1 == "Session favorite", format!("{link:?}"));
+    report(
+        "a tab linked to a favorite comes back linked, titled with its name",
+        fav.is_some() && link.0 == fav && link.1 == "Session favorite",
+        format!("{link:?}"),
+    );
     let (rows, cell, restored, partial, connected) = cx
         .update(|_, cx| {
             let t = t1.read(cx);
@@ -173,7 +193,11 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         .unwrap();
     report(
         "the script's error is back, on screen, with its result tabs",
-        phase == Some(Phase::Failed) && error.as_deref().is_some_and(|m| m.contains("no_such_table_here")) && tabs >= 2 && shown_err && before.0[1].3 == Some(Phase::Failed),
+        phase == Some(Phase::Failed)
+            && error.as_deref().is_some_and(|m| m.contains("no_such_table_here"))
+            && tabs >= 2
+            && shown_err
+            && before.0[1].3 == Some(Phase::Failed),
         format!("phase {phase:?}, error {error:?}, {tabs} result tabs, error on screen {shown_err}"),
     );
     let edit = cx.update(|_, cx| t1.read(cx).edit.clone()).unwrap();
@@ -199,10 +223,18 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let (conn, answer, live) = cx
         .update(|_, cx| {
             let t = t1.read(cx);
-            (t.connection().map(|c| c.profile.id.clone()), t.result().and_then(|r| r.snapshot().text(0, 0).map(|s| s.into_owned())), t.result().is_some_and(|r| !r.is_restored()))
+            (
+                t.connection().map(|c| c.profile.id.clone()),
+                t.result().and_then(|r| r.snapshot().text(0, 0).map(|s| s.into_owned())),
+                t.result().is_some_and(|r| !r.is_restored()),
+            )
         })
         .unwrap();
-    report("its first run connects its own connection and runs there", conn == before.0[0].2 && answer.as_deref() == Some("42") && live, format!("{conn:?} {answer:?}"));
+    report(
+        "its first run connects its own connection and runs there",
+        conn == before.0[0].2 && answer.as_deref() == Some("42") && live,
+        format!("{conn:?} {answer:?}"),
+    );
 
     if stage == "session" {
         let ws3 = relaunch(&ws2, cx);

@@ -329,18 +329,38 @@ fn comparable(d: Dialect, type_name: &str) -> bool {
     if d == Dialect::DuckDb {
         // FLOAT is single precision: it never equals the decimal it prints.
         let t = base.to_ascii_uppercase();
-        return !matches!(t.as_str(), "FLOAT" | "FLOAT4" | "REAL") && !t.contains("[]") && !t.starts_with("STRUCT") && !t.starts_with("MAP") && !t.starts_with("UNION");
+        return !matches!(t.as_str(), "FLOAT" | "FLOAT4" | "REAL")
+            && !t.contains("[]")
+            && !t.starts_with("STRUCT")
+            && !t.starts_with("MAP")
+            && !t.starts_with("UNION");
     }
     if d == Dialect::TSql {
         // SQL Server cannot compare its old large types, XML and CLR types with `=`; floats
         // never equal the decimal they print, and the grid keeps time to the µs (datetime2's
         // seventh digit is not shown).
-        return !matches!(
-            base,
-            "text" | "ntext" | "image" | "xml" | "udt" | "sql_variant" | "float" | "real" | "datetime2" | "time" | "datetimeoffset"
-        );
+        return !matches!(base, "text" | "ntext" | "image" | "xml" | "udt" | "sql_variant" | "float" | "real" | "datetime2" | "time" | "datetimeoffset");
     }
-    !matches!(base, "json" | "xml" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "jsonpath" | "lquery" | "ltxtquery" | "txid_snapshot" | "pg_snapshot" | "float" | "float unsigned" | "geometry")
+    !matches!(
+        base,
+        "json"
+            | "xml"
+            | "point"
+            | "line"
+            | "lseg"
+            | "box"
+            | "path"
+            | "polygon"
+            | "circle"
+            | "jsonpath"
+            | "lquery"
+            | "ltxtquery"
+            | "txid_snapshot"
+            | "pg_snapshot"
+            | "float"
+            | "float unsigned"
+            | "geometry"
+    )
 }
 
 /// MySQL compares a number with a string as doubles (an unsigned BIGINT would lose digits):
@@ -478,7 +498,9 @@ pub struct ApplyReport {
 pub fn explain_error_in(e: &ErrorInfo, engine: crate::config::Engine) -> String {
     let class = e.class(engine);
     let base = match class {
-        crate::result::ErrorClass::LockTimeout if engine.is_file() => "The database is locked: another tab or program holds a write transaction on this file; nothing was saved. Try again.",
+        crate::result::ErrorClass::LockTimeout if engine.is_file() => {
+            "The database is locked: another tab or program holds a write transaction on this file; nothing was saved. Try again."
+        }
         c => c.explain(),
     };
     let mut s = String::new();
@@ -525,10 +547,7 @@ impl Connection {
                         None => false,
                     };
                     let (kind, message) = if exists {
-                        (
-                            ConflictKind::Changed,
-                            format!("The row with {} was changed by someone else since it was read. Reload before saving.", c.key),
-                        )
+                        (ConflictKind::Changed, format!("The row with {} was changed by someone else since it was read. Reload before saving.", c.key))
                     } else {
                         (ConflictKind::RowGone, format!("The row with {} is gone (deleted or changed by someone else).", c.key))
                     };
@@ -716,18 +735,22 @@ impl Connection {
             if matches!(dialect, Dialect::Sqlite | Dialect::DuckDb) {
                 generated = columns
                     .iter()
-                    .map(|c| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n)).is_some_and(|t| t.default.as_deref().is_some_and(|d| d.starts_with("GENERATED"))))
+                    .map(|c| {
+                        c.as_ref()
+                            .and_then(|n| tcols_full.iter().find(|t| &t.name == n))
+                            .is_some_and(|t| t.default.as_deref().is_some_and(|d| d.starts_with("GENERATED")))
+                    })
                     .collect();
             }
-            let not_null = columns
-                .iter()
-                .map(|c| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n)).is_some_and(|t| t.nullable == Some(false)))
-                .collect();
+            let not_null =
+                columns.iter().map(|c| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n)).is_some_and(|t| t.nullable == Some(false))).collect();
             let of = |c: &Option<String>| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n));
             let single_key = tcols_full.iter().filter(|t| t.primary_key).count() == 1;
             let has_default = columns
                 .iter()
-                .map(|c| of(c).is_some_and(|t| t.default.is_some() || (caps.rowid_key && single_key && t.primary_key && t.type_name.eq_ignore_ascii_case("integer"))))
+                .map(|c| {
+                    of(c).is_some_and(|t| t.default.is_some() || (caps.rowid_key && single_key && t.primary_key && t.type_name.eq_ignore_ascii_case("integer")))
+                })
                 .collect();
             let declared = columns.iter().map(|c| of(c).map_or(String::new(), |t| t.type_name.clone())).collect();
             (TableRef { schema: Some(schema), name: rel.name.clone() }, columns, rel.oid, not_null, has_default, declared)
@@ -806,7 +829,20 @@ impl Connection {
             }
             _ => None,
         };
-        Ok(Editability::Editable(EditTarget { table, key, key_source: source, columns, kinds, type_names, not_null, dialect: self.dialect(), generated, has_default, uuid_key, uuid_upper: caps.uuid_upper }))
+        Ok(Editability::Editable(EditTarget {
+            table,
+            key,
+            key_source: source,
+            columns,
+            kinds,
+            type_names,
+            not_null,
+            dialect: self.dialect(),
+            generated,
+            has_default,
+            uuid_key,
+            uuid_upper: caps.uuid_upper,
+        }))
     }
 
     /// A key that references another table's row (a one-to-one table) takes that row's value.
@@ -814,7 +850,9 @@ impl Connection {
         let schema = table.schema.as_deref().unwrap_or_default();
         let d = self.dialect();
         match self.relationships(db, schema).await {
-            Ok(g) => !g.links.iter().any(|l| same_name(d, &l.from_schema, schema) && same_name(d, &l.from_table, &table.name) && l.from_columns.iter().any(|f| same_name(d, f, column))),
+            Ok(g) => !g.links.iter().any(|l| {
+                same_name(d, &l.from_schema, schema) && same_name(d, &l.from_table, &table.name) && l.from_columns.iter().any(|f| same_name(d, f, column))
+            }),
             Err(e) => {
                 log::debug!("no UUID offered for {}: its foreign keys could not be read: {e:#}", table.name);
                 false
@@ -832,11 +870,7 @@ async fn pg_key(client: &Db, oid: u32) -> Result<Vec<(bool, Vec<String>)>> {
         )],
     )
     .await?;
-    let atts = first_ok(
-        client,
-        &[&format!("SELECT attnum, attname, attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = {oid} AND attnum > 0")],
-    )
-    .await?;
+    let atts = first_ok(client, &[&format!("SELECT attnum, attname, attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = {oid} AND attnum > 0")]).await?;
     let mut out = Vec::new();
     for r in idx {
         let primary = r.first().cloned().flatten().as_deref() == Some("t");
@@ -845,9 +879,7 @@ async fn pg_key(client: &Db, oid: u32) -> Result<Vec<(bool, Vec<String>)>> {
         let mut ok = !nums.is_empty();
         for n in &nums {
             match atts.iter().find(|a| a.first().cloned().flatten().as_deref() == Some(n)) {
-                Some(a) if primary || a.get(2).cloned().flatten().as_deref() == Some("t") => {
-                    names.push(a.get(1).cloned().flatten().unwrap_or_default())
-                }
+                Some(a) if primary || a.get(2).cloned().flatten().as_deref() == Some("t") => names.push(a.get(1).cloned().flatten().unwrap_or_default()),
                 _ => ok = false,
             }
         }
@@ -1232,10 +1264,8 @@ async fn resolve_base_types(client: &Db, cols: &[crate::result::ColumnInfo], typ
          ORDER BY r.top, r.depth DESC"
     );
     let Ok(rows) = first_ok(client, &[&sql]).await else { return };
-    let base: BTreeMap<u32, String> = rows
-        .into_iter()
-        .filter_map(|r| Some((r.first().cloned().flatten()?.parse().ok()?, r.get(1).cloned().flatten()?)))
-        .collect();
+    let base: BTreeMap<u32, String> =
+        rows.into_iter().filter_map(|r| Some((r.first().cloned().flatten()?.parse().ok()?, r.get(1).cloned().flatten()?))).collect();
     for (c, name) in cols.iter().zip(type_names.iter_mut()) {
         if let Some(b) = base.get(&c.type_oid)
             && !comparable(Dialect::Postgres, b)
@@ -1257,13 +1287,7 @@ mod tests {
         assert_eq!(s.alias.as_deref(), Some("p"));
         assert_eq!(
             s.items,
-            vec![
-                SelectItem::Column("id".into()),
-                SelectItem::Column("name".into()),
-                SelectItem::Expr,
-                SelectItem::Star,
-                SelectItem::Column("Total".into())
-            ]
+            vec![SelectItem::Column("id".into()), SelectItem::Column("name".into()), SelectItem::Expr, SelectItem::Star, SelectItem::Column("Total".into())]
         );
         assert_eq!(analyze_select("select * from t").unwrap().items, vec![SelectItem::Star]);
         for (sql, why) in [
@@ -1423,6 +1447,9 @@ mod tests {
         assert!(explain_error_in(&e, crate::config::Engine::Postgres).contains("nothing was saved"));
         // 1205: MySQL's lock wait, SQL Server's deadlock.
         let e = ErrorInfo { code: Some("1205".into()), message: "x".into(), ..Default::default() };
-        assert!(explain_error_in(&e, crate::config::Engine::SqlServer).starts_with("Deadlock") && explain_error_in(&e, crate::config::Engine::MySql).starts_with("Another transaction holds a lock"));
+        assert!(
+            explain_error_in(&e, crate::config::Engine::SqlServer).starts_with("Deadlock")
+                && explain_error_in(&e, crate::config::Engine::MySql).starts_with("Another transaction holds a lock")
+        );
     }
 }

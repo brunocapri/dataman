@@ -24,14 +24,7 @@ fn addr(var: &str, default: &str) -> (String, u16) {
 
 fn pg_profile() -> ConnectionProfile {
     let (host, port) = addr("DATAMAN_PG", "127.0.0.1:55432");
-    ConnectionProfile {
-        host,
-        port,
-        user: "postgres".into(),
-        database: "dataman".into(),
-        sslmode: SslMode::Disable,
-        ..ConnectionProfile::new("pg")
-    }
+    ConnectionProfile { host, port, user: "postgres".into(), database: "dataman".into(), sslmode: SslMode::Disable, ..ConnectionProfile::new("pg") }
 }
 
 fn connect(e: &Env, p: ConnectionProfile, pw: Option<&str>) -> Option<Arc<Connection>> {

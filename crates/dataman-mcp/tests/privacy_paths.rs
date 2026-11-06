@@ -27,7 +27,8 @@ fn addr(var: &str, default: &str) -> (String, u16) {
 
 fn up((var, default): (&str, &str)) -> bool {
     let (h, p) = addr(var, default);
-    let ok = std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok());
+    let ok = std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok());
     if !ok {
         eprintln!("skipping: nothing at {h}:{p} ({var})");
     }
@@ -62,7 +63,19 @@ const ES: (&str, &str) = ("DATAMAN_ES", "127.0.0.1:9201");
 const RD: (&str, &str) = ("DATAMAN_REDIS", "127.0.0.1:63790");
 
 /// Every value seeded below that agents must never get, nor the audit log keep.
-const SECRETS: &[&str] = &["hash-secret-1", "dflt-secret", "taxid-secret-9", "card-secret", "ssn-secret-1", "kid-secret", "4242cardsecret", "zed-secret", "pw-secret", "sess-secret", "closed-secret"];
+const SECRETS: &[&str] = &[
+    "hash-secret-1",
+    "dflt-secret",
+    "taxid-secret-9",
+    "card-secret",
+    "ssn-secret-1",
+    "kid-secret",
+    "4242cardsecret",
+    "zed-secret",
+    "pw-secret",
+    "sess-secret",
+    "closed-secret",
+];
 
 struct Conn<'a> {
     id: &'a str,
@@ -83,7 +96,10 @@ fn profiles(conns: &[Conn]) -> String {
         let (h, p) = addr(c.server.0, c.server.1);
         let ssl = if c.server.0 == MS.0 { "require" } else { "disable" };
         let engine = if c.engine.is_empty() { String::new() } else { format!("engine = \"{}\"\nsave_password = true\n", c.engine) };
-        text.push_str(&format!("[[connection]]\nid = \"{}\"\nname = \"{}\"\nhost = \"{h}\"\nport = {p}\nuser = \"{}\"\ndatabase = \"{}\"\nsslmode = \"{ssl}\"\n{engine}{}\n", c.id, c.id, c.user, c.db, c.extra));
+        text.push_str(&format!(
+            "[[connection]]\nid = \"{}\"\nname = \"{}\"\nhost = \"{h}\"\nport = {p}\nuser = \"{}\"\ndatabase = \"{}\"\nsslmode = \"{ssl}\"\n{engine}{}\n",
+            c.id, c.id, c.user, c.db, c.extra
+        ));
     }
     text
 }
@@ -240,20 +256,23 @@ fn postgres_values_stay_kept() {
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", None);
     e.admin(
         "execute",
-        with("pgadmin", json!({"sql": format!(
-            "CREATE SCHEMA {s}; \
-             CREATE TABLE {s}.users (id int PRIMARY KEY, name text, email text, password_hash text DEFAULT 'dflt-secret' CHECK (password_hash <> 'chk')); \
-             CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text, tax_id text, city text, n text); \
-             CREATE TABLE {s}.payments (id int PRIMARY KEY, card text); \
-             CREATE TABLE {s}.notes (id int PRIMARY KEY, body text); \
-             INSERT INTO {s}.users VALUES (1, 'Ana', 'ana@acme.com', 'hash-secret-1'); \
-             INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', 'taxid-secret-9', 'Recife', '12345678901234'); \
-             INSERT INTO {s}.payments VALUES (1, 'card-secret'); \
-             CREATE VIEW {s}.v_kept AS SELECT id, password_hash AS h FROM {s}.users; \
-             CREATE VIEW {s}.v_open AS SELECT id, body FROM {s}.notes; \
-             CREATE TABLE {s}.nums (id int, card bigint, doc numeric, meta jsonb); \
-             INSERT INTO {s}.nums VALUES (1, 4242424242424242, 4242424242424242, '{{\"card\": 4242424242424242}}')"
-        )})),
+        with(
+            "pgadmin",
+            json!({"sql": format!(
+                "CREATE SCHEMA {s}; \
+                 CREATE TABLE {s}.users (id int PRIMARY KEY, name text, email text, password_hash text DEFAULT 'dflt-secret' CHECK (password_hash <> 'chk')); \
+                 CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text, tax_id text, city text, n text); \
+                 CREATE TABLE {s}.payments (id int PRIMARY KEY, card text); \
+                 CREATE TABLE {s}.notes (id int PRIMARY KEY, body text); \
+                 INSERT INTO {s}.users VALUES (1, 'Ana', 'ana@acme.com', 'hash-secret-1'); \
+                 INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', 'taxid-secret-9', 'Recife', '12345678901234'); \
+                 INSERT INTO {s}.payments VALUES (1, 'card-secret'); \
+                 CREATE VIEW {s}.v_kept AS SELECT id, password_hash AS h FROM {s}.users; \
+                 CREATE VIEW {s}.v_open AS SELECT id, body FROM {s}.notes; \
+                 CREATE TABLE {s}.nums (id int, card bigint, doc numeric, meta jsonb); \
+                 INSERT INTO {s}.nums VALUES (1, 4242424242424242, 4242424242424242, '{{\"card\": 4242424242424242}}')"
+            )}),
+        ),
     );
     let q = |sql: String| e.call("run_query", with("pp", json!({"sql": sql})));
     let x = |sql: String| e.call("execute", with("pp", json!({"sql": sql})));
@@ -415,9 +434,21 @@ fn mysql_and_sql_server_values_stay_kept() {
         a(format!("CREATE TABLE {s}.users (id int PRIMARY KEY, name text, password_hash varchar(50) DEFAULT 'dflt-secret')"));
         a(format!("CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text)"));
         a(format!("CREATE TABLE {s}.payments (id int PRIMARY KEY, card text)"));
-        a(format!("INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO {s}.customers VALUES (1, 'Ana', 'zed-secret@acme.com'); INSERT INTO {s}.payments VALUES (1, 'card-secret')"));
+        a(format!(
+            "INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO {s}.customers VALUES (1, 'Ana', 'zed-secret@acme.com'); INSERT INTO {s}.payments VALUES (1, 'card-secret')"
+        ));
         let q = |sql: &str| e.call("run_query", with("mm", json!({"sql": sql})));
-        for sql in ["TABLE users", "SHOW CREATE TABLE users", "SHOW CREATE TABLE payments", "SHOW COLUMNS FROM users", "DESC users", "DESCRIBE users", "EXPLAIN users", "SHOW TABLES", "SHOW INDEX FROM payments"] {
+        for sql in [
+            "TABLE users",
+            "SHOW CREATE TABLE users",
+            "SHOW CREATE TABLE payments",
+            "SHOW COLUMNS FROM users",
+            "DESC users",
+            "DESCRIBE users",
+            "EXPLAIN users",
+            "SHOW TABLES",
+            "SHOW INDEX FROM payments",
+        ] {
             refused(sql, q(sql), "is not available to agents on mm");
         }
         for sql in [
@@ -481,11 +512,18 @@ fn mssql_rules_and_masks_for_scanned_names() {
     );
     let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules)], "", None);
     e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE IF EXISTS dbo.{s}_accts; CREATE TABLE dbo.{s}_accts (Id int, Token varchar(50), lowered varchar(50), Notes varchar(50), ApiKey varchar(50), ApiKey2 varchar(50))")})));
-    e.admin("execute", with("msadmin", json!({"sql": format!("INSERT INTO dbo.{s}_accts VALUES (1, 'taken-token-value', 'taken-lower-value', '{shaped}', '{unshaped}', '{unshaped}')")})));
+    e.admin(
+        "execute",
+        with(
+            "msadmin",
+            json!({"sql": format!("INSERT INTO dbo.{s}_accts VALUES (1, 'taken-token-value', 'taken-lower-value', '{shaped}', '{unshaped}', '{unshaped}')")}),
+        ),
+    );
     let q = |sql: String| e.ok("run_query", with("ss", json!({"sql": sql}))).to_string();
     let t = format!("dbo.{s}_accts");
     let upper = format!("dbo.{}_ACCTS", s.to_uppercase());
-    for (names, value) in [(["Token", "token", "TOKEN", "[tOkEn]"], "taken-token-value"), (["lowered", "Lowered", "LOWERED", "[lOwErEd]"], "taken-lower-value")] {
+    for (names, value) in [(["Token", "token", "TOKEN", "[tOkEn]"], "taken-token-value"), (["lowered", "Lowered", "LOWERED", "[lOwErEd]"], "taken-lower-value")]
+    {
         for name in names {
             for read in [format!("SELECT {name} FROM {t}"), format!("SELECT {name} FROM {upper}"), format!("SELECT * FROM {t}")] {
                 let got = q(read.clone());
@@ -582,17 +620,32 @@ fn search_values_stay_kept() {
         "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{s}-cust.email\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}-pay*\", kind = \"table\" }}, {{ name = \"{s}-cust.card\", kind = \"column\" }}]\n"
     );
     let cols = format!("[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}-cust.card\", kind = \"column\" }}]\n");
-    let e = env(&[conn("esadmin", ES, "elasticsearch", "elastic", "", "mcp = \"full\""), conn("es", ES, "elasticsearch", "elastic", "", rules), conn("esc", ES, "elasticsearch", "elastic", "", cols)], "", None);
+    let e = env(
+        &[
+            conn("esadmin", ES, "elasticsearch", "elastic", "", "mcp = \"full\""),
+            conn("es", ES, "elasticsearch", "elastic", "", rules),
+            conn("esc", ES, "elasticsearch", "elastic", "", cols),
+        ],
+        "",
+        None,
+    );
     let a = |t: String| e.admin("nosql_execute", with("esadmin", json!({"query": t})));
     a(format!("PUT {s}-cust/_doc/1?refresh=true\n{{\"name\": \"Ana\", \"card\": \"4242cardsecret\", \"email\": \"zed-secret@acme.com\"}}"));
     a(format!("PUT {s}-pay1/_doc/1?refresh=true\n{{\"amount\": 1, \"note\": \"card-secret\"}}"));
-    a(format!("POST _aliases\n{{\"actions\": [{{\"add\": {{\"index\": \"{s}-pay1\", \"alias\": \"{s}-al\"}}}}, {{\"add\": {{\"index\": \"{s}-cust\", \"alias\": \"{s}-alc\"}}}}]}}"));
+    a(format!(
+        "POST _aliases\n{{\"actions\": [{{\"add\": {{\"index\": \"{s}-pay1\", \"alias\": \"{s}-al\"}}}}, {{\"add\": {{\"index\": \"{s}-cust\", \"alias\": \"{s}-alc\"}}}}]}}"
+    ));
     let q = |c: &str, t: String| e.call("nosql_query", with(c, json!({"query": t})));
     for (t, want) in [
         (format!("GET {s}-cust/_search?q=card:4242*"), "hidden"),
         (format!("GET {s}-cust/_search?q=4242*"), "searches over every field"),
         (format!("GET {s}-cust/_search\n{{\"script_fields\": {{\"x\": {{\"script\": \"doc['card.keyword'].value\"}}}}}}"), "scripts"),
-        (format!("GET {s}-cust/_search\n{{\"runtime_mappings\": {{\"x\": {{\"type\": \"keyword\", \"script\": \"emit(doc['card.keyword'].value)\"}}}}, \"fields\": [\"x\"]}}"), "scripts"),
+        (
+            format!(
+                "GET {s}-cust/_search\n{{\"runtime_mappings\": {{\"x\": {{\"type\": \"keyword\", \"script\": \"emit(doc['card.keyword'].value)\"}}}}, \"fields\": [\"x\"]}}"
+            ),
+            "scripts",
+        ),
         (format!("GET {s}-cust/_search\n{{\"size\": 0, \"aggs\": {{\"x\": {{\"terms\": {{\"script\": \"doc['email.keyword'].value\"}}}}}}}}"), "scripts"),
         (format!("GET {s}-cust/_search\n{{\"query\": {{\"query_string\": {{\"query\": \"card:4242*\"}}}}}}"), "hidden"),
         (format!("GET {s}-cust/_search\n{{\"query\": {{\"multi_match\": {{\"query\": \"4242\"}}}}}}"), "searches over every field"),
@@ -606,7 +659,13 @@ fn search_values_stay_kept() {
     ] {
         refused(&t, q("es", t.clone()), want);
     }
-    for t in [format!("GET {s}-cust/_search\n{{\"fields\": [\"*\"]}}"), format!("GET {s}-cust/_search"), format!("GET {s}-cust/_search\n{{\"query\": {{\"match\": {{\"name\": \"card holder\"}}}}}}"), format!("GET {s}-alc/_search\n{{\"fields\": [\"*\"]}}"), format!("GET {s}-cust/_field_caps?fields=*")] {
+    for t in [
+        format!("GET {s}-cust/_search\n{{\"fields\": [\"*\"]}}"),
+        format!("GET {s}-cust/_search"),
+        format!("GET {s}-cust/_search\n{{\"query\": {{\"match\": {{\"name\": \"card holder\"}}}}}}"),
+        format!("GET {s}-alc/_search\n{{\"fields\": [\"*\"]}}"),
+        format!("GET {s}-cust/_field_caps?fields=*"),
+    ] {
         let r = q("es", t.clone()).unwrap_or_else(|err| panic!("{t}: {err}"));
         clean(&t, &r);
         assert!(!r.to_string().contains("card"), "{t}: {r}");
@@ -633,7 +692,11 @@ fn redis_values_stay_kept() {
         "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{s}:user:*.email\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}:session:*\", kind = \"table\" }}, {{ name = \"{s}:user:*.password\", kind = \"column\" }}]\n"
     );
     let only = format!("mcp = \"write\"\n[connection.mcp_rules.visible]\nmode = \"only\"\nitems = [{{ name = \"{s}:open:*\", kind = \"table\" }}]\n");
-    let e = env(&[conn("rdadmin", RD, "redis", "", "9", "mcp = \"full\""), conn("rd", RD, "redis", "", "9", rules), conn("ro", RD, "redis", "", "9", only)], "", None);
+    let e = env(
+        &[conn("rdadmin", RD, "redis", "", "9", "mcp = \"full\""), conn("rd", RD, "redis", "", "9", rules), conn("ro", RD, "redis", "", "9", only)],
+        "",
+        None,
+    );
     let a = |t: String| e.admin("nosql_execute", with("rdadmin", json!({"query": t})));
     a(format!("HSET {s}:user:1 name Ana password pw-secret email zed-secret@acme.com"));
     a(format!("SET {s}:session:1 sess-secret"));
@@ -657,7 +720,11 @@ fn redis_values_stay_kept() {
     ] {
         refused(&t, e.call(tool, with("ro", json!({"query": t.clone()}))), "not visible");
     }
-    assert_eq!(e.admin("nosql_query", with("rdadmin", json!({"query": format!("EXISTS {s}:open:dst {s}:open:z {s}:open:cp {s}:open:mv")})))["value"], 0, "nothing was copied");
+    assert_eq!(
+        e.admin("nosql_query", with("rdadmin", json!({"query": format!("EXISTS {s}:open:dst {s}:open:z {s}:open:cp {s}:open:mv")})))["value"],
+        0,
+        "nothing was copied"
+    );
     // The server's configuration holds its password: not an agent's, on any connection.
     for c in ["rd", "ro", "rdadmin"] {
         for t in ["CONFIG GET requirepass".to_string(), "CONFIG GET *".into(), "SLOWLOG RESET".into(), format!("SORT_RO {s}:open:l GET {s}:closed:*")] {
@@ -713,12 +780,15 @@ fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
     let e = env_with(&[], &text, "", None);
     e.admin(
         "execute",
-        with("liteadmin", json!({"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, pw TEXT DEFAULT 'dflt-secret', \
+        with(
+            "liteadmin",
+            json!({"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, pw TEXT DEFAULT 'dflt-secret', \
             pw_len INT GENERATED ALWAYS AS (length(pw)) VIRTUAL, name_up TEXT GENERATED ALWAYS AS (upper(name)) STORED); \
             CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, email TEXT); CREATE TABLE payments (id INTEGER PRIMARY KEY, card TEXT); \
             CREATE VIEW v_pw AS SELECT id, pw FROM users; \
             INSERT INTO users (id, name, pw) VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO customers VALUES (1, 'Ana', 'zed-secret@acme.com'); \
-            INSERT INTO payments VALUES (1, 'card-secret')"})),
+            INSERT INTO payments VALUES (1, 'card-secret')"}),
+        ),
     );
     let q = |c: &str, sql: &str| e.call("run_query", with(c, json!({"sql": sql})));
     let r = q("ll", "SELECT * FROM users").unwrap();
@@ -756,12 +826,15 @@ fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
     // A trigger the agent's write fires reads neither the hidden nor the masked for it.
     e.admin(
         "execute",
-        with("liteadmin", json!({"sql": "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); \
+        with(
+            "liteadmin",
+            json!({"sql": "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); \
             CREATE TRIGGER copy_card AFTER INSERT ON notes BEGIN UPDATE notes SET body = (SELECT card FROM payments LIMIT 1) WHERE id = NEW.id; END; \
             CREATE TABLE notes2 (id INTEGER PRIMARY KEY, body TEXT); \
             CREATE TRIGGER copy_email AFTER INSERT ON notes2 BEGIN UPDATE notes2 SET body = (SELECT email FROM customers LIMIT 1) WHERE id = NEW.id; END; \
             CREATE TABLE notes3 (id INTEGER PRIMARY KEY, body TEXT); \
-            CREATE TRIGGER stamp AFTER INSERT ON notes3 BEGIN UPDATE notes3 SET body = 'seen ' || NEW.id WHERE id = NEW.id; END"})),
+            CREATE TRIGGER stamp AFTER INSERT ON notes3 BEGIN UPDATE notes3 SET body = 'seen ' || NEW.id WHERE id = NEW.id; END"}),
+        ),
     );
     let w = |sql: &str| e.call("execute", with("llw", json!({"sql": sql})));
     refused("a trigger reading a hidden table", w("INSERT INTO notes (id) VALUES (1)"), "prohibited");
@@ -799,7 +872,13 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
     let secret_file = files.path().join("id_secret");
     std::fs::write(&secret_file, "kid-secret\n").unwrap();
     let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"customers.email\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.pw\", kind = \"column\" }]\n";
-    let text = [file_conn("duckadmin", "duckdb", &db, "mcp = \"full\""), file_conn("dd", "duckdb", &db, rules), file_conn("dr", "duckdb", &db, "mcp = \"read\""), file_conn("dw", "duckdb", &db, "mcp = \"full\"")].concat();
+    let text = [
+        file_conn("duckadmin", "duckdb", &db, "mcp = \"full\""),
+        file_conn("dd", "duckdb", &db, rules),
+        file_conn("dr", "duckdb", &db, "mcp = \"read\""),
+        file_conn("dw", "duckdb", &db, "mcp = \"full\""),
+    ]
+    .concat();
     let e = env_with(&[], &text, "", None);
     e.admin(
         "execute",
@@ -819,7 +898,11 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
     ] {
         refused(sql, q("dd", sql), "");
     }
-    refused("a twin of a connection with rules", e.call("create_connection", json!({"name": "twin", "engine": "duckdb", "path": db.display().to_string()})), "already reaches this file");
+    refused(
+        "a twin of a connection with rules",
+        e.call("create_connection", json!({"name": "twin", "engine": "duckdb", "path": db.display().to_string()})),
+        "already reaches this file",
+    );
     let r = q("dd", "SELECT * FROM users").unwrap();
     let cols = r["columns"].to_string();
     assert!(!cols.contains("\"pw\"") && !cols.contains("pw_len") && cols.contains("name_up"), "{r}");
@@ -858,7 +941,10 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
         e.human.allow.lock().clear();
         assert!(w.is_err(), "full, even allowed: {sql}: {w:?}");
     }
-    assert!(!out.exists() && !files.path().join("x.duckdb").exists() && !files.path().join("dump").exists() && !files.path().join("log.txt").exists(), "nothing written outside");
+    assert!(
+        !out.exists() && !files.path().join("x.duckdb").exists() && !files.path().join("dump").exists() && !files.path().join("log.txt").exists(),
+        "nothing written outside"
+    );
     refused("a write at read", e.call("execute", with("dr", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
     assert!(e.call("execute", with("dw", json!({"sql": "UPDATE customers SET name = 'Ana B.' WHERE id = 1"}))).is_ok());
     assert_eq!(q("dr", "SELECT name FROM customers WHERE id = 1").unwrap()["rows"][0][0], "Ana B.");
@@ -891,13 +977,20 @@ fn user_tools_follow_the_rules() {
     }
     let s = format!("mcp_tools_{}", std::process::id());
     let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"*tax_id*\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.password_hash\", kind = \"column\" }]\n".to_string();
-    let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", Some(&tools.replace("{s}", &s)));
+    let e = env(
+        &[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)],
+        "",
+        Some(&tools.replace("{s}", &s)),
+    );
     e.admin(
         "execute",
-        with("pgadmin", json!({"sql": format!(
-            "CREATE SCHEMA {s}; CREATE TABLE {s}.users (id int, name text, password_hash text); CREATE TABLE {s}.customers (id int, tax_id text); \
-             INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO {s}.customers VALUES (1, 'taxid-secret-9')"
-        )})),
+        with(
+            "pgadmin",
+            json!({"sql": format!(
+                "CREATE SCHEMA {s}; CREATE TABLE {s}.users (id int, name text, password_hash text); CREATE TABLE {s}.customers (id int, tax_id text); \
+                 INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO {s}.customers VALUES (1, 'taxid-secret-9')"
+            )}),
+        ),
     );
     let r = e.ok("all_users", json!({}));
     clean("all_users", &r);
@@ -960,7 +1053,10 @@ fn rules_have_one_precedence() {
                             } else if yolo || !list.is_empty() {
                                 assert_eq!(j, Verdict::Run, "(5) {why}");
                             } else if env.is_production() && access != Read {
-                                assert!(matches!(&j, Verdict::Ask(r) if r.iter().any(|x| x == "production")) || (access == Write && sql == del), "(6) {why}: {j:?}");
+                                assert!(
+                                    matches!(&j, Verdict::Ask(r) if r.iter().any(|x| x == "production")) || (access == Write && sql == del),
+                                    "(6) {why}: {j:?}"
+                                );
                             } else {
                                 match (access, sql == del) {
                                     (Read, _) | (Write, true) => assert!(matches!(j, Verdict::Refuse(_)), "(7) {why}: {j:?}"),
@@ -986,7 +1082,11 @@ fn rules_have_one_precedence() {
         let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("prod", PG, "", "postgres", "dataman", rules)], "", None);
         e.admin("execute", with("pgadmin", json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.users (id int, secret text)")})));
         e.human.asked.lock().clear();
-        refused("hidden on production", e.call("execute", with("prod", json!({"sql": format!("UPDATE {s}.users SET secret = 'x' WHERE id = 1")}))), "is hidden from agents");
+        refused(
+            "hidden on production",
+            e.call("execute", with("prod", json!({"sql": format!("UPDATE {s}.users SET secret = 'x' WHERE id = 1")}))),
+            "is hidden from agents",
+        );
         refused("structure off", e.call("execute", with("prod", json!({"sql": format!("CREATE TABLE {s}.t (a int)")}))), "changing structure");
         assert!(e.human.asked.lock().is_empty(), "nobody is asked for what the rules refuse");
         e.human.allow.lock().push_back(false);
@@ -997,13 +1097,25 @@ fn rules_have_one_precedence() {
     }
     let r = dataman_core::privacy::AgentRules {
         view: dataman_core::privacy::AgentView::Masked,
-        visible: dataman_core::privacy::Visible { mode: dataman_core::privacy::VisibleMode::Except, items: vec![dataman_core::privacy::VisibleItem { name: "users.secret".into(), kind: dataman_core::privacy::ItemKind::Column }] },
+        visible: dataman_core::privacy::Visible {
+            mode: dataman_core::privacy::VisibleMode::Except,
+            items: vec![dataman_core::privacy::VisibleItem { name: "users.secret".into(), kind: dataman_core::privacy::ItemKind::Column }],
+        },
         sensitive: vec![dataman_core::privacy::SensitiveCol { col: "users.secret".into(), how: Mask::PARTIAL, on: true }],
         ..Default::default()
     };
-    let tables = |_: Option<&str>, n: &str| (n == "users").then(|| dataman_core::agent_sql::Table { schema: "public".into(), name: "users".into(), columns: vec!["id".into(), "secret".into()] });
+    let tables = |_: Option<&str>, n: &str| {
+        (n == "users").then(|| dataman_core::agent_sql::Table { schema: "public".into(), name: "users".into(), columns: vec!["id".into(), "secret".into()] })
+    };
     let routines = Default::default();
-    let cx = dataman_core::agent_sql::Context { rules: &r, connection: "c", dialect: dataman_core::Dialect::Postgres, tables: &tables, routines: &routines, views: &[] };
+    let cx = dataman_core::agent_sql::Context {
+        rules: &r,
+        connection: "c",
+        dialect: dataman_core::Dialect::Postgres,
+        tables: &tables,
+        routines: &routines,
+        views: &[],
+    };
     assert!(dataman_core::agent_sql::check("SELECT secret FROM users", false, &cx).unwrap_err().contains("hidden"), "hidden wins over masked");
     let c = dataman_core::agent_sql::check("SELECT * FROM users", false, &cx).unwrap();
     assert!(!c.sql.contains("secret,") && c.sql.contains("(SELECT id FROM public.users)"), "{}", c.sql);
@@ -1125,7 +1237,8 @@ fn audit_records_each_call() {
     let got: Vec<(String, String)> = mine.iter().map(|x| (x["tool"].as_str().unwrap().to_string(), x["outcome"].as_str().unwrap().to_string())).collect();
     assert_eq!(
         got,
-        [("run_query", "ok"), ("run_query", "refused"), ("run_query", "error"), ("run_query", "invalid"), ("execute", "error"), ("execute", "refused")].map(|(a, b)| (a.to_string(), b.to_string())),
+        [("run_query", "ok"), ("run_query", "refused"), ("run_query", "error"), ("run_query", "invalid"), ("execute", "error"), ("execute", "refused")]
+            .map(|(a, b)| (a.to_string(), b.to_string())),
         "{mine:?}"
     );
     assert_eq!(mine[0]["seen"]["masked"][0][0], "tax_id", "{}", mine[0]);
@@ -1171,12 +1284,15 @@ fn generated_columns_follow_their_sources() {
         let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", None);
         e.admin(
             "execute",
-            with("pgadmin", json!({"sql": format!(
-                "CREATE SCHEMA {s}; CREATE TABLE {s}.gen (id int PRIMARY KEY, name text, email text, pw text, \
-                 pw_len int GENERATED ALWAYS AS (length(pw)) STORED, pw_v text GENERATED ALWAYS AS (pw || '!') VIRTUAL, \
-                 email_up text GENERATED ALWAYS AS (upper(email)) STORED, name_up text GENERATED ALWAYS AS (upper(name)) STORED); \
-                 INSERT INTO {s}.gen (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"
-            )})),
+            with(
+                "pgadmin",
+                json!({"sql": format!(
+                    "CREATE SCHEMA {s}; CREATE TABLE {s}.gen (id int PRIMARY KEY, name text, email text, pw text, \
+                     pw_len int GENERATED ALWAYS AS (length(pw)) STORED, pw_v text GENERATED ALWAYS AS (pw || '!') VIRTUAL, \
+                     email_up text GENERATED ALWAYS AS (upper(email)) STORED, name_up text GENERATED ALWAYS AS (upper(name)) STORED); \
+                     INSERT INTO {s}.gen (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"
+                )}),
+            ),
         );
         let table = format!("{s}.gen");
         check(&e, "pp", &table, &format!("SELECT * FROM {table}"));
@@ -1205,7 +1321,9 @@ fn generated_columns_follow_their_sources() {
     }
     if up(MS) {
         let t = format!("{s}_gen");
-        let rules = format!("[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{t}.email\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{t}.pw\", kind = \"column\" }}]\n");
+        let rules = format!(
+            "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{t}.email\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{t}.pw\", kind = \"column\" }}]\n"
+        );
         let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules)], "", None);
         e.admin("execute", with("msadmin", json!({"sql": format!(
             "CREATE TABLE dbo.{t} (id int, name varchar(50), email varchar(50), pw varchar(50), pw_len AS (len(pw)), email_up AS (upper(email)) PERSISTED, name_up AS (upper(name))); \

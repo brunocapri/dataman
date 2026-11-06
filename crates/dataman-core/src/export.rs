@@ -190,13 +190,7 @@ pub fn export_result(rt: &Handle, rs: Arc<ResultSet>, path: impl Into<PathBuf>, 
     export_result_with(rt, rs, path, opts, None)
 }
 
-pub fn export_result_with(
-    rt: &Handle,
-    rs: Arc<ResultSet>,
-    path: impl Into<PathBuf>,
-    opts: ExportOptions,
-    on_progress: Option<ProgressFn>,
-) -> Export {
+pub fn export_result_with(rt: &Handle, rs: Arc<ResultSet>, path: impl Into<PathBuf>, opts: ExportOptions, on_progress: Option<ProgressFn>) -> Export {
     let progress = Arc::new(ExportProgress::default());
     let path = path.into();
     let p = progress.clone();
@@ -541,7 +535,10 @@ fn make_sink<'a, W: Write + Send + 'a>(out: W, cols: &[ColumnInfo], o: &ExportOp
     // SQL Server's `datetime2` and `time`, text in the grid, are dates to the formats that type them.
     let dated: Vec<ColumnInfo> = cols
         .iter()
-        .map(|c| ColumnInfo { kind: if o.dialect == crate::sql::Dialect::TSql { crate::value::tsql_date_kind(c.kind, &c.type_name) } else { c.kind }, ..c.clone() })
+        .map(|c| ColumnInfo {
+            kind: if o.dialect == crate::sql::Dialect::TSql { crate::value::tsql_date_kind(c.kind, &c.type_name) } else { c.kind },
+            ..c.clone()
+        })
         .collect();
     let cols = &dated[..];
     let kinds: Vec<Kind> = cols.iter().map(|c| c.kind).collect();
@@ -641,7 +638,8 @@ impl<W: Write> DelimitedSink<W> {
             }
             return;
         }
-        let numeric = matches!(cell, Cell::Int(_) | Cell::Float(_) | Cell::Bool(_)) && kind.storage() != Storage::Text
+        let numeric = matches!(cell, Cell::Int(_) | Cell::Float(_) | Cell::Bool(_))
+            && kind.storage() != Storage::Text
             && !matches!(kind, Kind::Date | Kind::Time | Kind::Timestamp | Kind::TimestampTz)
             || (kind == Kind::Numeric && sqlgen::is_decimal(&s));
         let needs = s.is_empty()
@@ -822,8 +820,8 @@ mod parquet_sink {
 
     use anyhow::Result;
     use arrow_array::builder::{
-        BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int64Builder, StringBuilder,
-        Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+        BinaryBuilder, BooleanBuilder, Date32Builder, Float32Builder, Float64Builder, Int64Builder, StringBuilder, Time64MicrosecondBuilder,
+        TimestampMicrosecondBuilder,
     };
     use arrow_array::{ArrayRef, RecordBatch};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -919,10 +917,7 @@ mod parquet_sink {
                 })
                 .collect();
             let schema = Arc::new(Schema::new(fields));
-            let props = WriterProperties::builder()
-                .set_compression(Compression::SNAPPY)
-                .set_max_row_group_row_count(Some(row_group))
-                .build();
+            let props = WriterProperties::builder().set_compression(Compression::SNAPPY).set_max_row_group_row_count(Some(row_group)).build();
             let writer = ArrowWriter::try_new(out, schema.clone(), Some(props))?;
             let kinds: Vec<Kind> = cols.iter().map(|c| c.kind).collect();
             let builders = kinds.iter().map(|k| builder(*k)).collect();
@@ -1048,7 +1043,11 @@ mod tests {
             b.push_i64(4, 1_500_000);
             b.push_text(5, "{\"a\": [1, 2]}");
             b.push_text(6, "\\xdead");
-            if i == 3 { b.push_f64(7, f64::NAN) } else { b.push_f64(7, 0.25) }
+            if i == 3 {
+                b.push_f64(7, f64::NAN)
+            } else {
+                b.push_f64(7, 0.25)
+            }
             b.end_row();
             if b.len() == CHUNK {
                 rs.push_chunk(b.finish());

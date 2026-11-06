@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{App, Context, Global, Window};
 use dataman_core::groups::{Pane, SplitState};
 use dataman_core::session::{Session, SessionStore, VERSION};
+use gpui::{App, Context, Global, Window};
 
 use crate::app::Workspace;
 use crate::theme::metrics;
@@ -70,9 +70,7 @@ impl Workspace {
         cx.spawn(async move |_, cx| {
             let read = cx
                 .background_executor()
-                .spawn(async move {
-                    jobs.into_iter().map(|(f, shown, closed)| (store.load_results(&f), f, shown, closed)).collect::<Vec<_>>()
-                })
+                .spawn(async move { jobs.into_iter().map(|(f, shown, closed)| (store.load_results(&f), f, shown, closed)).collect::<Vec<_>>() })
                 .await;
             for (tab, (items, file, shown, closed)) in tabs.into_iter().zip(read) {
                 let (Some(tab), Some(items)) = (tab.upgrade(), items) else { continue };
@@ -134,8 +132,13 @@ impl Workspace {
         }
         let split = self.split.as_ref().and_then(|sp| {
             let at = |id: &gpui::EntityId| saved_at.get(id).copied();
-            SplitState { right: sp.right.iter().filter_map(at).collect(), focus_right: sp.focus == Pane::Right, other: at(&sp.other).unwrap_or(usize::MAX), ratio: sp.ratio }
-                .normalized(tabs.len(), active)
+            SplitState {
+                right: sp.right.iter().filter_map(at).collect(),
+                focus_right: sp.focus == Pane::Right,
+                other: at(&sp.other).unwrap_or(usize::MAX),
+                ratio: sp.ratio,
+            }
+            .normalized(tabs.len(), active)
         });
         let session = Session {
             version: VERSION,

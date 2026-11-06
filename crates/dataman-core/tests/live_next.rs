@@ -148,14 +148,20 @@ mod edit {
         let e = env();
         let Some(c) = pg(&e) else { return };
         let s = "dataman_edit_t";
-        exec(&e, &c, &[
-            &format!("DROP SCHEMA IF EXISTS {s} CASCADE"),
-            &format!("CREATE SCHEMA {s}"),
-            &format!("CREATE TABLE {s}.p (id int PRIMARY KEY, name text, total numeric(10,2), f real, j json, at timestamptz)"),
-            &format!("INSERT INTO {s}.p VALUES (1, 'one', 1.50, 0.1, '{{\"a\":1}}', '2026-01-01 10:00+00'), (2, NULL, 2, 0.2, NULL, NULL), (3, 'three', 3, 0.3, NULL, now())"),
-            &format!("CREATE TABLE {s}.nokey (a int, b text)"),
-            &format!("CREATE TABLE {s}.u (code text NOT NULL UNIQUE, v int)"),
-        ]);
+        exec(
+            &e,
+            &c,
+            &[
+                &format!("DROP SCHEMA IF EXISTS {s} CASCADE"),
+                &format!("CREATE SCHEMA {s}"),
+                &format!("CREATE TABLE {s}.p (id int PRIMARY KEY, name text, total numeric(10,2), f real, j json, at timestamptz)"),
+                &format!(
+                    "INSERT INTO {s}.p VALUES (1, 'one', 1.50, 0.1, '{{\"a\":1}}', '2026-01-01 10:00+00'), (2, NULL, 2, 0.2, NULL, NULL), (3, 'three', 3, 0.3, NULL, now())"
+                ),
+                &format!("CREATE TABLE {s}.nokey (a int, b text)"),
+                &format!("CREATE TABLE {s}.u (code text NOT NULL UNIQUE, v int)"),
+            ],
+        );
         let rs = query(&e, &c, &format!("SELECT * FROM {s}.p ORDER BY id"));
         let t = editable(target(&e, &c, &rs, None));
         assert_eq!(t.key_source, KeySource::PrimaryKey);
@@ -239,18 +245,24 @@ mod edit {
         let e = env();
         let Some(c) = pg(&e) else { return };
         let s = "dataman_edit_g";
-        exec(&e, &c, &[
-            &format!("DROP SCHEMA IF EXISTS {s} CASCADE"),
-            &format!("CREATE SCHEMA {s}"),
-            &format!("CREATE TABLE {s}.emp (id int PRIMARY KEY, name text, manager int, email text)"),
-            &format!("INSERT INTO {s}.emp VALUES (1, 'boss', NULL, 'boss@x'), (2, 'worker', 1, 'worker@x')"),
-            &format!("CREATE TABLE {s}.fk (k real PRIMARY KEY, v text)"),
-            &format!("INSERT INTO {s}.fk VALUES (0.1, 'a'), (0.3, 'b')"),
-            &format!("CREATE DOMAIN {s}.dj AS json"),
-            &format!("CREATE DOMAIN {s}.dpa AS point[]"),
-            &format!("CREATE TABLE {s}.odd (id int PRIMARY KEY, v text, j json[], x xml[], pa point[], dj {s}.dj, dpa {s}.dpa)"),
-            &format!("INSERT INTO {s}.odd VALUES (1, 'a', ARRAY['{{}}'::json], ARRAY['<a/>'::xml], ARRAY[point(1,2)], '{{}}', ARRAY[point(3,4)]), (2, 'b', NULL, NULL, NULL, NULL, NULL)"),
-        ]);
+        exec(
+            &e,
+            &c,
+            &[
+                &format!("DROP SCHEMA IF EXISTS {s} CASCADE"),
+                &format!("CREATE SCHEMA {s}"),
+                &format!("CREATE TABLE {s}.emp (id int PRIMARY KEY, name text, manager int, email text)"),
+                &format!("INSERT INTO {s}.emp VALUES (1, 'boss', NULL, 'boss@x'), (2, 'worker', 1, 'worker@x')"),
+                &format!("CREATE TABLE {s}.fk (k real PRIMARY KEY, v text)"),
+                &format!("INSERT INTO {s}.fk VALUES (0.1, 'a'), (0.3, 'b')"),
+                &format!("CREATE DOMAIN {s}.dj AS json"),
+                &format!("CREATE DOMAIN {s}.dpa AS point[]"),
+                &format!("CREATE TABLE {s}.odd (id int PRIMARY KEY, v text, j json[], x xml[], pa point[], dj {s}.dj, dpa {s}.dpa)"),
+                &format!(
+                    "INSERT INTO {s}.odd VALUES (1, 'a', ARRAY['{{}}'::json], ARRAY['<a/>'::xml], ARRAY[point(1,2)], '{{}}', ARRAY[point(3,4)]), (2, 'b', NULL, NULL, NULL, NULL, NULL)"
+                ),
+            ],
+        );
         for sql in [
             format!("SELECT * FROM (SELECT w.id, w.name, m.email FROM {s}.emp w JOIN {s}.emp m ON m.id = w.manager) x"),
             format!("WITH x AS (SELECT w.id, w.name, m.email FROM {s}.emp w JOIN {s}.emp m ON m.id = w.manager) SELECT * FROM x"),
@@ -316,16 +328,22 @@ mod relations {
         let e = env();
         let Some(c) = pg(&e) else { return };
         let s = "dataman_rel_t";
-        exec(&e, &c, &[
-            &format!("DROP SCHEMA IF EXISTS {s} CASCADE"),
-            &format!("CREATE SCHEMA {s}"),
-            &format!("CREATE TABLE {s}.customer (id int PRIMARY KEY, name text NOT NULL)"),
-            &format!("CREATE TABLE {s}.profile (customer_id int PRIMARY KEY REFERENCES {s}.customer(id), bio text)"),
-            &format!("CREATE TABLE {s}.orders (id int PRIMARY KEY, customer int NOT NULL REFERENCES {s}.customer(id), \"Total\" numeric)"),
-            &format!("CREATE TABLE {s}.batch (a int, b int, PRIMARY KEY (a, b))"),
-            &format!("CREATE TABLE {s}.item (id serial PRIMARY KEY, order_id int REFERENCES {s}.orders, la int, lb int, FOREIGN KEY (la, lb) REFERENCES {s}.batch (a, b))"),
-            &format!("ANALYZE {s}.customer"),
-        ]);
+        exec(
+            &e,
+            &c,
+            &[
+                &format!("DROP SCHEMA IF EXISTS {s} CASCADE"),
+                &format!("CREATE SCHEMA {s}"),
+                &format!("CREATE TABLE {s}.customer (id int PRIMARY KEY, name text NOT NULL)"),
+                &format!("CREATE TABLE {s}.profile (customer_id int PRIMARY KEY REFERENCES {s}.customer(id), bio text)"),
+                &format!("CREATE TABLE {s}.orders (id int PRIMARY KEY, customer int NOT NULL REFERENCES {s}.customer(id), \"Total\" numeric)"),
+                &format!("CREATE TABLE {s}.batch (a int, b int, PRIMARY KEY (a, b))"),
+                &format!(
+                    "CREATE TABLE {s}.item (id serial PRIMARY KEY, order_id int REFERENCES {s}.orders, la int, lb int, FOREIGN KEY (la, lb) REFERENCES {s}.batch (a, b))"
+                ),
+                &format!("ANALYZE {s}.customer"),
+            ],
+        );
         let g = e.core.block_on(c.relationships(c.database(), s)).unwrap();
         assert!(g.links.iter().all(|l| l.from_schema == s && l.to_schema == s));
         let l = g.links.iter().find(|l| l.from_table == "item" && l.to_table == "batch").unwrap();

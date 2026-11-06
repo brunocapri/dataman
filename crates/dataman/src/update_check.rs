@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point};
 use dataman_core::update::{Feed, ThrowawayKey};
+use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point};
 
 use crate::app::Workspace;
 use crate::updates::{self, State, Step};
@@ -38,7 +38,16 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 
 fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }));
-    input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+    input(
+        cx,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: p,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+    );
     input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1 }));
 }
 
@@ -169,7 +178,10 @@ fn artifact(work: &Path, stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
 fn artifact(work: &Path, stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
     let dmg_path = work.join(format!("Dataman-{NEW}.dmg"));
     stand_in(&stage_dir.join(APP), NEW)?;
-    sh(Command::new("/usr/bin/hdiutil").args(["create", "-quiet", "-volname", "Dataman", "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"]).arg(stage_dir).arg(&dmg_path))?;
+    sh(Command::new("/usr/bin/hdiutil")
+        .args(["create", "-quiet", "-volname", "Dataman", "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"])
+        .arg(stage_dir)
+        .arg(&dmg_path))?;
     Ok(std::fs::read(&dmg_path)?)
 }
 
@@ -381,7 +393,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let said = wait(cx, 10, |cx| state(cx) == State::Idle && up_to_date(cx)).await;
     let text = cx.update(|_, cx| updates::outcome_text(cx).map(|o| o.0)).ok().flatten().unwrap_or_default();
     snap(cx, "check-menu-up-to-date");
-    report("then \"Dataman is up to date\", in the sheet", said && sheet_open(cx) && text == "Dataman is up to date", format!("{:?}, sheet {}, {text:?}", state(cx), sheet_open(cx)));
+    report(
+        "then \"Dataman is up to date\", in the sheet",
+        said && sheet_open(cx) && text == "Dataman is up to date",
+        format!("{:?}, sheet {}, {text:?}", state(cx), sheet_open(cx)),
+    );
     let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().len()).unwrap_or(0);
     press(cx, "enter");
     report("its OK (↩) closes it", buttons == 1 && !sheet_open(cx), format!("{buttons} buttons, sheet {}", sheet_open(cx)));
@@ -391,13 +407,19 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let was_auto = state(cx) == State::Checking && !sheet_open(cx);
     menu_check(cx);
     let joined = wait(cx, 10, |cx| state(cx) == State::Idle && sheet_open(cx) && up_to_date(cx)).await;
-    report("asked for during an automatic check: the outcome is still said", was_auto && joined, format!("auto first {was_auto}, {:?}, sheet {}", state(cx), sheet_open(cx)));
+    report(
+        "asked for during an automatic check: the outcome is still said",
+        was_auto && joined,
+        format!("auto first {was_auto}, {:?}, sheet {}", state(cx), sheet_open(cx)),
+    );
     press(cx, "enter");
     let fresh = cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.at.elapsed().unwrap_or_default() < Duration::from_secs(5))).unwrap_or(false);
     report("a check asked for right after another still reads the feed (no throttle)", fresh, String::new());
 
     let settings = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.clone()).ok().flatten();
-    let status = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.as_ref().and_then(|v| v.read(cx).demo_update_status(cx))).ok().flatten().unwrap_or_default();
+    let status = |cx: &mut AsyncWindowContext| {
+        cx.update(|_, cx| ws.read(cx).settings_view.as_ref().and_then(|v| v.read(cx).demo_update_status(cx))).ok().flatten().unwrap_or_default()
+    };
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_settings_at("about", window, cx)));
     draw(cx);
     draw(cx);
@@ -412,7 +434,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     if let Some(p) = point {
         click(cx, p);
     }
-    report("Check now: \"Checking…\" beside it, Settings open", point.is_some() && checking && shown == "◌ Checking…" && settings(cx).is_some(), format!("point {point:?}, {:?}, {shown:?}", state(cx)));
+    report(
+        "Check now: \"Checking…\" beside it, Settings open",
+        point.is_some() && checking && shown == "◌ Checking…" && settings(cx).is_some(),
+        format!("point {point:?}, {:?}, {shown:?}", state(cx)),
+    );
     let said = wait(cx, 10, |cx| state(cx) == State::Idle && status(cx).starts_with("Dataman is up to date · checked ")).await;
     snap(cx, "check-settings-up-to-date");
     report("then \"Dataman is up to date · checked HH:MM\"", said, status(cx));
@@ -439,7 +465,10 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_settings(window, cx)));
     draw(cx);
     menu_check(cx);
-    let failed = wait(cx, 10, |cx| state(cx) == State::Idle && sheet_open(cx) && cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.error.is_some())).unwrap_or(false)).await;
+    let failed = wait(cx, 10, |cx| {
+        state(cx) == State::Idle && sheet_open(cx) && cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.error.is_some())).unwrap_or(false)
+    })
+    .await;
     draw(cx);
     let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().len()).unwrap_or(0);
     snap(cx, "check-menu-failed");
@@ -450,7 +479,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
 
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_import(window, cx)));
     draw(cx);
-    let alerts = |cx: &mut AsyncWindowContext| cx.update(|_, cx| cx.try_global::<updates::Updates>().map(|u| u.alerts.clone()).unwrap_or_default()).unwrap_or_default();
+    let alerts =
+        |cx: &mut AsyncWindowContext| cx.update(|_, cx| cx.try_global::<updates::Updates>().map(|u| u.alerts.clone()).unwrap_or_default()).unwrap_or_default();
     menu_check(cx);
     let alerted = wait(cx, 10, |cx| alerts(cx).iter().any(|a| a == "window: Dataman is up to date")).await;
     report("under another sheet: an alert on the window", alerted && !sheet_open(cx), format!("{:?}", alerts(cx)));
@@ -475,7 +505,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let offered = wait(cx, 10, |cx| matches!(state(cx), State::Available { .. })).await;
     let pill = cx.update(|_, cx| ws.read(cx).update_pill_bounds.borrow().first().copied()).ok().flatten();
     let sheet = cx.update(|_, cx| ws.read(cx).update_sheet).unwrap_or(true);
-    report("a background check finds 99.0.0: the title bar's notice, no sheet", offered && pill.is_some() && !sheet, format!("{:?}, pill {pill:?}, sheet {sheet}", state(cx)));
+    report(
+        "a background check finds 99.0.0: the title bar's notice, no sheet",
+        offered && pill.is_some() && !sheet,
+        format!("{:?}, pill {pill:?}, sheet {sheet}", state(cx)),
+    );
     let label = cx.update(|_, cx| updates::notice_shown(cx) && updates::offered(cx).is_some_and(|f| f.version == NEW)).unwrap_or(false);
     report("the notice is for 99.0.0", label, String::new());
 
@@ -484,7 +518,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
     let opened = wait(cx, 3, |cx| cx.update(|_, cx| ws.read(cx).update_sheet).unwrap_or(false)).await;
     let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().clone()).unwrap_or_default();
-    report("clicking the notice opens the sheet (Later, Install & Relaunch)", opened && buttons.len() == 2, format!("open {opened}, {} buttons", buttons.len()));
+    report(
+        "clicking the notice opens the sheet (Later, Install & Relaunch)",
+        opened && buttons.len() == 2,
+        format!("open {opened}, {} buttons", buttons.len()),
+    );
     if let Some(b) = buttons.first() {
         click(cx, b.center());
     }
@@ -561,7 +599,15 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
 /// `sudo -n` in place of pkexec (CI's runners allow it), and it is removed. Skipped where sudo
 /// asks for a password, except in CI.
 #[cfg(target_os = "linux")]
-async fn deb(ws: &Entity<Workspace>, work: &Path, site: &Site, base: &str, key: &ThrowawayKey, report: &mut dyn FnMut(&str, bool, String), cx: &mut AsyncWindowContext) {
+async fn deb(
+    ws: &Entity<Workspace>,
+    work: &Path,
+    site: &Site,
+    base: &str,
+    key: &ThrowawayKey,
+    report: &mut dyn FnMut(&str, bool, String),
+    cx: &mut AsyncWindowContext,
+) {
     use dataman_core::update;
     const PKG: &str = "dataman-update-check";
     let sudo = |args: &[&str]| Command::new("sudo").arg("-n").args(args).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
@@ -582,7 +628,9 @@ async fn deb(ws: &Entity<Workspace>, work: &Path, site: &Site, base: &str, key: 
         std::fs::set_permissions(bin.join("dataman"), <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755))?;
         std::fs::write(
             root.join("DEBIAN/control"),
-            format!("Package: {name}\nVersion: {version}\nArchitecture: all\nMaintainer: Dataman checks <checks@dataman.invalid>\nDescription: A stand-in for the update check\n"),
+            format!(
+                "Package: {name}\nVersion: {version}\nArchitecture: all\nMaintainer: Dataman checks <checks@dataman.invalid>\nDescription: A stand-in for the update check\n"
+            ),
         )?;
         let out = work.join(format!("{name}_{version}.deb"));
         let st = Command::new("dpkg-deb").args(["--root-owner-group", "--build"]).arg(&root).arg(&out).stdout(std::process::Stdio::null()).status()?;
@@ -596,12 +644,22 @@ async fn deb(ws: &Entity<Workspace>, work: &Path, site: &Site, base: &str, key: 
             return;
         }
     };
-    let installed_version = || Command::new("dpkg-query").args(["--show", "--showformat=${Version}", PKG]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let installed_version = || {
+        Command::new("dpkg-query")
+            .args(["--show", "--showformat=${Version}", PKG])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
     let old_deb = work.join(format!("{PKG}_0.0.1.deb"));
     let target = Path::new("/opt").join(PKG).join("dataman");
     let put_in = sudo(&["dpkg", "-i", &old_deb.to_string_lossy()]);
     let owner = update::deb_package(&target);
-    report("a stand-in 0.0.1 .deb is installed (as root)", put_in && owner.as_deref() == Some(PKG) && installed_version() == "0.0.1", format!("{put_in} {owner:?} {}", installed_version()));
+    report(
+        "a stand-in 0.0.1 .deb is installed (as root)",
+        put_in && owner.as_deref() == Some(PKG) && installed_version() == "0.0.1",
+        format!("{put_in} {owner:?} {}", installed_version()),
+    );
     if owner.is_none() {
         return;
     }
@@ -653,7 +711,11 @@ async fn deb(ws: &Entity<Workspace>, work: &Path, site: &Site, base: &str, key: 
         s => format!("{s:?}"),
     };
     report("Retry installs the new .deb as root (sudo -n standing in for pkexec)", installed, error);
-    report("dpkg has the package at 99.0.0, and the app says 99.0.0", installed_version() == NEW && plist_version(&target) == NEW, format!("{} {}", installed_version(), plist_version(&target)));
+    report(
+        "dpkg has the package at 99.0.0, and the app says 99.0.0",
+        installed_version() == NEW && plist_version(&target) == NEW,
+        format!("{} {}", installed_version(), plist_version(&target)),
+    );
 
     // No pkexec: the error says what to run.
     update::elevate_with(Some(&["/nonexistent/pkexec"]));

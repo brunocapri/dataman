@@ -137,9 +137,7 @@ fn parse_hms(t: &str) -> Option<((i64, u8, u8), u32)> {
     let m: u8 = p.next()?.parse().ok()?;
     let s: u8 = p.next()?.parse().ok()?;
     let us = match frac {
-        Some(f) if !f.is_empty() && f.len() <= 6 && f.bytes().all(|c| c.is_ascii_digit()) => {
-            f.parse::<u32>().ok()? * 10u32.pow(6 - f.len() as u32)
-        }
+        Some(f) if !f.is_empty() && f.len() <= 6 && f.bytes().all(|c| c.is_ascii_digit()) => f.parse::<u32>().ok()? * 10u32.pow(6 - f.len() as u32),
         Some(_) => return None,
         None => 0,
     };

@@ -202,19 +202,54 @@ impl Frame {
 }
 
 const NO_SPACE_KW: &[&str] = &[
-    "CAST", "ANY", "SOME", "ALL", "ARRAY", "ROW", "NUMERIC", "DECIMAL", "VARCHAR", "CHAR", "CHARACTER", "TIMESTAMP",
-    "TIMESTAMPTZ", "TIME", "LEFT", "RIGHT", "REPLACE",
+    "CAST",
+    "ANY",
+    "SOME",
+    "ALL",
+    "ARRAY",
+    "ROW",
+    "NUMERIC",
+    "DECIMAL",
+    "VARCHAR",
+    "CHAR",
+    "CHARACTER",
+    "TIMESTAMP",
+    "TIMESTAMPTZ",
+    "TIME",
+    "LEFT",
+    "RIGHT",
+    "REPLACE",
 ];
-const SELECT_END: &[&str] = &[
-    "FROM", "INTO", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT",
-    "EXCEPT",
-];
+const SELECT_END: &[&str] = &["FROM", "INTO", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT", "EXCEPT"];
 const SET_END: &[&str] = &["WHERE", "FROM", "RETURNING"];
 const VALUES_END: &[&str] = &["ON", "RETURNING", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT"];
 const CLAUSES: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FETCH", "WINDOW", "UNION", "INTERSECT",
-    "EXCEPT", "RETURNING", "VALUES", "SET", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "UPDATE",
-    "DELETE", "INSERT",
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "GROUP",
+    "HAVING",
+    "ORDER",
+    "LIMIT",
+    "OFFSET",
+    "FETCH",
+    "WINDOW",
+    "UNION",
+    "INTERSECT",
+    "EXCEPT",
+    "RETURNING",
+    "VALUES",
+    "SET",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "INNER",
+    "CROSS",
+    "NATURAL",
+    "UPDATE",
+    "DELETE",
+    "INSERT",
 ];
 
 struct Fmt<'a> {
@@ -378,7 +413,9 @@ impl<'a> Fmt<'a> {
 
     fn comment(&mut self, k: usize) {
         let t = self.toks[k];
-        let own = k == 0 || self.toks[k - 1].kind == TokenKind::LineComment || (self.toks[k - 1].kind == TokenKind::Whitespace && self.toks[k - 1].text(self.src).contains('\n'));
+        let own = k == 0
+            || self.toks[k - 1].kind == TokenKind::LineComment
+            || (self.toks[k - 1].kind == TokenKind::Whitespace && self.toks[k - 1].text(self.src).contains('\n'));
         let text = t.text(self.src).trim_end_matches([' ', '\t', '\r']);
         let line = t.kind == TokenKind::LineComment;
         if own {
@@ -626,7 +663,9 @@ impl<'a> Fmt<'a> {
                 TokenKind::Ident | TokenKind::QuotedIdent => {
                     let after = self.close[si] + 1;
                     ["INTO", "WITH", "RECURSIVE", "VIEW", "TABLE"].iter().any(|w| self.word(p.wrapping_sub(1), w))
-                        || (self.punct(p.wrapping_sub(1), ",") && self.kw(after, "AS") && (self.punct(after + 1, "(") || self.kw(after + 1, "NOT") || self.kw(after + 1, "MATERIALIZED")))
+                        || (self.punct(p.wrapping_sub(1), ",")
+                            && self.kw(after, "AS")
+                            && (self.punct(after + 1, "(") || self.kw(after + 1, "NOT") || self.kw(after + 1, "MATERIALIZED")))
                 }
                 TokenKind::Keyword => !NO_SPACE_KW.iter().any(|w| ps.eq_ignore_ascii_case(w)),
                 _ => true,
@@ -749,7 +788,10 @@ where c.id = orders.customer"
 
     #[test]
     fn spacing() {
-        assert_eq!(fmt("select a::int,-1,b[1:2],array[1,2],x->>'k',count(*),cast(x as text),:name,:'v' from t"), "SELECT\n  a::int,\n  -1,\n  b[1:2],\n  ARRAY[1, 2],\n  x ->> 'k',\n  count(*),\n  CAST(x AS TEXT),\n  :name,\n  :'v'\nFROM t");
+        assert_eq!(
+            fmt("select a::int,-1,b[1:2],array[1,2],x->>'k',count(*),cast(x as text),:name,:'v' from t"),
+            "SELECT\n  a::int,\n  -1,\n  b[1:2],\n  ARRAY[1, 2],\n  x ->> 'k',\n  count(*),\n  CAST(x AS TEXT),\n  :name,\n  :'v'\nFROM t"
+        );
         assert_eq!(fmt("select t.type, x . key from t"), "SELECT t.type, x.key\nFROM t");
         assert_eq!(fmt("select * from a join b using(id) where x is distinct from y"), "SELECT *\nFROM a\nJOIN b USING (id)\nWHERE x IS DISTINCT FROM y");
         assert_eq!(fmt("select sum(x) over (partition by a order by b) from t"), "SELECT sum(x) OVER (PARTITION BY a ORDER BY b)\nFROM t");
@@ -777,7 +819,11 @@ where c.id = orders.customer"
             "select * from t where a = any(array[1,2]) and b not in (select c from d) limit all",
             "select 1 union select 2 except select 3 intersect select 4 order by 1",
         ];
-        for o in [FormatOptions::default(), FormatOptions { keyword_case: KeywordCase::Lower, indent: 4 }, FormatOptions { keyword_case: KeywordCase::Preserve, indent: 2 }] {
+        for o in [
+            FormatOptions::default(),
+            FormatOptions { keyword_case: KeywordCase::Lower, indent: 4 },
+            FormatOptions { keyword_case: KeywordCase::Preserve, indent: 2 },
+        ] {
             for s in samples {
                 idempotent(s, &o);
             }
@@ -788,7 +834,10 @@ where c.id = orders.customer"
     fn only_whitespace_and_keyword_case_change() {
         let squash = |s: &str| {
             let toks = tokenize(s);
-            toks.iter().filter(|t| t.kind != TokenKind::Whitespace).map(|t| if t.kind == TokenKind::Keyword { t.text(s).to_ascii_uppercase() } else { t.text(s).trim_end().to_string() }).collect::<String>()
+            toks.iter()
+                .filter(|t| t.kind != TokenKind::Whitespace)
+                .map(|t| if t.kind == TokenKind::Keyword { t.text(s).to_ascii_uppercase() } else { t.text(s).trim_end().to_string() })
+                .collect::<String>()
         };
         for s in ["select a, b from t where x = 'a  b' -- c\n and y = $$ z $$", "with x as (select 1) insert into t select * from x returning *"] {
             assert_eq!(squash(s), squash(&fmt(s)));

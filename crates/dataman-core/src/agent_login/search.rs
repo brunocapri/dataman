@@ -46,12 +46,20 @@ pub fn desired(spec: &Spec, inv: &Inventory, os: bool, fls: bool) -> Desired {
             continue;
         }
         if a.whole {
-            if a.write { whole_write.push(a.name.clone()) } else { whole_read.push(a.name.clone()) }
+            if a.write {
+                whole_write.push(a.name.clone())
+            } else {
+                whole_read.push(a.name.clone())
+            }
             ok.push(a);
             continue;
         }
         if !fls {
-            not_granted.push(NotGranted { object: a.name.clone(), reason: "field level security needs a Platinum or Enterprise license (or a trial)".into(), sql: Vec::new() });
+            not_granted.push(NotGranted {
+                object: a.name.clone(),
+                reason: "field level security needs a Platinum or Enterprise license (or a trial)".into(),
+                sql: Vec::new(),
+            });
             continue;
         }
         let mut except: Vec<String> = a.hidden.clone();
@@ -145,7 +153,11 @@ fn rules(spec: &Spec, d: &Desired, os: bool, prod: bool) -> Vec<RuleLine> {
         spec.rows,
     ));
     v.push(line(if spec.code { "Scripts" } else { "Run code off" }, "scripts in searches can't be turned off per user", Who::Dataman));
-    v.push(line(if spec.activity { "Server activity" } else { "No server activity" }, if spec.activity { "cluster monitor" } else { "no cluster privileges" }, Who::Database));
+    v.push(line(
+        if spec.activity { "Server activity" } else { "No server activity" },
+        if spec.activity { "cluster monitor" } else { "no cluster privileges" },
+        Who::Database,
+    ));
     v.push(line(time_label(spec.time_limit_s), "no time limit per user", Who::Dataman));
     v.extend(dataman_lines(spec, prod));
     v
@@ -156,7 +168,12 @@ fn http(group: &str, method: &str, path: String, body: Option<Value>, shown_body
         Some(b) => format!("{method} {path}\n{}", serde_json::to_string_pretty(b).unwrap_or_default()),
         None => format!("{method} {path}"),
     };
-    Step { shown: text(&shown_body.clone().or_else(|| body.clone())), copy: text(&body), action: Action::Http { method: method.into(), path, body }, group: group.into() }
+    Step {
+        shown: text(&shown_body.clone().or_else(|| body.clone())),
+        copy: text(&body),
+        action: Action::Http { method: method.into(), path, body },
+        group: group.into(),
+    }
 }
 
 fn user_body(spec: &Spec, hash: &str, os: bool) -> (Value, Value) {
@@ -222,7 +239,13 @@ pub fn rotate_step(spec_user: &str, conn: &str, password: &str, os: bool) -> Ste
         let b = |h: &str| json!({ "hash": h, "opendistro_security_roles": [spec_user], "attributes": { "dataman": MARK, "conn": conn } });
         return http("a new password", "PUT", user_path(true, spec_user), Some(b(&h)), Some(b("$2a$10$…")));
     }
-    http("a new password", "PUT", format!("/_security/user/{}/_password", enc(spec_user)), Some(json!({ "password_hash": h })), Some(json!({ "password_hash": "$2a$10$…" })))
+    http(
+        "a new password",
+        "PUT",
+        format!("/_security/user/{}/_password", enc(spec_user)),
+        Some(json!({ "password_hash": h })),
+        Some(json!({ "password_hash": "$2a$10$…" })),
+    )
 }
 
 pub(crate) async fn call(c: &Client, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
@@ -242,7 +265,12 @@ pub(crate) async fn probe(c: &Client, user: &str, conn: &str) -> Result<Probe> {
         Ok(v) => v,
         Err(e) => {
             let text = format!("{e:#}");
-            if status(&e) == Some(404) || text.contains("security is disabled") || text.contains("Security must be explicitly enabled") || text.contains("no handler found") || text.contains("security_exception") && text.contains("disabled") {
+            if status(&e) == Some(404)
+                || text.contains("security is disabled")
+                || text.contains("Security must be explicitly enabled")
+                || text.contains("no handler found")
+                || text.contains("security_exception") && text.contains("disabled")
+            {
                 p.manual = Some(Manual::NoSecurity);
                 p.lacks.push("security is off on this server: there are no users to create (turn security on, then come back)".into());
                 p.checks.push((false, "security off".into()));
@@ -256,11 +284,18 @@ pub(crate) async fn probe(c: &Client, user: &str, conn: &str) -> Result<Probe> {
         // Only an admin of the security plugin may read roles through its REST API.
         call(c, "GET", &format!("{}/roles", base(true)), None).await.is_ok()
     } else {
-        call(c, "POST", "/_security/user/_has_privileges", Some(&json!({ "cluster": ["manage_security"] }))).await.map(|v| v["has_all_requested"] == json!(true)).unwrap_or(false)
+        call(c, "POST", "/_security/user/_has_privileges", Some(&json!({ "cluster": ["manage_security"] })))
+            .await
+            .map(|v| v["has_all_requested"] == json!(true))
+            .unwrap_or(false)
     };
     p.can_create = can;
     if !can {
-        p.lacks.push(format!("{} can't manage security: it needs {}", p.login, if os { "the security REST API (all_access or security_rest_api_access)" } else { "the manage_security cluster privilege" }));
+        p.lacks.push(format!(
+            "{} can't manage security: it needs {}",
+            p.login,
+            if os { "the security REST API (all_access or security_rest_api_access)" } else { "the manage_security cluster privilege" }
+        ));
     }
     // Field level security: OpenSearch has it; Elasticsearch from Platinum (or a trial).
     let fls = os || {
@@ -298,7 +333,15 @@ pub(crate) async fn inventory(c: &Client) -> Result<Inventory> {
             continue;
         }
         let fields = crate::backend::search::fields(c, &i.name).await.unwrap_or_default();
-        out.objects.push(Obj { schema: String::new(), name: i.name, kind: ObjKind::Index, columns: fields.into_iter().map(|(f, _)| Col::new(&f)).filter(|c| c.name != "_id").collect(), grantable: true, owner: String::new(), sequences: Vec::new() });
+        out.objects.push(Obj {
+            schema: String::new(),
+            name: i.name,
+            kind: ObjKind::Index,
+            columns: fields.into_iter().map(|(f, _)| Col::new(&f)).filter(|c| c.name != "_id").collect(),
+            grantable: true,
+            owner: String::new(),
+            sequences: Vec::new(),
+        });
     }
     Ok(out)
 }
@@ -312,7 +355,8 @@ pub(crate) async fn have(c: &Client, user: &str, os: bool) -> Result<Vec<String>
             lines.push(format!("cluster {}", c.as_str().unwrap_or("")));
         }
         for e in r["index_permissions"].as_array().cloned().unwrap_or_default() {
-            let acts: Vec<String> = e["allowed_actions"].as_array().cloned().unwrap_or_default().iter().filter_map(|a| a.as_str().map(str::to_string)).collect();
+            let acts: Vec<String> =
+                e["allowed_actions"].as_array().cloned().unwrap_or_default().iter().filter_map(|a| a.as_str().map(str::to_string)).collect();
             for n in e["index_patterns"].as_array().cloned().unwrap_or_default() {
                 let n = n.as_str().unwrap_or("");
                 for a in acts.iter().filter(|a| matches!(a.as_str(), "read" | "write")) {

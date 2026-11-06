@@ -33,7 +33,8 @@ fn admin_pw() -> String {
 }
 
 fn up(host: &str, port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
+    std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
 
 /// Approves every ask; `during` runs first (the user doing something meanwhile).
@@ -121,7 +122,19 @@ fn postgres_every_tool_runs_as_the_agent() {
     let e = env();
     let hub = e.hub().clone();
     let core = &hub.core;
-    let root = core.block_on(core.connect(ConnectionProfile { host: host.clone(), port, user: "postgres".into(), database: "postgres".into(), sslmode: SslMode::Disable, ..ConnectionProfile::new("root") }, Some(admin_pw()))).unwrap();
+    let root = core
+        .block_on(core.connect(
+            ConnectionProfile {
+                host: host.clone(),
+                port,
+                user: "postgres".into(),
+                database: "postgres".into(),
+                sslmode: SslMode::Disable,
+                ..ConnectionProfile::new("root")
+            },
+            Some(admin_pw()),
+        ))
+        .unwrap();
     let id = "aumcprt001";
     let user = agent_login::login_name(id);
     for sql in [
@@ -133,7 +146,15 @@ fn postgres_every_tool_runs_as_the_agent() {
     ] {
         exec(core, &root, &sql);
     }
-    let mut p = ConnectionProfile { host, port, user: "au_owner".into(), database: "au_rtm".into(), sslmode: SslMode::Disable, save_password: true, ..ConnectionProfile::new(id) };
+    let mut p = ConnectionProfile {
+        host,
+        port,
+        user: "au_owner".into(),
+        database: "au_rtm".into(),
+        sslmode: SslMode::Disable,
+        save_password: true,
+        ..ConnectionProfile::new(id)
+    };
     p.id = id.into();
     p.name = "rt".into();
     p.mcp = Some(McpAccess::Full);
@@ -142,7 +163,12 @@ fn postgres_every_tool_runs_as_the_agent() {
     core.save_connection(p.clone(), Some("Owner-pw-1"), None).unwrap();
     {
         let admin = core.block_on(core.connect(p.clone(), None)).unwrap();
-        for sql in ["CREATE TABLE t (id int PRIMARY KEY, name text)", "INSERT INTO t VALUES (1, 'a')", "CREATE TABLE users (id int PRIMARY KEY, email text)", "INSERT INTO users VALUES (1, 'ana@acme.co')"] {
+        for sql in [
+            "CREATE TABLE t (id int PRIMARY KEY, name text)",
+            "INSERT INTO t VALUES (1, 'a')",
+            "CREATE TABLE users (id int PRIMARY KEY, email text)",
+            "INSERT INTO users VALUES (1, 'ana@acme.co')",
+        ] {
             exec(core, &admin, sql);
         }
         let rv = core.block_on(live::review(&admin, &p, &Options::default())).unwrap();
@@ -193,7 +219,8 @@ fn postgres_every_tool_runs_as_the_agent() {
     }
     // The login's password: in the Keychain only, never in the audit, the files, nor a reply.
     let pw = e.secrets.get(&agent_login::secret_account(id)).unwrap().unwrap();
-    let files: String = ["dataman/mcp-audit.jsonl", "dataman/connections.toml"].iter().map(|f| std::fs::read_to_string(e.dir.path().join(f)).unwrap_or_default()).collect();
+    let files: String =
+        ["dataman/mcp-audit.jsonl", "dataman/connections.toml"].iter().map(|f| std::fs::read_to_string(e.dir.path().join(f)).unwrap_or_default()).collect();
     assert!(!files.is_empty() && !files.contains(&pw), "the password leaked into a file");
     e.secrets.set(&agent_login::secret_account(id), "wrong-password-0000000000").unwrap();
     e.hub().close_all();
@@ -227,7 +254,18 @@ fn postgres_every_tool_runs_as_the_agent() {
     core.block_on(live::end_sessions(&mine, &p, &user)).unwrap();
     std::thread::sleep(Duration::from_millis(200));
     assert!(pids_of(core, &root, &user).is_empty(), "ended: {:?}", pids_of(core, &root, &user));
-    assert_eq!(exec(core, &root, &format!("SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = '{user}' AND (m.inherit_option OR m.set_option)"))[0][0].as_deref(), Some("0"), "the admin kept no use of it (only the ADMIN that PostgreSQL gives the role's creator)");
+    assert_eq!(
+        exec(
+            core,
+            &root,
+            &format!(
+                "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid WHERE r.rolname = '{user}' AND (m.inherit_option OR m.set_option)"
+            )
+        )[0][0]
+            .as_deref(),
+        Some("0"),
+        "the admin kept no use of it (only the ADMIN that PostgreSQL gives the role's creator)"
+    );
     let plan = core.block_on(live::removal(&mine, &p, &login)).unwrap();
     core.block_on(live::apply(&mine, &plan, &login.database)).unwrap();
     core.config.upsert(ConnectionProfile { agent_login: None, agents_refused: true, ..p.clone() }).unwrap();
@@ -242,7 +280,14 @@ fn postgres_every_tool_runs_as_the_agent() {
 }
 
 fn with_login(id: &str) -> ConnectionProfile {
-    let mut p = ConnectionProfile { host: "db.example.com".into(), port: 5432, user: "app".into(), database: "shop".into(), save_password: true, ..ConnectionProfile::new(id) };
+    let mut p = ConnectionProfile {
+        host: "db.example.com".into(),
+        port: 5432,
+        user: "app".into(),
+        database: "shop".into(),
+        save_password: true,
+        ..ConnectionProfile::new(id)
+    };
     p.id = id.into();
     p.name = id.into();
     p.mcp = Some(McpAccess::Read);
@@ -260,15 +305,28 @@ fn a_twin_of_an_agent_login_connection_is_refused() {
     let mut a = with_login("twinbase01");
     a.host = "localhost".into();
     core.config.upsert(a.clone()).unwrap();
-    let refused = ConnectionProfile { id: "twinbase02".into(), name: "twinbase02".into(), host: "db2.example.com".into(), agent_login: None, agents_refused: true, ..a.clone() };
+    let refused = ConnectionProfile {
+        id: "twinbase02".into(),
+        name: "twinbase02".into(),
+        host: "db2.example.com".into(),
+        agent_login: None,
+        agents_refused: true,
+        ..a.clone()
+    };
     core.config.upsert(refused.clone()).unwrap();
     for (host, port) in [("localhost", 5432), ("127.0.0.1", 5432), ("::1", 5432), ("LOCALHOST", 5432), ("db2.example.com", 5432), ("DB2.example.com.", 5432)] {
-        let r = e.call("create_connection", json!({"name": format!("twin {host}"), "engine": "postgres", "host": host, "port": port, "user": "app", "database": "shop"}));
+        let r = e.call(
+            "create_connection",
+            json!({"name": format!("twin {host}"), "engine": "postgres", "host": host, "port": port, "user": "app", "database": "shop"}),
+        );
         let err = r.expect_err(&format!("{host}: a twin"));
         assert!(err.contains("already reaches") && err.contains("agent login"), "{host}: {err}");
     }
     // Another user is another login: not a twin (it needs that login's own password).
-    e.ok("create_connection", json!({"name": "other user", "engine": "postgres", "host": "localhost", "port": 5432, "user": "someone_else", "database": "shop"}));
+    e.ok(
+        "create_connection",
+        json!({"name": "other user", "engine": "postgres", "host": "localhost", "port": 5432, "user": "someone_else", "database": "shop"}),
+    );
 }
 
 /// The user makes or removes the agent login while an agent's update_connection waits for the
@@ -325,9 +383,23 @@ fn postgres_through_an_ssh_tunnel() {
     let hub = e.hub().clone();
     let core = &hub.core;
     let id = "aumcpssh01";
-    let mut p = ConnectionProfile { host: dh.into(), port: dp.parse().unwrap(), user: "postgres".into(), database: "postgres".into(), sslmode: SslMode::Disable, save_password: true, ..ConnectionProfile::new(id) };
+    let mut p = ConnectionProfile {
+        host: dh.into(),
+        port: dp.parse().unwrap(),
+        user: "postgres".into(),
+        database: "postgres".into(),
+        sslmode: SslMode::Disable,
+        save_password: true,
+        ..ConnectionProfile::new(id)
+    };
     (p.id, p.name, p.mcp) = (id.into(), "tunnel".into(), Some(McpAccess::Read));
-    p.ssh = Some(dataman_core::SshSettings { host: sh.into(), port: Some(sp.parse().unwrap()), user: "rt".into(), auth: dataman_core::SshAuth::Password, key_file: String::new() });
+    p.ssh = Some(dataman_core::SshSettings {
+        host: sh.into(),
+        port: Some(sp.parse().unwrap()),
+        user: "rt".into(),
+        auth: dataman_core::SshAuth::Password,
+        key_file: String::new(),
+    });
     core.save_connection(p.clone(), Some(&admin_pw()), Some(&ssh_pw)).unwrap();
     let admin = {
         let mut c = None;
@@ -347,7 +419,13 @@ fn postgres_through_an_ssh_tunnel() {
     };
     let user = agent_login::login_name(id);
     // A run that stopped half-way left it: gone first.
-    exec(core, &admin, &format!("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{user}') THEN EXECUTE 'DROP OWNED BY {user}'; EXECUTE 'DROP ROLE {user}'; END IF; END $$"));
+    exec(
+        core,
+        &admin,
+        &format!(
+            "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{user}') THEN EXECUTE 'DROP OWNED BY {user}'; EXECUTE 'DROP ROLE {user}'; END IF; END $$"
+        ),
+    );
     let rv = core.block_on(live::review(&admin, &p, &Options::default())).unwrap();
     core.block_on(live::apply(&admin, &rv.plan, &p.database)).unwrap();
     e.secrets.set(&agent_login::secret_account(id), &rv.password).unwrap();

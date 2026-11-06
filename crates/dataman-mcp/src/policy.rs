@@ -79,7 +79,14 @@ pub struct Target {
 
 impl Target {
     pub fn of(p: &ConnectionProfile) -> Target {
-        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo_on(), agent_login: p.agent_login.is_some() }
+        Target {
+            access: p.mcp_access(),
+            env: p.env,
+            read_only: p.read_only,
+            dialect: p.engine.dialect(),
+            yolo: p.mcp_yolo_on(),
+            agent_login: p.agent_login.is_some(),
+        }
     }
 
     pub fn of_in(p: &ConnectionProfile, database: &str) -> Target {
@@ -97,7 +104,9 @@ pub fn allow(enabled: bool, t: Target, need: Need) -> Result<(), String> {
     }
     match (t.access, need) {
         (McpAccess::Off, _) => Err("MCP access to this connection is off (connection settings › MCP)".into()),
-        (McpAccess::Read, Need::Write) if !t.yolo => Err("this connection allows reads only; writes need its MCP tier set to write (non-destructive) or full in Dataman".into()),
+        (McpAccess::Read, Need::Write) if !t.yolo => {
+            Err("this connection allows reads only; writes need its MCP tier set to write (non-destructive) or full in Dataman".into())
+        }
         (_, Need::Write) if t.read_only => Err(READ_ONLY.into()),
         _ => Ok(()),
     }
@@ -140,10 +149,9 @@ pub fn write_verdict(enabled: bool, t: Target, class: &WriteClass) -> Verdict {
             "{} is destructive: it needs the connection's MCP tier full in Dataman and a human's Allow there; this connection allows non-destructive writes only",
             reasons.join(", ")
         )),
-        (WriteClass::Create { what }, _) => Verdict::Refuse(format!(
-            "{} needs the connection's MCP tier full in Dataman; this connection allows non-destructive writes only",
-            what.join(", ")
-        )),
+        (WriteClass::Create { what }, _) => {
+            Verdict::Refuse(format!("{} needs the connection's MCP tier full in Dataman; this connection allows non-destructive writes only", what.join(", ")))
+        }
     }
 }
 
@@ -347,17 +355,35 @@ mod tests {
             assert!(matches!(v(McpAccess::Full, Dev, sql), Verdict::Ask(_)), "{sql}");
         }
         assert_eq!(v(McpAccess::Full, Production, "INSERT INTO t VALUES (1)"), Verdict::Ask(vec!["production".into()]));
-        for sql in ["CREATE TABLE t (a int)", "CREATE INDEX i ON t (a)", "CREATE VIEW v AS SELECT 1", "CREATE SCHEMA s", "CREATE TABLE t (a int); INSERT INTO t VALUES (1); DELETE FROM t WHERE a = 1"] {
+        for sql in [
+            "CREATE TABLE t (a int)",
+            "CREATE INDEX i ON t (a)",
+            "CREATE VIEW v AS SELECT 1",
+            "CREATE SCHEMA s",
+            "CREATE TABLE t (a int); INSERT INTO t VALUES (1); DELETE FROM t WHERE a = 1",
+        ] {
             assert_eq!(v(McpAccess::Full, Dev, sql), Verdict::Run, "{sql}");
             assert!(matches!(v(McpAccess::Write, Dev, sql), Verdict::Refuse(e) if e.contains("tier full")), "{sql}");
             assert!(matches!(v(McpAccess::Read, Dev, sql), Verdict::Refuse(e) if e.contains("reads only")), "{sql}");
             assert!(matches!(v(McpAccess::Full, Production, sql), Verdict::Ask(r) if r.iter().any(|x| x == PRODUCTION) && r[0].starts_with("CREATE")), "{sql}");
-            assert!(matches!(write_verdict(true, t(McpAccess::Full, Dev, true), &agent_write_class(sql, Dialect::Postgres)), Verdict::Refuse(e) if e == READ_ONLY), "{sql}");
-            assert!(matches!(write_verdict(true, Target { agent_login: true, ..t(McpAccess::Full, Dev, false) }, &agent_write_class(sql, Dialect::Postgres)), Verdict::Ask(r) if r[0].starts_with("CREATE")), "{sql}");
+            assert!(
+                matches!(write_verdict(true, t(McpAccess::Full, Dev, true), &agent_write_class(sql, Dialect::Postgres)), Verdict::Refuse(e) if e == READ_ONLY),
+                "{sql}"
+            );
+            assert!(
+                matches!(write_verdict(true, Target { agent_login: true, ..t(McpAccess::Full, Dev, false) }, &agent_write_class(sql, Dialect::Postgres)), Verdict::Ask(r) if r[0].starts_with("CREATE")),
+                "{sql}"
+            );
             let j = judge(true, t(McpAccess::Full, Dev, false), sql, &[]);
             assert!(j.row_limit && j.verdict == Verdict::Run && j.by.is_none(), "{j:?}");
         }
-        for sql in ["CREATE OR REPLACE VIEW v AS SELECT 1", "CREATE TABLE t AS SELECT 1", "CREATE TRIGGER tr BEFORE INSERT ON t EXECUTE FUNCTION f()", "CREATE ROLE r", "CREATE TABLE t (a int); DROP TABLE u"] {
+        for sql in [
+            "CREATE OR REPLACE VIEW v AS SELECT 1",
+            "CREATE TABLE t AS SELECT 1",
+            "CREATE TRIGGER tr BEFORE INSERT ON t EXECUTE FUNCTION f()",
+            "CREATE ROLE r",
+            "CREATE TABLE t (a int); DROP TABLE u",
+        ] {
             assert!(matches!(v(McpAccess::Full, Dev, sql), Verdict::Ask(_)), "{sql}");
             assert!(matches!(v(McpAccess::Write, Dev, sql), Verdict::Refuse(_)), "{sql}");
         }
@@ -420,7 +446,11 @@ mod tests {
             for ro in [false, true] {
                 for access in McpAccess::ALL {
                     let tg = t(access, env, ro);
-                    for sql in ["truncate audit_tmp;", "DELETE FROM sessions WHERE expires_at < '2026-01-01'", "TRUNCATE audit_tmp; delete from sessions where expires_at < 3; SELECT 1"] {
+                    for sql in [
+                        "truncate audit_tmp;",
+                        "DELETE FROM sessions WHERE expires_at < '2026-01-01'",
+                        "TRUNCATE audit_tmp; delete from sessions where expires_at < 3; SELECT 1",
+                    ] {
                         let j = judge(true, tg, sql, &allowed);
                         match (access, ro) {
                             (Off, _) => assert!(matches!(&j.verdict, Verdict::Refuse(e) if e.contains("off")), "{j:?}"),
@@ -434,7 +464,15 @@ mod tests {
                     }
                     for sql in ["TRUNCATE audit", "DELETE FROM sessions WHERE expires_at < now()", "DELETE FROM sessions"] {
                         let j = judge(true, tg, sql, &allowed);
-                        assert_eq!(j, Judged { verdict: write_verdict(true, tg, &dataman_core::guard::agent_write_class(sql, Dialect::Postgres)), by: None, row_limit: true }, "{sql}");
+                        assert_eq!(
+                            j,
+                            Judged {
+                                verdict: write_verdict(true, tg, &dataman_core::guard::agent_write_class(sql, Dialect::Postgres)),
+                                by: None,
+                                row_limit: true
+                            },
+                            "{sql}"
+                        );
                     }
                     if !ro && access != Off {
                         let j = judge(true, tg, "TRUNCATE audit_tmp; INSERT INTO t VALUES (1)", &allowed);
@@ -456,15 +494,25 @@ mod tests {
                         assert_eq!(j.by.is_some(), want != "refuse", "{j:?}");
                         let j = judge(true, tg, "TRUNCATE audit_tmp; DROP TABLE users", &allowed);
                         match access {
-                            Full => assert!(matches!(&j.verdict, Verdict::Ask(r) if r[0] == "DROP TABLE" && !r.iter().any(|x| x.contains("TRUNCATE"))), "{j:?}"),
+                            Full => {
+                                assert!(matches!(&j.verdict, Verdict::Ask(r) if r[0] == "DROP TABLE" && !r.iter().any(|x| x.contains("TRUNCATE"))), "{j:?}")
+                            }
                             _ => assert!(matches!(&j.verdict, Verdict::Refuse(_)), "{j:?}"),
                         }
                     }
                 }
             }
         }
-        let j = judge(true, t(Read, Environment::Dev, false), "DELETE FROM sessions WHERE expires_at < 1; TRUNCATE audit_tmp; DELETE FROM sessions WHERE expires_at < 2", &allowed);
+        let j = judge(
+            true,
+            t(Read, Environment::Dev, false),
+            "DELETE FROM sessions WHERE expires_at < 1; TRUNCATE audit_tmp; DELETE FROM sessions WHERE expires_at < 2",
+            &allowed,
+        );
         assert_eq!(j.by, Some(By::Allowlist(allowed.clone())));
-        assert_eq!(By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(), dataman_core::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] });
+        assert_eq!(
+            By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(),
+            dataman_core::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] }
+        );
     }
 }

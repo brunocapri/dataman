@@ -67,21 +67,12 @@ impl Connection {
             names("conrelid", "conkey"),
             names("confrelid", "confkey"),
         );
-        let split = |v: Option<String>| -> Vec<String> {
-            v.filter(|s| !s.is_empty()).map(|s| split_quoted_idents(&s)).unwrap_or_default()
-        };
+        let split = |v: Option<String>| -> Vec<String> { v.filter(|s| !s.is_empty()).map(|s| split_quoted_idents(&s)).unwrap_or_default() };
         let mut g = RelationGraph::default();
         for r in first_ok(&client, &[&sql]).await? {
             let get = |i: usize| r.get(i).cloned().flatten();
             let (Some(table), Some(to_schema), Some(to_table)) = (get(0), get(2), get(3)) else { continue };
-            g.links.push(Link {
-                from_schema: schema.into(),
-                from_table: table,
-                from_columns: split(get(1)),
-                to_schema,
-                to_table,
-                to_columns: split(get(4)),
-            });
+            g.links.push(Link { from_schema: schema.into(), from_table: table, from_columns: split(get(1)), to_schema, to_table, to_columns: split(get(4)) });
         }
         Ok(g)
     }
@@ -142,14 +133,9 @@ impl Connection {
                     l.from_columns.push(col);
                     l.to_columns.push(to_col);
                 }
-                _ => g.links.push(Link {
-                    from_schema: schema.into(),
-                    from_table: table,
-                    from_columns: vec![col],
-                    to_schema,
-                    to_table,
-                    to_columns: vec![to_col],
-                }),
+                _ => {
+                    g.links.push(Link { from_schema: schema.into(), from_table: table, from_columns: vec![col], to_schema, to_table, to_columns: vec![to_col] })
+                }
             }
             last = Some(key);
         }

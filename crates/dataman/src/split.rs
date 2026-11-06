@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use dataman_core::groups::{self, Pane};
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EntityId, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Stateful, StatefulInteractiveElement, Styled, WeakEntity, Window, actions, div,
-    relative,
+    AnyElement, App, Context, Div, Entity, EntityId, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Stateful,
+    StatefulInteractiveElement, Styled, WeakEntity, Window, actions, div, relative,
 };
 
 use crate::app::{Drag, DraggedTab, Workspace};
@@ -11,15 +11,7 @@ use crate::motion::{RectTween, SplitTween};
 use crate::tab::QueryTab;
 use crate::theme::{ActiveTheme, Pt, px};
 
-actions!(
-    split,
-    [
-        OpenToSide,
-        MoveToOtherGroup,
-        FocusOtherGroup,
-        CloseGroup,
-    ]
-);
+actions!(split, [OpenToSide, MoveToOtherGroup, FocusOtherGroup, CloseGroup,]);
 
 pub const PANE_MIN: f32 = 260.;
 pub const SEAM: f32 = 1.;
@@ -525,15 +517,9 @@ impl Workspace {
     }
 
     pub(crate) fn render_seam(&self, left_w: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        div()
-            .id("group-seam")
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left(px(left_w + SEAM / 2. - SEAM_HIT / 2.))
-            .w(px(SEAM_HIT))
-            .cursor_col_resize()
-            .on_mouse_down(MouseButton::Left, cx.listener(|w, ev: &gpui::MouseDownEvent, _, cx| {
+        div().id("group-seam").absolute().top_0().bottom_0().left(px(left_w + SEAM / 2. - SEAM_HIT / 2.)).w(px(SEAM_HIT)).cursor_col_resize().on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|w, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if ev.click_count == 2 {
                     if let Some(s) = &mut w.split {
@@ -543,7 +529,8 @@ impl Workspace {
                 } else {
                     w.drag = Some(Drag::Groups);
                 }
-            }))
+            }),
+        )
     }
 
     /// The title bar paints it after the work column (over the band's hairline) and before the

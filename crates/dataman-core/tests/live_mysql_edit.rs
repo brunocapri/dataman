@@ -74,7 +74,14 @@ fn edit_every_type() {
             let r = e.core.block_on(c.apply_changes(Some(db), plan.clone())).unwrap();
             let ok = r.committed && r.outcomes.iter().all(|o| matches!(&o.outcome, Outcome::Applied { rows: 1 }));
             if !ok {
-                bad.push(format!("{} ({:?} -> {:?}): {}\n   {:?}", col.name, from, to, plan[0].sql, r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()));
+                bad.push(format!(
+                    "{} ({:?} -> {:?}): {}\n   {:?}",
+                    col.name,
+                    from,
+                    to,
+                    plan[0].sql,
+                    r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()
+                ));
             }
         }
     }
@@ -95,7 +102,13 @@ fn edit_every_type() {
         let r = e.core.block_on(c.apply_changes(Some(db), plan.clone())).unwrap();
         let ok = r.committed && r.outcomes.iter().all(|o| matches!(&o.outcome, Outcome::Applied { .. }));
         if !ok {
-            bad.push(format!("same-value {} ({:?}): {}\n   {:?}", col.name, now, plan[0].sql, r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()));
+            bad.push(format!(
+                "same-value {} ({:?}): {}\n   {:?}",
+                col.name,
+                now,
+                plan[0].sql,
+                r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()
+            ));
         }
     }
     exec_quiet(&e, &c0, &["DROP DATABASE dataman_me1"]);

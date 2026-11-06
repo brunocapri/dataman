@@ -68,17 +68,17 @@ impl Mcp {
 
     /// With `home` as the home folder: agents' files inside it need no Allow.
     fn spawn_home(cfg: &std::path::Path, home: &std::path::Path) -> Mcp {
-        Mcp::spawn_cmd(Command::new(env!("CARGO_BIN_EXE_dataman-mcp")).env("XDG_CONFIG_HOME", cfg).env("PGPASSFILE", cfg.join("none")).env("HOME", home).env("USERPROFILE", home))
+        Mcp::spawn_cmd(
+            Command::new(env!("CARGO_BIN_EXE_dataman-mcp"))
+                .env("XDG_CONFIG_HOME", cfg)
+                .env("PGPASSFILE", cfg.join("none"))
+                .env("HOME", home)
+                .env("USERPROFILE", home),
+        )
     }
 
     fn spawn_cmd(cmd: &mut Command) -> Mcp {
-        let mut child = cmd
-            .env("DATAMAN_MCP_SECRETS", "memory")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = cmd.env("DATAMAN_MCP_SECRETS", "memory").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Mcp { child, stdin, stdout, next: 1 }
@@ -244,7 +244,14 @@ fn stdio_quickstart_prompt() {
     let got = m.call("prompts/get", json!({"name": "quickstart"}));
     let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap_or_else(|| panic!("{got}"));
     assert_eq!(got["result"]["messages"][0]["role"], "user");
-    for said in ["Never read a password out of", "show_in_dataman", "create_connection", "agents_protection", "Never edit connections.toml or settings.toml by hand", "ask the user to open it"] {
+    for said in [
+        "Never read a password out of",
+        "show_in_dataman",
+        "create_connection",
+        "agents_protection",
+        "Never edit connections.toml or settings.toml by hand",
+        "ask the user to open it",
+    ] {
         assert!(text.contains(said), "{said}: {text}");
     }
     assert!(init["result"]["instructions"].as_str().unwrap().contains(text), "the instructions hold the same script");
@@ -292,7 +299,9 @@ fn stdio_show_in_dataman_needs_the_app() {
 
     // MCP switched off in Settings: everything stays refused, the new tool and the prompt too.
     std::fs::write(cfg.path().join("dataman/settings.toml"), "mcp_enabled = false\n").unwrap();
-    for args in [json!({"destination": "settings_mcp"}), json!({"destination": "agents_general"}), json!({"destination": "connection", "connection": "local pg"})] {
+    for args in
+        [json!({"destination": "settings_mcp"}), json!({"destination": "agents_general"}), json!({"destination": "connection", "connection": "local pg"})]
+    {
         let (err, text) = m.tool("show_in_dataman", args.clone());
         assert!(err && text.contains("turned off") && !text.contains("has to be open"), "{args}: {text}");
     }
@@ -346,7 +355,10 @@ fn stdio_pgpass_wildcard_stays_home() {
         return;
     }
     assert!(!err, "the user's connection uses the * line: {text}");
-    let (err, text) = m.tool("create_connection", json!({"name": "agent pg", "host": "127.0.0.1", "port": 55432, "user": "postgres", "database": "dataman", "sslmode": "disable"}));
+    let (err, text) = m.tool(
+        "create_connection",
+        json!({"name": "agent pg", "host": "127.0.0.1", "port": 55432, "user": "postgres", "database": "dataman", "sslmode": "disable"}),
+    );
     assert!(!err, "{text}");
     let toml = std::fs::read_to_string(cfg.path().join("dataman/connections.toml")).unwrap();
     assert!(block_for(&toml, "agent pg").contains("agent_made = true"), "{toml}");
@@ -506,7 +518,8 @@ fn stdio_create_connection_refuses_escalation() {
 
     let (err, text) = m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "env": "none"}));
     assert!(!err, "{text}");
-    let (err, text) = m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "read", "env": "dev"}));
+    let (err, text) =
+        m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "read", "env": "dev"}));
     assert!(!err, "narrowing, tightening: {text}");
     let (err, text) = m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "env": "none"}));
     assert!(err && text.contains("loosen"), "{text}");
@@ -558,7 +571,8 @@ fn stdio_create_connection_drops_the_secret_when_the_target_changes() {
         let block = block_for(&toml_of(cfg.path()), "secret1").to_string();
         assert!(block.contains("host = \"h1\"") && block.contains("user = \"u1\"") && block.contains("save_password = true"), "{block}");
     }
-    let (err, text) = m.tool("create_connection", json!({"name": "secret1", "host": "h1", "port": 5432, "user": "u1", "sslmode": "disable", "overwrite": true}));
+    let (err, text) =
+        m.tool("create_connection", json!({"name": "secret1", "host": "h1", "port": 5432, "user": "u1", "sslmode": "disable", "overwrite": true}));
     assert!(err && text.contains("sslmode would loosen"), "{text}");
     let (err, text) = m.tool("create_connection", json!({"name": "prod", "host": "10.255.255.1", "user": "app", "color": "violet", "overwrite": true}));
     assert!(err && text.contains("off"), "an MCP-off connection is not replaced: {text}");
@@ -664,7 +678,10 @@ impl dataman_mcp::Front for Drafter {
     fn tabs(&self) -> bool {
         true
     }
-    fn run_read(&self, _: dataman_mcp::TabRead) -> futures_util::future::BoxFuture<'static, Result<dataman_core::bounded::Outcome, dataman_core::bounded::Stop>> {
+    fn run_read(
+        &self,
+        _: dataman_mcp::TabRead,
+    ) -> futures_util::future::BoxFuture<'static, Result<dataman_core::bounded::Outcome, dataman_core::bounded::Stop>> {
         *self.reads.lock().unwrap() += 1;
         Box::pin(async { Err(dataman_core::bounded::Stop::Refused("no".into())) })
     }
@@ -680,7 +697,14 @@ fn drafts_go_to_the_app_and_never_run() {
     let cfg = tempfile::tempdir().unwrap();
     let dir = cfg.path().join("dataman");
     std::fs::create_dir_all(&dir).unwrap();
-    let conns = [("r", "read", "", false), ("w", "write", "", false), ("f", "full", "", false), ("ro", "full", "", true), ("p", "write", "production", false), ("o", "off", "", false)];
+    let conns = [
+        ("r", "read", "", false),
+        ("w", "write", "", false),
+        ("f", "full", "", false),
+        ("ro", "full", "", true),
+        ("p", "write", "production", false),
+        ("o", "off", "", false),
+    ];
     let mut toml = String::new();
     for (name, tier, env, ro) in conns {
         toml.push_str(&format!("[[connection]]\nid = \"{name}\"\nname = \"{name}\"\nhost = \"10.255.255.1\"\nport = 5432\nuser = \"app\"\ndatabase = \"app\"\nmcp = \"{tier}\"\nread_only = {ro}\n"));
@@ -711,7 +735,10 @@ fn drafts_go_to_the_app_and_never_run() {
     {
         let d = app.drafts.lock().unwrap();
         assert_eq!(d.len(), 20);
-        assert_eq!((d[0].client.as_str(), d[0].connection_id.as_str(), d[0].database.as_str(), d[0].sql.as_str(), d[0].title.as_deref()), ("draft-test", "r", "shop", "DELETE FROM orders", Some("t")));
+        assert_eq!(
+            (d[0].client.as_str(), d[0].connection_id.as_str(), d[0].database.as_str(), d[0].sql.as_str(), d[0].title.as_deref()),
+            ("draft-test", "r", "shop", "DELETE FROM orders", Some("t"))
+        );
     }
     assert_eq!((*app.asked.lock().unwrap(), *app.reads.lock().unwrap()), (0, 0), "nothing asked, nothing run");
     assert!(hub.connected("f").is_none(), "nothing connected");
@@ -734,7 +761,11 @@ fn drafts_go_to_the_app_and_never_run() {
     let log = std::fs::read_to_string(dir.join("mcp-audit.jsonl")).unwrap();
     let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let d = lines.iter().find(|l| l["draft"] == true && l["connection"] == "r").unwrap();
-    assert_eq!((d["outcome"].as_str(), d["sql"].as_str(), d["query"].as_str(), d["database"].as_str()), (Some("ok"), Some("DELETE FROM orders"), Some("DELETE FROM orders"), Some("shop")), "{d}");
+    assert_eq!(
+        (d["outcome"].as_str(), d["sql"].as_str(), d["query"].as_str(), d["database"].as_str()),
+        (Some("ok"), Some("DELETE FROM orders"), Some("DELETE FROM orders"), Some("shop")),
+        "{d}"
+    );
     assert!(d.get("rows").is_none());
     assert_eq!(lines.iter().filter(|l| l["draft"] == true).count(), 21);
     assert!(lines.iter().filter(|l| l["outcome"] != "ok").all(|l| l.get("draft").is_none()));
@@ -753,7 +784,9 @@ impl dataman_mcp::Front for Denier {
 
 #[test]
 fn stdio_hands_calls_to_the_app() {
-    if !std::net::TcpStream::connect_timeout(&"127.0.0.1:55432".parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok()) {
+    if !std::net::TcpStream::connect_timeout(&"127.0.0.1:55432".parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
+    {
         eprintln!("skipping: no PostgreSQL at 127.0.0.1:55432");
         return;
     }
@@ -790,7 +823,10 @@ fn stdio_hands_calls_to_the_app() {
     {
         let asked = human.0.lock().unwrap();
         assert_eq!(asked.len(), 1, "asked in the app");
-        assert_eq!((asked[0].client.as_str(), asked[0].connection.as_str(), asked[0].reasons.clone()), ("forward-test", "pg full", vec!["DROP TABLE".to_string()]));
+        assert_eq!(
+            (asked[0].client.as_str(), asked[0].connection.as_str(), asked[0].reasons.clone()),
+            ("forward-test", "pg full", vec!["DROP TABLE".to_string()])
+        );
     }
     let (err, text) = m.tool("run_query", json!({"connection": "pg full", "sql": "SELECT 1 AS one"}));
     assert!(!err && text.contains("\"one\""), "{text}");

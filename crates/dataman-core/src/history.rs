@@ -206,7 +206,16 @@ mod tests {
     fn take_and_put_back() {
         let dir = tempfile::tempdir().unwrap();
         let h = History::new(dir.path().join("history"));
-        let entry = |sql: &str| HistoryEntry { ts: Utc::now(), database: "db".into(), sql: sql.into(), duration_ms: 1., rows: None, outcome: Outcome::Ok, error: None, source: None };
+        let entry = |sql: &str| HistoryEntry {
+            ts: Utc::now(),
+            database: "db".into(),
+            sql: sql.into(),
+            duration_ms: 1.,
+            rows: None,
+            outcome: Outcome::Ok,
+            error: None,
+            source: None,
+        };
         assert!(h.take("abc").unwrap().is_none());
         h.append("abc", &entry("select 1")).unwrap();
         h.append("abc", &entry("select 2")).unwrap();
@@ -223,7 +232,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = History::new(dir.path().join("history"));
         let at = |s: i64| DateTime::<Utc>::from_timestamp(1_700_000_000 + s, 0).unwrap();
-        let entry = |s: i64, sql: &str| HistoryEntry { ts: at(s), database: "db".into(), sql: sql.into(), duration_ms: 1., rows: None, outcome: Outcome::Ok, error: None, source: None };
+        let entry = |s: i64, sql: &str| HistoryEntry {
+            ts: at(s),
+            database: "db".into(),
+            sql: sql.into(),
+            duration_ms: 1.,
+            rows: None,
+            outcome: Outcome::Ok,
+            error: None,
+            source: None,
+        };
         h.append("a", &entry(1, "a1")).unwrap();
         h.append("b", &entry(2, "b2")).unwrap();
         h.append("a", &entry(3, "a3")).unwrap();

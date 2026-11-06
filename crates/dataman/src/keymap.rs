@@ -42,7 +42,14 @@ pub struct Command {
     action: fn() -> Box<dyn Action>,
 }
 
-const fn c(id: &'static str, label: &'static str, group: &'static str, scope: Scope, keys: &'static [&'static str], action: fn() -> Box<dyn Action>) -> Command {
+const fn c(
+    id: &'static str,
+    label: &'static str,
+    group: &'static str,
+    scope: Scope,
+    keys: &'static [&'static str],
+    action: fn() -> Box<dyn Action>,
+) -> Command {
     Command { id, label, group, keys, scope, context: scope.context(), action }
 }
 
@@ -57,7 +64,10 @@ pub const COMMANDS: &[Command] = &[
     c("new_tab", "New query tab", "GLOBAL", Scope::Workspace, &["cmd-t"], || Box::new(NewTab)),
     c("close_tab", "Close tab", "GLOBAL", Scope::Workspace, &["cmd-w"], || Box::new(CloseTab)),
     Command { context: Some(crate::undo::KEYS), ..c("undo", "Undo", "GLOBAL", Scope::Workspace, &["cmd-z", "ctrl-z"], || Box::new(crate::undo::Undo)) },
-    Command { context: Some(crate::undo::KEYS), ..c("redo", "Redo", "GLOBAL", Scope::Workspace, &["cmd-shift-z", "ctrl-shift-z"], || Box::new(crate::undo::Redo)) },
+    Command {
+        context: Some(crate::undo::KEYS),
+        ..c("redo", "Redo", "GLOBAL", Scope::Workspace, &["cmd-shift-z", "ctrl-shift-z"], || Box::new(crate::undo::Redo))
+    },
     c("open_to_side", "Open to the side", "GLOBAL", Scope::Workspace, &["cmd-\\"], || Box::new(crate::split::OpenToSide)),
     c("next_tab", "Next tab", "GLOBAL", Scope::Workspace, &["ctrl-tab", "cmd-shift-]"], || Box::new(NextTab)),
     c("prev_tab", "Previous tab", "GLOBAL", Scope::Workspace, &["ctrl-shift-tab", "cmd-shift-["], || Box::new(PrevTab)),
@@ -239,7 +249,6 @@ fn parse_typed_as_written(s: &str) -> Option<String> {
     parse(&mods.join("-"))
 }
 
-
 static OVERRIDES: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
 
 pub fn overrides() -> BTreeMap<String, String> {
@@ -312,7 +321,14 @@ pub fn bind_all(cx: &mut App) {
         let extra = (cmd.id == "zoom_result").then_some("DocView");
         for k in effective_in(&map, cmd).iter() {
             for context in std::iter::once(cmd.context).chain(extra.map(Some)) {
-                match KeyBinding::load(k, (cmd.action)(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper) {
+                match KeyBinding::load(
+                    k,
+                    (cmd.action)(),
+                    context.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()),
+                    false,
+                    None,
+                    &gpui::DummyKeyboardMapper,
+                ) {
                     Ok(b) => bindings.push(b),
                     Err(e) => log::warn!("key {k} for {}: {e}", cmd.id),
                 }
@@ -486,7 +502,17 @@ mod tests {
         for c in COMMANDS {
             for k in defaults(c) {
                 assert!(!k.contains("super"), "{} {k}", c.id);
-                for taken in ["ctrl-alt-t", "ctrl-alt-l", "ctrl-alt-delete", "ctrl-alt-backspace", "ctrl-alt-left", "ctrl-alt-right", "ctrl-alt-up", "ctrl-alt-down", "ctrl-alt-d"] {
+                for taken in [
+                    "ctrl-alt-t",
+                    "ctrl-alt-l",
+                    "ctrl-alt-delete",
+                    "ctrl-alt-backspace",
+                    "ctrl-alt-left",
+                    "ctrl-alt-right",
+                    "ctrl-alt-up",
+                    "ctrl-alt-down",
+                    "ctrl-alt-d",
+                ] {
                     assert_ne!(k, taken, "{}", c.id);
                 }
             }

@@ -7,8 +7,8 @@
 
 use dataman_core::Core;
 use dataman_core::agents_config::Change;
-use dataman_core::project::ConnReview;
 use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
+use dataman_core::project::ConnReview;
 use gpui::{AnyElement, App, Context, FontWeight, MouseButton, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
@@ -85,7 +85,13 @@ impl Workspace {
         let core = self.store.read(cx).core.clone();
         let started = std::time::Instant::now();
         let result = core.config.accept(&o.conns).and_then(|()| core.settings.accept(&o.settings));
-        let reasons: Vec<String> = o.conns.iter().flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what))).chain(o.settings.iter().filter(|x| x.loosens).map(|x| x.what.clone())).take(20).collect();
+        let reasons: Vec<String> = o
+            .conns
+            .iter()
+            .flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what)))
+            .chain(o.settings.iter().filter(|x| x.loosens).map(|x| x.what.clone()))
+            .take(20)
+            .collect();
         let (outcome, error) = match &result {
             Ok(()) => (Outcome::Ok, None),
             Err(e) => (Outcome::Error, Some(format!("{e:#}"))),
@@ -153,7 +159,14 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().flex().flex_row().gap(px(8.)).child(ui::caps(&t, title)).children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .child(ui::caps(&t, title))
+                            .children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))),
+                    )
                     .children(rows),
             );
         };
@@ -187,7 +200,12 @@ impl Workspace {
                 .child(
                     ui::modal(&t, "outside-review-card")
                         .w(px(680.))
-                        .child(ui::modal_header(&t, None, "Edited outside Dataman", ui::modal_close(&t, "outside-review-close").on_click(cx.listener(|w, _, window, cx| w.close_outside_review(false, window, cx)))))
+                        .child(ui::modal_header(
+                            &t,
+                            None,
+                            "Edited outside Dataman",
+                            ui::modal_close(&t, "outside-review-close").on_click(cx.listener(|w, _, window, cx| w.close_outside_review(false, window, cx))),
+                        ))
                         .child(div().id("outside-review-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(
                             ui::modal_footer(&t)

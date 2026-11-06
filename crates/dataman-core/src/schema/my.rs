@@ -180,9 +180,7 @@ pub(super) fn stats_sql(schema: &str) -> String {
 
 pub(super) fn parse_stats(rows: &[Vec<Option<String>>]) -> std::collections::HashMap<String, super::RelStats> {
     rows.iter()
-        .filter_map(|r| {
-            Some((get(r, 0)?, super::RelStats { rows: get(r, 1).and_then(|s| s.parse().ok()), bytes: get(r, 2).and_then(|s| s.parse().ok()) }))
-        })
+        .filter_map(|r| Some((get(r, 0)?, super::RelStats { rows: get(r, 1).and_then(|s| s.parse().ok()), bytes: get(r, 2).and_then(|s| s.parse().ok()) })))
         .collect()
 }
 
@@ -242,7 +240,12 @@ pub(super) fn parse_trigger(r: &[Option<String>]) -> Option<super::Trigger> {
     let (timing, event) = (get(r, 2).unwrap_or_default(), get(r, 3).unwrap_or_default());
     let q = Dialect::MySql;
     let definition = get(r, 4).map(|body| {
-        format!("CREATE TRIGGER {} {timing} {event} ON {}\nFOR EACH {}\n{body}", q.quote_ident(&name), q.quote_ident(&table), get(r, 5).unwrap_or_else(|| "ROW".into()))
+        format!(
+            "CREATE TRIGGER {} {timing} {event} ON {}\nFOR EACH {}\n{body}",
+            q.quote_ident(&name),
+            q.quote_ident(&table),
+            get(r, 5).unwrap_or_else(|| "ROW".into())
+        )
     });
     Some(super::Trigger { name, table, enabled: true, events: format!("{timing} {event}").to_lowercase(), definition })
 }

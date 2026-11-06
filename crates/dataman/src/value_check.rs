@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point, px};
+use gpui::{
+    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, point, px,
+};
 
 use crate::app::Workspace;
 use crate::grid::ResultGrid;
@@ -44,7 +46,16 @@ fn move_to(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
 }
 
 fn press(cx: &mut AsyncWindowContext, p: Point<Pixels>, clicks: usize) {
-    input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: clicks, first_mouse: false }));
+    input(
+        cx,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: p,
+            modifiers: Modifiers::default(),
+            click_count: clicks,
+            first_mouse: false,
+        }),
+    );
     input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: clicks }));
 }
 
@@ -131,7 +142,13 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let want = cx.update(|_, cx| grid.read(cx).value_at(1, ADDRESS).map(|c| c.value)).ok().flatten().unwrap_or_default();
     report(
         "a click on the eye opens the sheet with the cell's value, as a tree",
-        eye.is_some() && s.as_ref().is_some_and(|(col, tree, lines)| col == "address" && *tree && lines.iter().any(|l| l.starts_with("zip: ")) && lines.iter().all(|l| want.contains(l.split(": ").nth(1).unwrap_or("")))),
+        eye.is_some()
+            && s.as_ref().is_some_and(|(col, tree, lines)| {
+                col == "address"
+                    && *tree
+                    && lines.iter().any(|l| l.starts_with("zip: "))
+                    && lines.iter().all(|l| want.contains(l.split(": ").nth(1).unwrap_or("")))
+            }),
         format!("eye {eye:?} {s:?} want {want}"),
     );
     let (sel, editing) = cx.update(|_, cx| (grid.read(cx).active_cell(), grid.read(cx).demo_editing())).unwrap();
@@ -160,7 +177,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let text = sheet(ws, cx);
     report(
         "⇧Space on nested JSON: the tree, Collapse all down to the root's members, Text formatted",
-        full == 7 && collapsed == 3 && text.as_ref().is_some_and(|(_, tree, lines)| !tree && lines.first().map(String::as_str) == Some("{") && lines.iter().any(|l| l.starts_with("    \"id\": 7"))),
+        full == 7
+            && collapsed == 3
+            && text.as_ref().is_some_and(|(_, tree, lines)| {
+                !tree && lines.first().map(String::as_str) == Some("{") && lines.iter().any(|l| l.starts_with("    \"id\": 7"))
+            }),
         format!("full {full} collapsed {collapsed} {text:?}"),
     );
     key(cx, "escape");

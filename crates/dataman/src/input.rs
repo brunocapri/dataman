@@ -3,23 +3,42 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, ElementId, ElementInputHandler, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, relative, size,
-};
 use crate::editor::{floor_boundary, word_at, word_left, word_right};
 use crate::theme::{Pt, px};
+use gpui::{
+    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, GlobalElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style,
+    TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, relative, size,
+};
 
 use crate::theme::ActiveTheme;
 
 actions!(
     text_input,
     [
-        Backspace, Delete, DeleteToStart, DeleteWordLeft, Left, Right, SelectLeft, SelectRight, SelectAll, Home, End,
-        SelectHome, SelectEnd, MoveWordLeft, MoveWordRight, SelectWordLeft, SelectWordRight, Paste, Cut, Copy, Submit,
-        Undo, Redo
+        Backspace,
+        Delete,
+        DeleteToStart,
+        DeleteWordLeft,
+        Left,
+        Right,
+        SelectLeft,
+        SelectRight,
+        SelectAll,
+        Home,
+        End,
+        SelectHome,
+        SelectEnd,
+        MoveWordLeft,
+        MoveWordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        Paste,
+        Cut,
+        Copy,
+        Submit,
+        Undo,
+        Redo
     ]
 );
 
@@ -596,14 +615,7 @@ impl EntityInputHandler for TextInput {
         self.replace(r, &new, EditKind::Type, cx);
     }
 
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        r16: Option<Range<usize>>,
-        new: &str,
-        sel16: Option<Range<usize>>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn replace_and_mark_text_in_range(&mut self, r16: Option<Range<usize>>, new: &str, sel16: Option<Range<usize>>, _: &mut Window, cx: &mut Context<Self>) {
         let r = self.target(r16.as_ref());
         let new = &new.replace(['\n', '\r'], "");
         self.raw_replace(r.clone(), new, EditKind::Type, cx);
@@ -634,10 +646,7 @@ impl EntityInputHandler for TextInput {
         let r = self.clamp(self.range_from16(&r16));
         let l = self.last_layout.as_ref()?;
         let x = b.left() - self.scroll;
-        Some(Bounds::from_corners(
-            point(x + l.x_for_index(self.to_display(r.start)), b.top()),
-            point(x + l.x_for_index(self.to_display(r.end)), b.bottom()),
-        ))
+        Some(Bounds::from_corners(point(x + l.x_for_index(self.to_display(r.start)), b.top()), point(x + l.x_for_index(self.to_display(r.end)), b.bottom())))
     }
 
     fn character_index_for_point(&mut self, p: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
@@ -697,21 +706,13 @@ impl Element for TextElement {
         let theme = cx.theme();
         let input = self.input.read(cx);
         let style = window.text_style();
-        let (text, color) = if input.content.is_empty() {
-            (input.placeholder.to_string(), theme.tx3)
-        } else {
-            (input.display(), style.color)
-        };
+        let (text, color) = if input.content.is_empty() { (input.placeholder.to_string(), theme.tx3) } else { (input.display(), style.color) };
         let base = TextRun { len: text.len(), font: style.font(), color, background_color: None, underline: None, strikethrough: None };
         let marked = input.marked.clone().map(|m| input.clamp(m)).filter(|m| m.end <= text.len());
         let runs = match marked.as_ref().filter(|_| !input.content.is_empty() && !input.masked) {
             Some(m) => vec![
                 TextRun { len: m.start, ..base.clone() },
-                TextRun {
-                    len: m.end - m.start,
-                    underline: Some(UnderlineStyle { color: Some(base.color), thickness: px(1.), wavy: false }),
-                    ..base.clone()
-                },
+                TextRun { len: m.end - m.start, underline: Some(UnderlineStyle { color: Some(base.color), thickness: px(1.), wavy: false }), ..base.clone() },
                 TextRun { len: text.len() - m.end, ..base },
             ]
             .into_iter()
@@ -746,7 +747,10 @@ impl Element for TextElement {
             (None, Some(fill(Bounds::new(point(x0 + line.x_for_index(cur), bounds.top() + px(1.)), size(px(1.5), bounds.size.height - px(2.))), theme.acc)))
         } else {
             (
-                Some(fill(Bounds::from_corners(point(x0 + line.x_for_index(start), bounds.top()), point(x0 + line.x_for_index(end), bounds.bottom())), theme.sel)),
+                Some(fill(
+                    Bounds::from_corners(point(x0 + line.x_for_index(start), bounds.top()), point(x0 + line.x_for_index(end), bounds.bottom())),
+                    theme.sel,
+                )),
                 None,
             )
         };
@@ -963,4 +967,3 @@ mod tests {
         assert_eq!(edge_dir(120., 20., 120.), None);
     }
 }
-

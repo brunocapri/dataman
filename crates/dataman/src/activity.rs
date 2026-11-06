@@ -2,15 +2,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, StyledText,
-    Task, WeakEntity, Window, actions, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::Connection;
-use dataman_core::activity::{self as act, LockEdge, Maintenance, SessionRow, Severity, Signal, State, StatementRow, Statements, TableRow, Thresholds, TreeRow};
+use dataman_core::activity::{
+    self as act, LockEdge, Maintenance, SessionRow, Severity, Signal, State, StatementRow, Statements, TableRow, Thresholds, TreeRow,
+};
 use dataman_core::result::{Cell, ChunkBuilder, ColumnInfo, ResultSet};
 use dataman_core::value::Kind;
+use gpui::{
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, StyledText, Task, WeakEntity, Window,
+    actions, div, prelude::*,
+};
 
 use crate::assets::{Icon, icon};
 use crate::grid::{CellDecor, Decorations, GridEvent, ResultGrid, RowDecor, Tone, tone_strong};
@@ -772,10 +774,7 @@ fn stmt_key(r: &StatementRow) -> String {
 }
 
 pub(crate) fn filter_sessions(rows: &[SessionRow], idle: bool, background: bool, q: &str) -> Vec<SessionRow> {
-    rows.iter()
-        .filter(|r| (idle || !r.is_idle()) && (background || !r.is_background()) && (q.is_empty() || r.haystack().contains(q)))
-        .cloned()
-        .collect()
+    rows.iter().filter(|r| (idle || !r.is_idle()) && (background || !r.is_background()) && (q.is_empty() || r.haystack().contains(q))).cloned().collect()
 }
 
 pub(crate) fn offered(avail: &[Avail; 4]) -> Vec<Section> {
@@ -920,7 +919,11 @@ pub(crate) fn tables_result(rows: &[TableRow]) -> (Arc<ResultSet>, Decorations) 
         let dead = t.dead_ratio();
         d.cells.insert(
             (i, 4),
-            CellDecor { text: Some(Some(dead.map(act::fmt_pct).unwrap_or_default())), color: dead.filter(|x| *x >= 0.2).map(|_| Tone::Warn), ..Default::default() },
+            CellDecor {
+                text: Some(Some(dead.map(act::fmt_pct).unwrap_or_default())),
+                color: dead.filter(|x| *x >= 0.2).map(|_| Tone::Warn),
+                ..Default::default()
+            },
         );
         d.cells.insert((i, 9), shown_as(t.seq_ratio().map(act::fmt_pct).unwrap_or_default()));
         d.cells.insert((i, 10), shown_as(size(t.table_bytes)));
@@ -1032,7 +1035,18 @@ impl ActivityView {
                 ui::segment(t, ("act-section", s.ix()), s.label(), on)
                     .flex_none()
                     .gap(px(6.))
-                    .children(count(s).map(|n| div().text_size(px(crate::theme::text::SMALL)).text_color(if warn { t.warn } else if on { t.tx3 } else { t.tx4 }).child(n)))
+                    .children(count(s).map(|n| {
+                        div()
+                            .text_size(px(crate::theme::text::SMALL))
+                            .text_color(if warn {
+                                t.warn
+                            } else if on {
+                                t.tx3
+                            } else {
+                                t.tx4
+                            })
+                            .child(n)
+                    }))
                     .on_click(cx.listener(move |m, _: &ClickEvent, window, cx| m.set_section(s, window, cx)))
             }))
         });
@@ -1071,8 +1085,8 @@ impl ActivityView {
                 })))
         });
         let next = EVERY[(EVERY.iter().position(|e| *e == self.every).unwrap_or(0) + 1) % EVERY.len()];
-        let every = chip(t, "act-every", self.every.label(), self.every != Every::Off)
-            .on_click(cx.listener(move |m, _: &ClickEvent, _, cx| m.set_every(next, cx)));
+        let every =
+            chip(t, "act-every", self.every.label(), self.every != Every::Off).on_click(cx.listener(move |m, _: &ClickEvent, _, cx| m.set_every(next, cx)));
         div()
             .h(px(metrics::TOOLBAR_H))
             .flex_none()
@@ -1090,10 +1104,7 @@ impl ActivityView {
             .children(filters)
             .when(!filter_shown, |d| d.child(div().flex_1()))
             .child(every.flex_none())
-            .child(
-                ui::icon_button(t, "act-refresh", Icon::Reload, 26., 14.)
-                    .on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.refresh_now(cx))),
-            )
+            .child(ui::icon_button(t, "act-refresh", Icon::Reload, 26., 14.).on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.refresh_now(cx))))
     }
 
     fn render_locks(&self, t: &Theme, focused: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1136,7 +1147,11 @@ impl ActivityView {
             let top = r.depth == 0;
             let (lock, rel, wait) = match &r.edge {
                 Some(e) => (
-                    format!("{}{}", e.mode.as_deref().unwrap_or(""), e.locktype.as_deref().filter(|l| *l != "relation").map(|l| format!(" · {l}")).unwrap_or_default()),
+                    format!(
+                        "{}{}",
+                        e.mode.as_deref().unwrap_or(""),
+                        e.locktype.as_deref().filter(|l| *l != "relation").map(|l| format!(" · {l}")).unwrap_or_default()
+                    ),
                     e.relation.clone().unwrap_or_default(),
                     e.wait.map(act::fmt_age).unwrap_or_default(),
                 ),
@@ -1188,9 +1203,22 @@ impl ActivityView {
                         .items_center()
                         .gap(px(6.))
                         .pl(px(16. * r.depth as f32))
-                        .child(div().flex_none().text_color(if r.cycle { t.err } else if top { t.warn } else { t.tx4 }).child(glyph))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(if r.cycle {
+                                    t.err
+                                } else if top {
+                                    t.warn
+                                } else {
+                                    t.tx4
+                                })
+                                .child(glyph),
+                        )
                         .child(div().flex_none().text_color(fg).when(top, |d| d.font_weight(FontWeight::SEMIBOLD)).child(pid.to_string()))
-                        .when(top && r.behind > 0, |d| d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(format!("+{}", r.behind))))
+                        .when(top && r.behind > 0, |d| {
+                            d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(format!("+{}", r.behind)))
+                        })
                         .when(own, |d| d.child(div().flex_none().size(px(6.)).rounded(px(3.)).bg(t.acc))),
                 )
                 .child(cell(W_USER).text_color(if dim { t.tx3 } else { t.tx2 }).child(s.and_then(|s| s.user.clone()).unwrap_or_default()))
@@ -1218,10 +1246,12 @@ impl ActivityView {
                             .gap(px(4.))
                             .ml(px(8.))
                             .when(!shown, |d| d.invisible().group_hover(group.clone(), |s| s.visible()))
-                            .child(small(ui::button(t, ("lock-cancel", i), Btn::Ghost)).child("Cancel").on_click(cx.listener(move |m, _: &ClickEvent, _, cx| {
-                                m.select_pid(Some(pid), cx);
-                                m.request_signal(Signal::Cancel, cx);
-                            })))
+                            .child(small(ui::button(t, ("lock-cancel", i), Btn::Ghost)).child("Cancel").on_click(cx.listener(
+                                move |m, _: &ClickEvent, _, cx| {
+                                    m.select_pid(Some(pid), cx);
+                                    m.request_signal(Signal::Cancel, cx);
+                                },
+                            )))
                             .child(small(ui::button(t, ("lock-terminate", i), Btn::Ghost)).text_color(t.err).child("Terminate").on_click(cx.listener(
                                 move |m, _: &ClickEvent, _, cx| {
                                     m.select_pid(Some(pid), cx);
@@ -1257,30 +1287,26 @@ impl ActivityView {
             .items_center()
             .justify_center()
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(div().text_color(t.tx2).child("pg_stat_statements"))
-                    .child(label)
-                    .child(
-                        ui::button(t, "act-create-pgss", Btn::Secondary)
-                            .h(px(26.))
-                            .child(act::CREATE_PGSS.trim_end_matches(';').replace(" IF NOT EXISTS", ""))
-                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ActivityEvent::OpenSql { sql: act::CREATE_PGSS.to_string(), explain: false }))),
-                    ),
+                div().flex().flex_row().items_center().gap(px(10.)).child(div().text_color(t.tx2).child("pg_stat_statements")).child(label).child(
+                    ui::button(t, "act-create-pgss", Btn::Secondary)
+                        .h(px(26.))
+                        .child(act::CREATE_PGSS.trim_end_matches(';').replace(" IF NOT EXISTS", ""))
+                        .on_click(
+                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ActivityEvent::OpenSql { sql: act::CREATE_PGSS.to_string(), explain: false })),
+                        ),
+                ),
             )
             .into_any_element()
     }
 
     fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let btn = |id: &'static str, label: &'static str, on: bool| {
-            small(ui::button(t, id, Btn::Ghost)).when(!on, |d| d.text_color(t.tx4)).child(label)
-        };
+        let btn = |id: &'static str, label: &'static str, on: bool| small(ui::button(t, id, Btn::Ghost)).when(!on, |d| d.text_color(t.tx4)).child(label);
         let mut left: Vec<gpui::AnyElement> = Vec::new();
         let mut right: Vec<gpui::AnyElement> = Vec::new();
-        let details = || ui::icon_button(t, "act-details", Icon::PanelRight, 24., 14.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ActivityEvent::Details { toggle: true })));
+        let details = || {
+            ui::icon_button(t, "act-details", Icon::PanelRight, 24., 14.)
+                .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ActivityEvent::Details { toggle: true })))
+        };
         match self.section {
             Section::Sessions | Section::Locks => {
                 let count = if self.section == Section::Sessions {
@@ -1300,7 +1326,9 @@ impl ActivityView {
                 }
                 let on = sel.is_some();
                 let q = sel.is_some_and(|s| s.visible_query().is_some());
-                right.push(btn("act-cancel", "Cancel", on).on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.request_signal(Signal::Cancel, cx))).into_any_element());
+                right.push(
+                    btn("act-cancel", "Cancel", on).on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.request_signal(Signal::Cancel, cx))).into_any_element(),
+                );
                 right.push(
                     btn("act-terminate", "Terminate", on)
                         .when(on, |d| d.text_color(t.err))
@@ -1338,10 +1366,7 @@ impl ActivityView {
                 right.push(btn("act-open", "Open in editor", on).on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.open_query(false, cx))).into_any_element());
                 right.push(ui::vsep(t, 16.).mx(px(4.)).into_any_element());
                 right.push(
-                    btn("act-reset", "Reset…", true)
-                        .text_color(t.err)
-                        .on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.request_reset(cx)))
-                        .into_any_element(),
+                    btn("act-reset", "Reset…", true).text_color(t.err).on_click(cx.listener(|m, _: &ClickEvent, _, cx| m.request_reset(cx))).into_any_element(),
                 );
                 right.push(details().into_any_element());
             }
@@ -1453,11 +1478,7 @@ fn query_block(t: &Theme, sql: &str) -> gpui::Div {
         .text_size(px(crate::theme::text::BODY))
         .line_height(px(18.))
         .children(lines.into_iter().map(|(text, runs)| {
-            if text.is_empty() {
-                div().h(px(18.)).into_any_element()
-            } else {
-                div().child(StyledText::new(text).with_runs(runs)).into_any_element()
-            }
+            if text.is_empty() { div().h(px(18.)).into_any_element() } else { div().child(StyledText::new(text).with_runs(runs)).into_any_element() }
         }))
 }
 
@@ -1550,7 +1571,9 @@ impl Render for ActivityDetails {
             .child(ui::caps(&t, caps))
             .children(title)
             .child(div().flex_1())
-            .child(ui::icon_button(&t, "act-details-close", Icon::Close, 24., 13.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(DetailsEvent::Close))));
+            .child(
+                ui::icon_button(&t, "act-details-close", Icon::Close, 24., 13.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(DetailsEvent::Close))),
+            );
         let content: gpui::AnyElement = if body.is_empty() {
             div().flex_1().flex().items_center().justify_center().child(ui::empty_state(&t, "[ NO SELECTION ]", 13., None)).into_any_element()
         } else {
@@ -1568,15 +1591,7 @@ impl Render for ActivityDetails {
                 .children(body)
                 .into_any_element()
         };
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .track_focus(&self.focus)
-            .font_family(mono())
-            .text_size(px(crate::theme::text::BODY))
-            .child(header)
-            .child(content)
+        div().size_full().flex().flex_col().track_focus(&self.focus).font_family(mono()).text_size(px(crate::theme::text::BODY)).child(header).child(content)
     }
 }
 
@@ -1760,7 +1775,8 @@ mod tests {
         assert_eq!(d.cells[&(0, 14)].text, Some(Some("~25%".into())));
         assert_eq!(snap.text(0, 10).as_deref(), Some("8388608"), "sizes sort as bytes");
 
-        let s = StatementRow { query: "SELECT $1".into(), calls: 3, total_ms: 1500., mean_ms: 500., rows: 3, shared_hit: 9, shared_read: 1, ..Default::default() };
+        let s =
+            StatementRow { query: "SELECT $1".into(), calls: 3, total_ms: 1500., mean_ms: 500., rows: 3, shared_hit: 9, shared_read: 1, ..Default::default() };
         let (rs, d) = statements_result(&[s]);
         assert_eq!(rs.snapshot().text(0, 1).as_deref(), Some("3"));
         assert_eq!(d.cells[&(0, 2)].text, Some(Some("1.50 s".into())));

@@ -223,8 +223,7 @@ pub fn preview_delimited(head: &[u8], complete: bool, format: ImportFormat, give
             }
         }
     }
-    let rows: Vec<Vec<Option<String>>> =
-        data.iter().take(PREVIEW_ROWS).map(|r| (0..names.len()).map(|i| r.get(i).cloned().flatten()).collect()).collect();
+    let rows: Vec<Vec<Option<String>>> = data.iter().take(PREVIEW_ROWS).map(|r| (0..names.len()).map(|i| r.get(i).cloned().flatten()).collect()).collect();
     let exact = complete && recs.len() <= SAMPLE_ROWS;
     Ok(Preview {
         path: Default::default(),
@@ -537,9 +536,7 @@ mod pq {
     pub fn pg_type(t: &DataType) -> PgType {
         match t {
             DataType::Boolean => PgType::Bool,
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 | DataType::UInt8 | DataType::UInt16 | DataType::UInt32 => {
-                PgType::Int8
-            }
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 | DataType::UInt8 | DataType::UInt16 | DataType::UInt32 => PgType::Int8,
             DataType::UInt64 | DataType::Decimal128(..) | DataType::Decimal256(..) => PgType::Numeric,
             DataType::Float16 | DataType::Float32 | DataType::Float64 => PgType::Float8,
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => PgType::Text,
@@ -575,8 +572,7 @@ mod pq {
     }
 
     fn push_time(out: &mut String, nanos: i64) -> bool {
-        let Some(t) = chrono::NaiveTime::from_num_seconds_from_midnight_opt((nanos / 1_000_000_000) as u32, (nanos % 1_000_000_000) as u32)
-        else {
+        let Some(t) = chrono::NaiveTime::from_num_seconds_from_midnight_opt((nanos / 1_000_000_000) as u32, (nanos % 1_000_000_000) as u32) else {
             return false;
         };
         let _ = write!(out, "{}", t.format("%H:%M:%S%.f"));
@@ -798,13 +794,7 @@ mod pq {
     }
 }
 
-fn read_parquet(
-    path: &Path,
-    ncols: usize,
-    limit: Option<usize>,
-    bytes: Arc<AtomicU64>,
-    on_row: &mut dyn FnMut(&Row, u64) -> Result<Flow>,
-) -> Result<()> {
+fn read_parquet(path: &Path, ncols: usize, limit: Option<usize>, bytes: Arc<AtomicU64>, on_row: &mut dyn FnMut(&Row, u64) -> Result<Flow>) -> Result<()> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -975,12 +965,10 @@ mod tests {
         let (_d, p) = tmp("x.ndjson", nd.as_bytes());
         let pv = super::super::preview(&p, None, None).unwrap();
         assert_eq!(pv.format, ImportFormat::Ndjson);
-        assert_eq!(pv.columns.iter().map(|c| (c.name.as_str(), c.ty)).collect::<Vec<_>>(), [
-            ("id", PgType::Int8),
-            ("name", PgType::Text),
-            ("tags", PgType::Jsonb),
-            ("extra", PgType::Jsonb)
-        ]);
+        assert_eq!(
+            pv.columns.iter().map(|c| (c.name.as_str(), c.ty)).collect::<Vec<_>>(),
+            [("id", PgType::Int8), ("name", PgType::Text), ("tags", PgType::Jsonb), ("extra", PgType::Jsonb)]
+        );
         let names: Vec<String> = pv.columns.iter().map(|c| c.name.clone()).collect();
         let (good, bad) = all_rows(&p, pv.format, &pv.dialect, &names);
         assert_eq!(good[0], (1, vec![s("1"), s("a"), s("[1,2]"), None]));
@@ -1032,16 +1020,10 @@ mod tests {
         let pv = super::super::preview(&p, None, None).unwrap();
         assert_eq!(pv.format, ImportFormat::Parquet);
         assert_eq!(pv.total_rows, Some(2));
-        assert_eq!(pv.columns.iter().map(|c| c.ty).collect::<Vec<_>>(), [
-            PgType::Bool,
-            PgType::Numeric,
-            PgType::Float8,
-            PgType::Date,
-            PgType::TimestampTz,
-            PgType::Bytea,
-            PgType::Jsonb,
-            PgType::Int8
-        ]);
+        assert_eq!(
+            pv.columns.iter().map(|c| c.ty).collect::<Vec<_>>(),
+            [PgType::Bool, PgType::Numeric, PgType::Float8, PgType::Date, PgType::TimestampTz, PgType::Bytea, PgType::Jsonb, PgType::Int8]
+        );
         assert_eq!(pv.rows[0], vec![s("true"), s("12.50"), s("0.5"), s("2024-01-01"), s("2000-01-01 00:00:01.500+00"), s("\\xdead"), s("[1,2]"), s("42")]);
         assert_eq!(pv.rows[1], vec![None, s("-0.05"), s("NaN"), s("1970-01-01"), None, s("\\x"), None, s("43")]);
     }

@@ -278,11 +278,7 @@ pub fn trigger_events(tgtype: i64) -> String {
     } else {
         "after"
     };
-    let ev: Vec<&str> = [(4, "insert"), (16, "update"), (8, "delete"), (32, "truncate")]
-        .into_iter()
-        .filter(|(b, _)| tgtype & b != 0)
-        .map(|(_, n)| n)
-        .collect();
+    let ev: Vec<&str> = [(4, "insert"), (16, "update"), (8, "delete"), (32, "truncate")].into_iter().filter(|(b, _)| tgtype & b != 0).map(|(_, n)| n).collect();
     format!("{timing} {}", ev.join("/"))
 }
 
@@ -300,11 +296,9 @@ pub fn constraint_summary(kind: ConstraintKind, definition: Option<&str>) -> Str
         ConstraintKind::Primary => strip("PRIMARY KEY"),
         ConstraintKind::Unique => strip("UNIQUE"),
         ConstraintKind::Exclusion => strip("EXCLUDE"),
-        ConstraintKind::Check => strip("CHECK").map(|r| {
-            match r.strip_prefix("((").and_then(|x| x.strip_suffix("))")) {
-                Some(inner) if balanced(inner) => &r[1..r.len() - 1],
-                _ => r,
-            }
+        ConstraintKind::Check => strip("CHECK").map(|r| match r.strip_prefix("((").and_then(|x| x.strip_suffix("))")) {
+            Some(inner) if balanced(inner) => &r[1..r.len() - 1],
+            _ => r,
         }),
         ConstraintKind::Foreign => strip("FOREIGN KEY").map(|r| {
             let cut = r.find(" ON ").or_else(|| r.find(" MATCH ")).or_else(|| r.find(" DEFERRABLE")).or_else(|| r.find(" NOT VALID")).unwrap_or(r.len());
@@ -633,7 +627,11 @@ impl Connection {
             }
             let client = this.meta(&db).await?;
             let v: Vec<Function> = match this.engine() {
-                Engine::MySql => uncached(first_ok(&client, &[&my::functions_sql(&schema)]).await, "functions")?.iter().enumerate().filter_map(|(n, r)| my::parse_function(n, r)).collect(),
+                Engine::MySql => uncached(first_ok(&client, &[&my::functions_sql(&schema)]).await, "functions")?
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(n, r)| my::parse_function(n, r))
+                    .collect(),
                 Engine::SqlServer => {
                     let rows = uncached(first_ok(&client, &[&ms::routines_sql(Some(&schema))]).await, "functions")?;
                     ms::parse_routines(&rows).into_iter().enumerate().map(|(n, f)| ms::function_of(n, f)).collect()
@@ -663,7 +661,9 @@ impl Connection {
             }
             let client = this.meta(&db).await?;
             let v: Vec<Sequence> = match this.engine() {
-                Engine::SqlServer => uncached(first_ok(&client, &[&ms::sequences_sql(&schema)]).await, "sequences")?.iter().filter_map(|r| ms::parse_sequence(r)).collect(),
+                Engine::SqlServer => {
+                    uncached(first_ok(&client, &[&ms::sequences_sql(&schema)]).await, "sequences")?.iter().filter_map(|r| ms::parse_sequence(r)).collect()
+                }
                 Engine::Postgres => {
                     let qs = pg::sequences_sql(&schema);
                     uncached(first_ok(&client, &[&qs[0], &qs[1], &qs[2]]).await, "sequences")?.iter().filter_map(|r| pg::parse_sequence(r)).collect()
@@ -742,11 +742,17 @@ impl Connection {
             if this.engine() == Engine::Sqlite {
                 let client = this.meta(&db).await?;
                 t.constraints = Some(lite::constraints(&client, &schema, &rel).await);
-                t.triggers = first_ok(&client, &[&lite::triggers_sql(&schema, Some(&rel))]).await.ok().map(|rows| rows.iter().filter_map(|r| lite::parse_trigger(r)).collect());
+                t.triggers = first_ok(&client, &[&lite::triggers_sql(&schema, Some(&rel))])
+                    .await
+                    .ok()
+                    .map(|rows| rows.iter().filter_map(|r| lite::parse_trigger(r)).collect());
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::DuckDb {
                 let client = this.meta(&db).await?;
-                t.constraints = first_ok(&client, &[&duck::constraints_sql("", &schema, &rel)]).await.ok().map(|rows| rows.iter().filter_map(|r| duck::parse_constraint(&rel, r)).collect());
+                t.constraints = first_ok(&client, &[&duck::constraints_sql("", &schema, &rel)])
+                    .await
+                    .ok()
+                    .map(|rows| rows.iter().filter_map(|r| duck::parse_constraint(&rel, r)).collect());
                 t.triggers = Some(Vec::new());
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::MySql {
@@ -760,12 +766,18 @@ impl Connection {
                 }
                 cons.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
                 t.constraints = Some(cons);
-                t.triggers = first_ok(&client, &[&my::table_triggers_sql(&schema, &rel)]).await.ok().map(|rows| rows.iter().filter_map(|r| my::parse_trigger(r)).collect());
+                t.triggers = first_ok(&client, &[&my::table_triggers_sql(&schema, &rel)])
+                    .await
+                    .ok()
+                    .map(|rows| rows.iter().filter_map(|r| my::parse_trigger(r)).collect());
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::SqlServer {
                 let client = this.meta(&db).await?;
                 t.constraints = first_ok(&client, &[&ms::constraints_sql(&schema, &rel)]).await.ok().map(|rows| ms::parse_constraints(&schema, &rows));
-                t.triggers = first_ok(&client, &[&ms::table_triggers_sql(&schema, &rel)]).await.ok().map(|rows| rows.iter().filter_map(|r| ms::parse_trigger(r)).collect());
+                t.triggers = first_ok(&client, &[&ms::table_triggers_sql(&schema, &rel)])
+                    .await
+                    .ok()
+                    .map(|rows| rows.iter().filter_map(|r| ms::parse_trigger(r)).collect());
                 t.partitions = Some(Vec::new());
             } else if let Some(oid) = oid {
                 let client = this.meta(&db).await?;
@@ -974,19 +986,17 @@ impl Connection {
                  WHERE u.rolname = {} ORDER BY 1",
                 lit(&name)
             );
-            let member_of: Vec<(String, bool)> = first_ok(&client, &[&q])
-                .await
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|r| Some((get(r, 0)?, parse_bool(&get(r, 1)).unwrap_or(false))))
-                .collect();
+            let member_of: Vec<(String, bool)> =
+                first_ok(&client, &[&q]).await.unwrap_or_default().iter().filter_map(|r| Some((get(r, 0)?, parse_bool(&get(r, 1)).unwrap_or(false)))).collect();
             Ok(Some(role_ddl(&role, &member_of)))
         })
     }
 
     pub fn sequence_value(self: &Arc<Self>, db: &str, schema: &str, name: &str) -> Task<Option<(String, bool)>> {
         let q = match self.engine() {
-            e @ (Engine::Sqlite | Engine::DuckDb) => return self.spawn(async move { Err(anyhow::anyhow!("sequence values are not available on {}", e.label())) }),
+            e @ (Engine::Sqlite | Engine::DuckDb) => {
+                return self.spawn(async move { Err(anyhow::anyhow!("sequence values are not available on {}", e.label())) });
+            }
             Engine::SqlServer => ms::sequence_value_sql(schema, name),
             _ => format!("SELECT last_value, is_called FROM {}", qualified(Some(schema), name)),
         };
@@ -1075,7 +1085,10 @@ mod tests {
     #[test]
     fn definitions() {
         assert_eq!(enum_ddl("s", "mood", &["sad".into(), "it's ok".into()]), "CREATE TYPE s.mood AS ENUM (\n    'sad',\n    'it''s ok'\n);");
-        assert_eq!(composite_ddl("s", "pt", &[("x".into(), "integer".into()), ("Y".into(), "text".into())]), "CREATE TYPE s.pt AS (\n    x integer,\n    \"Y\" text\n);");
+        assert_eq!(
+            composite_ddl("s", "pt", &[("x".into(), "integer".into()), ("Y".into(), "text".into())]),
+            "CREATE TYPE s.pt AS (\n    x integer,\n    \"Y\" text\n);"
+        );
         assert_eq!(
             domain_ddl("s", "price", "numeric(12,2)", true, Some("0"), &[("price_check".into(), "CHECK ((VALUE >= (0)::numeric))".into())]),
             "CREATE DOMAIN s.price AS numeric(12,2)\n    DEFAULT 0\n    NOT NULL\n    CONSTRAINT price_check CHECK ((VALUE >= (0)::numeric));"

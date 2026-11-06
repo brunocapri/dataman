@@ -15,7 +15,11 @@ fn run(e: &Env, s: &Arc<dataman_core::Session>, sql: &str) -> Arc<dataman_core::
 fn ddl_round_trips() {
     let e = env();
     let Some(c0) = mysql_on(&e, mysql_profile("")) else { return };
-    exec_quiet(&e, &c0, &["DROP DATABASE IF EXISTS dataman_sw6", "DROP DATABASE IF EXISTS dataman_sw6b", "CREATE DATABASE dataman_sw6", "CREATE DATABASE dataman_sw6b"]);
+    exec_quiet(
+        &e,
+        &c0,
+        &["DROP DATABASE IF EXISTS dataman_sw6", "DROP DATABASE IF EXISTS dataman_sw6b", "CREATE DATABASE dataman_sw6", "CREATE DATABASE dataman_sw6b"],
+    );
     let Some(c) = mysql_on(&e, mysql_profile("dataman_sw6")) else { return };
     let s = c.session(None);
     let tables = [
@@ -89,12 +93,9 @@ fn edits_on_odd_tables() {
     ] {
         run(&e, &s, t);
     }
-    for (table, edit_col, old, new) in [
-        ("`we``ird`", "na;me", "b;c", "it's \\ \"q\""),
-        ("comp", "v", "v1", "new;v'1"),
-        ("comp", "n", "1.5", "2.25"),
-        ("nokey", "b", "a", "z"),
-    ] {
+    for (table, edit_col, old, new) in
+        [("`we``ird`", "na;me", "b;c", "it's \\ \"q\""), ("comp", "v", "v1", "new;v'1"), ("comp", "n", "1.5", "2.25"), ("nokey", "b", "a", "z")]
+    {
         let rs = run(&e, &s, &format!("SELECT * FROM {table}"));
         let t = match e.core.block_on(c.edit_target(db, &rs, None)).unwrap() {
             Editability::Editable(t) => t,

@@ -10,8 +10,8 @@ mod agents;
 mod agents_check;
 mod agents_clear;
 mod agents_copy;
-mod agents_mcp;
 mod agents_login;
+mod agents_mcp;
 mod agents_rules;
 mod agents_sens;
 mod agents_suggest;
@@ -24,9 +24,11 @@ mod bench;
 mod check;
 mod chrome;
 mod conn_dialog;
-mod conn_menu;
 #[cfg(feature = "checks")]
 mod conn_folders_check;
+mod conn_menu;
+#[cfg(feature = "checks")]
+mod conn_steps_check;
 mod conns;
 #[cfg(feature = "checks")]
 mod conns_check;
@@ -46,6 +48,8 @@ mod editor;
 #[cfg(feature = "checks")]
 mod engines_check;
 #[cfg(feature = "checks")]
+mod errors_check;
+#[cfg(feature = "checks")]
 mod explorer_check;
 #[cfg(feature = "checks")]
 mod explorer_demo;
@@ -54,25 +58,14 @@ mod export_check;
 mod export_ui;
 mod fades;
 mod find;
-mod fmt;
-#[cfg(feature = "checks")]
-mod errors_check;
 #[cfg(feature = "checks")]
 mod find_check;
 #[cfg(feature = "checks")]
 mod fk_check;
+mod fmt;
 #[cfg(feature = "checks")]
 mod format_check;
 mod glass;
-#[cfg(feature = "checks")]
-mod mssql_check;
-#[cfg(feature = "checks")]
-mod mysql_check;
-mod restore;
-#[cfg(feature = "checks")]
-mod results_check;
-#[cfg(feature = "checks")]
-mod session_check;
 mod grid;
 mod grid_menu;
 mod history;
@@ -84,16 +77,16 @@ mod import_ui;
 mod input;
 #[cfg(feature = "checks")]
 mod input_check;
+#[cfg(feature = "checks")]
+mod insert_check;
 #[cfg(not(target_os = "macos"))]
 mod instance;
-#[cfg(feature = "checks")]
-mod conn_steps_check;
-#[cfg(feature = "checks")]
-mod lite_check;
 #[cfg(feature = "checks")]
 mod intel_demo;
 mod keymap;
 mod keys;
+#[cfg(feature = "checks")]
+mod lite_check;
 mod mcp;
 #[cfg(feature = "checks")]
 mod mcp_check;
@@ -103,11 +96,13 @@ mod mcp_tools_check;
 mod menus_check;
 mod messages;
 mod motion;
+#[cfg(feature = "checks")]
+mod mssql_check;
+#[cfg(feature = "checks")]
+mod mysql_check;
 mod nav;
 #[cfg(feature = "checks")]
 mod nav_check;
-#[cfg(feature = "checks")]
-mod insert_check;
 #[cfg(feature = "checks")]
 mod newuser_check;
 #[cfg(feature = "checks")]
@@ -123,14 +118,19 @@ mod pin_check;
 mod plan;
 #[cfg(feature = "checks")]
 mod plan_demo;
-mod privileges;
 mod prefs;
-mod prompt;
+mod privileges;
 #[cfg(feature = "checks")]
 mod project_check;
 mod project_ui;
+mod prompt;
+mod restore;
 mod result_bar;
+#[cfg(feature = "checks")]
+mod results_check;
 mod row_actions;
+#[cfg(feature = "checks")]
+mod session_check;
 #[cfg(feature = "checks")]
 mod settings_check;
 mod settings_view;
@@ -142,10 +142,10 @@ mod sql_picker;
 mod tab;
 mod tab_motion;
 #[cfg(feature = "checks")]
-mod tabs_check;
-#[cfg(feature = "checks")]
 mod table_check;
 mod table_view;
+#[cfg(feature = "checks")]
+mod tabs_check;
 mod theme;
 mod tree;
 mod tree_menu;
@@ -163,10 +163,10 @@ mod update_ui;
 mod updates;
 #[cfg(feature = "checks")]
 mod value_check;
-#[cfg(feature = "checks")]
-mod values_check;
 mod value_edit;
 mod value_view;
+#[cfg(feature = "checks")]
+mod values_check;
 mod welcome;
 #[cfg(feature = "checks")]
 mod welcome_check;
@@ -174,11 +174,9 @@ mod welcome_check;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use gpui::{
-    App, AppContext, Bounds, Menu, MenuItem, OsAction, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
-};
-use gpui_platform::application;
 use dataman_core::{Core, Dirs, Keychain, MemorySecrets, SecretStore, ThemePref};
+use gpui::{App, AppContext, Bounds, Menu, MenuItem, OsAction, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
+use gpui_platform::application;
 
 /// The desktop entry's name on Linux (Wayland app id, icon, notifications).
 pub const APP_ID: &str = "dev.dataman.Dataman";
@@ -310,17 +308,17 @@ fn menus(cx: &App) -> Vec<Menu> {
                 ],
             ))
             .chain([
-            MenuItem::action("Commit Transaction", CommitTx),
-            MenuItem::action("Rollback Transaction", RollbackTx),
-            MenuItem::separator(),
-            MenuItem::action("Next Result", NextResult),
-            MenuItem::action("Previous Result", PrevResult),
-            MenuItem::separator(),
-            MenuItem::action("Next Page", NextPage),
-            MenuItem::action("Previous Page", PrevPage),
-            MenuItem::separator(),
-            MenuItem::action("Jump to Error", JumpToError),
-            MenuItem::action("Use Explorer Connection", UseExplorerConnection),
+                MenuItem::action("Commit Transaction", CommitTx),
+                MenuItem::action("Rollback Transaction", RollbackTx),
+                MenuItem::separator(),
+                MenuItem::action("Next Result", NextResult),
+                MenuItem::action("Previous Result", PrevResult),
+                MenuItem::separator(),
+                MenuItem::action("Next Page", NextPage),
+                MenuItem::action("Previous Page", PrevPage),
+                MenuItem::separator(),
+                MenuItem::action("Jump to Error", JumpToError),
+                MenuItem::action("Use Explorer Connection", UseExplorerConnection),
             ]),
         ),
         Menu::new("View").items(
@@ -338,38 +336,29 @@ fn menus(cx: &App) -> Vec<Menu> {
             .into_iter()
             .chain(when(caps.activity, vec![MenuItem::action("Activity Monitor", OpenActivity)]))
             .chain([
-            MenuItem::action("Agents", ToggleMcpLog),
-            MenuItem::separator(),
-            MenuItem::action("Focus Explorer", FocusExplorer),
-            MenuItem::action("Focus Editor", FocusEditor),
-            MenuItem::action("Focus Grid", FocusGrid),
-            MenuItem::action("Next Region", CycleFocus),
-            MenuItem::separator(),
-            MenuItem::action("Toggle Theme", ToggleTheme),
-            MenuItem::action("Dark Theme", ThemeDark),
-            MenuItem::action("Black Theme", ThemeBlack),
-            MenuItem::action("Light Theme", ThemeLight),
-            MenuItem::action("Solarized Theme", ThemeSolarized),
-            MenuItem::action("Theme Follows System", ThemeSystem),
-            MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Transparency").items([
-                MenuItem::action("On", TranslucencyOn),
-                MenuItem::action("Off", TranslucencyOff),
-            ])),
-            MenuItem::action("Zoom In", ZoomIn),
-            MenuItem::action("Zoom Out", ZoomOut),
-            MenuItem::action("Actual Size", ZoomReset),
-            MenuItem::separator(),
-            MenuItem::submenu(Menu::new("Font").items([
-                MenuItem::action("Lilex", FontLilex),
-                MenuItem::action("Geist Mono", FontGeistMono),
-            ])),
+                MenuItem::action("Agents", ToggleMcpLog),
+                MenuItem::separator(),
+                MenuItem::action("Focus Explorer", FocusExplorer),
+                MenuItem::action("Focus Editor", FocusEditor),
+                MenuItem::action("Focus Grid", FocusGrid),
+                MenuItem::action("Next Region", CycleFocus),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Theme", ToggleTheme),
+                MenuItem::action("Dark Theme", ThemeDark),
+                MenuItem::action("Black Theme", ThemeBlack),
+                MenuItem::action("Light Theme", ThemeLight),
+                MenuItem::action("Solarized Theme", ThemeSolarized),
+                MenuItem::action("Theme Follows System", ThemeSystem),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu::new("Transparency").items([MenuItem::action("On", TranslucencyOn), MenuItem::action("Off", TranslucencyOff)])),
+                MenuItem::action("Zoom In", ZoomIn),
+                MenuItem::action("Zoom Out", ZoomOut),
+                MenuItem::action("Actual Size", ZoomReset),
+                MenuItem::separator(),
+                MenuItem::submenu(Menu::new("Font").items([MenuItem::action("Lilex", FontLilex), MenuItem::action("Geist Mono", FontGeistMono)])),
             ]),
         ),
-        Menu::new("Window").items([
-            MenuItem::action("Next Tab", NextTab),
-            MenuItem::action("Previous Tab", PrevTab),
-        ]),
+        Menu::new("Window").items([MenuItem::action("Next Tab", NextTab), MenuItem::action("Previous Tab", PrevTab)]),
     ]
 }
 
@@ -535,7 +524,8 @@ fn main() {
         cx.set_menus(menus(cx));
 
         // Check stages can draw a narrower window (DATAMAN_SHOT_WIDTH, down to the smallest).
-        let width = if cfg!(feature = "checks") { std::env::var("DATAMAN_SHOT_WIDTH").ok().and_then(|w| w.parse::<f32>().ok()).unwrap_or(1400.) } else { 1400. };
+        let width =
+            if cfg!(feature = "checks") { std::env::var("DATAMAN_SHOT_WIDTH").ok().and_then(|w| w.parse::<f32>().ok()).unwrap_or(1400.) } else { 1400. };
         let bounds = Bounds::centered(None, size(px(width.max(theme::metrics::MIN_WINDOW.0)), px(900.)), cx);
         let (min_w, min_h) = theme::metrics::MIN_WINDOW;
         let window = cx
@@ -619,8 +609,7 @@ fn main() {
         #[cfg(feature = "checks")]
         if let Some(mode) = bench {
             let ws = window.entity(cx).expect("workspace");
-            cx.update_window(window.into(), |_, window, cx| bench::start(mode, ws, window, cx))
-                .expect("window update");
+            cx.update_window(window.into(), |_, window, cx| bench::start(mode, ws, window, cx)).expect("window update");
         }
     });
     if bench.is_some() {

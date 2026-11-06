@@ -37,7 +37,10 @@ pub(crate) fn tier_tip() -> Tip {
         .item("Off", "Agents can't use it.")
         .item("Read", "Reads only.")
         .item("Write", "Also inserts, and updates or deletes with a real WHERE, up to Rows per write.")
-        .item("Full", "Also new tables, indexes, views and schemas. Destructive statements (DROP, ALTER, TRUNCATE, a DELETE without WHERE…) wait for your Allow.")
+        .item(
+            "Full",
+            "Also new tables, indexes, views and schemas. Destructive statements (DROP, ALTER, TRUNCATE, a DELETE without WHERE…) wait for your Allow.",
+        )
         .note("On production, every write waits for your Allow.")
 }
 
@@ -163,7 +166,15 @@ pub(crate) fn section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div>) ->
         .flex_col()
         .gap(px(12.))
         .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(title.to_string()))
-        .child(div().border_1().border_color(t.line).rounded(px(3.)).flex().flex_col().children(subs.into_iter().enumerate().map(move |(k, s)| s.px(px(20.)).py(px(18.)).when(k > 0, |d| d.border_t_1().border_color(faint)))))
+        .child(
+            div()
+                .border_1()
+                .border_color(t.line)
+                .rounded(px(3.))
+                .flex()
+                .flex_col()
+                .children(subs.into_iter().enumerate().map(move |(k, s)| s.px(px(20.)).py(px(18.)).when(k > 0, |d| d.border_t_1().border_color(faint)))),
+        )
 }
 
 /// Protection's sections: the title, then the subsections with no box around them, a line between.
@@ -176,7 +187,9 @@ pub(crate) fn flat_section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div
         .flex_col()
         .gap(px(12.))
         .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(title.to_string()))
-        .child(div().flex().flex_col().children(subs.into_iter().enumerate().map(|(k, s)| s.py(px(18.)).when(k == 0, |d| d.pt(px(6.))).when(k > 0, |d| d.border_t_1().border_color(t.line)))))
+        .child(div().flex().flex_col().children(
+            subs.into_iter().enumerate().map(|(k, s)| s.py(px(18.)).when(k == 0, |d| d.pt(px(6.))).when(k > 0, |d| d.border_t_1().border_color(t.line))),
+        ))
 }
 
 pub(crate) fn sub(head: impl IntoElement) -> gpui::Div {
@@ -184,12 +197,27 @@ pub(crate) fn sub(head: impl IntoElement) -> gpui::Div {
 }
 
 pub(crate) fn sub_title(t: &Theme, tip_id: &str, title: &str, tip: Tip) -> gpui::Div {
-    div().flex().flex_row().items_center().gap(px(7.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title.to_string()).child(qmark(t, tip_id, tip).font_weight(FontWeight::NORMAL))
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(7.))
+        .text_size(px(12.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.tx)
+        .child(title.to_string())
+        .child(qmark(t, tip_id, tip).font_weight(FontWeight::NORMAL))
 }
 
 fn table(t: &Theme, rows: Vec<AnyElement>) -> gpui::Div {
     let faint = t.grid_line;
-    div().border_1().border_color(t.line).rounded(px(2.)).flex().flex_col().children(rows.into_iter().enumerate().map(move |(k, r)| div().when(k > 0, |d| d.border_t_1().border_color(faint)).child(r)))
+    div()
+        .border_1()
+        .border_color(t.line)
+        .rounded(px(2.))
+        .flex()
+        .flex_col()
+        .children(rows.into_iter().enumerate().map(move |(k, r)| div().when(k > 0, |d| d.border_t_1().border_color(faint)).child(r)))
 }
 
 const GROW: Duration = Duration::from_millis(220);
@@ -201,13 +229,17 @@ fn grow(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: bool) -> AnyElem
         return row.into_any_element();
     }
     row.overflow_hidden()
-        .with_animation(SharedString::from(format!("agents-in-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| d.h(px(h * k)).opacity(k))
+        .with_animation(SharedString::from(format!("agents-in-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| {
+            d.h(px(h * k)).opacity(k)
+        })
         .into_any_element()
 }
 
 fn shrink(row: gpui::Stateful<gpui::Div>, h: f32, key: &str) -> AnyElement {
     row.overflow_hidden()
-        .with_animation(SharedString::from(format!("agents-out-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| d.h(px(h * (1. - k))).opacity(1. - k))
+        .with_animation(SharedString::from(format!("agents-out-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| {
+            d.h(px(h * (1. - k))).opacity(1. - k)
+        })
         .into_any_element()
 }
 
@@ -221,13 +253,27 @@ fn dim(el: gpui::Div, id: &'static str, masked: bool, fading: bool) -> AnyElemen
     if !fading {
         return el.when(!masked, |d| d.opacity(0.55)).into_any_element();
     }
-    el.with_animation((id, masked as usize), Animation::new(FADE).with_easing(gpui::ease_out_quint()), move |d, k| d.opacity(if masked { 0.55 + 0.45 * k } else { 1. - 0.45 * k }))
-        .into_any_element()
+    el.with_animation((id, masked as usize), Animation::new(FADE).with_easing(gpui::ease_out_quint()), move |d, k| {
+        d.opacity(if masked { 0.55 + 0.45 * k } else { 1. - 0.45 * k })
+    })
+    .into_any_element()
 }
 
 /// Add or Hide with nothing typed: drawn, not clickable.
 fn off_button(t: &Theme, id: &'static str, label: &'static str) -> AnyElement {
-    div().children(ui::here(&id.into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_size(px(crate::theme::text::BODY)).text_color(t.tx4).child(label).into_any_element()
+    div()
+        .children(ui::here(&id.into()))
+        .flex_none()
+        .h(px(30.))
+        .px(px(14.))
+        .flex()
+        .items_center()
+        .border_1()
+        .border_color(t.line2)
+        .text_size(px(crate::theme::text::BODY))
+        .text_color(t.tx4)
+        .child(label)
+        .into_any_element()
 }
 
 /// A row's ×, as a tab's: there only while the row is hovered (the row lights up), brighter
@@ -256,7 +302,14 @@ pub(crate) fn state_note(t: &Theme, text: impl Into<SharedString>) -> gpui::Div 
 }
 
 /// The page's segmented control: one choice, told by its wash.
-pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)], on: T, cx: &mut Context<AgentsPage>, pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static) -> gpui::Div {
+pub(crate) fn choices<T: Copy + PartialEq + 'static>(
+    t: &Theme,
+    id: &str,
+    opts: &[(T, &str)],
+    on: T,
+    cx: &mut Context<AgentsPage>,
+    pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static,
+) -> gpui::Div {
     let segs = opts.iter().enumerate().map(|(k, (v, label))| {
         let (v, pick) = (*v, pick.clone());
         let sel = v == on;
@@ -283,18 +336,7 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: 
                 cx.notify();
             }))
     });
-    div().flex().child(
-        div()
-            .relative()
-            .flex()
-            .flex_row()
-            .h(px(28.))
-            .p(px(2.))
-            .bg(t.field)
-            .border_1()
-            .border_color(t.line2)
-            .children(segs),
-    )
+    div().flex().child(div().relative().flex().flex_row().h(px(28.)).p(px(2.)).bg(t.field).border_1().border_color(t.line2).children(segs))
 }
 
 /// How wide a popup button is: on its own, or as wide as its column.
@@ -310,7 +352,13 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
         Fit::Fill => 0.,
     };
     let open = page.menu.as_ref().is_some_and(|m| m.id == id);
-    div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(crate::agents::select_box(t, id, label, enabled, open))
+    div()
+        .relative()
+        .min_w(px(min))
+        .when(fit == Fit::Fill, |d| d.flex_1())
+        .when(fit != Fit::Fill, |d| d.flex_none())
+        .child(page.anchor(id.clone()))
+        .child(crate::agents::select_box(t, id, label, enabled, open))
 }
 
 pub(crate) const REDACTED: &str = "‹redacted›";
@@ -367,9 +415,18 @@ impl AgentsPage {
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .children(crate::assets::small_logo(p.engine, 14.))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
-                .when(login, |d| d.child(div().children(ui::here(&SharedString::from(format!("agents-conn-key-{}", p.name)).into())).flex_none().child(icon(Icon::Key).size(px(12.)).text_color(t.ok))))
+                .when(login, |d| {
+                    d.child(
+                        div()
+                            .children(ui::here(&SharedString::from(format!("agents-conn-key-{}", p.name)).into()))
+                            .flex_none()
+                            .child(icon(Icon::Key).size(px(12.)).text_color(t.ok)),
+                    )
+                })
                 .child(div().flex_1())
-                .child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
+                .child(
+                    div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()),
+                )
                 .on_click(cx.listener(move |v, _, window, cx| {
                     v.focus_list(window, cx);
                     v.conn = Some(id.clone());
@@ -379,7 +436,20 @@ impl AgentsPage {
                     cx.notify();
                 }))
         });
-        div().id("agents-conns").w(px(CONNS_W)).flex_none().py(px(4.)).flex().flex_col().gap(px(6.)).overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
+        div()
+            .id("agents-conns")
+            .w(px(CONNS_W))
+            .flex_none()
+            .py(px(4.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .overflow_y_scroll()
+            .track_scroll(&self.conns_scroll)
+            .border_r_1()
+            .border_color(t.line)
+            .children(rows)
+            .into_any_element()
     }
 
     /// One bar over both columns, a single line under it: Protection over the connections, the
@@ -393,7 +463,18 @@ impl AgentsPage {
             .flex_row()
             .border_b_1()
             .border_color(t.line)
-            .child(div().w(px(CONNS_W)).flex_none().pl(px(32.)).pr(px(16.)).flex().items_center().border_r_1().border_color(t.line).child(crate::agents::page_title(t, "Protection")))
+            .child(
+                div()
+                    .w(px(CONNS_W))
+                    .flex_none()
+                    .pl(px(32.))
+                    .pr(px(16.))
+                    .flex()
+                    .items_center()
+                    .border_r_1()
+                    .border_color(t.line)
+                    .child(crate::agents::page_title(t, "Protection")),
+            )
             .children(p.map(|p| {
                 div()
                     .children(ui::here(&"agents-protection-conn".into()))
@@ -429,9 +510,26 @@ impl AgentsPage {
         }
     }
 
-    fn pick(&self, t: &Theme, id: &str, label: &str, enabled: bool, fit: Fit, width: f32, items: Vec<(SharedString, bool, Act)>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn pick(
+        &self,
+        t: &Theme,
+        id: &str,
+        label: &str,
+        enabled: bool,
+        fit: Fit,
+        width: f32,
+        items: Vec<(SharedString, bool, Act)>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let sid = SharedString::from(id.to_string());
-        let el = div().id(SharedString::from(format!("{id}-btn"))).flex().when(fit == Fit::Fill, |d| d.w_full()).child(select(t, self, sid.clone(), label, enabled, fit));
+        let el = div().id(SharedString::from(format!("{id}-btn"))).flex().when(fit == Fit::Fill, |d| d.w_full()).child(select(
+            t,
+            self,
+            sid.clone(),
+            label,
+            enabled,
+            fit,
+        ));
         if enabled { el.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(sid.clone(), width, items.clone(), cx))) } else { el }
     }
 
@@ -509,7 +607,16 @@ impl AgentsPage {
         if p.engine == Engine::MongoDb {
             let cur = r.read_from.unwrap_or(ReadFrom::Primary);
             let items = ReadFrom::ALL.iter().map(|f| (f.label().into(), *f == cur, Act::ReadFrom(*f))).collect();
-            subs.push(sub(sub_title(t, "agents-read-from-tip", "Read from", read_from_tip())).child(self.pick(t, "agents-read-from", cur.label(), true, Fit::Alone, 180., items, cx)));
+            subs.push(sub(sub_title(t, "agents-read-from-tip", "Read from", read_from_tip())).child(self.pick(
+                t,
+                "agents-read-from",
+                cur.label(),
+                true,
+                Fit::Alone,
+                180.,
+                items,
+                cx,
+            )));
         }
         // A value that came from the old global setting (or a file) shows as a choice of its own,
         // in order before ∞. The value that applies is the one selected; choosing the default
@@ -530,7 +637,9 @@ impl AgentsPage {
         let write_items = with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (count_label(n).into(), n == writes, Act::WriteRows(n))).collect();
         // Rows per write means nothing below the Write tier.
         let writing = tier >= McpAccess::Write;
-        let limit = |label: &str, on: bool, el: gpui::Stateful<gpui::Div>| div().flex_1().min_w_0().flex().flex_col().gap(px(6.)).child(div().text_color(if on { t.tx2 } else { t.tx3 }).child(label.to_string())).child(el);
+        let limit = |label: &str, on: bool, el: gpui::Stateful<gpui::Div>| {
+            div().flex_1().min_w_0().flex().flex_col().gap(px(6.)).child(div().text_color(if on { t.tx2 } else { t.tx3 }).child(label.to_string())).child(el)
+        };
         let row = div()
             .flex()
             .flex_row()
@@ -564,11 +673,15 @@ impl AgentsPage {
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s.clone()))
                 .child(ui::icon_button(t, ("agents-allowed-rm", k), Icon::Close, 20., 10.).on_click(cx.listener(move |v, _, _, cx| {
                     if let Some(id) = v.conn.clone() {
-                        v.edit_conn(&id, |p| {
-                            if k < p.mcp_allowed.len() {
-                                p.mcp_allowed.remove(k);
-                            }
-                        }, cx);
+                        v.edit_conn(
+                            &id,
+                            |p| {
+                                if k < p.mcp_allowed.len() {
+                                    p.mcp_allowed.remove(k);
+                                }
+                            },
+                            cx,
+                        );
                     }
                 })))
         });
@@ -578,14 +691,9 @@ impl AgentsPage {
             .gap(px(8.))
             .child(ui::caps(t, "ALLOWED WITHOUT ASKING"))
             .children(rows)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.))
-                    .child(field(t, "agents-field-allowed", &self.allow_input, window, cx).flex_1())
-                    .child(ui::button(t, "agents-allowed-add", ui::Btn::Secondary).h(px(28.)).child("+ Add").on_click(cx.listener(|v, _, _, cx| v.add_allowed(cx)))),
-            )
+            .child(div().flex().flex_row().gap(px(8.)).child(field(t, "agents-field-allowed", &self.allow_input, window, cx).flex_1()).child(
+                ui::button(t, "agents-allowed-add", ui::Btn::Secondary).h(px(28.)).child("+ Add").on_click(cx.listener(|v, _, _, cx| v.add_allowed(cx))),
+            ))
             .children(self.allow_error.clone().map(|e| div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(e)))
             .into_any_element()
     }
@@ -597,8 +705,9 @@ impl AgentsPage {
             return;
         }
         let d = p.engine.dialect();
-        let entry = dataman_core::guard::allowlist_entry(&text, d)
-            .and_then(|e| if p.mcp_allowed.iter().any(|a| dataman_core::guard::allowlist_match(a, &e, d)) { Err("already allowed".to_string()) } else { Ok(e) });
+        let entry = dataman_core::guard::allowlist_entry(&text, d).and_then(|e| {
+            if p.mcp_allowed.iter().any(|a| dataman_core::guard::allowlist_match(a, &e, d)) { Err("already allowed".to_string()) } else { Ok(e) }
+        });
         match entry {
             Ok(e) => {
                 self.edit_conn(&p.id, |p| p.mcp_allowed.push(e), cx);
@@ -624,7 +733,15 @@ impl AgentsPage {
                     .flex_row()
                     .items_center()
                     .gap(px(12.))
-                    .child(div().flex_1().flex().flex_col().gap(px(3.)).child(div().text_color(if on { t.err } else { t.tx }).child("YOLO")).child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Writes run without asking.")))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(div().text_color(if on { t.err } else { t.tx }).child("YOLO"))
+                            .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Writes run without asking.")),
+                    )
                     .child(crate::agents::switch(t, "agents-yolo-switch", on))
                     .cursor_pointer()
                     .on_click(cx.listener(|v, _, _, cx| {
@@ -725,7 +842,8 @@ impl AgentsPage {
         let sens_place = format!("{one}.{} or *pattern*", part(p.engine));
         self.sens_input.update(cx, |i, cx| i.set_placeholder(sens_place.clone(), cx));
         let views: Vec<(AgentView, &str)> = AgentView::ALL.iter().map(|v| (*v, v.label())).collect();
-        let sees = sub(sub_title(t, "agents-sees-tip", "Agents see", sees_tip())).child(choices(t, "agents-view", &views, r.view, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
+        let sees = sub(sub_title(t, "agents-sees-tip", "Agents see", sees_tip()))
+            .child(choices(t, "agents-view", &views, r.view, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
 
         // Sensitive columns mask in Masked data only: elsewhere the table is shown, dimmed and
         // inert (no focus, click or key), and Use Masked data is the way back to editing.
@@ -794,10 +912,30 @@ impl AgentsPage {
                         .items_center()
                         .gap(px(9.))
                         .child(icon(Icon::Column).size(px(13.)).text_color(t.tx3))
-                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(name.to_string()))
-                        .child(div().w(px(180.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).text_color(if s.on { t.tx2 } else { t.tx3 }).child(how))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_color(if s.on { t.tx } else { t.tx3 })
+                                .child(name.to_string()),
+                        )
+                        .child(
+                            div()
+                                .w(px(180.))
+                                .flex_none()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .text_size(px(crate::theme::text::BODY))
+                                .text_color(if s.on { t.tx2 } else { t.tx3 })
+                                .child(how),
+                        )
                         .child({
-                            let edit = ui::button(t, id.clone(), ui::Btn::Secondary).h(px(26.)).px(px(10.)).text_size(px(crate::theme::text::BODY)).child("Edit");
+                            let edit =
+                                ui::button(t, id.clone(), ui::Btn::Secondary).h(px(26.)).px(px(10.)).text_size(px(crate::theme::text::BODY)).child("Edit");
                             if masked {
                                 let (col, how) = (s.col.clone(), s.how);
                                 edit.on_click(cx.listener(move |v, _, _, cx| v.open_sens_edit(col.clone(), how, cx))).into_any_element()
@@ -836,38 +974,66 @@ impl AgentsPage {
             .flex_row()
             .gap(px(10.))
             .when(masked, |d| {
-                d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx).h(px(30.)), window, cx))
-                    .child(if sens_empty { off_button(t, "agents-sens-add", "Add") } else { ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))).into_any_element() })
+                d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx).h(px(30.)), window, cx)).child(
+                    if sens_empty {
+                        off_button(t, "agents-sens-add", "Add")
+                    } else {
+                        ui::button(t, "agents-sens-add", ui::Btn::Secondary)
+                            .h(px(30.))
+                            .px(px(14.))
+                            .child("Add")
+                            .on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx)))
+                            .into_any_element()
+                    },
+                )
             })
             // No input at all while disabled: nothing to focus, click, type into or Tab to.
             .when(!masked, |d| {
-                d.child(div().children(ui::here(&"agents-field-sensitive".into())).flex_1().h(px(30.)).px(px(9.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx4).child(sens_place))
-                    .child(off_button(t, "agents-sens-add", "Add"))
+                d.child(
+                    div()
+                        .children(ui::here(&"agents-field-sensitive".into()))
+                        .flex_1()
+                        .h(px(30.))
+                        .px(px(9.))
+                        .flex()
+                        .items_center()
+                        .bg(t.field)
+                        .border_1()
+                        .border_color(t.field_b)
+                        .text_color(t.tx4)
+                        .child(sens_place),
+                )
+                .child(off_button(t, "agents-sens-add", "Add"))
             });
         let add = dim(add, "agents-sens-add-dim", masked, fading);
         let sensitive = sub(sub_title(t, "agents-sens-tip", title, sens_tip()).child(scan))
             // Kept and editable in every mode, but they only mask in Masked data: say so.
             .when(!masked, |d| {
                 let note = div()
-                        .children(ui::here(&"agents-sens-unused".into()))
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap(px(6.))
-                        .text_size(px(crate::theme::text::UI))
-                        .text_color(t.tx2)
-                        .child("Used only when Agents see is Masked data.")
-                        .child(
-                            div()
-                                .children(ui::here(&"agents-sens-use-masked".into()))
-                                .id("agents-sens-use-masked")
-                                .text_color(t.acc_t)
-                                .cursor_pointer()
-                                .hover(|s| s.opacity(0.75))
-                                .child("Use Masked data")
-                                .on_click(cx.listener(|v, _, _, cx| v.set_rule(|r| r.view = AgentView::Masked, cx))),
-                        );
-                d.child(if fading { note.with_animation("agents-sens-unused-in", Animation::new(FADE).with_easing(gpui::ease_out_quint()), |d, k| d.opacity(k)).into_any_element() } else { note.into_any_element() })
+                    .children(ui::here(&"agents-sens-unused".into()))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .text_size(px(crate::theme::text::UI))
+                    .text_color(t.tx2)
+                    .child("Used only when Agents see is Masked data.")
+                    .child(
+                        div()
+                            .children(ui::here(&"agents-sens-use-masked".into()))
+                            .id("agents-sens-use-masked")
+                            .text_color(t.acc_t)
+                            .cursor_pointer()
+                            .hover(|s| s.opacity(0.75))
+                            .child("Use Masked data")
+                            .on_click(cx.listener(|v, _, _, cx| v.set_rule(|r| r.view = AgentView::Masked, cx))),
+                    );
+                d.child(if fading {
+                    note.with_animation("agents-sens-unused-in", Animation::new(FADE).with_easing(gpui::ease_out_quint()), |d, k| d.opacity(k))
+                        .into_any_element()
+                } else {
+                    note.into_any_element()
+                })
             })
             .children(self.scan_note.clone().map(|n| state_note(t, n)))
             .when(!rows.is_empty(), |d| d.child(dim(table(t, rows), "agents-sens-dim", masked, fading)))
@@ -926,7 +1092,16 @@ impl AgentsPage {
                     .flex_row()
                     .gap(px(10.))
                     .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx).h(px(30.)), window, cx))
-                    .child(if typed.is_empty() { off_button(t, "agents-vis-add", verb) } else { ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx))).into_any_element() }),
+                    .child(if typed.is_empty() {
+                        off_button(t, "agents-vis-add", verb)
+                    } else {
+                        ui::button(t, "agents-vis-add", ui::Btn::Secondary)
+                            .h(px(30.))
+                            .px(px(14.))
+                            .child(verb)
+                            .on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))
+                            .into_any_element()
+                    }),
             );
         flat_section(t, "agents-privacy", "Privacy", vec![sees, visible, sensitive])
     }
@@ -957,11 +1132,14 @@ impl AgentsPage {
             return;
         }
         let how = privacy::sensitive_name(text.rsplit('.').next().unwrap_or(&text).trim_matches('*')).map_or(Mask::Hidden, |h| h.how);
-        self.set_rule(|r| {
-            if !r.sensitive.iter().any(|s| s.col.eq_ignore_ascii_case(&text)) {
-                r.sensitive.push(SensitiveCol { col: text, how, on: true });
-            }
-        }, cx);
+        self.set_rule(
+            |r| {
+                if !r.sensitive.iter().any(|s| s.col.eq_ignore_ascii_case(&text)) {
+                    r.sensitive.push(SensitiveCol { col: text, how, on: true });
+                }
+            },
+            cx,
+        );
         self.sens_input.update(cx, |i, cx| i.set_text("", cx));
     }
 
@@ -972,11 +1150,14 @@ impl AgentsPage {
             return;
         }
         let kind = Visible::kind_of(&text, &self.schemas_of(&p, cx), Names::of(p.engine));
-        self.set_rule(|r| {
-            if !r.visible.items.iter().any(|i| i.name.eq_ignore_ascii_case(&text)) {
-                r.visible.items.push(VisibleItem { name: text, kind });
-            }
-        }, cx);
+        self.set_rule(
+            |r| {
+                if !r.visible.items.iter().any(|i| i.name.eq_ignore_ascii_case(&text)) {
+                    r.visible.items.push(VisibleItem { name: text, kind });
+                }
+            },
+            cx,
+        );
         self.vis_input.update(cx, |i, cx| i.set_text("", cx));
     }
 

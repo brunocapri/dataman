@@ -1,29 +1,16 @@
 // The owner renders the bar beside its own key context, not inside it, so the editor's and
 // the grid's keys (arrows, ↩, ⌘Z…) never act while the field has the focus.
 
-use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, Focusable, SharedString, Subscription, Window, actions,
-    div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::find::FindOptions;
+use gpui::{App, ClickEvent, Context, Entity, EventEmitter, Focusable, SharedString, Subscription, Window, actions, div, prelude::*};
 
 use crate::assets::Icon;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, mono};
 use crate::ui;
 
-actions!(
-    find,
-    [
-        Find,
-        FindReplace,
-        FindNext,
-        FindPrevious,
-        CloseFind,
-        NextField,
-    ]
-);
+actions!(find, [Find, FindReplace, FindNext, FindPrevious, CloseFind, NextField,]);
 
 pub const CONTEXT: &str = "FindBar";
 
@@ -219,33 +206,15 @@ impl Render for FindBar {
             .items_center()
             .gap(px(2.))
             .child(field(&self.query, q_on, invalid))
-            .child(
-                div()
-                    .flex_none()
-                    .min_w(px(54.))
-                    .px(px(6.))
-                    .text_size(px(crate::theme::text::SMALL))
-                    .text_color(t.tx3)
-                    .whitespace_nowrap()
-                    .child(count),
-            )
-            .child(
-                ui::icon_button(&t, "find-prev", Icon::ChevronUp, 24., 12.)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Prev))),
-            )
-            .child(
-                ui::icon_button(&t, "find-next", Icon::ChevronDown, 24., 12.)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Next))),
-            )
+            .child(div().flex_none().min_w(px(54.)).px(px(6.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).whitespace_nowrap().child(count))
+            .child(ui::icon_button(&t, "find-prev", Icon::ChevronUp, 24., 12.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Prev))))
+            .child(ui::icon_button(&t, "find-next", Icon::ChevronDown, 24., 12.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Next))))
             .child(div().mx(px(3.)).child(ui::vsep(&t, 14.)))
             .child(toggle("find-case", "Aa", o.case).on_click(cx.listener(|b, _: &ClickEvent, w, cx| b.toggle(|o| o.case = !o.case, w, cx))))
             .child(toggle("find-word", "ab", o.word).on_click(cx.listener(|b, _: &ClickEvent, w, cx| b.toggle(|o| o.word = !o.word, w, cx))))
             .child(toggle("find-regex", ".*", o.regex).on_click(cx.listener(|b, _: &ClickEvent, w, cx| b.toggle(|o| o.regex = !o.regex, w, cx))))
             .child(div().mx(px(3.)).child(ui::vsep(&t, 14.)))
-            .child(
-                ui::icon_button(&t, "find-close", Icon::Close, 24., 12.)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Close))),
-            );
+            .child(ui::icon_button(&t, "find-close", Icon::Close, 24., 12.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Close))));
         let bottom = self.replacing.then(|| {
             div()
                 .flex()

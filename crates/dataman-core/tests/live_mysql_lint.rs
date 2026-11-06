@@ -131,7 +131,10 @@ fn reads_are_reads() {
         if read && !writes_inside && f.is_write() {
             bad.push(format!("{src} -> {:?} {}", f.effect, f.verb));
         }
-        if read && !writes_inside && let Some(why) = dataman_core::guard::read_only_refusal_in(src, Dialect::MySql) {
+        if read
+            && !writes_inside
+            && let Some(why) = dataman_core::guard::read_only_refusal_in(src, Dialect::MySql)
+        {
             bad.push(format!("{src} refused: {why}"));
         }
     }

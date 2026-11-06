@@ -3,8 +3,8 @@
 //! the complete error on the clipboard from there, from the connection sheet, the status bar's
 //! notice, a query's error view and result bar, and an import that cannot read its file.
 
-use gpui::{AsyncWindowContext, Bounds, Entity, Modifiers, Pixels, PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
 use dataman_core::config::{ConnectionProfile, Engine};
+use gpui::{AsyncWindowContext, Bounds, Entity, Modifiers, Pixels, PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -100,16 +100,29 @@ async fn failed_connection(ws: &Entity<Workspace>, r: &mut Report, cx: &mut Asyn
     let viewport = cx.update(|window, _| window.viewport_size()).expect("the window");
     r.check(
         "the tooltip is bounded, wraps, and all of it fits the window",
-        bounds.is_some_and(|b| b.size.width <= px(480.) && b.size.height <= px(14. * 17. + 52.) && b.right() <= viewport.width && b.bottom() <= viewport.height)
+        bounds
+            .is_some_and(|b| b.size.width <= px(480.) && b.size.height <= px(14. * 17. + 52.) && b.right() <= viewport.width && b.bottom() <= viewport.height)
             && body.zip(port).is_some_and(|(b, p)| b.size.width <= p.size.width && b.size.height > p.size.height),
         format!("tooltip {bounds:?} text {body:?} in {port:?}, window {viewport:?}"),
     );
     snap("tooltip", cx);
     if let Some(p) = port {
-        input(cx, PlatformInput::ScrollWheel(ScrollWheelEvent { position: centre(p), delta: ScrollDelta::Pixels(point(px(0.), px(-120.))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved }));
+        input(
+            cx,
+            PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position: centre(p),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-120.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            }),
+        );
     }
     let scrolled = until(cx, 2, |cx| probed("error-tip-body", cx).zip(body).is_some_and(|(now, was)| now.top() < was.top())).await;
-    r.check("the rest of a long error scrolls inside the tooltip, which stays", scrolled && tip(cx).is_some(), format!("{:?} from {body:?}", probed("error-tip-body", cx)));
+    r.check(
+        "the rest of a long error scrolls inside the tooltip, which stays",
+        scrolled && tip(cx).is_some(),
+        format!("{:?} from {body:?}", probed("error-tip-body", cx)),
+    );
     leave(cx).await;
     r.check("…and leaving the tooltip closes it", tip(cx).is_none(), "still there");
     id
@@ -199,7 +212,11 @@ async fn import_failure(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWi
     .await;
     snap("import", cx);
     let (button, text) = (probed("di-error", cx), probed("di-error-text", cx));
-    r.check("its error wraps beside its button", button.zip(text).is_some_and(|(b, t)| b.left() >= t.right() && t.size.width > px(200.)), format!("button {button:?} text {text:?}"));
+    r.check(
+        "its error wraps beside its button",
+        button.zip(text).is_some_and(|(b, t)| b.left() >= t.right() && t.size.width > px(200.)),
+        format!("button {button:?} text {text:?}"),
+    );
     set_clipboard(UNTOUCHED, cx);
     let clicked = click_probe("di-error", cx);
     until(cx, 3, |cx| clipboard(cx) != UNTOUCHED).await;

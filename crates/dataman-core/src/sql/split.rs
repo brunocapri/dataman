@@ -144,9 +144,7 @@ pub fn result_statement(src: &str, k: usize) -> Option<&str> {
 }
 
 fn begins_block(next: Option<&str>) -> bool {
-    !next.is_some_and(|w| {
-        ["TRAN", "TRANSACTION", "DISTRIBUTED", "DIALOG", "CONVERSATION"].iter().any(|k| w.eq_ignore_ascii_case(k))
-    })
+    !next.is_some_and(|w| ["TRAN", "TRANSACTION", "DISTRIBUTED", "DIALOG", "CONVERSATION"].iter().any(|k| w.eq_ignore_ascii_case(k)))
 }
 
 fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
@@ -159,9 +157,26 @@ fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
             if ["PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"].iter().any(|k| w.eq_ignore_ascii_case(k)) {
                 return true;
             }
-            if ["TABLE", "VIEW", "INDEX", "DATABASE", "SCHEMA", "USER", "ROLE", "SERVER", "TABLESPACE", "UNIQUE", "FULLTEXT", "SPATIAL", "TEMPORARY", "SEQUENCE", "LOGFILE", "RESOURCE"]
-                .iter()
-                .any(|k| w.eq_ignore_ascii_case(k))
+            if [
+                "TABLE",
+                "VIEW",
+                "INDEX",
+                "DATABASE",
+                "SCHEMA",
+                "USER",
+                "ROLE",
+                "SERVER",
+                "TABLESPACE",
+                "UNIQUE",
+                "FULLTEXT",
+                "SPATIAL",
+                "TEMPORARY",
+                "SEQUENCE",
+                "LOGFILE",
+                "RESOURCE",
+            ]
+            .iter()
+            .any(|k| w.eq_ignore_ascii_case(k))
             {
                 return false;
             }
@@ -370,7 +385,10 @@ mod tests {
     fn mysql_executable_comments_are_statements() {
         let src = "/*!40101 SET NAMES utf8mb4 */;\n/* plain */;\n-- note\n/*!40014 SET FOREIGN_KEY_CHECKS=0 */;\nSELECT /*!40001 SQL_NO_CACHE */ 1;\n/*M!100000 SET x = 1 */";
         let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
-        assert_eq!(got, vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */", "SELECT /*!40001 SQL_NO_CACHE */ 1", "/*M!100000 SET x = 1 */"]);
+        assert_eq!(
+            got,
+            vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */", "SELECT /*!40001 SQL_NO_CACHE */ 1", "/*M!100000 SET x = 1 */"]
+        );
         assert_eq!(split_in("/*!40101 SET x */;", Dialect::Postgres).len(), 0);
         let f = crate::guard::classify_in("/*!50000 DROP TABLE t */", Dialect::MySql);
         assert_eq!((f.verb.as_str(), f.effect), ("DROP TABLE", crate::guard::Effect::Ddl));
@@ -403,8 +421,20 @@ mod tests {
             CREATE TABLE trigger_log (event INT, begin_at INT); BEGIN; SELECT 1; COMMIT; CREATE VIEW v AS SELECT CASE WHEN 1 THEN 2 END AS c; SELECT 9";
         let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(got.len(), 10, "{got:#?}");
-        assert!(got[0].ends_with("END LOOP l; END") && got[1].ends_with("END") && got[2].ends_with("SET NEW.b = 2; END") && got[3].ends_with("DELETE FROM x; END"));
-        assert_eq!(&got[4..], ["CREATE TABLE trigger_log (event INT, begin_at INT)", "BEGIN", "SELECT 1", "COMMIT", "CREATE VIEW v AS SELECT CASE WHEN 1 THEN 2 END AS c", "SELECT 9"]);
+        assert!(
+            got[0].ends_with("END LOOP l; END") && got[1].ends_with("END") && got[2].ends_with("SET NEW.b = 2; END") && got[3].ends_with("DELETE FROM x; END")
+        );
+        assert_eq!(
+            &got[4..],
+            [
+                "CREATE TABLE trigger_log (event INT, begin_at INT)",
+                "BEGIN",
+                "SELECT 1",
+                "COMMIT",
+                "CREATE VIEW v AS SELECT CASE WHEN 1 THEN 2 END AS c",
+                "SELECT 9"
+            ]
+        );
         let src = "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END//\nSELECT 2//\nDELIMITER ;\nSELECT 3; SELECT 4";
         assert_eq!(split_in(src, Dialect::MySql).len(), 4);
     }
@@ -417,7 +447,8 @@ mod tests {
         assert!(got[1].starts_with("CREATE TRIGGER") && got[1].ends_with("INSERT INTO log VALUES (NEW.a);\nEND"), "{}", got[1]);
         assert!(got[2].ends_with("RAISE(ABORT, 'no'); END"));
         assert_eq!(&got[3..], ["SELECT [a;b] FROM t", "SELECT 2"]);
-        let duck: Vec<&str> = split_in("SELECT [1, 2]; BEGIN; SELECT 1; COMMIT", Dialect::DuckDb).into_iter().map(|s| s.range.len().to_string().leak() as &str).collect();
+        let duck: Vec<&str> =
+            split_in("SELECT [1, 2]; BEGIN; SELECT 1; COMMIT", Dialect::DuckDb).into_iter().map(|s| s.range.len().to_string().leak() as &str).collect();
         assert_eq!(duck.len(), 4);
     }
 

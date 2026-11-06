@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use gpui::{
-    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, NavigationDirection, PlatformInput, Pixels,
-    Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
+    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformInput, Point,
+    ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
 };
 
 use crate::app::{Region, Workspace};
@@ -175,7 +175,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let before_back = active(ws, cx);
     side_button(cx, point(px(600.), px(300.)), NavigationDirection::Back);
     let now = active(ws, cx);
-    report("a closed tab is never gone back to", now != src && cx.update(|_, cx| ws.read(cx).tabs.contains(&now)).unwrap(), format!("from {:?} to {:?}", before_back.entity_id(), now.entity_id()));
+    report(
+        "a closed tab is never gone back to",
+        now != src && cx.update(|_, cx| ws.read(cx).tabs.contains(&now)).unwrap(),
+        format!("from {:?} to {:?}", before_back.entity_id(), now.entity_id()),
+    );
 
     println!("{}", if ok { "ALL PASS" } else { "SOME CHECKS FAILED" });
     ok

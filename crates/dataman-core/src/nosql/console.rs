@@ -122,7 +122,23 @@ impl Request {
         }
         match self.method.as_str() {
             "GET" | "HEAD" => WriteClass::Read,
-            "POST" if matches!(ep, "_search" | "_count" | "_msearch" | "_mget" | "_validate" | "_explain" | "_field_caps" | "_analyze" | "_termvectors" | "_mtermvectors" | "_rank_eval" | "_render") => {
+            "POST"
+                if matches!(
+                    ep,
+                    "_search"
+                        | "_count"
+                        | "_msearch"
+                        | "_mget"
+                        | "_validate"
+                        | "_explain"
+                        | "_field_caps"
+                        | "_analyze"
+                        | "_termvectors"
+                        | "_mtermvectors"
+                        | "_rank_eval"
+                        | "_render"
+                ) =>
+            {
                 WriteClass::Read
             }
             "POST" | "PUT" if ep == "_doc" || ep == "_create" => WriteClass::SafeWrite,

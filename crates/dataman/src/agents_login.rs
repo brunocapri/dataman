@@ -54,8 +54,19 @@ struct WhatRuns {
 }
 
 pub(crate) enum Sheet {
-    Create { review: Option<Result<live::Review, String>>, opts: Options, confirm: bool, busy: bool, error: Option<String> },
-    Remove { plan: Option<Result<Plan, String>>, confirm: bool, busy: bool, error: Option<String> },
+    Create {
+        review: Option<Result<live::Review, String>>,
+        opts: Options,
+        confirm: bool,
+        busy: bool,
+        error: Option<String>,
+    },
+    Remove {
+        plan: Option<Result<Plan, String>>,
+        confirm: bool,
+        busy: bool,
+        error: Option<String>,
+    },
     /// The drift: what changes on the login, and what runs for it.
     Changes,
     Checks,
@@ -122,15 +133,26 @@ impl AgentsPage {
         }
         // A PostgreSQL-protocol server Dataman is connected to already: asked once whether it has
         // logins at all (MotherDuck is known by its host; another, by its review).
-        if fresh && p.engine == Engine::Postgres && p.agent_login.is_none() && !self.no_logins.contains(&p.id) && !agent_login::pg::motherduck(p) && self.login_open_conn(&p.id, cx).is_some() {
+        if fresh
+            && p.engine == Engine::Postgres
+            && p.agent_login.is_none()
+            && !self.no_logins.contains(&p.id)
+            && !agent_login::pg::motherduck(p)
+            && self.login_open_conn(&p.id, cx).is_some()
+        {
             let id = p.id.clone();
-            self.login_task(p, cx, |_, admin, p| Box::pin(async move { live::has_logins(&admin, &p).await.map_err(|e| format!("{e:#}")) }), move |v, r, _| match r {
-                Ok(false) => {
-                    v.no_logins.insert(id);
-                }
-                Ok(true) => {}
-                Err(e) => log::debug!("couldn't ask the server whether it has logins: {e}"),
-            });
+            self.login_task(
+                p,
+                cx,
+                |_, admin, p| Box::pin(async move { live::has_logins(&admin, &p).await.map_err(|e| format!("{e:#}")) }),
+                move |v, r, _| match r {
+                    Ok(false) => {
+                        v.no_logins.insert(id);
+                    }
+                    Ok(true) => {}
+                    Err(e) => log::debug!("couldn't ask the server whether it has logins: {e}"),
+                },
+            );
         }
         let Some(l) = p.agent_login.as_ref().filter(|_| agent_login::supported(p.engine)) else { return };
         let now = agent_login::rules_hash(p, &l.database);
@@ -140,7 +162,11 @@ impl AgentsPage {
         if changed {
             self.login_auto_start(p, cx);
         }
-        let read = if fresh { changed || due || self.login_open_conn(&p.id, cx).is_some() } else { changed && self.login.drift_rules.as_deref() != Some(now.as_str()) };
+        let read = if fresh {
+            changed || due || self.login_open_conn(&p.id, cx).is_some()
+        } else {
+            changed && self.login.drift_rules.as_deref() != Some(now.as_str())
+        };
         if read && !self.login_auto_running(&p.id) {
             self.login_drift(p, cx);
         }
@@ -199,7 +225,8 @@ impl AgentsPage {
     /// background when Dataman can reach the server with what it keeps; the others wait for
     /// Permissions, which says they are due.
     pub(crate) fn rotate_due(&mut self, cx: &mut Context<Self>) {
-        let due: Vec<ConnectionProfile> = self.profiles(cx).into_iter().filter(|p| p.agent_login.as_ref().and_then(|l| l.rotation_due(Utc::now())).is_some_and(|d| d <= 0)).collect();
+        let due: Vec<ConnectionProfile> =
+            self.profiles(cx).into_iter().filter(|p| p.agent_login.as_ref().and_then(|l| l.rotation_due(Utc::now())).is_some_and(|d| d <= 0)).collect();
         for p in due {
             let Some(l) = p.agent_login.clone() else { continue };
             let id = p.id.clone();
@@ -221,11 +248,15 @@ impl AgentsPage {
                     })
                 },
                 move |v, r, cx| match r {
-                    Ok(()) => v.edit_conn(&id, |p| {
-                        if let Some(l) = p.agent_login.as_mut() {
-                            l.rotated = Some(Utc::now());
-                        }
-                    }, cx),
+                    Ok(()) => v.edit_conn(
+                        &id,
+                        |p| {
+                            if let Some(l) = p.agent_login.as_mut() {
+                                l.rotated = Some(Utc::now());
+                            }
+                        },
+                        cx,
+                    ),
                     Err(e) => log::info!("the agent login's password is due for rotation and could not be rotated now: {e}"),
                 },
             );
@@ -286,17 +317,19 @@ impl AgentsPage {
         self.login_task(
             p,
             cx,
-            move |core, admin, p| {
-                Box::pin(async move { live::create(&core, &admin, &p, &rv, &opts).await })
-            },
+            move |core, admin, p| Box::pin(async move { live::create(&core, &admin, &p, &rv, &opts).await }),
             |v, r, cx| match r {
                 Ok((rec, checks, warn)) => {
                     let id = v.login.conn.clone().unwrap_or_default();
                     let user = rec.user.clone();
-                    v.edit_conn(&id, |p| {
-                        p.agent_login = Some(rec);
-                        p.agents_refused = false;
-                    }, cx);
+                    v.edit_conn(
+                        &id,
+                        |p| {
+                            p.agent_login = Some(rec);
+                            p.agents_refused = false;
+                        },
+                        cx,
+                    );
                     v.login.sheet = None;
                     v.login.checks = checks;
                     v.login.note = Some(match warn {
@@ -356,10 +389,14 @@ impl AgentsPage {
                 match r {
                     Ok(Verified::Gone) => {
                         let _ = v.core.secrets.delete(&agent_login::secret_account(&id));
-                        v.edit_conn(&id, |p| {
-                            p.agent_login = None;
-                            p.agents_refused = true;
-                        }, cx);
+                        v.edit_conn(
+                            &id,
+                            |p| {
+                                p.agent_login = None;
+                                p.agents_refused = true;
+                            },
+                            cx,
+                        );
                         v.login.note = Some((true, "The login is gone from the server: Dataman forgot it. Agents are refused here until you choose.".into()));
                     }
                     Ok(Verified::Checked(checks, back)) => {
@@ -368,11 +405,15 @@ impl AgentsPage {
                         }
                         let ok = checks.iter().all(|c| c.ok);
                         if ok {
-                            v.edit_conn(&id, |p| {
-                                if let Some(l) = p.agent_login.as_mut() {
-                                    l.verified = Some(Utc::now());
-                                }
-                            }, cx);
+                            v.edit_conn(
+                                &id,
+                                |p| {
+                                    if let Some(l) = p.agent_login.as_mut() {
+                                        l.verified = Some(Utc::now());
+                                    }
+                                },
+                                cx,
+                            );
                         }
                         v.login.checks = checks;
                         let said = if ok { "Verified by logging in as it" } else { "Logging in as it did not go as the rules say" };
@@ -398,7 +439,9 @@ impl AgentsPage {
                     let plan = live::rotation(&admin, &p, &l, &old, &new).await.map_err(|e| format!("{e:#}"))?;
                     live::apply(&admin, &plan, &l.database).await.map_err(|e| format!("{e:#}"))?;
                     // The server first, then the Keychain: the old one stays until this works.
-                    core.secrets.set(&agent_login::secret_account(&p.id), &new).map_err(|e| format!("the new password is set on the server but could not be kept in the {}: {e:#}; Rotate again", dataman_core::secret::STORE_NAME))?;
+                    core.secrets.set(&agent_login::secret_account(&p.id), &new).map_err(|e| {
+                        format!("the new password is set on the server but could not be kept in the {}: {e:#}; Rotate again", dataman_core::secret::STORE_NAME)
+                    })?;
                     // Sessions opened with the old password would go on working: ended.
                     Ok(live::end_sessions(&admin, &p, &l.user).await.err().map(|e| format!("{e:#}")))
                 })
@@ -408,14 +451,21 @@ impl AgentsPage {
                 match r {
                     Ok(left) => {
                         let id = v.login.conn.clone().unwrap_or_default();
-                        v.edit_conn(&id, |p| {
-                            if let Some(l) = p.agent_login.as_mut() {
-                                l.rotated = Some(Utc::now());
-                            }
-                        }, cx);
+                        v.edit_conn(
+                            &id,
+                            |p| {
+                                if let Some(l) = p.agent_login.as_mut() {
+                                    l.rotated = Some(Utc::now());
+                                }
+                            },
+                            cx,
+                        );
                         v.login.note = Some(match left {
                             None => (true, "New password set; agents reconnect with it".into()),
-                            Some(e) => (false, format!("New password set, but the sessions opened with the old one could not be ended ({e}): they last until they disconnect")),
+                            Some(e) => (
+                                false,
+                                format!("New password set, but the sessions opened with the old one could not be ended ({e}): they last until they disconnect"),
+                            ),
                         });
                     }
                     Err(e) => v.login.note = Some((false, e)),
@@ -454,11 +504,15 @@ impl AgentsPage {
 
     /// `plan` ran on `id`'s login for the rules `hash`: kept on the connection.
     fn login_synced(&mut self, id: &str, hash: String, plan: &Plan, cx: &mut Context<Self>) {
-        self.edit_conn(id, |p| {
-            if let Some(l) = p.agent_login.as_mut() {
-                live::note_synced(l, hash, plan);
-            }
-        }, cx);
+        self.edit_conn(
+            id,
+            |p| {
+                if let Some(l) = p.agent_login.as_mut() {
+                    live::note_synced(l, hash, plan);
+                }
+            },
+            cx,
+        );
     }
 
     /// `p`'s login was put back in its database made again: kept, and said where it shows.
@@ -532,11 +586,15 @@ impl AgentsPage {
 
     /// The option in the Login section: rule changes applied on their own, or left for Apply.
     fn login_set_auto(&mut self, p: &ConnectionProfile, on: bool, cx: &mut Context<Self>) {
-        self.edit_conn(&p.id, |p| {
-            if let Some(l) = p.agent_login.as_mut() {
-                l.auto_sync = on;
-            }
-        }, cx);
+        self.edit_conn(
+            &p.id,
+            |p| {
+                if let Some(l) = p.agent_login.as_mut() {
+                    l.auto_sync = on;
+                }
+            },
+            cx,
+        );
         if !on {
             return;
         }
@@ -612,16 +670,29 @@ impl AgentsPage {
     pub(crate) fn login_forget(&mut self, cx: &mut Context<Self>) {
         let id = self.login.conn.clone().unwrap_or_default();
         let kept = self.core.secrets.delete(&agent_login::secret_account(&id)).err();
-        self.edit_conn(&id, |p| {
-            p.agent_login = None;
-            p.agents_refused = true;
-        }, cx);
+        self.edit_conn(
+            &id,
+            |p| {
+                p.agent_login = None;
+                p.agents_refused = true;
+            },
+            cx,
+        );
         self.login.sheet = None;
         self.login.checks.clear();
         self.login.drift = None;
         self.login.note = Some(match kept {
-            None => (true, "The agent login is gone from Dataman. Agents are refused on this connection until you create a new one or let them use your login.".into()),
-            Some(e) => (false, format!("The agent login is gone from Dataman, but its password could not be removed from the {}: {e:#}. Agents are refused on this connection.", dataman_core::secret::STORE_NAME)),
+            None => (
+                true,
+                "The agent login is gone from Dataman. Agents are refused on this connection until you create a new one or let them use your login.".into(),
+            ),
+            Some(e) => (
+                false,
+                format!(
+                    "The agent login is gone from Dataman, but its password could not be removed from the {}: {e:#}. Agents are refused on this connection.",
+                    dataman_core::secret::STORE_NAME
+                ),
+            ),
         });
         cx.notify();
     }
@@ -669,7 +740,12 @@ impl AgentsPage {
         let mine = if p.user.is_empty() { "your login".to_string() } else { p.user.clone() };
         let create = |cx: &mut Context<Self>| {
             let pid = p.clone();
-            ui::button(t, "agents-login-create", ui::Btn::Primary).h(px(32.)).px(px(16.)).font_weight(FontWeight::SEMIBOLD).child("Create agent login").on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_open_create(&pid, cx)))
+            ui::button(t, "agents-login-create", ui::Btn::Primary)
+                .h(px(32.))
+                .px(px(16.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Create agent login")
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_open_create(&pid, cx)))
         };
         if !supported {
             card = card.child(div().text_color(t.tx2).child(agent_login::FILE_NOTE));
@@ -681,13 +757,21 @@ impl AgentsPage {
                     .flex_col()
                     .gap(px(8.))
                     .child(div().text_color(t.tx2).child(agent_login::NO_LOGINS_NOTE))
-                    .when(agent_login::pg::motherduck(p), |d| d.child(div().children(ui::here(&"agents-login-motherduck".into())).text_color(t.tx3).child(agent_login::MOTHERDUCK_NOTE))),
+                    .when(agent_login::pg::motherduck(p), |d| {
+                        d.child(div().children(ui::here(&"agents-login-motherduck".into())).text_color(t.tx3).child(agent_login::MOTHERDUCK_NOTE))
+                    }),
             );
         } else if p.agents_refused {
             let pid = p.clone();
-            let let_mine = ui::button(t, "agents-login-mine", ui::Btn::Secondary).h(px(32.)).px(px(14.)).child("Let agents use my login").on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_let_mine(&pid, cx)));
+            let let_mine = ui::button(t, "agents-login-mine", ui::Btn::Secondary)
+                .h(px(32.))
+                .px(px(14.))
+                .child("Let agents use my login")
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_let_mine(&pid, cx)));
             card = card
-                .child(div().text_color(t.err).child("Agents are refused here: its agent login was removed. Create a new one, or let agents use your login again (Dataman's rules still apply)."))
+                .child(div().text_color(t.err).child(
+                    "Agents are refused here: its agent login was removed. Create a new one, or let agents use your login again (Dataman's rules still apply).",
+                ))
                 .child(div().flex().flex_row().flex_wrap().gap(px(8.)).child(create(cx)).child(let_mine));
         } else {
             let (_, many) = crate::agents_rules::nouns(p.engine);
@@ -700,9 +784,17 @@ impl AgentsPage {
             let (text, button) = if agent_login::mongo::atlas(p) {
                 ("On MongoDB Atlas, database users are made in Atlas itself, so Dataman can't create one here.".to_string(), None)
             } else {
-                (format!("Give agents a login of their own and {} enforces these rules too: {tier}, hidden {many} not granted. Your tabs keep using {mine}.", p.engine.label()), Some(create(cx)))
+                (
+                    format!(
+                        "Give agents a login of their own and {} enforces these rules too: {tier}, hidden {many} not granted. Your tabs keep using {mine}.",
+                        p.engine.label()
+                    ),
+                    Some(create(cx)),
+                )
             };
-            card = card.child(self.login_chain(t, p, &mine)).child(div().pt(px(4.)).flex().flex_row().items_center().gap(px(20.)).child(div().flex_1().min_w_0().text_color(t.tx2).child(text)).children(button));
+            card = card.child(self.login_chain(t, p, &mine)).child(
+                div().pt(px(4.)).flex().flex_row().items_center().gap(px(20.)).child(div().flex_1().min_w_0().text_color(t.tx2).child(text)).children(button),
+            );
         }
         Some(card.children(self.login_notes(t, cx)).into_any_element())
     }
@@ -773,10 +865,12 @@ impl AgentsPage {
                 [one] => (t.err, "✕", format!("{} of {} checks failed: {}", 1, checks.len(), one.what)),
                 many => (t.err, "✕", format!("{} of {} checks failed", many.len(), checks.len())),
             };
-            let view = ui::button(t, "agents-login-checks", ui::Btn::Secondary).h(px(28.)).px(px(12.)).cursor_pointer().child("View checks").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-                v.login.sheet = Some(Sheet::Checks);
-                cx.notify();
-            }));
+            let view = ui::button(t, "agents-login-checks", ui::Btn::Secondary).h(px(28.)).px(px(12.)).cursor_pointer().child("View checks").on_click(
+                cx.listener(|v, _: &ClickEvent, _, cx| {
+                    v.login.sheet = Some(Sheet::Checks);
+                    cx.notify();
+                }),
+            );
             out.push(
                 div()
                     .children(ui::here(&"agents-login-checks-line".into()))
@@ -799,7 +893,19 @@ impl AgentsPage {
     fn checks_sheet(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_else(|| agent_login::login_name(&p.id));
         let checks = &self.login.checks;
-        let mut body = div().id("agents-login-checks-body").flex_1().min_w_0().min_h_0().overflow_y_scroll().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(18.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        let mut body = div()
+            .id("agents-login-checks-body")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(20.))
+            .py(px(16.))
+            .flex()
+            .flex_col()
+            .gap(px(18.))
+            .text_size(px(crate::theme::text::UI))
+            .line_height(px(18.));
         let verifying = self.login.busy.as_deref() == Some("Verifying…");
         if verifying || checks.is_empty() {
             let wait = |text: String| div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child(text);
@@ -833,8 +939,17 @@ impl AgentsPage {
                 .border_b_1()
                 .border_color(t.line)
                 .child(ui::caps(t, g.label().to_uppercase()))
-                .child(div().ml_auto().text_size(px(crate::theme::text::SMALL)).text_color(if bad > 0 { t.err } else { t.tx3 }).child(if bad > 0 { format!("{bad} failed") } else { format!("{} of {}", rows.len(), rows.len()) }));
-            let mut sec = div().children(ui::here(&SharedString::from(format!("agents-login-checks-{}", g.label().to_lowercase())).into())).flex().flex_col().gap(px(8.)).child(head);
+                .child(div().ml_auto().text_size(px(crate::theme::text::SMALL)).text_color(if bad > 0 { t.err } else { t.tx3 }).child(if bad > 0 {
+                    format!("{bad} failed")
+                } else {
+                    format!("{} of {}", rows.len(), rows.len())
+                }));
+            let mut sec = div()
+                .children(ui::here(&SharedString::from(format!("agents-login-checks-{}", g.label().to_lowercase())).into()))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(head);
             for c in rows {
                 k += 1;
                 let tip = Tip::new(c.what.clone()).lead(c.tip);
@@ -866,13 +981,19 @@ impl AgentsPage {
             }
             body = body.child(sec);
         }
-        let close = ui::button(t, "agents-login-checks-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-            v.login.sheet = None;
-            cx.notify();
-        }));
+        let close = ui::button(t, "agents-login-checks-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(
+            |v, _: &ClickEvent, _, cx| {
+                v.login.sheet = None;
+                cx.notify();
+            },
+        ));
         let pv = p.clone();
         let again = p.agent_login.is_some().then(|| {
-            let b = ui::button(t, "agents-login-checks-again", ui::Btn::Secondary).h(px(30.)).px(px(12.)).child(if verifying { "Verifying…" } else { "Verify again" });
+            let b = ui::button(t, "agents-login-checks-again", ui::Btn::Secondary).h(px(30.)).px(px(12.)).child(if verifying {
+                "Verifying…"
+            } else {
+                "Verify again"
+            });
             if verifying { b.opacity(0.5) } else { b.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx))) }
         });
         let footer = ui::modal_footer(t).child(div().flex_1()).children(again).child(close).into_any_element();
@@ -881,19 +1002,28 @@ impl AgentsPage {
 
     /// Where a login was removed, said under the tier: agents are refused until the user chooses.
     pub(crate) fn login_refused_note(&self, t: &Theme, p: &ConnectionProfile) -> Option<AnyElement> {
-        (p.agents_refused && p.agent_login.is_none()).then(|| div().children(ui::here(&"agents-login-refused".into())).text_size(px(crate::theme::text::SMALL)).text_color(t.err).child("Agents are refused here: its agent login was removed.").into_any_element())
+        (p.agents_refused && p.agent_login.is_none()).then(|| {
+            div()
+                .children(ui::here(&"agents-login-refused".into()))
+                .text_size(px(crate::theme::text::SMALL))
+                .text_color(t.err)
+                .child("Agents are refused here: its agent login was removed.")
+                .into_any_element()
+        })
     }
 
     /// Last on the page while agents connect as a login of their own: it, its password, and the
     /// way back to the user's login.
     pub(crate) fn login_section(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> Option<AnyElement> {
         let l = p.agent_login.as_ref().filter(|_| agent_login::supported(p.engine))?;
-        let drifted = l.rules != agent_login::rules_hash(p, &l.database) || self.login.drift.as_ref().is_some_and(|d| d.as_ref().is_ok_and(|d| !d.changes.is_empty()));
+        let drifted =
+            l.rules != agent_login::rules_hash(p, &l.database) || self.login.drift.as_ref().is_some_and(|d| d.as_ref().is_ok_and(|d| !d.changes.is_empty()));
         let busy = self.login.busy.clone();
         let button = |id: &'static str, label: String| ui::button(t, id, ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(label);
         let row = || div().min_h(px(30.)).flex().flex_row().items_center().gap(px(12.));
         let pv = p.clone();
-        let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() }).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
+        let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() })
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
         let state = self.login_state(p, l, drifted);
         let (pa, on) = (p.clone(), l.auto_sync);
         let auto = div()
@@ -907,20 +1037,36 @@ impl AgentsPage {
             .child(ui::switch(t, "agents-login-auto", on).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_set_auto(&pa, !on, cx))));
         let mut login = sub(sub_title(t, "agents-login-tip", "Login", login_tip())).child(
             row()
-                .child(div().children(ui::here(&"agents-login-as".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(l.user.clone()))
+                .child(
+                    div()
+                        .children(ui::here(&"agents-login-as".into()))
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_color(t.tx)
+                        .child(l.user.clone()),
+                )
                 .child(state.render(t))
                 .child(div().ml_auto().flex().flex_row().items_center().gap(px(16.)).child(auto).child(verify)),
         );
         login = login.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if on { AUTO_ON } else { AUTO_OFF }));
         if l.not_granted > 0 {
-            login = login.child(div().text_size(px(crate::theme::text::UI)).text_color(t.warn).child(format!("{} can't be granted to it: agents don't see {}.", agent_login_count(l.not_granted, "table"), if l.not_granted == 1 { "it" } else { "them" })));
+            login = login.child(div().text_size(px(crate::theme::text::UI)).text_color(t.warn).child(format!(
+                "{} can't be granted to it: agents don't see {}.",
+                agent_login_count(l.not_granted, "table"),
+                if l.not_granted == 1 { "it" } else { "them" }
+            )));
         }
         if drifted {
             login = login.child(self.login_drift_lines(t, p, cx));
         }
         login = login.children(self.login_notes(t, cx));
         let pr = p.clone();
-        let rotate = button("agents-login-rotate", if busy.as_deref() == Some("A new password…") { "A new password…".into() } else { "Rotate password".into() }).ml_auto().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_rotate(&pr, cx)));
+        let rotate =
+            button("agents-login-rotate", if busy.as_deref() == Some("A new password…") { "A new password…".into() } else { "Rotate password".into() })
+                .ml_auto()
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_rotate(&pr, cx)));
         let store = dataman_core::secret::STORE_NAME;
         let (due, kept) = match l.rotation_due(Utc::now()) {
             Some(d) if d <= 0 => (true, format!("In the {store} · rotation due")),
@@ -928,7 +1074,8 @@ impl AgentsPage {
             Some(d) => (false, format!("In the {store} · rotates in {d} days")),
             None => (false, format!("In the {store}")),
         };
-        let password = sub(sub_title(t, "agents-login-pw-tip", "Password", password_tip())).child(row().child(div().min_w_0().text_color(if due { t.warn } else { t.tx }).child(kept)).child(rotate));
+        let password = sub(sub_title(t, "agents-login-pw-tip", "Password", password_tip()))
+            .child(row().child(div().min_w_0().text_color(if due { t.warn } else { t.tx }).child(kept)).child(rotate));
         let pm = p.clone();
         let err = t.err;
         let remove = button("agents-login-remove", "Remove login…".into())
@@ -964,7 +1111,8 @@ impl AgentsPage {
 
     /// The rules changed since the login was made: what it needs, and the button that runs it.
     fn login_drift_lines(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> gpui::Div {
-        let col = div().children(ui::here(&"agents-login-drift".into())).flex().flex_col().gap(px(10.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        let col =
+            div().children(ui::here(&"agents-login-drift".into())).flex().flex_col().gap(px(10.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
         if self.login_auto_running(&p.id) {
             return col.child(div().text_color(t.tx3).child("Dataman is applying the new rules to the login, as your login. Until then it keeps its old grants, and Dataman already applies the new rules on top."));
         }
@@ -972,26 +1120,39 @@ impl AgentsPage {
             None => col.child(div().text_color(t.tx3).child("Reading what the login has now…")),
             Some(Err(e)) => {
                 let pid = p.clone();
-                col.child(ui::error_block(t, "agents-login-drift-error", e.clone())).child(div().flex().flex_row().child(ui::button(t, "agents-login-drift-retry", ui::Btn::Secondary).h(px(28.)).child("Try again").on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_drift(&pid, cx)))))
+                col.child(ui::error_block(t, "agents-login-drift-error", e.clone())).child(
+                    div().flex().flex_row().child(
+                        ui::button(t, "agents-login-drift-retry", ui::Btn::Secondary)
+                            .h(px(28.))
+                            .child("Try again")
+                            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_drift(&pid, cx))),
+                    ),
+                )
             }
             Some(Ok(d)) => {
                 let n = d.changes.len();
                 let pid = p.clone();
                 let label = self.login.busy.clone().unwrap_or_else(|| if n == 1 { "Apply 1 change".into() } else { format!("Apply {n} changes") });
-                let view = ui::button(t, "agents-login-changes", ui::Btn::Secondary).h(px(30.)).px(px(14.)).cursor_pointer().child("View changes").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-                    v.login.sheet = Some(Sheet::Changes);
-                    v.login.sql_scroll.set_offset(gpui::Point::default());
-                    cx.notify();
-                }));
-                col.child(div().text_color(t.tx2).child("Until they run, the login keeps its old grants. Dataman already applies the new rules on top, so nothing new is exposed meanwhile."))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(10.))
-                            .child(view)
-                            .child(ui::button(t, "agents-login-apply", ui::Btn::Primary).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).child(label).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_apply_drift(&pid, cx)))),
-                    )
+                let view = ui::button(t, "agents-login-changes", ui::Btn::Secondary).h(px(30.)).px(px(14.)).cursor_pointer().child("View changes").on_click(
+                    cx.listener(|v, _: &ClickEvent, _, cx| {
+                        v.login.sheet = Some(Sheet::Changes);
+                        v.login.sql_scroll.set_offset(gpui::Point::default());
+                        cx.notify();
+                    }),
+                );
+                col.child(div().text_color(t.tx2).child(
+                    "Until they run, the login keeps its old grants. Dataman already applies the new rules on top, so nothing new is exposed meanwhile.",
+                ))
+                .child(
+                    div().flex().flex_row().gap(px(10.)).child(view).child(
+                        ui::button(t, "agents-login-apply", ui::Btn::Primary)
+                            .h(px(30.))
+                            .px(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(label)
+                            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_apply_drift(&pid, cx))),
+                    ),
+                )
             }
         }
     }
@@ -1029,7 +1190,13 @@ impl AgentsPage {
                     ui::modal(t, "agents-login-card")
                         .w(px(w))
                         .h(px(h))
-                        .child(ui::modal_header_with(t, None, title, p.env.is_production().then(|| prod_tag(t).into_any_element()), ui::modal_close(t, "agents-login-close").cursor_pointer().on_click(close)))
+                        .child(ui::modal_header_with(
+                            t,
+                            None,
+                            title,
+                            p.env.is_production().then(|| prod_tag(t).into_any_element()),
+                            ui::modal_close(t, "agents-login-close").cursor_pointer().on_click(close),
+                        ))
                         .child(div().flex_1().min_h_0().flex().flex_row().child(body))
                         .child(footer),
                 )
@@ -1037,12 +1204,41 @@ impl AgentsPage {
         )
     }
 
-    fn create_sheet(&self, t: &Theme, p: &ConnectionProfile, review: Option<&Result<live::Review, String>>, opts: Options, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
+    fn create_sheet(
+        &self,
+        t: &Theme,
+        p: &ConnectionProfile,
+        review: Option<&Result<live::Review, String>>,
+        opts: Options,
+        confirm: bool,
+        busy: bool,
+        error: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> (String, AnyElement, AnyElement) {
         let user = agent_login::login_name(&p.id);
         let title = format!("Create {user} on {}", p.name);
         let rv = match review {
-            None => return (title, div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("Checking your login and what the rules allow…").into_any_element(), ui::modal_footer(t).into_any_element()),
-            Some(Err(e)) => return (title, ui::error_block(t, "agents-login-review-error", e.clone()).flex_1().p(px(20.)).into_any_element(), ui::modal_footer(t).into_any_element()),
+            None => {
+                return (
+                    title,
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(t.tx3)
+                        .child("Checking your login and what the rules allow…")
+                        .into_any_element(),
+                    ui::modal_footer(t).into_any_element(),
+                );
+            }
+            Some(Err(e)) => {
+                return (
+                    title,
+                    ui::error_block(t, "agents-login-review-error", e.clone()).flex_1().p(px(20.)).into_any_element(),
+                    ui::modal_footer(t).into_any_element(),
+                );
+            }
             Some(Ok(rv)) => rv,
         };
         let plan = &rv.plan;
@@ -1111,22 +1307,53 @@ impl AgentsPage {
                 .flex_row()
                 .gap(px(10.))
                 .cursor_pointer()
-                .child(div().pt(px(1.)).children(on.then(|| ui::here(&gpui::SharedString::from(format!("{id}-on")).into())).flatten()).child(checkbox(t, on, false)))
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(text)).children(sub.map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string()))))
+                .child(
+                    div()
+                        .pt(px(1.))
+                        .children(on.then(|| ui::here(&gpui::SharedString::from(format!("{id}-on")).into())).flatten())
+                        .child(checkbox(t, on, false)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_color(t.tx).child(text))
+                        .children(sub.map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string()))),
+                )
         };
         let (p1, p2, p3) = (p.clone(), p.clone(), p.clone());
         let mut opts_row = div().flex().flex_row().items_start().gap(px(32.)).child(
-            opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate its password every {} days", agent_login::ROTATE_DAYS), Some(format!("A new one on the server and in the {}, the old one's sessions ended", dataman_core::secret::STORE_NAME).as_str()))
-                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx))),
+            opt_row(
+                "agents-login-opt-rotate",
+                opts.rotate_days.is_some(),
+                format!("Rotate its password every {} days", agent_login::ROTATE_DAYS),
+                Some(format!("A new one on the server and in the {}, the old one's sessions ended", dataman_core::secret::STORE_NAME).as_str()),
+            )
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx)
+            })),
         );
         // Only where the database itself turns the next session away.
         if agent_login::caps_sessions(p.engine) {
             opts_row = opts_row.child(
-                opt_row("agents-login-opt-conns", opts.conn_limit.is_some(), format!("At most {} sessions open at once", agent_login::CONN_LIMIT), Some("The database turns away more, so a runaway agent can't pile up open sessions"))
-                    .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p2, |o| o.conn_limit = if o.conn_limit.is_some() { None } else { Some(agent_login::CONN_LIMIT) }, cx))),
+                opt_row(
+                    "agents-login-opt-conns",
+                    opts.conn_limit.is_some(),
+                    format!("At most {} sessions open at once", agent_login::CONN_LIMIT),
+                    Some("The database turns away more, so a runaway agent can't pile up open sessions"),
+                )
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                    v.login_option(&p2, |o| o.conn_limit = if o.conn_limit.is_some() { None } else { Some(agent_login::CONN_LIMIT) }, cx)
+                })),
             );
         }
-        opts_row = opts_row.child(opt_row("agents-login-opt-auto", opts.auto_sync, "Apply rule changes on its own".into(), Some(AUTO_SUB)).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p3, |o| o.auto_sync = !o.auto_sync, cx))));
+        opts_row = opts_row.child(
+            opt_row("agents-login-opt-auto", opts.auto_sync, "Apply rule changes on its own".into(), Some(AUTO_SUB))
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p3, |o| o.auto_sync = !o.auto_sync, cx))),
+        );
         let options = div()
             .children(ui::here(&"agents-login-options".into()))
             .flex_none()
@@ -1158,16 +1385,29 @@ impl AgentsPage {
             _ => "Create login".to_string(),
         };
         let pc = p.clone();
-        let create = ui::button(t, "agents-login-go", if confirm { ui::Btn::Danger } else { ui::Btn::Primary }).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).child(label);
-        let create = if blocked || busy { create.opacity(0.5).into_any_element() } else { create.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_create(&pc, cx))).into_any_element() };
-        let cancel = ui::button(t, "agents-login-cancel", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Cancel").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-            v.login.sheet = None;
-            cx.notify();
-        }));
+        let create = ui::button(t, "agents-login-go", if confirm { ui::Btn::Danger } else { ui::Btn::Primary })
+            .h(px(30.))
+            .px(px(14.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(label);
+        let create = if blocked || busy {
+            create.opacity(0.5).into_any_element()
+        } else {
+            create.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_create(&pc, cx))).into_any_element()
+        };
+        let cancel = ui::button(t, "agents-login-cancel", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Cancel").on_click(cx.listener(
+            |v, _: &ClickEvent, _, cx| {
+                v.login.sheet = None;
+                cx.notify();
+            },
+        ));
         let say = match (error, confirm) {
             (Some(_), _) => div().flex_1().min_w_0().text_color(t.err).child("Not created: the reason is above."),
             (None, true) => div().flex_1().text_color(t.err).child(format!("Production: this creates a login on {} now.", p.host)),
-            (None, false) => div().flex_1().text_color(t.tx3).child(format!("Dataman runs this as {}, then logs in as the new login to check it before keeping it.", if rv.probe.login.is_empty() { "your login" } else { &rv.probe.login })),
+            (None, false) => div().flex_1().text_color(t.tx3).child(format!(
+                "Dataman runs this as {}, then logs in as the new login to check it before keeping it.",
+                if rv.probe.login.is_empty() { "your login" } else { &rv.probe.login }
+            )),
         };
         let footer = ui::modal_footer(t).child(say).child(cancel).child(create).into_any_element();
         (title, body, footer)
@@ -1181,7 +1421,17 @@ impl AgentsPage {
         let (gone, new) = (d.changes.iter().filter(|c| !c.add).count(), d.changes.iter().filter(|c| c.add).count());
         let line = |c: &agent_login::Change| {
             let (sign, fg, bg) = if c.add { ("+", t.ok, t.ok_s) } else { ("−", t.err, t.err_s) };
-            div().flex_none().min_h(px(22.)).px(px(20.)).py(px(2.)).flex().flex_row().gap(px(10.)).bg(bg).child(div().flex_none().w(px(8.)).text_color(fg).child(sign)).child(div().flex_1().min_w_0().text_color(t.tx).child(c.line.clone()))
+            div()
+                .flex_none()
+                .min_h(px(22.))
+                .px(px(20.))
+                .py(px(2.))
+                .flex()
+                .flex_row()
+                .gap(px(10.))
+                .bg(bg)
+                .child(div().flex_none().w(px(8.)).text_color(fg).child(sign))
+                .child(div().flex_1().min_w_0().text_color(t.tx).child(c.line.clone()))
         };
         // What goes first, then what comes, as a diff reads.
         let lines = d.changes.iter().filter(|c| !c.add).chain(d.changes.iter().filter(|c| c.add)).map(line);
@@ -1206,25 +1456,68 @@ impl AgentsPage {
                     .border_b_1()
                     .border_color(t.line)
                     .child(ui::caps(t, "CHANGES"))
-                    .child(div().ml_auto().flex().flex_row().gap(px(8.)).font_family(mono()).text_size(px(crate::theme::text::SMALL)).child(count(gone, "−", t.err)).child(count(new, "+", t.ok))),
+                    .child(
+                        div()
+                            .ml_auto()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .font_family(mono())
+                            .text_size(px(crate::theme::text::SMALL))
+                            .child(count(gone, "−", t.err))
+                            .child(count(new, "+", t.ok)),
+                    ),
             )
-            .child(div().children(ui::here(&"agents-login-diff".into())).id("agents-login-diff").flex_1().min_h_0().overflow_y_scroll().py(px(10.)).flex().flex_col().gap(px(2.)).font_family(mono()).text_size(px(crate::theme::text::UI)).line_height(px(18.)).children(lines));
-        let body = div().flex_1().min_w_0().flex().flex_row().child(diff).child(self.what_runs(t, "agents-login-drift-sql", Ok(&d.plan), p.engine)).into_any_element();
+            .child(
+                div()
+                    .children(ui::here(&"agents-login-diff".into()))
+                    .id("agents-login-diff")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .py(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .font_family(mono())
+                    .text_size(px(crate::theme::text::UI))
+                    .line_height(px(18.))
+                    .children(lines),
+            );
+        let body =
+            div().flex_1().min_w_0().flex().flex_row().child(diff).child(self.what_runs(t, "agents-login-drift-sql", Ok(&d.plan), p.engine)).into_any_element();
         let pid = p.clone();
         let label = if n == 1 { "Apply 1 change".to_string() } else { format!("Apply {n} changes") };
-        let apply = ui::button(t, "agents-login-changes-apply", ui::Btn::Primary).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).cursor_pointer().child(label).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
-            v.login.sheet = None;
-            v.login_apply_drift(&pid, cx);
-        }));
-        let close = ui::button(t, "agents-login-changes-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-            v.login.sheet = None;
-            cx.notify();
-        }));
+        let apply = ui::button(t, "agents-login-changes-apply", ui::Btn::Primary)
+            .h(px(30.))
+            .px(px(14.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .child(label)
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                v.login.sheet = None;
+                v.login_apply_drift(&pid, cx);
+            }));
+        let close = ui::button(t, "agents-login-changes-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(
+            |v, _: &ClickEvent, _, cx| {
+                v.login.sheet = None;
+                cx.notify();
+            },
+        ));
         let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Runs as your login, then {user} has what the rules allow now."));
         Some((format!("Changes to {user}"), body, ui::modal_footer(t).child(say).child(close).child(apply).into_any_element()))
     }
 
-    fn remove_sheet(&self, t: &Theme, p: &ConnectionProfile, plan: Option<&Result<Plan, String>>, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
+    fn remove_sheet(
+        &self,
+        t: &Theme,
+        p: &ConnectionProfile,
+        plan: Option<&Result<Plan, String>>,
+        confirm: bool,
+        busy: bool,
+        error: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> (String, AnyElement, AnyElement) {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
         let title = format!("Remove {user} from {}", p.name);
         let text = match plan {
@@ -1234,7 +1527,17 @@ impl AgentsPage {
         };
         let unreachable = matches!(plan, Some(Err(_))) || error.is_some();
         let lead = "Drops the login and only what Dataman made for it (views, their schema or database, its role), revokes what it holds, and forgets its password. Nothing Dataman didn't make is touched. Agents are then refused here until you create a new login or let them use yours.";
-        let mut head = div().flex_none().px(px(20.)).py(px(14.)).border_b_1().border_color(t.line).flex().flex_col().gap(px(10.)).line_height(px(18.)).child(div().text_color(t.tx2).child(lead));
+        let mut head = div()
+            .flex_none()
+            .px(px(20.))
+            .py(px(14.))
+            .border_b_1()
+            .border_color(t.line)
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .line_height(px(18.))
+            .child(div().text_color(t.tx2).child(lead));
         if let Some(Err(e)) = plan {
             head = head.child(ui::error_block(t, "agents-login-plan-error", e.clone()));
         }
@@ -1246,7 +1549,8 @@ impl AgentsPage {
                 .child(div().text_color(t.tx2).child("Can't reach the server, or your login can't drop it? Dataman can forget it on its own side: the login stays on the server until an admin drops it."))
                 .child(div().flex().flex_row().child(ui::button(t, "agents-login-forget", ui::Btn::Danger).h(px(28.)).cursor_pointer().child("Forget it in Dataman only").on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.login_forget(cx)))));
         }
-        let body = div().flex_1().min_w_0().flex().flex_col().child(head).child(self.what_runs(t, "agents-login-remove-sql", text, p.engine)).into_any_element();
+        let body =
+            div().flex_1().min_w_0().flex().flex_col().child(head).child(self.what_runs(t, "agents-login-remove-sql", text, p.engine)).into_any_element();
         let ready = matches!(plan, Some(Ok(_))) && !busy;
         let label = match (busy, p.env.is_production(), confirm) {
             (true, _, _) => "Removing…".to_string(),
@@ -1256,11 +1560,17 @@ impl AgentsPage {
         };
         let pr = p.clone();
         let go = ui::button(t, "agents-login-remove-go", ui::Btn::Danger).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).child(label);
-        let go = if ready { go.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_remove(&pr, cx))).into_any_element() } else { go.opacity(0.5).into_any_element() };
-        let cancel = ui::button(t, "agents-login-remove-cancel", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Cancel").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-            v.login.sheet = None;
-            cx.notify();
-        }));
+        let go = if ready {
+            go.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_remove(&pr, cx))).into_any_element()
+        } else {
+            go.opacity(0.5).into_any_element()
+        };
+        let cancel = ui::button(t, "agents-login-remove-cancel", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Cancel").on_click(cx.listener(
+            |v, _: &ClickEvent, _, cx| {
+                v.login.sheet = None;
+                cx.notify();
+            },
+        ));
         let say = if confirm { div().flex_1().text_color(t.err).child(format!("Production: this drops {user} on {} now.", p.host)) } else { div().flex_1() };
         let footer = ui::modal_footer(t).child(say).child(cancel).child(go).into_any_element();
         (title, body, footer)
@@ -1288,7 +1598,9 @@ impl AgentsPage {
         let count = if view > gpui::px(0.) { (view.as_f32() / row.as_f32()).ceil() as usize + 2 * WHAT_OVERSCAN } else { 80 };
         let n = what.lines.len();
         let (first, last) = (first.min(n), (first + count).min(n));
-        let line = |(s, runs): &(SharedString, Vec<TextRun>)| if s.is_empty() { div().h(row) } else { div().whitespace_nowrap().child(StyledText::new(s.clone()).with_runs(runs.clone())) };
+        let line = |(s, runs): &(SharedString, Vec<TextRun>)| {
+            if s.is_empty() { div().h(row) } else { div().whitespace_nowrap().child(StyledText::new(s.clone()).with_runs(runs.clone())) }
+        };
         let widest = (!(first..last).contains(&what.widest)).then(|| what.lines.get(what.widest).map(|l| line(l).h_0().overflow_hidden())).flatten();
         div()
             .flex_1()
@@ -1296,7 +1608,18 @@ impl AgentsPage {
             .min_w_0()
             .flex()
             .flex_col()
-            .child(div().h(px(40.)).flex_none().px(px(20.)).flex().flex_row().items_center().border_b_1().border_color(t.line).child(div().children(ui::here(&"agents-login-what".into())).child(ui::caps(t, "WHAT RUNS"))))
+            .child(
+                div()
+                    .h(px(40.))
+                    .flex_none()
+                    .px(px(20.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(t.line)
+                    .child(div().children(ui::here(&"agents-login-what".into())).child(ui::caps(t, "WHAT RUNS"))),
+            )
             .child(
                 div()
                     .children(ui::here(&id.into()))
@@ -1335,9 +1658,18 @@ impl AgentsPage {
     pub(crate) fn demo_drift(&mut self, p: &ConnectionProfile, changes: Vec<agent_login::Change>) {
         let now = agent_login::rules_hash(p, &p.agent_login.as_ref().map(|l| l.database.clone()).unwrap_or_default());
         // What runs: the lines themselves, as the plan of a real drift holds them.
-        let steps = changes.iter().map(|c| agent_login::Step { action: agent_login::Action::Sql(c.line.clone()), shown: format!("{};", c.line), copy: format!("{};", c.line), group: "Grants".into() }).collect();
+        let steps = changes
+            .iter()
+            .map(|c| agent_login::Step {
+                action: agent_login::Action::Sql(c.line.clone()),
+                shown: format!("{};", c.line),
+                copy: format!("{};", c.line),
+                group: "Grants".into(),
+            })
+            .collect();
         let plan = Plan { engine: Some(p.engine), steps, one_tx: true, ..Default::default() };
-        let drift = live::Drift { plan, changes, probe: Default::default(), spec: agent_login::compile(p, "", &Options::default()), inventory: Default::default() };
+        let drift =
+            live::Drift { plan, changes, probe: Default::default(), spec: agent_login::compile(p, "", &Options::default()), inventory: Default::default() };
         self.login = LoginUi { conn: Some(p.id.clone()), drift: Some(Ok(drift)), drift_rules: Some(now), ..Default::default() };
     }
 
@@ -1349,15 +1681,58 @@ impl AgentsPage {
     pub(crate) fn demo_checks(&mut self, p: &ConnectionProfile) {
         self.login.conn = Some(p.id.clone());
         use live::{Check, CheckGroup as G};
-        let c = |group, what: &str, on: &str, tip, ok, detail: &str| Check { group, what: what.into(), on: on.into(), tip, guard: live::guards(what), ok, detail: detail.into() };
+        let c = |group, what: &str, on: &str, tip, ok, detail: &str| Check {
+            group,
+            what: what.into(),
+            on: on.into(),
+            tip,
+            guard: live::guards(what),
+            ok,
+            detail: detail.into(),
+        };
         self.login.checks = vec![
-            c(G::Login, "Logs in as itself", &agent_login::login_name(&p.id), "Dataman connected with the login's own password, from the Keychain, and the server named it back.", true, ""),
+            c(
+                G::Login,
+                "Logs in as itself",
+                &agent_login::login_name(&p.id),
+                "Dataman connected with the login's own password, from the Keychain, and the server named it back.",
+                true,
+                "",
+            ),
             c(G::Login, "Sessions start read-only", "", "Its role starts every session read-only, a second lock on top of its grants.", true, ""),
             c(G::Reading, "Reads what the rules allow", "public.orders", "A read that returns no rows, on one table the rules let agents read.", true, ""),
-            c(G::Reading, "Reads masked tables through its view", "users", "Masked columns are read through a view Dataman made, which masks them on the server.", true, ""),
-            c(G::Writing, "Can't write rows", "public.orders", "Read only: a write that matches no row, refused by the database for lack of privilege.", true, ""),
-            c(G::Privacy, "Can't read masked values unmasked", "users.email", "The table itself doesn't give it the masked column: only the view, which masks it.", true, ""),
-            c(G::Privacy, "Can't read hidden tables", "public.audit_log", "Tables Privacy hides get no grant at all: the database itself refuses them.", false, "it read the hidden table"),
+            c(
+                G::Reading,
+                "Reads masked tables through its view",
+                "users",
+                "Masked columns are read through a view Dataman made, which masks them on the server.",
+                true,
+                "",
+            ),
+            c(
+                G::Writing,
+                "Can't write rows",
+                "public.orders",
+                "Read only: a write that matches no row, refused by the database for lack of privilege.",
+                true,
+                "",
+            ),
+            c(
+                G::Privacy,
+                "Can't read masked values unmasked",
+                "users.email",
+                "The table itself doesn't give it the masked column: only the view, which masks it.",
+                true,
+                "",
+            ),
+            c(
+                G::Privacy,
+                "Can't read hidden tables",
+                "public.audit_log",
+                "Tables Privacy hides get no grant at all: the database itself refuses them.",
+                false,
+                "it read the hidden table",
+            ),
             c(G::Structure, "Can't change structure", "", "Creating a table as it is refused (and rolled back if it wasn't).", true, ""),
         ];
         self.login.sheet = Some(Sheet::Checks);
@@ -1368,7 +1743,9 @@ impl AgentsPage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SyncState {
     /// `live`: Auto sync on, so it stays that way on its own.
-    InSync { live: bool },
+    InSync {
+        live: bool,
+    },
     Syncing,
     Checking,
     /// Changes waiting for Apply (0: the rules changed, not read yet).
@@ -1395,7 +1772,16 @@ impl SyncState {
             SyncState::Changes(_) => "agents-login-state-changes",
             SyncState::Failed => "agents-login-state-failed",
         };
-        div().children(ui::here(&id.into())).flex_none().flex().flex_row().items_center().gap(px(8.)).text_color(color).child(status_dot(color, pulse, id)).child(label)
+        div()
+            .children(ui::here(&id.into()))
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_color(color)
+            .child(status_dot(color, pulse, id))
+            .child(label)
     }
 }
 
@@ -1441,19 +1827,38 @@ fn check_mark(t: &Theme, c: &live::Check) -> gpui::Div {
     let mark = div().flex_none().w(px(12.)).flex().items_center().justify_center();
     match (c.ok, c.guard) {
         (false, _) => mark.text_color(t.err).child("✕"),
-        (true, true) => mark.children(ui::here(&"agents-login-check-lock".into())).child(crate::assets::icon(crate::assets::Icon::Lock).size(px(12.)).text_color(t.ok)),
+        (true, true) => {
+            mark.children(ui::here(&"agents-login-check-lock".into())).child(crate::assets::icon(crate::assets::Icon::Lock).size(px(12.)).text_color(t.ok))
+        }
         (true, false) => mark.text_color(t.ok).child("✓"),
     }
 }
 
 fn prod_tag(t: &Theme) -> gpui::Div {
-    div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn).bg(t.warn_s).child("PRODUCTION")
+    div()
+        .flex_none()
+        .h(px(20.))
+        .px(px(7.))
+        .flex()
+        .items_center()
+        .text_size(px(crate::theme::text::HINT))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.warn)
+        .bg(t.warn_s)
+        .child("PRODUCTION")
 }
 
 fn password_tip() -> Tip {
     Tip::new("Its password")
-        .lead(format!("{} random characters, kept in the {}. Dataman and its MCP connect as the login on their own: nothing to paste anywhere.", agent_login::hash::PASSWORD_LEN, dataman_core::secret::STORE_NAME))
-        .item("Rotate password", format!("A new one on the server and in the {}; the sessions opened with the old one are ended.", dataman_core::secret::STORE_NAME))
+        .lead(format!(
+            "{} random characters, kept in the {}. Dataman and its MCP connect as the login on their own: nothing to paste anywhere.",
+            agent_login::hash::PASSWORD_LEN,
+            dataman_core::secret::STORE_NAME
+        ))
+        .item(
+            "Rotate password",
+            format!("A new one on the server and in the {}; the sessions opened with the old one are ended.", dataman_core::secret::STORE_NAME),
+        )
 }
 
 fn agent_login_count(n: usize, one: &str) -> String {

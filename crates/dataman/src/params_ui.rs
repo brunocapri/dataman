@@ -1,5 +1,5 @@
-use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, SharedString, Window, actions, div, prelude::*};
 use crate::theme::px;
+use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, SharedString, Window, actions, div, prelude::*};
 
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, mono};
@@ -109,7 +109,17 @@ impl Render for ParamPrompt {
                 .flex_row()
                 .items_center()
                 .gap(px(10.))
-                .child(div().w(px(96.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(mono()).text_color(t.param).child(r.key.clone()))
+                .child(
+                    div()
+                        .w(px(96.))
+                        .flex_none()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .font_family(mono())
+                        .text_color(t.param)
+                        .child(r.key.clone()),
+                )
                 .child(div().flex_1().min_w_0().child(r.input.clone()))
                 .child(
                     div()

@@ -56,13 +56,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use editor::{CodeEditor, EditorEvent};
-use gpui::{
-    App, Bounds, Context, Entity, Focusable, KeyBinding, Window, WindowBounds, WindowOptions, actions, div, prelude::*,
-    px, size,
-};
-use gpui_platform::application;
 use dataman_core::schema::{Column, RelKind, Relation, SchemaSnapshot};
+use editor::{CodeEditor, EditorEvent};
+use gpui::{App, Bounds, Context, Entity, Focusable, KeyBinding, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size};
+use gpui_platform::application;
 
 actions!(editor_demo, [Quit]);
 
@@ -94,31 +91,13 @@ select \"Odd Column\", 42, 3.14e2, now()::date from order_summary;
 const SAMPLE: &str = "select o.id, o.customer, o.status, o.total from orders o join customer c on c.id = o.customer where o.status = 'open' and o.total > 100 order by o.total desc limit 50; select c.name, count(*) from customer c join orders o on o.customer = c.id where o.st";
 
 fn schema() -> SchemaSnapshot {
-    let col = |name: &str, ty: &str, pk: bool| Column {
-        name: name.into(),
-        type_name: ty.into(),
-        nullable: Some(!pk),
-        primary_key: pk,
-        default: None,
-    };
+    let col = |name: &str, ty: &str, pk: bool| Column { name: name.into(), type_name: ty.into(), nullable: Some(!pk), primary_key: pk, default: None };
     let rel = |name: &str, kind| Relation { schema: "public".into(), name: name.into(), kind, oid: None };
-    let relations =
-        vec![rel("orders", RelKind::Table), rel("customer", RelKind::Table), rel("order_summary", RelKind::View)];
+    let relations = vec![rel("orders", RelKind::Table), rel("customer", RelKind::Table), rel("order_summary", RelKind::View)];
     let mut columns = HashMap::new();
-    columns.insert(
-        0,
-        vec![
-            col("id", "bigint", true),
-            col("customer", "bigint", false),
-            col("status", "text", false),
-            col("total", "numeric(12,2)", false),
-        ],
-    );
+    columns.insert(0, vec![col("id", "bigint", true), col("customer", "bigint", false), col("status", "text", false), col("total", "numeric(12,2)", false)]);
     columns.insert(1, vec![col("id", "bigint", true), col("name", "text", false)]);
-    columns.insert(
-        2,
-        vec![col("customer", "text", false), col("orders", "bigint", false), col("total", "numeric", false)],
-    );
+    columns.insert(2, vec![col("customer", "text", false), col("orders", "bigint", false), col("total", "numeric", false)]);
     let mut s = SchemaSnapshot::new(vec!["public".into()], vec!["public".into(), "sales".into()], relations, columns);
     let f = |name: &str, args: &str, result: &str| dataman_core::schema::FuncSig {
         oid: 1,
@@ -186,14 +165,7 @@ fn pct(v: &mut [Duration], p: f64) -> f64 {
 
 fn report(b: &mut Bench) {
     for (name, v) in [("keystroke_to_frame_ms", &mut b.latency), ("type_text_ms", &mut b.call)] {
-        println!(
-            "{name} n={} p50={:.2} p95={:.2} p99={:.2} max={:.2}",
-            v.len(),
-            pct(v, 0.5),
-            pct(v, 0.95),
-            pct(v, 0.99),
-            pct(v, 1.0)
-        );
+        println!("{name} n={} p50={:.2} p95={:.2} p99={:.2} max={:.2}", v.len(), pct(v, 0.5), pct(v, 0.95), pct(v, 0.99), pct(v, 1.0));
     }
     println!("popup_visible={}/{}", b.visible, b.chars.len());
 }
@@ -240,9 +212,7 @@ fn check(ed: Entity<CodeEditor>, window: &mut Window, cx: &mut App) {
         Box::new(move |_, w, cx| w.dispatch_action(Box::new(x.clone()), cx))
     }
     fn p(label: &'static str) -> Step {
-        Box::new(move |ed, _, cx| {
-            println!("{label}: {} popup={}", t(ed, cx), ed.read(cx).completion_visible())
-        })
+        Box::new(move |ed, _, cx| println!("{label}: {} popup={}", t(ed, cx), ed.read(cx).completion_visible()))
     }
     fn f(g: impl Fn(&mut CodeEditor, &mut Window, &mut Context<CodeEditor>) + 'static) -> Step {
         Box::new(move |ed, w, cx| ed.update(cx, |e, cx| g(e, w, cx)))
@@ -415,53 +385,38 @@ fn main() {
         let bench = std::env::var("EDITOR_BENCH").is_ok_and(|v| v == "1");
         let bounds = Bounds::centered(None, size(px(1100.), px(750.)), cx);
         let window = cx
-            .open_window(
-                WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() },
-                |window, cx| {
-                    let editor = cx.new(|cx| {
-                        let mut e = CodeEditor::new(window, cx);
-                        let lines: usize =
-                            std::env::var("EDITOR_LINES").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
-                        let text = if bench {
-                            format!("{}\n", SCRIPT.repeat(lines / SCRIPT.lines().count() + 1))
-                        } else {
-                            SCRIPT.to_string()
-                        };
-                        e.set_text(&text, cx);
-                        e.set_schema(Arc::new(schema()), cx);
-                        if !bench {
-                            if let Some(at) = text.find("\"Odd Column") {
-                                let d = editor::Diagnostic { stmt: at..at, at: Some(at), message: "42703 column \"Odd Column\" does not exist".into() };
-                                e.set_diagnostic(Some(d), cx);
-                            }
-                            e.set_cursor(0, cx);
+            .open_window(WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() }, |window, cx| {
+                let editor = cx.new(|cx| {
+                    let mut e = CodeEditor::new(window, cx);
+                    let lines: usize = std::env::var("EDITOR_LINES").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
+                    let text = if bench { format!("{}\n", SCRIPT.repeat(lines / SCRIPT.lines().count() + 1)) } else { SCRIPT.to_string() };
+                    e.set_text(&text, cx);
+                    e.set_schema(Arc::new(schema()), cx);
+                    if !bench {
+                        if let Some(at) = text.find("\"Odd Column") {
+                            let d = editor::Diagnostic { stmt: at..at, at: Some(at), message: "42703 column \"Odd Column\" does not exist".into() };
+                            e.set_diagnostic(Some(d), cx);
                         }
-                        e
-                    });
-                    cx.new(|cx| {
-                        cx.subscribe(&editor, |_, _, ev: &EditorEvent, _| match ev {
-                            EditorEvent::Run(stmts) => println!("Run {:?}", stmts.iter().map(|s| (s.at, s.sql.as_str())).collect::<Vec<_>>()),
-                            EditorEvent::RunAll(stmts) => println!("RunAll ({}) {:?}", stmts.len(), stmts.iter().map(|s| s.sql.as_str()).collect::<Vec<_>>()),
-                            EditorEvent::Changed => {}
-                            EditorEvent::Definition { def, peek } => println!("Definition {def:?} peek={peek}"),
-                            EditorEvent::Notice(m) => println!("Notice {m}"),
-                        })
-                        .detach();
-                        Demo {
-                            editor,
-                            bench: bench.then(|| Bench {
-                                chars: SAMPLE.chars().collect(),
-                                next: 0,
-                                started: None,
-                                latency: vec![],
-                                call: vec![],
-                                visible: 0,
-                            }),
-                            started: false,
-                        }
+                        e.set_cursor(0, cx);
+                    }
+                    e
+                });
+                cx.new(|cx| {
+                    cx.subscribe(&editor, |_, _, ev: &EditorEvent, _| match ev {
+                        EditorEvent::Run(stmts) => println!("Run {:?}", stmts.iter().map(|s| (s.at, s.sql.as_str())).collect::<Vec<_>>()),
+                        EditorEvent::RunAll(stmts) => println!("RunAll ({}) {:?}", stmts.len(), stmts.iter().map(|s| s.sql.as_str()).collect::<Vec<_>>()),
+                        EditorEvent::Changed => {}
+                        EditorEvent::Definition { def, peek } => println!("Definition {def:?} peek={peek}"),
+                        EditorEvent::Notice(m) => println!("Notice {m}"),
                     })
-                },
-            )
+                    .detach();
+                    Demo {
+                        editor,
+                        bench: bench.then(|| Bench { chars: SAMPLE.chars().collect(), next: 0, started: None, latency: vec![], call: vec![], visible: 0 }),
+                        started: false,
+                    }
+                })
+            })
             .unwrap();
         window
             .update(cx, |demo, window, cx| {

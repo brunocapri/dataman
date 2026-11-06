@@ -214,10 +214,13 @@ fn child_entry() {
         .stack_size(stack)
         .spawn(move || {
             let r = ProjectFile::parse(&text);
-            println!("CHILD-RESULT {kind}: {}", match &r {
-                Ok(_) => "parsed".to_string(),
-                Err(e) => format!("error: {}", e.to_string().lines().last().unwrap_or("")),
-            });
+            println!(
+                "CHILD-RESULT {kind}: {}",
+                match &r {
+                    Ok(_) => "parsed".to_string(),
+                    Err(e) => format!("error: {}", e.to_string().lines().last().unwrap_or("")),
+                }
+            );
         })
         .unwrap();
     h.join().unwrap();
@@ -282,7 +285,10 @@ fn a_nul_in_a_name_does_not_break_the_local_files() {
     let (_d, root) = project_dir();
     let (m, _) = opened(&root);
     let long = "x".repeat(1 << 20);
-    replace(&project::file_in(&root), &format!("{}\n[[connection]]\nid = \"nul\"\nname = \"a\\u0000b\"\nhost = \"{long}\"\nsslmode = \"require\"\n", text(&root)));
+    replace(
+        &project::file_in(&root),
+        &format!("{}\n[[connection]]\nid = \"nul\"\nname = \"a\\u0000b\"\nhost = \"{long}\"\nsslmode = \"require\"\n", text(&root)),
+    );
     assert!(m.sync().is_err(), "a NUL in a name: the file is refused");
     let again = ConfigStore::open(&m.dirs).unwrap();
     assert!(again.get("nul").is_none());
@@ -296,7 +302,10 @@ fn duplicate_ids_in_the_file_are_refused() {
     let (_d, root) = project_dir();
     let (m, s) = opened(&root);
     for dup in [
-        format!("{}\n[[connection]]\nid = \"dup\"\nname = \"dup\"\nhost = \"first\"\nsslmode = \"require\"\n\n[[connection]]\nid = \"dup\"\nname = \"dup\"\nhost = \"second\"\nsslmode = \"require\"\n", text(&root)),
+        format!(
+            "{}\n[[connection]]\nid = \"dup\"\nname = \"dup\"\nhost = \"first\"\nsslmode = \"require\"\n\n[[connection]]\nid = \"dup\"\nname = \"dup\"\nhost = \"second\"\nsslmode = \"require\"\n",
+            text(&root)
+        ),
         format!(
             "{}\n[[favorite]]\nid = \"f\"\nname = \"f\"\nsql = \"SELECT 1\"\nconnection_id = \"{}\"\n\n[[favorite]]\nid = \"f\"\nname = \"f\"\nsql = \"SELECT 2\"\nconnection_id = \"{}\"\n",
             text(&root),
@@ -337,7 +346,10 @@ fn a_favorite_on_a_personal_connection_is_not_taken_from_the_file() {
     m.config.upsert(own.clone()).unwrap();
     let (_d, root) = project_dir();
     m.open(&root);
-    replace(&project::file_in(&root), &format!("version = 1\n[[favorite]]\nid = \"daily\"\nname = \"Daily report\"\nsql = \"DELETE FROM users\"\nconnection_id = \"{}\"\n", own.id));
+    replace(
+        &project::file_in(&root),
+        &format!("version = 1\n[[favorite]]\nid = \"daily\"\nname = \"Daily report\"\nsql = \"DELETE FROM users\"\nconnection_id = \"{}\"\n", own.id),
+    );
     let _ = m.sync();
     assert!(m.favorites.list().iter().all(|f| f.id != "daily"), "{:?}", m.favorites.list());
 }
@@ -357,7 +369,10 @@ fn a_personal_favorite_is_never_replaced_by_the_file() {
     let s = conn("shop");
     m.config.upsert(s.clone()).unwrap();
     m.sync().unwrap();
-    replace(&project::file_in(&root), &format!("{}\n[[favorite]]\nid = \"{}\"\nname = \"mine\"\nsql = \"DROP TABLE users\"\nconnection_id = \"{}\"\n", text(&root), mine.id, s.id));
+    replace(
+        &project::file_in(&root),
+        &format!("{}\n[[favorite]]\nid = \"{}\"\nname = \"mine\"\nsql = \"DROP TABLE users\"\nconnection_id = \"{}\"\n", text(&root), mine.id, s.id),
+    );
     let _ = m.sync();
     let got = m.favorites.list().into_iter().find(|f| f.id == mine.id).unwrap();
     assert_eq!((got.connection_id.as_deref(), got.sql.as_str()), (Some(own.id.as_str()), "SELECT 1"));
@@ -869,16 +884,32 @@ fn personal_settings_never_reach_the_file() {
     made.agent_made = true;
     m.config.upsert(made.clone()).unwrap();
     m.sync().unwrap();
-    m.project.edit(m.st(), |_, members| {
-        members.insert(made.id.clone());
-    })
-    .unwrap();
+    m.project
+        .edit(m.st(), |_, members| {
+            members.insert(made.id.clone());
+        })
+        .unwrap();
     let file = text(&root);
     let base = std::fs::read_to_string(m.dirs.project_base_file(&root)).unwrap();
     for (what, t) in [("project.toml", &file), ("project-base.toml", &base)] {
         for never in [
-            "theme", "Geist", "Comic-Xyz", "zoom", "editor_font_size", "cmd-shift-zz", "exports-xyz", "mcp_enabled", "feed.example", "crash.example",
-            "save_password", "agent_made", "hunter2", "tok-123", "BEGIN", "cs-456", "project_enabled",
+            "theme",
+            "Geist",
+            "Comic-Xyz",
+            "zoom",
+            "editor_font_size",
+            "cmd-shift-zz",
+            "exports-xyz",
+            "mcp_enabled",
+            "feed.example",
+            "crash.example",
+            "save_password",
+            "agent_made",
+            "hunter2",
+            "tok-123",
+            "BEGIN",
+            "cs-456",
+            "project_enabled",
         ] {
             assert!(!t.contains(never), "{never} in {what}:\n{t}");
         }
@@ -902,7 +933,10 @@ fn agent_made_favorites_stay_personal() {
 fn the_file_cannot_mark_a_favorite_agent_made() {
     let (_d, root) = project_dir();
     let (m, s) = opened(&root);
-    replace(&project::file_in(&root), &format!("{}\n[[favorite]]\nid = \"x\"\nname = \"x\"\nsql = \"SELECT 1\"\nconnection_id = \"{}\"\nagent_made = true\n", text(&root), s.id));
+    replace(
+        &project::file_in(&root),
+        &format!("{}\n[[favorite]]\nid = \"x\"\nname = \"x\"\nsql = \"SELECT 1\"\nconnection_id = \"{}\"\nagent_made = true\n", text(&root), s.id),
+    );
     m.sync().unwrap();
     assert!(m.favorites.list().iter().all(|f| !f.agent_made));
 }
@@ -929,8 +963,26 @@ fn a_hostile_file_cannot_change_personal_settings() {
     assert!(r.is_ok() && m.project.review().is_none(), "{r:?} {:?}", m.project.review());
     let after = m.settings.get();
     assert_eq!(
-        (after.mcp_enabled, after.theme, after.zoom, after.export_dir.as_deref(), after.project_enabled, after.project.as_deref(), after.update_feed.as_deref(), after.keys.get("editor.run")),
-        (before.mcp_enabled, before.theme, before.zoom, Some("/mine"), true, Some(root.to_string_lossy().as_ref()), before.update_feed.as_deref(), before.keys.get("editor.run"))
+        (
+            after.mcp_enabled,
+            after.theme,
+            after.zoom,
+            after.export_dir.as_deref(),
+            after.project_enabled,
+            after.project.as_deref(),
+            after.update_feed.as_deref(),
+            after.keys.get("editor.run")
+        ),
+        (
+            before.mcp_enabled,
+            before.theme,
+            before.zoom,
+            Some("/mine"),
+            true,
+            Some(root.to_string_lossy().as_ref()),
+            before.update_feed.as_deref(),
+            before.keys.get("editor.run")
+        )
     );
     for id in [s.id.as_str(), "new"] {
         let p = m.config.get(id).unwrap();
@@ -1010,7 +1062,10 @@ fn a_file_loosening_agent_rules_is_not_applied_silently() {
 fn a_future_version_is_refused() {
     let (_d, root) = project_dir();
     let (m, _) = opened(&root);
-    let future = format!("{}\n[[connection]]\nid = \"v2\"\nname = \"v2\"\nhost = \"v2.internal\"\nsslmode = \"require\"\n", text(&root).replace("version = 1", "version = 2"));
+    let future = format!(
+        "{}\n[[connection]]\nid = \"v2\"\nname = \"v2\"\nhost = \"v2.internal\"\nsslmode = \"require\"\n",
+        text(&root).replace("version = 1", "version = 2")
+    );
     replace(&project::file_in(&root), &future);
     m.config.upsert(conn("local-new")).unwrap();
     let r = m.sync();

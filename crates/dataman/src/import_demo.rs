@@ -71,13 +71,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let path = if new { dir.join("events.ndjson") } else { dir.join("orders-2024.csv") };
     let _ = std::fs::write(&path, if new { events_ndjson() } else { orders_csv() });
     let Ok(Some(conn)) = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id)) else { return };
-    let target = DataTarget {
-        conn_id: id.to_string(),
-        conn,
-        db: db.to_string(),
-        schema: "public".into(),
-        table: (!new).then(|| "orders".to_string()),
-    };
+    let target = DataTarget { conn_id: id.to_string(), conn, db: db.to_string(), schema: "public".into(), table: (!new).then(|| "orders".to_string()) };
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.import_data(Some(target), Some(path.clone()), window, cx)));
     let mut view = None;
     for _ in 0..200 {

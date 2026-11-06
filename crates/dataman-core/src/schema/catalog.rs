@@ -48,12 +48,62 @@ pub struct Catalog {
 }
 
 pub const BUILTIN_TYPES: &[&str] = &[
-    "bigint", "bigserial", "bit", "boolean", "box", "bytea", "char", "cidr", "circle", "date", "daterange",
-    "decimal", "double precision", "float4", "float8", "inet", "int", "int2", "int4", "int4range", "int8",
-    "int8range", "integer", "interval", "json", "jsonb", "jsonpath", "line", "lseg", "macaddr", "money", "name",
-    "numeric", "numrange", "oid", "path", "point", "polygon", "real", "regclass", "regproc", "regtype", "serial",
-    "smallint", "text", "time", "timestamp", "timestamptz", "timetz", "tsquery", "tsrange", "tstzrange",
-    "tsvector", "uuid", "varchar", "xml",
+    "bigint",
+    "bigserial",
+    "bit",
+    "boolean",
+    "box",
+    "bytea",
+    "char",
+    "cidr",
+    "circle",
+    "date",
+    "daterange",
+    "decimal",
+    "double precision",
+    "float4",
+    "float8",
+    "inet",
+    "int",
+    "int2",
+    "int4",
+    "int4range",
+    "int8",
+    "int8range",
+    "integer",
+    "interval",
+    "json",
+    "jsonb",
+    "jsonpath",
+    "line",
+    "lseg",
+    "macaddr",
+    "money",
+    "name",
+    "numeric",
+    "numrange",
+    "oid",
+    "path",
+    "point",
+    "polygon",
+    "real",
+    "regclass",
+    "regproc",
+    "regtype",
+    "serial",
+    "smallint",
+    "text",
+    "time",
+    "timestamp",
+    "timestamptz",
+    "timetz",
+    "tsquery",
+    "tsrange",
+    "tstzrange",
+    "tsvector",
+    "uuid",
+    "varchar",
+    "xml",
 ];
 
 impl Catalog {
@@ -128,7 +178,8 @@ impl Connection {
                             Vec::new()
                         }
                     };
-                    let types = first_ok(&client, &[&pg::types_sql()]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_type(r)).collect()).unwrap_or_default();
+                    let types =
+                        first_ok(&client, &[&pg::types_sql()]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_type(r)).collect()).unwrap_or_default();
                     (functions, types)
                 }
                 Db::My(_) => {
@@ -173,7 +224,11 @@ mod tests {
     #[test]
     fn lookups() {
         let cat = Catalog::new(
-            vec![f("pg_catalog", "date_trunc", "text, timestamp with time zone", "timestamp with time zone"), f("pg_catalog", "date_trunc", "text, interval", "interval"), f("public", "customer_total", "c bigint", "numeric")],
+            vec![
+                f("pg_catalog", "date_trunc", "text, timestamp with time zone", "timestamp with time zone"),
+                f("pg_catalog", "date_trunc", "text, interval", "interval"),
+                f("public", "customer_total", "c bigint", "numeric"),
+            ],
             vec![
                 TypeEntry { schema: "public".into(), name: "mood".into(), kind: 'e', labels: vec!["ok".into(), "sad".into()] },
                 TypeEntry { schema: "app".into(), name: "mood".into(), kind: 'e', labels: vec!["x".into()] },

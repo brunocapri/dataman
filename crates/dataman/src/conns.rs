@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use dataman_core::{ConnFolder, Connection, ConnectionProfile, Core, SshError};
 use gpui::{Context, EventEmitter};
-use dataman_core::{ConnFolder, ConnectionProfile, Connection, Core, SshError};
 
 #[derive(Clone)]
 pub enum ConnState {
@@ -16,7 +16,12 @@ pub enum ConnEvent {
     /// Connected on its own (Settings › Connections), not picked: nothing moves to it.
     Arrived(String),
     /// `cloud`: a cloud sign-in that the user can fix from the dialog (sign in again, install).
-    Failed { id: String, needs_password: bool, ssh: Option<SshError>, cloud: Option<dataman_core::cloudauth::SignInError> },
+    Failed {
+        id: String,
+        needs_password: bool,
+        ssh: Option<SshError>,
+        cloud: Option<dataman_core::cloudauth::SignInError>,
+    },
 }
 
 pub struct ConnStore {
@@ -186,7 +191,12 @@ impl ConnStore {
         if !auto_connect(&self.core) {
             return;
         }
-        let ids: Vec<String> = self.profiles.iter().filter(|p| ids.contains(&p.id) && !p.engine.caps().exclusive_lock && !self.states.contains_key(&p.id)).map(|p| p.id.clone()).collect();
+        let ids: Vec<String> = self
+            .profiles
+            .iter()
+            .filter(|p| ids.contains(&p.id) && !p.engine.caps().exclusive_lock && !self.states.contains_key(&p.id))
+            .map(|p| p.id.clone())
+            .collect();
         for id in ids {
             self.quiet.insert(id.clone());
             self.connect(&id, None, cx);

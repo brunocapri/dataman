@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Local;
+use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
 use dataman_core::privacy::{Mask, Validator};
 use dataman_core::{ConnectionProfile, Core, Engine};
-use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, Point,
-    SharedString, StyledText, Window, div, point, prelude::*,
+    AnyElement, App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, Point, SharedString,
+    StyledText, Window, div, point, prelude::*,
 };
 
 use crate::assets::{Icon, icon};
@@ -64,7 +64,11 @@ impl Page {
 }
 
 pub enum AgentsEvent {
-    Open { sql: String, connection: Option<String>, database: Option<String> },
+    Open {
+        sql: String,
+        connection: Option<String>,
+        database: Option<String>,
+    },
     /// A cell of what the agent received, for the value viewer (read-only).
     ViewValue(crate::value_view::ValueCell),
     /// The header's ×: back to the sidebar's earlier view and the tabs.
@@ -325,7 +329,8 @@ fn hidden_column_refusal(e: &Entry) -> bool {
 
 fn hidden_refusal(e: &Entry) -> bool {
     let conn = e.connection.as_deref().unwrap_or_default();
-    hidden_column_refusal(e) || (e.outcome == Outcome::Refused && e.error.as_deref().is_some_and(|m| m.ends_with(&format!(" is not visible to agents on {conn}"))))
+    hidden_column_refusal(e)
+        || (e.outcome == Outcome::Refused && e.error.as_deref().is_some_and(|m| m.ends_with(&format!(" is not visible to agents on {conn}"))))
 }
 
 const MASKED_ENDINGS: &[&str] = &[
@@ -338,7 +343,8 @@ const MASKED_ENDINGS: &[&str] = &[
 fn masked_refusal(e: &Entry) -> bool {
     let conn = e.connection.as_deref().unwrap_or_default();
     let marker = format!(" is masked for agents on {conn}: ");
-    e.outcome == Outcome::Refused && e.error.as_deref().and_then(|m| m.rfind(&marker).map(|at| &m[at + marker.len()..])).is_some_and(|rest| MASKED_ENDINGS.contains(&rest))
+    e.outcome == Outcome::Refused
+        && e.error.as_deref().and_then(|m| m.rfind(&marker).map(|at| &m[at + marker.len()..])).is_some_and(|rest| MASKED_ENDINGS.contains(&rest))
 }
 
 /// Refused by what agents may do on the connection (Permissions), not by its tier.
@@ -442,7 +448,11 @@ pub(crate) fn decision_text(e: &Entry) -> String {
         Outcome::Refused if permission_refusal(e) => "Refused · permissions".into(),
         Outcome::Refused => {
             let m = e.error.as_deref().unwrap_or("");
-            if ["tier", "reads only", "destructive", "read-only", "MCP access"].iter().any(|k| m.contains(k)) { "Refused · tier".into() } else { "Refused".into() }
+            if ["tier", "reads only", "destructive", "read-only", "MCP access"].iter().any(|k| m.contains(k)) {
+                "Refused · tier".into()
+            } else {
+                "Refused".into()
+            }
         }
         Outcome::Ok if e.draft => "Drafted · placed in your tab".into(),
         Outcome::Ok => match &e.allowed_by {
@@ -607,7 +617,20 @@ impl AgentsPage {
             scan_note: None,
             sens_edit: None,
             sens_grid,
-            editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false, test: None },
+            editor: TypeEditor {
+                editing: None,
+                name,
+                regex,
+                mask: Mask::Hidden,
+                more: false,
+                validator: Validator::None,
+                ignore_case: false,
+                keep: 4,
+                samples: Vec::new(),
+                sample,
+                confirm_delete: false,
+                test: None,
+            },
             suggest: Default::default(),
             received,
             received_for: None,
@@ -949,8 +972,12 @@ impl AgentsPage {
             if m.items.len() > 1 {
                 rows.push(ui::menu_sep(t).into_any_element());
             }
-            rows.extend(crate::conn_menu::rows(t, &m.id, &store.folders, &saved, picked, cx, |p, indent| at(&p.name).map(|k| item(k, indent)).into_iter().collect()));
-            rows.extend((1..m.items.len()).filter(|&k| !matches!(&m.items[k].2, Act::Conn(Some(n)) if saved.iter().any(|p| p.name == *n))).map(|k| item(k, 0.)));
+            rows.extend(crate::conn_menu::rows(t, &m.id, &store.folders, &saved, picked, cx, |p, indent| {
+                at(&p.name).map(|k| item(k, indent)).into_iter().collect()
+            }));
+            rows.extend(
+                (1..m.items.len()).filter(|&k| !matches!(&m.items[k].2, Act::Conn(Some(n)) if saved.iter().any(|p| p.name == *n))).map(|k| item(k, 0.)),
+            );
             rows
         } else {
             (0..m.items.len()).map(|k| item(k, 0.)).collect()
@@ -972,7 +999,18 @@ impl AgentsPage {
 
     /// A page's title bar, as Protection's: the title over a line across the page.
     pub(crate) fn header(&self, t: &Theme, title: &str) -> gpui::Div {
-        div().h(px(52.)).flex_none().pl(px(32.)).pr(px(CLOSE_ROOM)).flex().flex_row().items_center().gap(px(10.)).border_b_1().border_color(t.line).child(page_title(t, title))
+        div()
+            .h(px(52.))
+            .flex_none()
+            .pl(px(32.))
+            .pr(px(CLOSE_ROOM))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .border_b_1()
+            .border_color(t.line)
+            .child(page_title(t, title))
     }
 
     pub(crate) fn conn_label(&self, t: &Theme, name: &str, cx: &App) -> gpui::Div {
@@ -1020,7 +1058,17 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .text_size(px(crate::theme::text::BODY))
-            .child(div().h(px(34.)).flex_none().pl(px(14.)).pr(px(12.)).flex().flex_row().items_center().child(div().flex_1().text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child("AGENTS")))
+            .child(
+                div()
+                    .h(px(34.))
+                    .flex_none()
+                    .pl(px(14.))
+                    .pr(px(12.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(div().flex_1().text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child("AGENTS")),
+            )
             .child(div().pt(px(2.)).pb(px(10.)).flex().flex_col().children(rows))
             .into_any_element()
     }
@@ -1029,7 +1077,11 @@ impl AgentsPage {
         let items: Vec<(SharedString, bool, Act)> = match id {
             "agents-f-agent" => {
                 let mut v = vec![("All agents".into(), self.f_agent.is_none(), Act::Agent(None))];
-                v.extend(agents_of(&self.entries).into_iter().map(|a| (dataman_mcp::shown_client(&a.name).into(), self.f_agent.as_deref() == Some(a.name.as_str()), Act::Agent(Some(a.name)))));
+                v.extend(
+                    agents_of(&self.entries)
+                        .into_iter()
+                        .map(|a| (dataman_mcp::shown_client(&a.name).into(), self.f_agent.as_deref() == Some(a.name.as_str()), Act::Agent(Some(a.name)))),
+                );
                 v
             }
             "agents-f-conn" => {
@@ -1079,17 +1131,35 @@ impl AgentsPage {
             .justify_center()
             .gap(px(14.))
             .when(self.loaded, |d| {
-                d.child(div().text_size(px(crate::theme::text::TITLE)).text_color(t.tx2).child("No agent has connected yet."))
-                    .child(
-                        div()
-                            .max_w(px(720.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(div().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
-                            .child(ui::button(t, "agents-copy-cmd", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
-                    )
+                d.child(div().text_size(px(crate::theme::text::TITLE)).text_color(t.tx2).child("No agent has connected yet.")).child(
+                    div()
+                        .max_w(px(720.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .px(px(10.))
+                                .py(px(6.))
+                                .bg(t.field)
+                                .border_1()
+                                .border_color(t.line)
+                                .text_size(px(crate::theme::text::UI))
+                                .text_color(t.tx)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(cmd),
+                        )
+                        .child(
+                            ui::button(t, "agents-copy-cmd", ui::Btn::Secondary)
+                                .h(px(28.))
+                                .child("Copy")
+                                .on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone())))),
+                        ),
+                )
             })
             .into_any_element()
     }
@@ -1185,10 +1255,16 @@ impl AgentsPage {
                 .into_any_element()
         } else {
             let theme = t.clone();
-            gpui::list(self.audit_list.clone(), cx.processor(move |v, ix: usize, window, cx| {
-                let focused = v.focus.is_focused(window);
-                v.render_audit_item(ix, &theme, focused, cx)
-            })).flex_1().min_w_0().into_any_element()
+            gpui::list(
+                self.audit_list.clone(),
+                cx.processor(move |v, ix: usize, window, cx| {
+                    let focused = v.focus.is_focused(window);
+                    v.render_audit_item(ix, &theme, focused, cx)
+                }),
+            )
+            .flex_1()
+            .min_w_0()
+            .into_any_element()
         };
         // On its way, the reply leaves an empty slot in the detail and grows from it over the
         // page as the result grid grows over the editor: same time and curve.
@@ -1281,16 +1357,19 @@ impl AgentsPage {
             .right(px(self.detail_shown() - SEAM_HIT / 2.))
             .w(px(SEAM_HIT))
             .cursor_col_resize()
-            .on_mouse_down(MouseButton::Left, cx.listener(|v, ev: &gpui::MouseDownEvent, _, cx| {
-                cx.stop_propagation();
-                if ev.click_count == 2 {
-                    v.detail_w = DETAIL_W;
-                    v.detail_drag = false;
-                } else {
-                    v.detail_drag = true;
-                }
-                cx.notify();
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, ev: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if ev.click_count == 2 {
+                        v.detail_w = DETAIL_W;
+                        v.detail_drag = false;
+                    } else {
+                        v.detail_drag = true;
+                    }
+                    cx.notify();
+                }),
+            )
             .children(drag)
             .into_any_element()
     }
@@ -1379,7 +1458,18 @@ impl AgentsPage {
         let row = div()
             .w_full()
             .relative()
-            .child(gpui::canvas(move |r, _, _| { b.borrow_mut().insert(i, r); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .child(
+                gpui::canvas(
+                    move |r, _, _| {
+                        b.borrow_mut().insert(i, r);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .child(
                 div()
                     .children(ui::here(&id.clone().into()))
@@ -1412,8 +1502,23 @@ impl AgentsPage {
                                     .child(div().text_color(t.tx).child(dataman_mcp::shown_client(&e.client)))
                                     .children(e.connection.as_deref().map(|c| self.conn_label(t, c, cx))),
                             )
-                            .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))))
-                            .child(div().text_size(px(crate::theme::text::SMALL)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(t.tx2)
+                                    .child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(crate::theme::text::SMALL))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_color(if bad { t.err } else { t.tx3 })
+                                    .child(note),
+                            ),
                     )
                     .on_click(cx.listener(move |v, ev: &ClickEvent, window, cx| {
                         v.focus_list(window, cx);
@@ -1453,7 +1558,11 @@ impl AgentsPage {
                 .line_height(px(19.))
                 // Only the lines shown are coloured: a call can be a long script.
                 .children(crate::editor::highlighted_lines(t, head_lines(text, 14)).into_iter().take(14).map(|(s, runs)| {
-                    if s.is_empty() { div().h(px(19.)).into_any_element() } else { div().whitespace_nowrap().overflow_hidden().child(StyledText::new(s).with_runs(runs)).into_any_element() }
+                    if s.is_empty() {
+                        div().h(px(19.)).into_any_element()
+                    } else {
+                        div().whitespace_nowrap().overflow_hidden().child(StyledText::new(s).with_runs(runs)).into_any_element()
+                    }
                 }))
         };
         let seen = e.seen.clone().unwrap_or_default();
@@ -1467,18 +1576,31 @@ impl AgentsPage {
             }
             if parts.is_empty() { "—".to_string() } else { parts.join(" · ") }
         };
-        let masked = if seen.masked.is_empty() { "—".to_string() } else { seen.masked.iter().map(|(c, m)| format!("{c} ({})", m.key())).collect::<Vec<_>>().join(" · ") };
-        let values = if seen.values.is_empty() { "—".to_string() } else { seen.values.iter().map(|(k, n)| format!("{n} {}", k.to_lowercase())).collect::<Vec<_>>().join(" · ") };
-        let fact = |k: &str, v: String| [div().text_color(t.tx3).child(k.to_string()).into_any_element(), div().min_w_0().text_color(t.tx).child(v).into_any_element()];
+        let masked = if seen.masked.is_empty() {
+            "—".to_string()
+        } else {
+            seen.masked.iter().map(|(c, m)| format!("{c} ({})", m.key())).collect::<Vec<_>>().join(" · ")
+        };
+        let values = if seen.values.is_empty() {
+            "—".to_string()
+        } else {
+            seen.values.iter().map(|(k, n)| format!("{n} {}", k.to_lowercase())).collect::<Vec<_>>().join(" · ")
+        };
+        let fact = |k: &str, v: String| {
+            [div().text_color(t.tx3).child(k.to_string()).into_any_element(), div().min_w_0().text_color(t.tx).child(v).into_any_element()]
+        };
         let facts: Vec<AnyElement> = [
             fact("Agent", dataman_mcp::shown_client(&e.client)),
             fact("Connection", [e.connection.clone(), e.database.clone().filter(|d| !d.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
-            fact("Ran as", match (e.login.as_deref(), &e.connection) {
-                (Some("you"), _) => "your login (you allowed it)".to_string(),
-                (Some(l), _) => l.to_string(),
-                (None, Some(_)) => "your login".to_string(),
-                (None, None) => "—".to_string(),
-            }),
+            fact(
+                "Ran as",
+                match (e.login.as_deref(), &e.connection) {
+                    (Some("you"), _) => "your login (you allowed it)".to_string(),
+                    (Some(l), _) => l.to_string(),
+                    (None, Some(_)) => "your login".to_string(),
+                    (None, None) => "—".to_string(),
+                },
+            ),
             fact("Decision", decision_text(e)),
             fact("Sent", sent),
             fact("Masked", masked),
@@ -1510,7 +1632,13 @@ impl AgentsPage {
                     .flex_col()
                     .gap(px(6.))
                     .child(render_reply(t, &text))
-                    .when(cut, |d| d.child(note(&format!("Longer than {} KB: the log keeps the first {} KB.", dataman_core::audit::REPLY_MAX / 1024, dataman_core::audit::REPLY_MAX / 1024))))
+                    .when(cut, |d| {
+                        d.child(note(&format!(
+                            "Longer than {} KB: the log keeps the first {} KB.",
+                            dataman_core::audit::REPLY_MAX / 1024,
+                            dataman_core::audit::REPLY_MAX / 1024
+                        )))
+                    })
                     .into_any_element(),
                 Some(Kept::Reading) => note("Reading the log…"),
                 Some(Kept::RotatedOut) => note("This reply was rotated out of the log."),
@@ -1543,9 +1671,23 @@ impl AgentsPage {
                         .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), crate::fmt::ms(e.ms))),
                 )
                 .children(e.statement().map(|s| block(&shown_agent_text(s, 20_000))))
-                .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))))
+                .children(
+                    e.rewritten
+                        .as_deref()
+                        .map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))),
+                )
                 .child(grid)
-                .children(error.map(|m| div().flex().flex_row().items_start().gap(px(12.)).text_size(px(crate::theme::text::UI)).line_height(px(17.)).child(div().flex_1().min_w_0().text_color(t.err).child(shown_agent_text(&m, 2_000))).child(ui::copy_error(t, "agents-error-copy", m))))
+                .children(error.map(|m| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(12.))
+                        .text_size(px(crate::theme::text::UI))
+                        .line_height(px(17.))
+                        .child(div().flex_1().min_w_0().text_color(t.err).child(shown_agent_text(&m, 2_000)))
+                        .child(ui::copy_error(t, "agents-error-copy", m))
+                }))
                 .children(received)
                 .when(e.statement().is_some(), |d| {
                     d.child(
@@ -1718,15 +1860,7 @@ impl AgentsPage {
             );
         let grid = div().border_1().border_color(t.line).child(self.received.clone());
         let grid = if fill { grid.flex_1().min_h_0() } else { grid.h(px(260.)).flex_none() };
-        div()
-            .children(ui::here(&"agents-recv".into()))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .when(fill, |d| d.size_full())
-            .child(bar)
-            .child(grid)
-            .into_any_element()
+        div().children(ui::here(&"agents-recv".into())).flex().flex_col().gap(px(8.)).when(fill, |d| d.size_full()).child(bar).child(grid).into_any_element()
     }
 }
 
@@ -1737,24 +1871,28 @@ pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::Resul
     use serde_json::Value;
     let v: Value = serde_json::from_str(text).ok()?;
     let result = v.get("results").and_then(|r| r.get(0)).unwrap_or(&v);
-    let (names, types, rows): (Vec<String>, Vec<String>, Vec<Vec<Value>>) = if let (Some(cols), Some(rows)) = (result.get("columns").and_then(Value::as_array), result.get("rows").and_then(Value::as_array)) {
-        let names = cols.iter().map(|c| c.get(0).and_then(Value::as_str).or(c.as_str()).unwrap_or("").to_string()).collect();
-        let types = cols.iter().map(|c| c.get(1).and_then(Value::as_str).unwrap_or("").to_string()).collect();
-        (names, types, rows.iter().map(|r| r.as_array().cloned().unwrap_or_default()).collect())
-    } else {
-        let docs = result.get("documents").and_then(Value::as_array)?;
-        let mut names: Vec<String> = Vec::new();
-        for d in docs {
-            match d.as_object() {
-                Some(m) => names.extend(m.keys().filter(|k| !names.contains(k)).cloned().collect::<Vec<_>>()),
-                None if !names.iter().any(|n| n == "value") => names.push("value".into()),
-                None => {}
+    let (names, types, rows): (Vec<String>, Vec<String>, Vec<Vec<Value>>) =
+        if let (Some(cols), Some(rows)) = (result.get("columns").and_then(Value::as_array), result.get("rows").and_then(Value::as_array)) {
+            let names = cols.iter().map(|c| c.get(0).and_then(Value::as_str).or(c.as_str()).unwrap_or("").to_string()).collect();
+            let types = cols.iter().map(|c| c.get(1).and_then(Value::as_str).unwrap_or("").to_string()).collect();
+            (names, types, rows.iter().map(|r| r.as_array().cloned().unwrap_or_default()).collect())
+        } else {
+            let docs = result.get("documents").and_then(Value::as_array)?;
+            let mut names: Vec<String> = Vec::new();
+            for d in docs {
+                match d.as_object() {
+                    Some(m) => names.extend(m.keys().filter(|k| !names.contains(k)).cloned().collect::<Vec<_>>()),
+                    None if !names.iter().any(|n| n == "value") => names.push("value".into()),
+                    None => {}
+                }
             }
-        }
-        names.truncate(64);
-        let rows = docs.iter().map(|d| names.iter().map(|n| d.as_object().map_or_else(|| d.clone(), |m| m.get(n).cloned().unwrap_or(Value::Null))).collect()).collect();
-        (names.clone(), vec![String::new(); names.len()], rows)
-    };
+            names.truncate(64);
+            let rows = docs
+                .iter()
+                .map(|d| names.iter().map(|n| d.as_object().map_or_else(|| d.clone(), |m| m.get(n).cloned().unwrap_or(Value::Null))).collect())
+                .collect();
+            (names.clone(), vec![String::new(); names.len()], rows)
+        };
     let kind_of = |k: usize| {
         let vals: Vec<&Value> = rows.iter().filter_map(|r| r.get(k)).filter(|x| !x.is_null()).collect();
         if vals.is_empty() {
@@ -1771,7 +1909,11 @@ pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::Resul
             Kind::Text
         }
     };
-    let cols: Vec<ColumnInfo> = names.iter().enumerate().map(|(k, n)| ColumnInfo { name: n.clone(), type_name: types.get(k).cloned().unwrap_or_default(), type_oid: 0, kind: kind_of(k) }).collect();
+    let cols: Vec<ColumnInfo> = names
+        .iter()
+        .enumerate()
+        .map(|(k, n)| ColumnInfo { name: n.clone(), type_name: types.get(k).cloned().unwrap_or_default(), type_oid: 0, kind: kind_of(k) })
+        .collect();
     let mut b = ChunkBuilder::new(&cols);
     for r in &rows {
         for (k, c) in cols.iter().enumerate() {
@@ -1797,7 +1939,12 @@ pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::Resul
 pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
     use serde_json::Value;
     let Ok(v) = serde_json::from_str::<Value>(text) else {
-        return div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx2).child(text.chars().take(2000).collect::<String>()).into_any_element();
+        return div()
+            .text_size(px(crate::theme::text::UI))
+            .line_height(px(17.))
+            .text_color(t.tx2)
+            .child(text.chars().take(2000).collect::<String>())
+            .into_any_element();
     };
     let result = v.get("results").and_then(|r| r.get(0)).unwrap_or(&v);
     let cell = |x: &Value| match x {
@@ -1841,26 +1988,32 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(
-                div()
-                    .id("agents-reply-table")
-                    .overflow_x_scroll()
-                    .border_1()
-                    .border_color(t.line)
-                    .bg(t.field)
-                    .text_size(px(crate::theme::text::UI))
-                    .child(div().flex().flex_col().min_w(px(widths.iter().sum::<f32>())).child(line(names, true)).children(shown.into_iter().map(|r| line(r, false)))),
-            )
+            .child(div().id("agents-reply-table").overflow_x_scroll().border_1().border_color(t.line).bg(t.field).text_size(px(crate::theme::text::UI)).child(
+                div().flex().flex_col().min_w(px(widths.iter().sum::<f32>())).child(line(names, true)).children(shown.into_iter().map(|r| line(r, false))),
+            ))
             .children(foot(rows.len().min(REPLY_ROWS), total.or(Some(rows.len() as u64)), None))
             .into_any_element();
     }
     if let Some(docs) = result.get("documents").and_then(Value::as_array) {
-        let lines = docs.iter().take(REPLY_ROWS).map(|d| div().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(t.tx).child(one_line(&d.to_string())));
+        let lines =
+            docs.iter().take(REPLY_ROWS).map(|d| div().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(t.tx).child(one_line(&d.to_string())));
         return div()
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).children(lines))
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .bg(t.field)
+                    .border_1()
+                    .border_color(t.line)
+                    .text_size(px(crate::theme::text::UI))
+                    .children(lines),
+            )
             .children(foot(docs.len().min(REPLY_ROWS), result.get("total").and_then(Value::as_u64).or(Some(docs.len() as u64)), None))
             .into_any_element();
     }
@@ -1884,8 +2037,23 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).text_color(t.tx).children(lines.into_iter().map(|l| div().child(l))))
-            .children(returning.map(|r| div().flex().flex_col().gap(px(6.)).child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("RETURNING")).child(r)))
+            .child(
+                div()
+                    .px(px(10.))
+                    .py(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .bg(t.field)
+                    .border_1()
+                    .border_color(t.line)
+                    .text_size(px(crate::theme::text::UI))
+                    .text_color(t.tx)
+                    .children(lines.into_iter().map(|l| div().child(l))),
+            )
+            .children(returning.map(|r| {
+                div().flex().flex_col().gap(px(6.)).child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("RETURNING")).child(r)
+            }))
             .into_any_element();
     }
     let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
@@ -2030,8 +2198,23 @@ impl Render for TipView {
                 .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(term.clone()))
                 .child(div().text_color(t.tx2).child(what.clone()))
                 .into_any_element(),
-            TipPart::Code(s) => div().px(px(8.)).py(px(5.)).bg(t.field).border_1().border_color(t.line).font_family(code_font.clone()).text_color(t.tx).child(s.clone()).into_any_element(),
-            TipPart::Example(s) => div().flex().flex_col().gap(px(2.)).child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("EXAMPLE")).child(div().text_color(t.tx2).child(s.clone())).into_any_element(),
+            TipPart::Code(s) => div()
+                .px(px(8.))
+                .py(px(5.))
+                .bg(t.field)
+                .border_1()
+                .border_color(t.line)
+                .font_family(code_font.clone())
+                .text_color(t.tx)
+                .child(s.clone())
+                .into_any_element(),
+            TipPart::Example(s) => div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("EXAMPLE"))
+                .child(div().text_color(t.tx2).child(s.clone()))
+                .into_any_element(),
             TipPart::Note(s) => div().mt(px(2.)).pt(px(10.)).border_t_1().border_color(t.line).text_color(t.tx3).child(s.clone()).into_any_element(),
         });
         div()
@@ -2122,13 +2305,41 @@ impl Render for AgentsPage {
         div()
             .id("agents-page")
             .key_context("AgentsPage")
-            .on_action(cx.listener(|v, _: &ListUp, _, cx| if !v.list_step(Step::By(-1), cx) { cx.propagate() }))
-            .on_action(cx.listener(|v, _: &ListDown, _, cx| if !v.list_step(Step::By(1), cx) { cx.propagate() }))
-            .on_action(cx.listener(|v, _: &ListPageUp, _, cx| if !v.list_step(Step::By(-PAGE_STEP), cx) { cx.propagate() }))
-            .on_action(cx.listener(|v, _: &ListPageDown, _, cx| if !v.list_step(Step::By(PAGE_STEP), cx) { cx.propagate() }))
-            .on_action(cx.listener(|v, _: &ListFirst, _, cx| if !v.list_step(Step::First, cx) { cx.propagate() }))
-            .on_action(cx.listener(|v, _: &ListLast, _, cx| if !v.list_step(Step::Last, cx) { cx.propagate() }))
-            .on_action(cx.listener(|v, _: &ListOpen, _, cx| if !v.list_open(cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListUp, _, cx| {
+                if !v.list_step(Step::By(-1), cx) {
+                    cx.propagate()
+                }
+            }))
+            .on_action(cx.listener(|v, _: &ListDown, _, cx| {
+                if !v.list_step(Step::By(1), cx) {
+                    cx.propagate()
+                }
+            }))
+            .on_action(cx.listener(|v, _: &ListPageUp, _, cx| {
+                if !v.list_step(Step::By(-PAGE_STEP), cx) {
+                    cx.propagate()
+                }
+            }))
+            .on_action(cx.listener(|v, _: &ListPageDown, _, cx| {
+                if !v.list_step(Step::By(PAGE_STEP), cx) {
+                    cx.propagate()
+                }
+            }))
+            .on_action(cx.listener(|v, _: &ListFirst, _, cx| {
+                if !v.list_step(Step::First, cx) {
+                    cx.propagate()
+                }
+            }))
+            .on_action(cx.listener(|v, _: &ListLast, _, cx| {
+                if !v.list_step(Step::Last, cx) {
+                    cx.propagate()
+                }
+            }))
+            .on_action(cx.listener(|v, _: &ListOpen, _, cx| {
+                if !v.list_open(cx) {
+                    cx.propagate()
+                }
+            }))
             .on_action(cx.listener(|v, _: &crate::app::ToggleResultZoom, window, cx| {
                 if v.page == Page::Audit && v.received_rows.is_some() {
                     v.toggle_received_zoom(window, cx);

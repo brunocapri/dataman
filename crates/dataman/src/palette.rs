@@ -1,8 +1,5 @@
-use gpui::{
-    Action, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
-    ScrollHandle, Window, actions, div, prelude::*,
-};
 use crate::theme::px;
+use gpui::{Action, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, ScrollHandle, Window, actions, div, prelude::*};
 
 use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
@@ -75,7 +72,9 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
     }
     // Word starts first; when that skips letters the rest needs ("report 497 rev" in
     // "Report 497 revenue"), the next occurrence every time.
-    subsequence(&q, &chars, &lower, true).or_else(|| subsequence(&q, &chars, &lower, false)).map(|(score, positions)| Match { score: score - len_penalty, positions })
+    subsequence(&q, &chars, &lower, true)
+        .or_else(|| subsequence(&q, &chars, &lower, false))
+        .map(|(score, positions)| Match { score: score - len_penalty, positions })
 }
 
 fn subsequence(q: &[char], chars: &[(usize, char)], lower: &[char], words: bool) -> Option<(i32, Vec<usize>)> {
@@ -302,10 +301,12 @@ fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>,
                     if section == Section::Favorites {
                         return contains_match(query, &it.sub);
                     }
-                    fuzzy(query, &it.sub).filter(|m| m.score >= 500 || query.is_empty()).map(|m| Match { score: m.score - 400, positions: vec![] }).or_else(|| match &it.kind {
-                        ItemKind::Setting { words, .. } => contains_match(query, words),
-                        _ => None,
-                    })
+                    fuzzy(query, &it.sub).filter(|m| m.score >= 500 || query.is_empty()).map(|m| Match { score: m.score - 400, positions: vec![] }).or_else(
+                        || match &it.kind {
+                            ItemKind::Setting { words, .. } => contains_match(query, words),
+                            _ => None,
+                        },
+                    )
                 })?;
                 Some(Hit { item: i, m })
             })
@@ -428,7 +429,10 @@ impl Palette {
         let view = self.scroll.bounds();
         // Child bounds are laid out unscrolled: the offset (negative) moves them up.
         let dy = self.scroll.offset().y;
-        let inside = self.scroll.bounds_for_item(self.row_of(self.sel)).is_some_and(|b| b.top() + dy >= view.top() - px(0.5) && b.bottom() + dy <= view.bottom() + px(0.5));
+        let inside = self
+            .scroll
+            .bounds_for_item(self.row_of(self.sel))
+            .is_some_and(|b| b.top() + dy >= view.top() - px(0.5) && b.bottom() + dy <= view.bottom() + px(0.5));
         (label, self.sel, self.count(), -self.scroll.offset().y.as_f32(), inside, view)
     }
 
@@ -539,32 +543,35 @@ impl Render for Palette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let (scope, q) = self.parsed(cx);
-        let scopes = SCOPES.iter().map(|&(s, name, prefix)| {
-            let on = s == scope || (scope == Scope::Goto && matches!(s, Scope::Tables | Scope::Tabs));
-            let hov = t.hov;
-            div()
-                .id(name)
-                .h(px(24.))
-                .px(px(8.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.))
-                .text_size(px(crate::theme::text::UI))
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .when(on, |d| d.bg(t.prs).text_color(t.tx).border_color(t.line2))
-                .when(!on, |d| d.text_color(t.tx3).hover(move |st| st.bg(hov)))
-                .child(name)
-                .child(div().text_size(px(crate::theme::text::HINT)).opacity(0.6).child(prefix))
-                .cursor_pointer()
-                .on_click(cx.listener(move |p, _, _, cx| {
-                    p.scope = s;
-                    let (_, q) = p.parsed(cx);
-                    p.input.update(cx, |i, cx| i.set_text(q, cx));
-                    p.refilter(cx);
-                }))
-        }).collect::<Vec<_>>();
+        let scopes = SCOPES
+            .iter()
+            .map(|&(s, name, prefix)| {
+                let on = s == scope || (scope == Scope::Goto && matches!(s, Scope::Tables | Scope::Tabs));
+                let hov = t.hov;
+                div()
+                    .id(name)
+                    .h(px(24.))
+                    .px(px(8.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(crate::theme::text::UI))
+                    .border_1()
+                    .border_color(gpui::transparent_black())
+                    .when(on, |d| d.bg(t.prs).text_color(t.tx).border_color(t.line2))
+                    .when(!on, |d| d.text_color(t.tx3).hover(move |st| st.bg(hov)))
+                    .child(name)
+                    .child(div().text_size(px(crate::theme::text::HINT)).opacity(0.6).child(prefix))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |p, _, _, cx| {
+                        p.scope = s;
+                        let (_, q) = p.parsed(cx);
+                        p.input.update(cx, |i, cx| i.set_text(q, cx));
+                        p.refilter(cx);
+                    }))
+            })
+            .collect::<Vec<_>>();
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         let mut flat = 0;
         for (section, hits) in &self.groups {
@@ -642,18 +649,7 @@ impl Render for Palette {
                     .child(div().flex_1().min_w_0().text_size(px(15.)).text_color(t.tx).line_height(px(20.)).child(self.input.clone()))
                     .child(ui::keycap(&t, "esc")),
             )
-            .child(
-                div()
-                    .h(px(36.))
-                    .px(px(12.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(4.))
-                    .border_b_1()
-                    .border_color(t.line)
-                    .children(scopes),
-            )
+            .child(div().h(px(36.)).px(px(12.)).flex().flex_row().items_center().gap(px(4.)).border_b_1().border_color(t.line).children(scopes))
             .child(body);
         div()
             .id("palette-scrim")
@@ -682,15 +678,7 @@ mod tests {
     use super::*;
 
     fn item(section: Section, label: &str) -> Item {
-        Item {
-            kind: ItemKind::Tab(0),
-            section,
-            label: label.into(),
-            sub: String::new(),
-            key: String::new(),
-            icon: PaletteIcon::Tab,
-            disabled: false,
-        }
+        Item { kind: ItemKind::Tab(0), section, label: label.into(), sub: String::new(), key: String::new(), icon: PaletteIcon::Tab, disabled: false }
     }
 
     #[test]
@@ -754,7 +742,13 @@ mod tests {
 
     #[test]
     fn favorites_by_name_and_by_sql() {
-        let fav = |label: &str, sql: &str| Item { kind: ItemKind::Favorite { id: label.into() }, section: Section::Favorites, sub: sql.into(), icon: PaletteIcon::Favorite, ..item(Section::Favorites, label) };
+        let fav = |label: &str, sql: &str| Item {
+            kind: ItemKind::Favorite { id: label.into() },
+            section: Section::Favorites,
+            sub: sql.into(),
+            icon: PaletteIcon::Favorite,
+            ..item(Section::Favorites, label)
+        };
         let items = vec![
             fav("Report 497 revenue", "SELECT 497 AS n, 'marker_497' AS tag FROM orders"),
             fav("Report 123 churn", "SELECT 123 AS n, 'marker_123' AS tag FROM orders"),
@@ -772,14 +766,21 @@ mod tests {
 
     #[test]
     fn settings_by_name_section_and_other_words() {
-        let setting = |label: &str, section: &'static str, words: &'static str| Item { kind: ItemKind::Setting { section, words }, sub: section.into(), icon: PaletteIcon::Setting, ..item(Section::Settings, label) };
+        let setting = |label: &str, section: &'static str, words: &'static str| Item {
+            kind: ItemKind::Setting { section, words },
+            sub: section.into(),
+            icon: PaletteIcon::Setting,
+            ..item(Section::Settings, label)
+        };
         let items = vec![
             Item { sub: String::new(), ..setting("Results grid", "Results grid", "") },
             setting("Rows fetched ahead", "Results grid", "prefetch fetch"),
             setting("Theme", "Appearance", "dark light system"),
             item(Section::Commands, "Run"),
         ];
-        let found = |q: &str, s: Scope| -> Vec<String> { rank(&items, q, s).0.iter().filter(|g| g.0 == Section::Settings).flat_map(|g| g.1.iter().map(|h| items[h.item].label.clone())).collect() };
+        let found = |q: &str, s: Scope| -> Vec<String> {
+            rank(&items, q, s).0.iter().filter(|g| g.0 == Section::Settings).flat_map(|g| g.1.iter().map(|h| items[h.item].label.clone())).collect()
+        };
         assert_eq!(found("rows fetched", Scope::All), ["Rows fetched ahead"], "its name");
         assert_eq!(found("results grid", Scope::All), ["Results grid"], "a section's whole name");
         assert_eq!(found("results", Scope::All), ["Results grid", "Rows fetched ahead"], "a word of it: the section, then its rows");
@@ -1075,7 +1076,13 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Open database file…", "a SQLite or DuckDB file", "", Box::new(crate::app::OpenDatabaseFile), Workspace),
         n(Need::Projects, "Open project…", "a folder's shared settings, in .dataman", "", Box::new(OpenProject), Workspace),
         n(Need::OpenProject, "Close project", "keeps what it brought, stops syncing", "", Box::new(CloseProject), Workspace),
-        c("Review edits made outside Dataman", "connections.toml or settings.toml, held until applied", "", Box::new(crate::outside_ui::ReviewOutsideEdits), Workspace),
+        c(
+            "Review edits made outside Dataman",
+            "connections.toml or settings.toml, held until applied",
+            "",
+            Box::new(crate::outside_ui::ReviewOutsideEdits),
+            Workspace,
+        ),
         c("Export result…", "CSV, TSV, JSON, NDJSON, SQL INSERT, Parquet", "⌘E", Box::new(ExportResult), Workspace),
         n(Need::Import, "Import data…", "CSV, TSV, JSON, NDJSON, Parquet", "", Box::new(ImportData), Workspace),
         c("Edit cell", "inline, in the grid", "↩", Box::new(crate::grid::EditCell), Grid),

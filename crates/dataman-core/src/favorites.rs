@@ -28,7 +28,15 @@ pub struct Favorite {
 
 impl Favorite {
     pub fn new(name: impl Into<String>, sql: impl Into<String>) -> Favorite {
-        Favorite { id: uuid::Uuid::new_v4().simple().to_string(), name: name.into(), sql: sql.into(), connection_id: None, database: None, folder: None, agent_made: false }
+        Favorite {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            name: name.into(),
+            sql: sql.into(),
+            connection_id: None,
+            database: None,
+            folder: None,
+            agent_made: false,
+        }
     }
 }
 
@@ -324,10 +332,44 @@ fn invisible(c: char) -> bool {
 /// A letter of another script drawn like a Latin one (Cyrillic а, Greek ο…): the Latin letter.
 fn latin_look(c: char) -> char {
     match c {
-        'а' => 'a', 'в' => 'b', 'с' => 'c', 'ԁ' => 'd', 'е' | 'ё' => 'e', 'һ' => 'h', 'і' | 'ӏ' => 'i', 'ј' => 'j', 'к' => 'k', 'м' => 'm',
-        'н' => 'h', 'о' => 'o', 'р' => 'p', 'ԛ' => 'q', 'г' => 'r', 'ѕ' => 's', 'т' => 't', 'у' => 'y', 'ԝ' => 'w', 'х' => 'x',
-        'α' => 'a', 'β' => 'b', 'ε' => 'e', 'η' => 'n', 'ι' => 'i', 'κ' => 'k', 'ν' => 'v', 'ο' => 'o', 'ρ' => 'p', 'τ' => 't', 'υ' => 'u',
-        'χ' => 'x', 'ω' => 'w', 'ϲ' => 'c', 'ı' => 'i', 'ȷ' => 'j', 'ɡ' => 'g', 'ℓ' => 'l',
+        'а' => 'a',
+        'в' => 'b',
+        'с' => 'c',
+        'ԁ' => 'd',
+        'е' | 'ё' => 'e',
+        'һ' => 'h',
+        'і' | 'ӏ' => 'i',
+        'ј' => 'j',
+        'к' => 'k',
+        'м' => 'm',
+        'н' => 'h',
+        'о' => 'o',
+        'р' => 'p',
+        'ԛ' => 'q',
+        'г' => 'r',
+        'ѕ' => 's',
+        'т' => 't',
+        'у' => 'y',
+        'ԝ' => 'w',
+        'х' => 'x',
+        'α' => 'a',
+        'β' => 'b',
+        'ε' => 'e',
+        'η' => 'n',
+        'ι' => 'i',
+        'κ' => 'k',
+        'ν' => 'v',
+        'ο' => 'o',
+        'ρ' => 'p',
+        'τ' => 't',
+        'υ' => 'u',
+        'χ' => 'x',
+        'ω' => 'w',
+        'ϲ' => 'c',
+        'ı' => 'i',
+        'ȷ' => 'j',
+        'ɡ' => 'g',
+        'ℓ' => 'l',
         c => c,
     }
 }

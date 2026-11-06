@@ -1,11 +1,12 @@
 use super::super::catalog::{FuncSig, TypeEntry};
 
 pub fn functions_sql() -> [String; 3] {
-    let skip_types = ["internal", "cstring", "trigger", "event_trigger", "language_handler", "fdw_handler", "index_am_handler", "table_am_handler", "tsm_handler"]
-        .iter()
-        .map(|t| format!("'pg_catalog.{t}'::pg_catalog.regtype"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let skip_types =
+        ["internal", "cstring", "trigger", "event_trigger", "language_handler", "fdw_handler", "index_am_handler", "table_am_handler", "tsm_handler"]
+            .iter()
+            .map(|t| format!("'pg_catalog.{t}'::pg_catalog.regtype"))
+            .collect::<Vec<_>>()
+            .join(", ");
     let from = format!(
         "FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
          WHERE n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%' \
