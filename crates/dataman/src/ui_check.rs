@@ -1039,14 +1039,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         grid.update(cx, |g, cx| g.select_cell(0, 0, cx));
         window.focus(&grid.focus_handle(cx), cx);
     });
-    press(cx, "cmd-shift-c");
-    let with = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
-    press(cx, "cmd-alt-c");
-    let csv = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
+    let with = crate::check::copied(cx, "answer\n7\n", |cx| press(cx, "cmd-shift-c")).await;
+    let csv = crate::check::copied(cx, "7\n", |cx| press(cx, "cmd-alt-c")).await;
     if let Some(c) = clip.clone() {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
-    report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.as_deref().map(str::trim_end) == Some("answer\n7") && csv.as_deref().map(str::trim_end) == Some("7"), format!("{with:?} {csv:?}"));
+    report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.trim_end() == "answer\n7" && csv.trim_end() == "7", format!("{with:?} {csv:?}"));
     let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion())).is_some()).unwrap_or(false);
     let copied_now = shown(cx);
     pause(cx, 2100).await;
@@ -1056,22 +1054,19 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let qgrid = cx.update(|_, cx| quoted.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&qgrid.focus_handle(cx), cx));
     press(cx, "cmd-a");
+    let wants = ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\n"];
     let mut copies = Vec::new();
-    for (fmt, header) in [(dataman_core::result::CopyFormat::Csv, true), (dataman_core::result::CopyFormat::Tsv, true)] {
-        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, header, cx)));
-        copies.push(cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten().unwrap_or_default());
+    for (fmt, want) in [(dataman_core::result::CopyFormat::Csv, wants[0]), (dataman_core::result::CopyFormat::Tsv, wants[1])] {
+        copies.push(crate::check::copied(cx, want, |cx| {
+            let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, true, cx)));
+        }).await);
     }
-    report(
-        "Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers leaves a NULL empty",
-        copies == ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\n"],
-        format!("{copies:?}"),
-    );
+    report("Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers leaves a NULL empty", copies == wants, format!("{copies:?}"));
     let mut cells = Vec::new();
-    for col in [0, 2] {
+    for (col, want) in [(0, "a,b"), (2, "")] {
         crate::check::set_clipboard("stale", cx);
         let _ = cx.update(|_, cx| qgrid.update(cx, |g, cx| g.select_cell(0, col, cx)));
-        press(cx, "cmd-c");
-        cells.push(crate::check::clipboard(cx));
+        cells.push(crate::check::copied(cx, want, |cx| press(cx, "cmd-c")).await);
     }
     report("⌘C on one cell copies the value alone; on a NULL, nothing", cells == ["a,b", ""], format!("{cells:?}"));
     if let Some(c) = clip {

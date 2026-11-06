@@ -31,7 +31,11 @@ async fn edit_cell(tab: &Entity<QueryTab>, id: &str, col: usize, text: Option<&s
     let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
     click(cx, p);
     key(cx, "enter");
-    pause(cx, 50).await;
+    // A commit re-runs the query, and ↩ only queues the edit while the target resolves again.
+    let editing = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).demo_editing()).unwrap_or(false);
+    if !until(cx, 10, editing).await {
+        return false;
+    }
     match text {
         Some(t) => {
             key(cx, "cmd-a");
@@ -40,8 +44,7 @@ async fn edit_cell(tab: &Entity<QueryTab>, id: &str, col: usize, text: Option<&s
         None => key(cx, "cmd-shift-n"),
     }
     key(cx, "enter");
-    pause(cx, 50).await;
-    true
+    until(cx, 10, |cx| !editing(cx)).await
 }
 
 /// The review opens in the side panel as it slides in: its Commit button, clicked once there.
@@ -119,10 +122,8 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         grid.update(cx, |g, cx| g.select_cell(row, STOCK, cx));
         window.focus(&grid.focus_handle(cx), cx);
     });
-    key(cx, "cmd-c");
-    let one = clipboard(cx);
-    key(cx, "cmd-shift-c");
-    let with = clipboard(cx);
+    let one = copied(cx, "7", |cx| key(cx, "cmd-c")).await;
+    let with = copied(cx, "stock\n7\n", |cx| key(cx, "cmd-shift-c")).await;
     r.check("a NULL with a pending edit copies what the cell shows, never \\N", stored.is_none() && one == "7" && with == "stock\n7\n", format!("{stored:?} {one:?} {with:?}"));
     key(cx, "cmd-backspace");
 

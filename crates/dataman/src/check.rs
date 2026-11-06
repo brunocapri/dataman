@@ -366,6 +366,22 @@ pub fn clipboard(cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default()).unwrap_or_default()
 }
 
+/// The clipboard once `copy` has written `want`, or what it last held after 2 s. On Windows other
+/// programs (clipboard history) hold the clipboard for some ms after each write, and GPUI opens it
+/// once, with no retry: a write or a read in that moment is lost.
+pub async fn copied(cx: &mut AsyncWindowContext, want: &str, mut copy: impl FnMut(&mut AsyncWindowContext)) -> String {
+    let mut got = String::new();
+    for _ in 0..40 {
+        copy(cx);
+        got = clipboard(cx);
+        if got == want {
+            break;
+        }
+        pause(cx, 50).await;
+    }
+    got
+}
+
 pub fn set_clipboard(text: &str, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string())));
 }
