@@ -383,6 +383,11 @@ async fn naming_field(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, names: &[&
     r.check("esc keeps the old name, and the tree has the keys", text(cx).is_none() && folder_named(ws, "whoops", cx).is_none() && in_tree(cx), format!("{:?} tree focus {}", folders(ws, cx), in_tree(cx)));
 
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_filter("nothing like this", cx)));
+    let offered = probed("x-reset-filters", cx).is_some();
+    click_probe("x-reset-filters", cx);
+    let (filter, listed) = (cx.update(|_, cx| t.read(cx).demo_filter().read(cx).text().to_string()).unwrap_or_default(), rows(t, cx));
+    r.check("a search nothing matches offers Reset filters, which clears it and lists the tree again", offered && filter.is_empty() && !listed.is_empty() && probed("x-reset-filters", cx).is_none(), format!("{offered} {filter:?} {listed:?}"));
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_filter("nothing like this", cx)));
     draw(cx);
     click_probe("x-new-folder", cx);
     pause(cx, 50).await;

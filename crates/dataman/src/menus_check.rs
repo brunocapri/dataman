@@ -119,4 +119,52 @@ pub async fn run_history_filter(ws: &Entity<Workspace>, r: &mut Report, cx: &mut
     click_probe("hscope:all", cx);
     pause(cx, 100).await;
     r.check("All connections brings everything back", shown(cx) == all, shown(cx));
+
+    let filter_text = |cx: &mut AsyncWindowContext| cx.update(|_, cx| h.read(cx).demo_filter_text(cx)).unwrap_or_default();
+    r.check("a list with rows offers no Reset filters", probed("history-reset", cx).is_none(), "");
+    click_probe("history-chip", cx);
+    click_probe("Error", cx);
+    click_probe("history-scope", cx);
+    click_probe(&format!("hscope:{}", my.id), cx);
+    let _ = cx.update(|window, cx| h.update(cx, |h, cx| h.demo_search("nothing like this", window, cx)));
+    let nothing = shown(cx);
+    let offered = probed("history-reset", cx).is_some();
+    click_probe("history-reset", cx);
+    let scope = cx.update(|_, cx| h.read(cx).demo_scope().0).ok().flatten();
+    let text = filter_text(cx);
+    r.check(
+        "History with a status, a connection and a search matching nothing: Reset filters clears all three",
+        nothing == 0 && offered && scope.is_none() && text.is_empty() && shown(cx) == all && probed("history-reset", cx).is_none(),
+        format!("{nothing} {offered} {scope:?} {text:?} {}", shown(cx)),
+    );
+
+    let _ = cx.update(|window, cx| h.update(cx, |h, cx| h.demo_search("kept for History", window, cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_nav(NavView::Favorites, window, cx)));
+    draw(cx);
+    let slate = probed("history-reset", cx).is_none();
+    let _ = cx.update(|_, cx| {
+        let core = ws.read(cx).store.read(cx).core.clone();
+        let mut f = dataman_core::Favorite::new("Only on PostgreSQL", "SELECT 'reset' AS check");
+        f.connection_id = Some(pg.id.clone());
+        let saved = core.favorites.add(f);
+        h.update(cx, |h, cx| h.reload_favorites(cx));
+        saved.map(|_| ())
+    });
+    let favs = |cx: &mut AsyncWindowContext| crate::history_check::rows(&h, cx);
+    click_probe("fav-scope", cx);
+    click_probe(&format!("fscope:{}", my.id), cx);
+    let _ = cx.update(|window, cx| h.update(cx, |h, cx| h.demo_search("nothing like this", window, cx)));
+    let (emptied, offered) = (favs(cx).is_empty(), probed("history-reset", cx).is_some());
+    click_probe("history-reset", cx);
+    let scope = cx.update(|_, cx| h.read(cx).demo_fav_scope().0).ok().flatten();
+    let (text, listed) = (filter_text(cx), favs(cx));
+    r.check(
+        "Favorites with no favorites: no Reset filters; with a connection and a search matching nothing: it clears both",
+        slate && emptied && offered && scope.is_none() && text.is_empty() && listed == ["Only on PostgreSQL"],
+        format!("{slate} {emptied} {offered} {scope:?} {text:?} {listed:?}"),
+    );
+    show_history(ws, cx);
+    let text = filter_text(cx);
+    r.check("…and History keeps its own search", text == "kept for History", &text);
+    let _ = cx.update(|window, cx| h.update(cx, |h, cx| h.demo_search("", window, cx)));
 }

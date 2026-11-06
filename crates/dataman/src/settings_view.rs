@@ -1296,6 +1296,16 @@ impl SettingsView {
     }
 
     #[cfg(feature = "checks")]
+    pub fn demo_search_handle(&self, cx: &App) -> FocusHandle {
+        self.search.focus_handle(cx)
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_query(&self, cx: &App) -> String {
+        self.query(cx)
+    }
+
+    #[cfg(feature = "checks")]
     pub fn demo_key_search_point(&self) -> Option<gpui::Point<Pixels>> {
         self.key_button_bounds.borrow().first().map(|b| b.center())
     }
@@ -1405,8 +1415,15 @@ impl Render for SettingsView {
             }
         }
         if page.is_empty() {
-            let free = key_label.map(|k| SharedString::from(format!("No command uses {k}.")));
-            page.push(div().pt(px(80.)).flex().justify_center().child(ui::empty_state(&t, "[ NO MATCH ]", 20., free)).into_any_element());
+            let empty = match key_label {
+                Some(k) => ui::empty_state(&t, "[ NO MATCH ]", 20., Some(format!("No command uses {k}.").into())),
+                None => ui::no_match(&t, "settings-reset", cx.listener(|v, _, _, cx| {
+                    v.search.update(cx, |i, cx| i.set_text("", cx));
+                    v.key_filter.update(cx, |i, cx| i.set_text("", cx));
+                    cx.notify();
+                })),
+            };
+            page.push(div().pt(px(80.)).flex().justify_center().child(empty).into_any_element());
         }
         if let Some(bar) = key_bar {
             page.insert(0, bar);

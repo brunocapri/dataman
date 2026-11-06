@@ -3800,7 +3800,7 @@ impl Render for SchemaTree {
                 .items_center()
                 .gap(px(8.))
                 .text_center()
-                .child(ui::banner("[ NO MATCH ]", 20., t.tx4))
+                .child(ui::no_match(&t, "x-reset-filters", cx.listener(|t, _, _, cx| t.clear_filter(cx))))
                 .children(near.map(|n| {
                     div().flex().flex_row().text_color(t.tx2).child("Did you mean ").child(div().text_color(t.acc_t).child(n)).child("?")
                 }))

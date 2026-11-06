@@ -1195,14 +1195,7 @@ impl AgentsPage {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
-                .child(div().text_color(t.tx3).child("Nothing matches these filters."))
-                .child(
-                    ui::button(t, "agents-clear-filters", ui::Btn::Secondary)
-                        .h(px(28.))
-                        .child("Clear filters")
-                        .on_click(cx.listener(|v, _, _, cx| v.clear_filters(cx))),
-                )
+                .child(ui::no_match(t, "agents-reset-filters", cx.listener(|v, _, _, cx| v.clear_filters(cx))))
                 .into_any_element()
         } else {
             let theme = t.clone();

@@ -840,6 +840,23 @@ impl HistoryPanel {
         }
     }
 
+    /// What narrows the list showing now: its search and its own filters.
+    fn filtered(&self) -> bool {
+        !self.query.is_empty() || if self.show_favorites { self.fav_scope.is_some() } else { self.chip != Chip::All || self.scope.is_some() }
+    }
+
+    /// Leaves the other list's search and filters as they are.
+    fn reset_filters(&mut self, cx: &mut Context<Self>) {
+        if self.show_favorites {
+            self.fav_scope = None;
+        } else {
+            self.chip = Chip::All;
+            self.scope = None;
+        }
+        self.filter.update(cx, |f, cx| f.set_text("", cx));
+        self.apply_filter(cx);
+    }
+
     fn matches(&self, (conn, e): &(String, HistoryEntry), q: &str, names: &std::collections::HashMap<String, String>) -> bool {
         let chip = match self.chip {
             Chip::All => true,
@@ -2256,7 +2273,11 @@ impl Render for HistoryPanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(ui::empty_state(&t, "[ CLEAN SLATE ]", 20., None))
+                .child(if self.filtered() {
+                    ui::no_match(&t, "history-reset", cx.listener(|h, _, _, cx| h.reset_filters(cx)))
+                } else {
+                    ui::empty_state(&t, "[ CLEAN SLATE ]", 20., None)
+                })
                 .into_any_element()
         } else {
             let theme = t.clone();
