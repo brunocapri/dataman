@@ -421,8 +421,17 @@ mod tests {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let f = bin.join(name);
-        std::fs::write(&f, format!("#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > '{}/{name}.args'\n{then}\n", dir.display())).unwrap();
+        std::fs::write(&f, format!("#!/bin/sh\n[ -z \"$DATAMAN_SCRIPT_PROBE\" ] || exit 0\nfor a in \"$@\"; do echo \"$a\"; done > '{}/{name}.args'\n{then}\n", dir.display())).unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A fork elsewhere in the test process can hold the file's write descriptor for an instant,
+        // and exec then fails with ETXTBSY. Once one run gets through none is left.
+        loop {
+            match std::process::Command::new(&f).env("DATAMAN_SCRIPT_PROBE", "1").status() {
+                Ok(_) => return,
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(e) => panic!("{}: {e}", f.display()),
+            }
+        }
     }
 
     #[test]
