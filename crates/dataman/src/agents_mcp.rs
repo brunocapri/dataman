@@ -210,9 +210,9 @@ impl AgentsPage {
         cx.notify();
     }
 
-    fn change_row(t: &Theme, k: usize, c: &Change) -> AnyElement {
+    pub(crate) fn change_row(t: &Theme, id: &str, k: usize, c: &Change) -> AnyElement {
         div()
-            .children(ui::here(&SharedString::from(format!("agents-import-change-{k}")).into()))
+            .children(ui::here(&SharedString::from(format!("{id}-{k}")).into()))
             .flex()
             .flex_row()
             .items_center()
@@ -262,7 +262,7 @@ impl AgentsPage {
                     .iter()
                     .map(|c| {
                         k += 1;
-                        Self::change_row(t, k - 1, c)
+                        Self::change_row(t, "agents-import-change", k - 1, c)
                     })
                     .collect();
                 body = std::mem::replace(&mut body, div()).child(

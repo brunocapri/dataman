@@ -14,7 +14,8 @@ fn targets(d: Dialect) -> Vec<Target> {
     let mut out = Vec::new();
     for access in [McpAccess::Read, McpAccess::Write, McpAccess::Full] {
         for env in [Environment::Dev, Environment::Production] {
-            out.push(Target { access, env, read_only: false, dialect: d, yolo: false });
+            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: false });
+            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: true });
         }
     }
     out
@@ -59,6 +60,10 @@ fn judge_runs_nothing_destructive_outside_the_allowlist() {
                 if j.verdict == Verdict::Run && t.env.is_production() && class.is_write() {
                     fails.push(format!("[{d:?} {:?} production] {sql:?}: Run without asking, {class:?}", t.access));
                 }
+                // A new object runs unasked on tier full alone, and never where only the user's login can make it.
+                if j.verdict == Verdict::Run && matches!(class, WriteClass::Create { .. }) && (t.access != McpAccess::Full || t.agent_login) {
+                    fails.push(format!("[{d:?} {:?} login={}] {sql:?}: Run, but {class:?}", t.access, t.agent_login));
+                }
                 // With the allowlist: what runs unasked is the entries and what the tier runs anyway.
                 let j = judge(true, t, &sql, &allowed);
                 if j.verdict != Verdict::Run {
@@ -70,6 +75,7 @@ fn judge_runs_nothing_destructive_outside_the_allowlist() {
                 let tier_runs = match rest_class {
                     WriteClass::Read => true,
                     WriteClass::SafeWrite => t.access != McpAccess::Read && !t.env.is_production(),
+                    WriteClass::Create { .. } => t.access == McpAccess::Full && !t.env.is_production() && !t.agent_login,
                     WriteClass::Destructive { .. } => false,
                 };
                 if !tier_runs {

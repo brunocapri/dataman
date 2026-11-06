@@ -423,7 +423,7 @@ impl Call {
     /// it (DDL, TRUNCATE, a procedure, a terminated session): never before that Allow.
     pub async fn as_user(&self, o: Opened, class: &WriteClass) -> Result<Opened, ToolError> {
         let allowed = self.note.lock().approval.as_ref().is_some_and(|n| n.decision == Decision::Approved);
-        if o.profile.agent_login.is_none() || !class.is_destructive() || !allowed {
+        if o.profile.agent_login.is_none() || !class.needs_user_login() || !allowed {
             return Ok(o);
         }
         let conn = tokio::select! {

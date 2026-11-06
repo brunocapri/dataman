@@ -165,7 +165,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
 }
 
 /// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-general[-import]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
-/// `agents-protection-login[-drift|-changes|-checks]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
+/// `agents-protection-copy`, `agents-protection-login[-drift|-changes|-checks]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
 /// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since, `-changes` its View changes open, `-checks` View checks open with one failed).
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
@@ -179,6 +179,10 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
     }
     if stage.starts_with("agents-protection-login") {
         demo_login(&core, stage.ends_with("-drift") || stage.ends_with("-changes"));
+    }
+    if stage == "agents-protection-copy" {
+        // prod-pg copied from a connection with no rules: what loosens shows.
+        let _ = core.config.upsert(profile("staging-pg", Engine::Postgres, Environment::Staging, McpAccess::Full));
     }
     ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx)));
     let page = match stage {
@@ -224,6 +228,11 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
                 && let Some(p) = id.as_ref().and_then(|id| core.config.get(id))
             {
                 a.demo_checks(&p);
+            }
+            if stage == "agents-protection-copy"
+                && let Some(from) = id_of("staging-pg", &core)
+            {
+                a.open_copy(from, window, cx);
             }
             if stage == "agents-types-card" {
                 a.select_type("card", cx);
@@ -322,11 +331,18 @@ async fn pick(a: &Entity<AgentsPage>, cx: &mut AsyncWindowContext, id: &str, k: 
 
 /// prod-pg with an agent login, its rules unchanged since or (`drift`) not.
 fn demo_login(core: &Core, drift: bool) {
-    use dataman_core::agent_login::{self, AgentLogin};
+    use dataman_core::agent_login;
     let Some(mut p) = core.config.connections().into_iter().find(|p| p.name == "prod-pg") else { return };
-    let now = chrono::Utc::now();
     let rules = if drift { "changed".to_string() } else { agent_login::rules_hash(&p, &p.database) };
-    p.agent_login = Some(AgentLogin {
+    // The drift stages show the changes waiting for Apply.
+    p.agent_login = Some(login_of(&p, rules, !drift));
+    let _ = core.config.upsert(p);
+}
+
+fn login_of(p: &ConnectionProfile, rules: String, auto_sync: bool) -> dataman_core::agent_login::AgentLogin {
+    use dataman_core::agent_login::{self, AgentLogin};
+    let now = chrono::Utc::now();
+    AgentLogin {
         user: agent_login::login_name(&p.id),
         server: String::new(),
         created: now - chrono::Duration::days(7),
@@ -337,15 +353,13 @@ fn demo_login(core: &Core, drift: bool) {
         rotate_days: Some(30),
         rotated: None,
         conn_limit: Some(4),
-        // The drift stages show the changes waiting for Apply.
-        auto_sync: !drift,
+        auto_sync,
         database: p.database.clone(),
         made: Vec::new(),
         views: Vec::new(),
         granted: 12,
         not_granted: 0,
-    });
-    let _ = core.config.upsert(p);
+    }
 }
 
 fn rules(core: &Core, id: &str) -> dataman_core::privacy::AgentRules {
@@ -725,6 +739,70 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     tap(&a, "agents-tier-0", cx).await;
     pause(cx, 50).await;
     tap(&a, "agents-tier-2", cx).await;
+    pause(cx, 50).await;
+
+    // Copy from…: this engine's other connections; a sheet first; what is one server's stays.
+    let mut source = profile("copy-source", Engine::Postgres, Environment::Dev, McpAccess::Full);
+    source.mcp_row_limit = Some(1000);
+    source.mcp_yolo = true;
+    source.agent_login = Some(login_of(&source, "elsewhere".into(), false));
+    let s = &mut source.mcp_rules;
+    (s.view, s.structure) = (AgentView::Masked, false);
+    s.visible.items.push(VisibleItem { name: "no_such_table".into(), kind: ItemKind::Table });
+    s.sensitive.push(SensitiveCol { col: "no_such.col".into(), how: Mask::Hidden, on: true });
+    let target = profile("copy-target", Engine::Postgres, Environment::Staging, McpAccess::Read);
+    let alone = profile("copy-alone", Engine::DuckDb, Environment::None, McpAccess::Read);
+    for p in [&source, &target, &alone] {
+        let _ = core.config.upsert(p.clone());
+    }
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    until(cx, 5, |cx| probed("agents-conn-copy-alone", cx).is_some()).await;
+    tap(&a, "agents-conn-copy-alone", cx).await;
+    r.check("Copy from…: not offered where no other connection has this engine", until(cx, 5, |cx| probed("agents-protection-conn", cx).is_some() && probed("agents-copy-from", cx).is_none()).await, String::new());
+    tap(&a, "agents-conn-copy-target", cx).await;
+    until(cx, 5, |cx| probed("agents-copy-from", cx).is_some()).await;
+    tap(&a, "agents-copy-from", cx).await;
+    until(cx, 5, |cx| probed("agents-copy-from:0", cx).is_some()).await;
+    let listed = cx.update(|_, cx| a.read(cx).demo_menu_labels()).unwrap_or_default();
+    let is = |n: &str| listed.iter().any(|l| l == n);
+    r.check("… it lists the engine's other connections, not this one, nor another engine's", is("copy-source") && is(&pg.name) && !is("copy-target") && !is("copy-alone"), format!("{listed:?}"));
+    let at = listed.iter().position(|l| l == "copy-source").unwrap_or(0);
+    tap(&a, &format!("agents-copy-from:{at}"), cx).await;
+    let up = until(cx, 5, |cx| probed("agents-copy-cancel", cx).is_some()).await;
+    r.check(
+        "… a sheet first, what loosens flagged, nothing written yet",
+        up && probed("agents-copy-loosens", cx).is_some() && probed("agents-copy-change-0", cx).is_some() && core.config.get(&target.id).as_ref() == Some(&target),
+        String::new(),
+    );
+    key(cx, "escape");
+    let shut = until(cx, 5, |cx| probed("agents-copy-cancel", cx).is_none()).await;
+    r.check("… Esc keeps the connection as it was", shut && core.config.get(&target.id).as_ref() == Some(&target), String::new());
+    r.check("… the page has no rule yet", probed("agents-sens-edit-0", cx).is_none(), String::new());
+    tap(&a, "agents-copy-from", cx).await;
+    until(cx, 5, |cx| probed("agents-copy-from:0", cx).is_some()).await;
+    tap(&a, &format!("agents-copy-from:{at}"), cx).await;
+    until(cx, 5, |cx| probed("agents-copy-apply", cx).is_some()).await;
+    tap(&a, "agents-copy-apply", cx).await;
+    let copied = until(cx, 5, |cx| probed("agents-copy-cancel", cx).is_none() && probed("agents-sens-edit-0", cx).is_some()).await;
+    let got = core.config.get(&target.id);
+    r.check(
+        "… Copy writes the source's tier, limits and rules, and the page shows them",
+        copied && got.as_ref().is_some_and(|p| p.mcp == source.mcp && p.mcp_row_limit == source.mcp_row_limit && p.mcp_rules == source.mcp_rules),
+        format!("{got:?}"),
+    );
+    r.check("… not its agent login, nor YOLO", got.as_ref().is_some_and(|p| p.agent_login.is_none() && !p.mcp_yolo), format!("{got:?}"));
+    r.check("… and the source stays as it was", core.config.get(&source.id).as_ref() == Some(&source), String::new());
+    tap(&a, "agents-copy-from", cx).await;
+    until(cx, 5, |cx| probed("agents-copy-from:0", cx).is_some()).await;
+    tap(&a, &format!("agents-copy-from:{at}"), cx).await;
+    let same = until(cx, 5, |cx| probed("agents-copy-same", cx).is_some()).await;
+    r.check("… copied again, nothing is left to change", same && probed("agents-copy-apply", cx).is_none(), String::new());
+    key(cx, "enter");
+    until(cx, 5, |cx| probed("agents-copy-cancel", cx).is_none()).await;
+    for p in [&source, &target, &alone] {
+        let _ = core.config.remove(&p.id);
+    }
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
     pause(cx, 50).await;
 
     // Privacy.

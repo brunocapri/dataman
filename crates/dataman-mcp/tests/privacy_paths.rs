@@ -892,7 +892,7 @@ fn search_sql_in_the_servers_dialect() {
 }
 
 fn target(access: McpAccess, env: Environment, read_only: bool, yolo: bool) -> Target {
-    Target { access, env, read_only, dialect: dataman_core::Dialect::Postgres, yolo }
+    Target { access, env, read_only, dialect: dataman_core::Dialect::Postgres, yolo, agent_login: false }
 }
 
 /// One order, whatever the combination: (1) MCP switched off, (2) the connection's tier off,

@@ -477,7 +477,7 @@ fn no_sql_writes_a_file_at_any_level() {
 }
 
 fn target(dialect: dataman_core::sql::Dialect, access: McpAccess, yolo: bool) -> Target {
-    Target { access, env: Environment::None, read_only: false, dialect, yolo }
+    Target { access, env: Environment::None, read_only: false, dialect, yolo, agent_login: false }
 }
 
 /// The server engines: a statement that reaches the server's files or runs a program there (on

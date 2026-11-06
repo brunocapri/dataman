@@ -18,7 +18,8 @@ fn rank(c: &WriteClass) -> u8 {
     match c {
         WriteClass::Read => 0,
         WriteClass::SafeWrite => 1,
-        WriteClass::Destructive { .. } => 2,
+        WriteClass::Create { .. } => 2,
+        WriteClass::Destructive { .. } => 3,
     }
 }
 
@@ -98,7 +99,9 @@ fn check(sql: &str, d: Dialect, out: &mut Vec<String>) {
 
     // A whole text is its strongest statement.
     let strongest = pieces.iter().map(|p| rank(&guard::agent_write_class(p, d))).max().unwrap_or(0);
-    if rank(&class) != strongest {
+    // But on MySQL, where a new object beside a write commits that write: destructive.
+    let beside_a_write = d == Dialect::MySql && strongest == 2 && pieces.iter().any(|p| guard::agent_write_class(p, d) == WriteClass::SafeWrite);
+    if rank(&class) != if beside_a_write { 3 } else { strongest } {
         fail(&format!("agent_write_class {class:?}, strongest piece rank {strongest}"));
     }
     let preview = pieces.iter().map(|p| guard::agent_preview(p, d)).max().unwrap_or(Preview::Held);
@@ -195,7 +198,7 @@ fn joined_statements_read_as_both() {
                     let both = Reading {
                         statements: ra.statements + rb.statements,
                         pieces: ra.pieces + rb.pieces,
-                        class: ra.class.max(rb.class),
+                        class: if d == Dialect::MySql && ra.class.min(rb.class) == 1 && ra.class.max(rb.class) == 2 { 3 } else { ra.class.max(rb.class) },
                         reads: ra.reads && rb.reads,
                         preview: ra.preview.max(rb.preview),
                     };
@@ -352,30 +355,30 @@ fn privacy_rewrite_keeps_statements() {
 /// the properties above found: the class and the read gate's answer they must keep.
 const REGRESSIONS: &[(Dialect, &str, u8, bool)] = &[
     // A text is its strongest statement.
-    (Dialect::Postgres, "SELECT 1; DELETE FROM t", 2, false),
+    (Dialect::Postgres, "SELECT 1; DELETE FROM t", 3, false),
     // MySQL runs what `/*! … */` holds; versioned ones are read run and skipped.
-    (Dialect::MySql, "SELECT 1 /*!; DELETE FROM t */", 2, false),
+    (Dialect::MySql, "SELECT 1 /*!; DELETE FROM t */", 3, false),
     (Dialect::MySql, "SELECT 1 /*! FOR UPDATE */", 1, false),
-    (Dialect::MySql, "SELECT /*! GET_LOCK('x', 1) */", 2, false),
-    (Dialect::MySql, "DELETE FROM t WHERE id = 1 /*! OR 1=1 */", 2, false),
-    (Dialect::MySql, "DELETE FROM t /*!99999 WHERE id = 1 */", 2, false),
-    (Dialect::MySql, "/*!50000 DROP TABLE t */", 2, false),
+    (Dialect::MySql, "SELECT /*! GET_LOCK('x', 1) */", 3, false),
+    (Dialect::MySql, "DELETE FROM t WHERE id = 1 /*! OR 1=1 */", 3, false),
+    (Dialect::MySql, "DELETE FROM t /*!99999 WHERE id = 1 */", 3, false),
+    (Dialect::MySql, "/*!50000 DROP TABLE t */", 3, false),
     (Dialect::MySql, "SELECT /*!40001 SQL_NO_CACHE */ 1", 0, true),
     // What follows a read in a T-SQL batch is read on its own.
-    (Dialect::TSql, "SELECT 1 EXEC sp_help 't'", 2, false),
+    (Dialect::TSql, "SELECT 1 EXEC sp_help 't'", 3, false),
     (Dialect::TSql, "SELECT 1 DECLARE @x int", 0, false),
     // SQL Server's spaces: every C0 control but NUL, NEL, NBSP and Unicode's spaces.
-    (Dialect::TSql, "SELECT 1\u{a0}DELETE FROM t", 2, false),
-    (Dialect::TSql, "UPDATE t SET a = 1 WHERE id = 2\u{2003}DROP\u{2003}TABLE\u{2003}t", 2, false),
-    (Dialect::TSql, "SELECT 1\u{200b}DELETE\u{3000}FROM t", 2, false),
-    (Dialect::TSql, "SELECT 1\u{1c}DELETE\u{85}FROM\u{2028}t", 2, false),
+    (Dialect::TSql, "SELECT 1\u{a0}DELETE FROM t", 3, false),
+    (Dialect::TSql, "UPDATE t SET a = 1 WHERE id = 2\u{2003}DROP\u{2003}TABLE\u{2003}t", 3, false),
+    (Dialect::TSql, "SELECT 1\u{200b}DELETE\u{3000}FROM t", 3, false),
+    (Dialect::TSql, "SELECT 1\u{1c}DELETE\u{85}FROM\u{2028}t", 3, false),
     (Dialect::TSql, "SELECT\u{a0}1", 0, true),
     // `\v` is a space everywhere.
-    (Dialect::Postgres, "EXPLAIN\u{b}ANALYZE DELETE FROM t", 2, false),
+    (Dialect::Postgres, "EXPLAIN\u{b}ANALYZE DELETE FROM t", 3, false),
     (Dialect::MySql, "SELECT\u{b}1", 0, true),
     // A bare `\r` ends a `--` comment on PostgreSQL and SQL Server, not on MySQL.
-    (Dialect::Postgres, "DELETE FROM t WHERE id = 5 --\rOR true\n AND true", 2, false),
-    (Dialect::TSql, "SELECT 1 --\rDELETE FROM t\n", 2, false),
+    (Dialect::Postgres, "DELETE FROM t WHERE id = 5 --\rOR true\n AND true", 3, false),
+    (Dialect::TSql, "SELECT 1 --\rDELETE FROM t\n", 3, false),
     (Dialect::MySql, "SELECT 1 --\rDELETE FROM t\n", 0, true),
     (Dialect::MySql, "SELECT 1 #\rDELETE FROM t\n", 0, true),
 ];

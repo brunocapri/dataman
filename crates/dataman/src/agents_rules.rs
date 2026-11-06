@@ -38,7 +38,7 @@ pub(crate) fn tier_tip() -> Tip {
         .item("Off", "Agents can't use it.")
         .item("Read", "Reads only.")
         .item("Write", "Also inserts, and updates or deletes with a real WHERE, up to Rows per write.")
-        .item("Full", "Also destructive statements (DROP, TRUNCATE, a DELETE without WHERE…). Each one waits for your Allow.")
+        .item("Full", "Also new tables, indexes, views and schemas. Destructive statements (DROP, ALTER, TRUNCATE, a DELETE without WHERE…) wait for your Allow.")
         .note("On production, every write waits for your Allow.")
 }
 
@@ -398,7 +398,8 @@ impl AgentsPage {
 
     /// One bar over both columns, a single line under it: Protection over the connections, the
     /// selected one's logo, name and place over the page.
-    fn protection_bar(&self, t: &Theme, p: Option<&ConnectionProfile>) -> gpui::Div {
+    fn protection_bar(&self, t: &Theme, p: Option<&ConnectionProfile>, cx: &mut Context<Self>) -> gpui::Div {
+        let copy = p.and_then(|p| self.copy_button(t, p, cx));
         div()
             .h(px(52.))
             .flex_none()
@@ -421,15 +422,17 @@ impl AgentsPage {
                     .children(crate::assets::small_logo(p.engine, 15.))
                     .child(div().flex_none().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.name.clone()))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(place(p)))
+                    .child(div().flex_1())
+                    .children(copy)
             }))
     }
 
-    fn no_conns(&self, t: &Theme) -> AnyElement {
+    fn no_conns(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(self.protection_bar(t, None))
+            .child(self.protection_bar(t, None, cx))
             .child(div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("No saved connections."))
             .into_any_element()
     }
@@ -450,7 +453,7 @@ impl AgentsPage {
 
     /// Protection: how agents reach the connection, Access, Privacy, and its agent login last.
     pub(crate) fn render_protection(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t) };
+        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t, cx) };
         self.login_sync(&p, cx);
         let card = self.login_card(t, &p, cx);
         let access = self.access_section(t, &p, window, cx);
@@ -478,7 +481,7 @@ impl AgentsPage {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.protection_bar(t, Some(&p)))
+            .child(self.protection_bar(t, Some(&p), cx))
             .child(div().flex_1().min_h_0().flex().flex_row().child(self.render_conn_list(t, self.focus.is_focused(window), cx)).child(body))
             .children(self.login_sheet(t, &p, cx))
             .children(self.sens_sheet(t, cx))
