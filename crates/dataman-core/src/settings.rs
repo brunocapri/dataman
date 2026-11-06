@@ -116,7 +116,6 @@ pub struct Settings {
     pub explorer_advanced: bool,
     pub keyword_case: crate::format::KeywordCase,
     pub indent: u8,
-    /// ⌘S (and Save As…) formats the tab's text first.
     pub format_on_save: bool,
     pub mcp_enabled: bool,
     pub update_check: bool,
@@ -124,7 +123,6 @@ pub struct Settings {
     pub crash_report_url: Option<String>,
     /// File › Open Project (a folder's `.dataman/project.toml`); off hides it and stops syncing.
     pub project_enabled: bool,
-    /// The open project's folder.
     pub project: Option<String>,
     /// Sensitive data types for agents, in every connection (only changes are written).
     #[serde(skip_serializing_if = "crate::privacy::TypeSettings::is_unchanged", deserialize_with = "de_types")]
@@ -261,12 +259,10 @@ pub struct SettingsStore {
 }
 
 struct State {
-    /// As they apply.
     settings: Settings,
     /// The file's rules for agents and what they loosen, while held.
     held: Option<(SettingsRules, Vec<Change>)>,
     kept: Kept<SettingsRules>,
-    /// The file as last read or written here.
     stamp: Option<FileStamp>,
 }
 

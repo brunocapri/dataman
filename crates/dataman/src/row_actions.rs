@@ -255,7 +255,6 @@ impl Workspace {
         }
     }
 
-    /// What a connection and several together do the same way.
     pub(crate) fn conns_action(&mut self, act: Act, ids: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         match act {
             Act::Disconnect => self.request_disconnect(ids, false, window, cx),

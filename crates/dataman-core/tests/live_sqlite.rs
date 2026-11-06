@@ -130,7 +130,6 @@ fn transactions_are_watched() {
     let rs = s.execute_opts("DELETE FROM note", Vec::new(), true);
     e.core.block_on(rs.wait_finished());
     assert_eq!(col(&ok(e, &s, "SELECT count(*) FROM note"), 0), [Some("3".into())]);
-    // Parameters bind by position, numbers as numbers.
     let rs = s.execute_with("SELECT name FROM customer WHERE id = ?1 OR email = ?2 LIMIT ?3", vec![Some("2".into()), Some("ana@example.com".into()), Some("5".into())]);
     rs.fetch_all();
     e.core.block_on(rs.wait_finished());
@@ -287,7 +286,6 @@ fn edits_by_key() {
     let rs = ok(e, &s, "SELECT id, label FROM customer");
     let Editability::Editable(t) = e.core.block_on(c.edit_target(db, &rs, None)).unwrap() else { panic!() };
     assert!(t.generated[1] && !t.generated[0], "the generated column is read-only");
-    // A constraint's error is explained.
     let rs = ok(e, &s, "SELECT id, email FROM customer ORDER BY id");
     let Editability::Editable(t) = e.core.block_on(c.edit_target(db, &rs, None)).unwrap() else { panic!() };
     let snap = rs.snapshot();

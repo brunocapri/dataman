@@ -252,7 +252,6 @@ impl TextInput {
         self
     }
 
-    /// Where it was last drawn.
     pub fn drawn_at(&self) -> Option<Bounds<Pixels>> {
         self.last_bounds
     }

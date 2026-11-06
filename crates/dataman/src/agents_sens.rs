@@ -16,13 +16,11 @@ use crate::ui;
 pub(crate) struct SensEdit {
     pub(crate) col: String,
     pub(crate) how: Mask,
-    /// Values of the column and the table they were read from, once read.
     pub(crate) sample: Option<(Vec<String>, String)>,
 }
 
 /// Long values are cut: the preview shows how the mask looks, not the whole value.
 const SAMPLE_MAX: usize = 80;
-/// The rows the preview reads and shows.
 const SAMPLE_ROWS: u32 = 6;
 const GRID_ROW_H: f32 = 22.;
 const GRID_HEAD_H: f32 = 28.;

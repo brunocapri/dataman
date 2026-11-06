@@ -70,7 +70,6 @@ pub struct ValueCell {
 
 pub enum ValueEvent {
     Close,
-    /// The edited JSON, for the cell's pending edit.
     Apply(String),
 }
 

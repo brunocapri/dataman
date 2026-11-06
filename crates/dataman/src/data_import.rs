@@ -496,7 +496,6 @@ impl DataImportView {
         cx.notify();
     }
 
-    /// The finished import: rows written, rows skipped, rolled back.
     #[cfg(feature = "checks")]
     pub fn demo_report(&self) -> Option<(u64, u64, bool)> {
         match &self.job.as_ref()?.state {

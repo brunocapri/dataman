@@ -24,7 +24,6 @@ const TOOLS: [&str; 28] = [
     "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
 ];
 
-/// One `dataman-mcp` process, as an MCP client starts it.
 pub(crate) struct Client {
     child: Child,
     io: Mutex<(ChildStdin, BufReader<ChildStdout>, u64)>,
@@ -148,7 +147,6 @@ async fn sheet_answer(ws: &Entity<Workspace>, allow: bool, cx: &mut AsyncWindowC
     Some(format!("{req:?}"))
 }
 
-/// Times show_in_dataman has brought the window forward.
 pub(crate) fn forward(cx: &mut AsyncWindowContext) -> usize {
     cx.update(|_, cx| cx.try_global::<crate::mcp::McpHost>().map_or(0, |h| h.forward)).unwrap_or(0)
 }
@@ -162,7 +160,6 @@ async fn close_dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bo
     until(cx, 5, |cx| dialog(ws, cx).is_none()).await
 }
 
-/// The Agents area as it stands: showing, on which page, about which connection.
 fn agents_at(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<(crate::agents::Page, Option<String>)> {
     cx.update(|_, cx| (ws.read(cx).view == dataman_core::layout::NavView::Agents).then(|| ws.read(cx).agents.read(cx)).map(|a| (a.page, a.conn.clone()))).ok().flatten()
 }
@@ -186,7 +183,6 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
     until(cx, 5, |cx| cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.iter().any(|p| p.name == "e2e no password")).unwrap_or(false)).await;
     let saved = file();
 
-    // A new connection's dialog, filled in.
     let fronted = forward(cx);
     let res = call(client, "show_in_dataman", json!({"destination": "new_connection", "name": "e2e filled", "engine": "mysql", "host": "db.example.internal", "port": 3307, "user": "app", "database": "orders"}), cx).await;
     let open = until(cx, 5, |cx| dialog(ws, cx).is_some() && probed("dlg-agent-made", cx).is_some()).await;

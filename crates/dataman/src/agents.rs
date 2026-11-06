@@ -27,14 +27,12 @@ use crate::ui::Tipped;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Audit,
-    /// What agents may do on each connection and what they may see there, on one page.
     Protection,
     Types,
     General,
 }
 
 impl Page {
-    /// The nav's rows.
     pub const NAV: [Page; 4] = [Page::General, Page::Protection, Page::Audit, Page::Types];
 
     pub fn label(self) -> &'static str {
@@ -97,7 +95,6 @@ pub fn bind_keys(cx: &mut App) {
     crate::agents_clear::bind_keys(cx);
 }
 
-/// A call's reply, as the log has it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Kept {
     Reading,
@@ -228,10 +225,8 @@ pub struct AgentsPage {
     pub(crate) core: Arc<Core>,
     pub(crate) store: Entity<ConnStore>,
     pub(crate) focus: FocusHandle,
-    /// An agents settings file read and checked, waiting for the user's word.
     pub(crate) import: Option<crate::agents_mcp::Import>,
     pub(crate) import_focus: FocusHandle,
-    /// What the last export or import did.
     pub(crate) settings_note: Option<String>,
     pub(crate) page: Page,
     visible: bool,
@@ -265,7 +260,6 @@ pub struct AgentsPage {
     pub(crate) received_rows: Option<(usize, u64)>,
     pub(crate) received_zoom: bool,
     pub(crate) received_tween: Option<crate::motion::ZoomTween>,
-    /// Where the reply sits in the detail, and the page below the header it zooms over.
     received_slot: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     received_area: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// Audit's detail width as the seam left it; shown within `detail_shown`'s bounds.
@@ -277,7 +271,6 @@ pub struct AgentsPage {
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
     pub(crate) protection_scroll: gpui::ScrollHandle,
-    /// A Protection section to bring to the top once it is laid out.
     pub(crate) jump: Option<crate::agents_rules::Jump>,
     /// Protection's rows as last drawn for a connection, and the ones that appeared since (added,
     /// scanned, taken from a suggestion): those grow in.
@@ -296,7 +289,6 @@ pub struct AgentsPage {
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
     pub(crate) fields: HashMap<String, Vec<(String, String)>>,
     pub(crate) loading: BTreeSet<String>,
-    /// Audit › Clear…'s sheet, while it asks.
     pub(crate) clear: Option<crate::agents_clear::ClearSheet>,
     pub(crate) clear_focus: FocusHandle,
     pub(crate) copy: Option<crate::agents_copy::CopySheet>,
@@ -308,7 +300,6 @@ pub struct AgentsPage {
     /// Connections found to speak PostgreSQL's protocol without its logins (MotherDuck and the
     /// like): agents use the user's login there.
     pub(crate) no_logins: BTreeSet<String>,
-    /// Agent logins whose rule changes are being applied on their own, or failed to be.
     pub(crate) login_auto: std::collections::BTreeMap<String, crate::agents_login::AutoSync>,
 }
 
@@ -390,7 +381,6 @@ fn masked_count(e: &Entry) -> u64 {
     e.seen.as_ref().map_or(0, |s| s.masked.len() as u64)
 }
 
-/// The one-word outcome of Home's table: nothing for a plain success.
 /// The note under an Audit row; true when it reads in the error color.
 pub(crate) fn audit_note(e: &Entry) -> (String, bool) {
     if let Some(a) = e.approval.as_ref().filter(|a| matches!(a.decision, Decision::Denied | Decision::Timeout)) {
@@ -496,7 +486,6 @@ enum AuditItem {
     Call(usize),
 }
 
-/// The day a call belongs to, as Audit groups them.
 pub(crate) fn day_label(ts: chrono::DateTime<chrono::Utc>) -> String {
     let d = ts.with_timezone(&Local).date_naive();
     match (Local::now().date_naive() - d).num_days() {
@@ -777,8 +766,6 @@ impl AgentsPage {
         cx.notify();
     }
 
-    // ---- Menus ----
-
     /// An invisible canvas recording where a dropdown's button sits, so its menu opens under it.
     pub(crate) fn anchor(&self, id: impl Into<SharedString>) -> AnyElement {
         let (id, anchors) = (id.into(), self.anchors.clone());
@@ -983,8 +970,6 @@ impl AgentsPage {
         Some(gpui::deferred(gpui::anchored().position(m.at).snap_to_window_with_margin(px(8.)).child(pop)).priority(3).into_any_element())
     }
 
-    // ---- Shared pieces ----
-
     /// A page's title bar, as Protection's: the title over a line across the page.
     pub(crate) fn header(&self, t: &Theme, title: &str) -> gpui::Div {
         div().h(px(52.)).flex_none().pl(px(32.)).pr(px(CLOSE_ROOM)).flex().flex_row().items_center().gap(px(10.)).border_b_1().border_color(t.line).child(page_title(t, title))
@@ -1000,8 +985,6 @@ impl AgentsPage {
             .children(self.engine_of(name, cx).and_then(|e| crate::assets::small_logo(e, 14.)))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(name.to_string()))
     }
-
-    // ---- Nav (in the sidebar) ----
 
     pub fn render_nav(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
@@ -1041,10 +1024,6 @@ impl AgentsPage {
             .child(div().pt(px(2.)).pb(px(10.)).flex().flex_col().children(rows))
             .into_any_element()
     }
-
-    // ---- Home ----
-
-    // ---- Audit ----
 
     fn filter_button(&self, t: &Theme, id: &'static str, label: String, cx: &mut Context<Self>) -> AnyElement {
         let items: Vec<(SharedString, bool, Act)> = match id {
@@ -1244,7 +1223,6 @@ impl AgentsPage {
             .into_any_element()
     }
 
-    /// The detail as wide as the seam left it, within its bounds for the page's width now.
     pub(crate) fn detail_shown(&self) -> f32 {
         let max = self.audit_body.get().map_or(f32::MAX, |b| {
             let w = b.size.width.as_f32();
@@ -1584,8 +1562,6 @@ impl AgentsPage {
         )
     }
 
-    // ---- Check hooks: the same ones the old log panel had ----
-
     #[cfg(feature = "checks")]
     pub(crate) fn demo_audit_w(&self) -> f32 {
         self.audit_body.get().map_or(0., |b| b.size.width.as_f32())
@@ -1667,7 +1643,6 @@ impl AgentsPage {
         self.received.update(cx, |g, cx| g.set_result(table.map(|(rs, _)| rs), rt, cx));
     }
 
-    /// A call's reply from the log, read in the background the first time it is asked for.
     pub(crate) fn kept(&mut self, id: &str, cx: &mut Context<Self>) -> Kept {
         if let Some(k) = self.replies.get(id) {
             return k.clone();
@@ -1711,7 +1686,6 @@ impl AgentsPage {
         cx.notify();
     }
 
-    /// How far the reply is zoomed, 0 in the detail to 1 over the page.
     pub(crate) fn received_now(&self) -> f32 {
         let target = if self.received_zoom { 1. } else { 0. };
         self.received_tween.and_then(|z| z.at(target, std::time::Instant::now())).unwrap_or(target)
@@ -1937,7 +1911,6 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
         .into_any_element()
 }
 
-/// The first `n` lines of `s`.
 fn head_lines(s: &str, n: usize) -> &str {
     s.match_indices('\n').nth(n.saturating_sub(1)).map_or(s, |(at, _)| &s[..at])
 }
@@ -1993,7 +1966,6 @@ impl Tip {
         self
     }
 
-    /// Everything it says, for checks.
     #[cfg(feature = "checks")]
     pub(crate) fn text(&self) -> String {
         let parts = self.parts.iter().map(|p| match p {
@@ -2012,7 +1984,6 @@ impl Tip {
     }
 }
 
-/// A page's title, in its title bar.
 pub(crate) fn page_title(t: &Theme, title: &str) -> gpui::Div {
     div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title.to_string())
 }

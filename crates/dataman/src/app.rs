@@ -217,7 +217,6 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
     Dock(dataman_core::layout::Dock, usize),
-    /// The editor/result divider of this tab's pane.
     Split(EntityId),
     Groups,
 }
@@ -296,7 +295,6 @@ impl Default for PaneState {
     }
 }
 
-/// A layer over the workspace that takes the focus while it shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Modal {
     /// The one-at-a-time sheets: palette, Settings, export, imports, the value viewer, the
@@ -306,7 +304,6 @@ pub(crate) enum Modal {
     Mcp,
     /// The project file's review: over anything, Settings included.
     ProjectReview,
-    /// The config files edited outside Dataman.
     OutsideReview,
 }
 
@@ -315,7 +312,6 @@ pub(crate) enum Modal {
 pub(crate) enum Back<F = FocusHandle> {
     To(F),
     Editor,
-    /// Another layer over it is still open and keeps the focus.
     Stay,
 }
 
@@ -331,7 +327,6 @@ impl<F> Default for ModalFocus<F> {
 }
 
 impl<F> ModalFocus<F> {
-    /// `m` opened (again) over what has `focus` now.
     pub(crate) fn open(&mut self, m: Modal, focus: Option<F>) {
         self.0.retain(|(k, _)| *k != m);
         self.0.push((m, focus));
@@ -419,12 +414,10 @@ pub struct Workspace {
     pub(crate) focus_visible: bool,
     pub(crate) copy_menu: bool,
     pub(crate) cancel_toast_hidden: Option<Instant>,
-    /// What the status bar says for a moment, and whether it is an error.
     pub(crate) flash_notice: Option<(String, Instant, bool)>,
     file_drag: Option<gpui::ExternalPaths>,
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
     pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
-    /// What had the focus before each open layer.
     pub(crate) modal_focus: ModalFocus,
     pub(crate) export: Option<Entity<crate::export_ui::ExportView>>,
     pub(crate) data_import: Option<Entity<crate::data_import::DataImportView>>,
@@ -961,7 +954,6 @@ impl Workspace {
         self.sheet_open(cx) || [Modal::Mcp, Modal::ProjectReview, Modal::OutsideReview].into_iter().any(|m| self.layer_shown(m, cx))
     }
 
-    /// One of the one-at-a-time sheets shows.
     fn sheet_open(&self, cx: &App) -> bool {
         self.palette.is_some()
             || self.settings_view.is_some()
@@ -1544,7 +1536,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A saved connection's dialog, at its password.
     pub(crate) fn open_dialog_for_password(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.open_dialog(Some(id), window, cx);
         if let Some(d) = self.dialog.clone() {
@@ -1934,7 +1925,6 @@ impl Workspace {
         }
     }
 
-    /// A SQLite or DuckDB file, picked in the open panel.
     pub(crate) fn open_database_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         const EXTS: &[&str] = &["sqlite", "sqlite3", "db", "db3", "duckdb", "ddb"];
         let paths = crate::sql_picker::pick_files(EXTS, false, cx);
@@ -3129,7 +3119,6 @@ mod tests {
     #[test]
     fn focus_goes_back_through_the_layers() {
         let all = |_: Modal| true;
-        // Closed in order: each gives back what it took.
         let mut s = ModalFocus::default();
         s.open(Modal::Sheet, Some("editor"));
         s.open(Modal::Mcp, Some("palette"));

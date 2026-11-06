@@ -193,12 +193,9 @@ pub fn remove_plan(user: &str, persist: Persist) -> Plan {
     Plan { engine: Some(Engine::Redis), user: user.into(), steps, ..Default::default() }
 }
 
-/// The old password dropped and the new one set, in one command.
 pub fn rotate_step(user: &str, new: &str) -> Step {
     step("a new password", vec!["ACL".into(), "SETUSER".into(), user.into(), "resetpass".into(), format!("#{}", hash::redis_sha(new))])
 }
-
-// ---- Live ----
 
 pub(crate) async fn call(c: &Client, a: &[String]) -> Result<crate::backend::redis::Reply> {
     c.call(c.default_db, a).await

@@ -2558,7 +2558,6 @@ mod tests {
         ] {
             assert!(agent_write_class(sql, d).is_destructive(), "{d:?} {sql}: {:?}", agent_write_class(sql, d));
         }
-        // What a new object leaves out.
         for sql in ["DROP TABLE t", "ALTER TABLE t ADD c int", "TRUNCATE t", "DELETE FROM t", "UPDATE t SET a = 1", "DELETE FROM t WHERE 1=1"] {
             assert!(agent_write_class(sql, Pg).is_destructive(), "{sql}");
         }

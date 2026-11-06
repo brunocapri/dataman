@@ -15,7 +15,6 @@ use crate::sql::Dialect;
 use crate::sql::lexer::{Token, TokenKind, tokenize_in};
 use crate::sql::scope::{self, Analysis, Clause, Item, Role, SourceKind};
 
-/// A table as the server knows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Table {
     pub schema: String,
@@ -214,7 +213,6 @@ fn statement(
     let words: Vec<Option<String>> = toks.iter().map(|t| word(sql, t)).collect();
     let has = |w: &str| words.iter().any(|x| x.as_deref() == Some(w));
 
-    // What agents may do.
     if !rules.structure && (facts.effect == Effect::Ddl || guard::changes_structure(text, d)) {
         return Err(format!("changing structure ({verb}) is off for agents on {conn} (Dataman › Agents › Permissions)"));
     }
@@ -243,7 +241,6 @@ fn statement(
         return Ok(());
     }
 
-    // Visible to agents, and sensitive columns in Masked data.
     if let Some(e) = table_command(sql, toks, d, verb == "INSERT") {
         return Err(format!("{e} is not available to agents on {conn} while some data is kept from them: write SELECT … FROM, or use list_tables and describe_table"));
     }

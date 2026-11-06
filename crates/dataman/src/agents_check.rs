@@ -23,7 +23,6 @@ fn profile(name: &str, engine: Engine, env: Environment, tier: McpAccess) -> Con
     p
 }
 
-/// The connections, rules and types of the mockups.
 fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
@@ -75,7 +74,6 @@ fn seed_profiles(core: &Core) {
     });
 }
 
-/// The calls of the mockups, newest first, at their distances from now.
 fn seed_audit(core: &Core) {
     let now = chrono::Utc::now();
     let note = |d: Decision, reasons: &[&str]| Some(ApprovalNote { decision: d, by: Some("bruno".into()), reasons: reasons.iter().map(|s| s.to_string()).collect(), rows: None });
@@ -129,7 +127,6 @@ fn seed_audit(core: &Core) {
     }
 }
 
-/// What the agent received in some of the mockups' calls, as the server sent it.
 fn demo_reply(ago: i64) -> Option<serde_json::Value> {
     use serde_json::json;
     Some(match ago {
@@ -623,7 +620,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     r.check("… and ↑ the one before", sel(cx) == Some(9.min(all - 2)), format!("{:?}", sel(cx)));
 
-    // Protection, on the PostgreSQL connection the check saved.
     tap(&a, "agents-nav-protection", cx).await;
     pause(cx, 100).await;
     r.check("the nav opens Protection", page(cx) == Page::Protection, format!("{:?}", page(cx)));
@@ -805,7 +801,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
     pause(cx, 50).await;
 
-    // Privacy.
     tap(&a, &format!("agents-conn-{}", pg.name), cx).await;
     pause(cx, 50).await;
     key(cx, "home");
@@ -871,7 +866,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         items.iter().any(|i| i.name == "public.payments" && i.kind == ItemKind::Table) && items.iter().any(|i| i.name == "users.password_hash" && i.kind == ItemKind::Column),
         format!("{items:?}"),
     );
-    // Suggestions under the fields, from the connection's schema.
     tap(&a, "agents-field-visible", cx).await;
     typ(cx, "pub");
     let listed = until(cx, 5, |cx| cx.update(|_, cx| !a.read(cx).suggest.items.is_empty()).unwrap_or(false)).await;
@@ -958,7 +952,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "escape");
     pause(cx, 50).await;
 
-    // Masks.
     click_probe("agents-nav-masks", cx);
     pause(cx, 100).await;
     r.check("Masks lists the built-in and custom ones, then + to add one", cx.update(|_, cx| a.read(cx).type_rows().len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2 && probed("agents-type-add", cx).is_some(), "");
@@ -981,7 +974,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         opened.as_ref().is_some_and(|(id, name, re)| id.as_deref() == Some("email") && name == "E-mail" && Some(re) == email.as_ref()) && probed("agents-editor-title", cx).is_some(),
         format!("{opened:?}"),
     );
-    // A built-in mask changed, then reset to its default.
     click_probe("agents-type-row-jwt", cx);
     pause(cx, 50).await;
     let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.editor.name.update(cx, |i, cx| i.set_text("JWT token", cx))));
@@ -1066,7 +1058,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let tip = dataman_core::privacy::builtin("phone").map(|b| (b.rule, b.example)).unwrap_or_default();
     r.check("Phone reads US numbers", tip.0.contains("(555) 123-4567") && tip.1.starts_with("(555) 123-4567"), format!("{tip:?}"));
 
-    // General: the server's own page.
     click_probe("agents-nav-general", cx);
     pause(cx, 100).await;
     r.check("Agents › General: agent access and the command that connects Claude Code", page(cx) == Page::General && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access", cx).is_some(), "");
@@ -1219,7 +1210,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     check_login(ws, &a, &pg, &pw, r, cx).await;
 }
 
-/// A shot of the window as it is now, where `DATAMAN_SHOT_DIR` says (screenshots builds).
 fn shoot(name: &str, cx: &mut AsyncWindowContext) {
     let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
     let path = format!("{dir}/{name}.png");
@@ -1658,7 +1648,6 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     let gone = until(cx, 5, |cx| sheet(cx).is_none() && !has(cx, "old-45")).await;
     r.check("⌘⌫ deletes them; the day's later calls stay", gone && !on_disk("old-60") && !on_disk("old-45") && on_disk("old-10"), format!("{:?}", ids(cx)));
     r.check("… and the selection, its call gone, moves to the first left under the filter", sel(cx).as_deref() == Some("old-10") && filter(cx).as_deref() == Some("Old Agent"), format!("{:?} {:?}", sel(cx), filter(cx)));
-    // Everything.
     let all = dataman_core::audit::count_before(&log, chrono::Utc::now());
     click_probe("agents-clear", cx);
     pause(cx, 50).await;

@@ -1430,7 +1430,6 @@ impl Workspace {
             })
     }
 
-    /// The result bar's buttons for what the result is in (fetch more, re-run, show the error…).
     fn result_bar_actions(&self, state: ResultState, rs: Option<&dataman_core::ResultSet>, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let action = |id: &'static str, label: SharedString, command: &'static str| {
             ui::button(t, id, Btn::Secondary)

@@ -84,7 +84,6 @@ impl Unfold {
         (now.saturating_duration_since(self.at).as_secs_f32() / d.as_secs_f32()).min(1.)
     }
 
-    /// The px showing of `full`.
     fn shown(&self, full: f32, now: Instant) -> f32 {
         let to = if self.opening { full } else { 0. };
         (self.from + (to - self.from) * crate::motion::EASE.eval(self.progress(now))).clamp(0., full)
@@ -103,7 +102,6 @@ struct Slide {
 }
 
 impl Slide {
-    /// Row `ix`'s offset and opacity in this frame, if it moved.
     fn at(&self, ix: usize) -> Option<(f32, f32)> {
         let from = *self.from.get(ix)?;
         (from != 0.).then_some((from * self.now, 1. - 2.2 * self.now * (1. - self.now)))
@@ -160,7 +158,6 @@ pub enum TreeEvent {
     Disconnect(String),
     FocusEditor,
     RowAction { act: Act, target: Target, alt: bool },
-    /// Disconnect, Reconnect or Delete on several connections together.
     ConnsAction { act: Act, conns: Vec<String> },
     Notice(String),
     Failed(String),
@@ -219,7 +216,6 @@ enum Sub {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Kind {
-    /// An explorer folder (its connections are the rows under it).
     Folder { id: String },
     Conn { id: String },
     Db { conn: String, db: String },
@@ -366,7 +362,6 @@ pub enum MenuAnchor {
     Mouse(gpui::Point<gpui::Pixels>),
     Row,
     RowMore,
-    /// The header's own menu, at that point.
     Header(gpui::Point<gpui::Pixels>),
 }
 
@@ -409,7 +404,6 @@ pub struct SchemaTree {
     /// Connections Collapse all shut: what opens in them stays closed below it, without the
     /// current database or a table's columns opening by themselves.
     collapsed: HashSet<String>,
-    /// A folder being named in place.
     naming: Option<(String, Entity<TextInput>)>,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
     /// Every object (the eye) or each database's tables (the eye crossed out).
@@ -423,13 +417,10 @@ pub struct SchemaTree {
 
 pub struct DraggedConn(pub String);
 
-/// An explorer folder being dragged among the folders.
 pub struct DraggedFolder(pub String);
 
-/// Where a dragged connection lands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConnDrop {
-    /// Onto a folder's row: into that folder.
     Into(String),
     /// Among a group's connections (a folder's, or the top level's): before one, or at the end.
     At { folder: Option<String>, before: Option<String> },
@@ -1440,7 +1431,6 @@ impl SchemaTree {
         let ix_block = (ix, self.block(ix));
         let shown_now = self.unfold.as_ref().filter(|u| u.parent.as_ref() == id).map(|u| u.shown(u.rows as f32 * ROW_H, now));
         if shutting {
-            // Opens again from where it got to.
             self.shut_task = None;
             self.unfold = Some(Unfold { parent: row.id.clone(), folder, opening: true, at: now, from: shown_now.unwrap_or(0.), rows: ix_block.1 });
             return cx.notify();
@@ -1475,7 +1465,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// The rows under `ix` (a node's children and theirs).
     fn block(&self, ix: usize) -> usize {
         let Some(d) = self.rows.get(ix).map(|r| r.depth) else { return 0 };
         self.rows[ix + 1..].iter().take_while(|r| r.depth > d).count()
@@ -1673,7 +1662,6 @@ impl SchemaTree {
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
 
-    /// The rows open under `id`.
     #[cfg(feature = "checks")]
     pub fn demo_open_under(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
@@ -2022,14 +2010,12 @@ impl SchemaTree {
         self.pick_anchor = Some(id.to_string());
     }
 
-    /// The row is one of those picked, or a connection in a picked folder.
     fn in_picked(&self, r: &Row) -> bool {
         self.picked.len() > 1
             && pickable(r)
             && self.picked.iter().any(|p| **p == *r.id || r.in_folder.as_deref().is_some_and(|f| p.strip_prefix("f:") == Some(f)))
     }
 
-    /// The connections the picked rows stand for, in the explorer's order.
     fn picked_conns(&self, cx: &App) -> Vec<String> {
         let store = self.store.read(cx);
         let picked = |prefix: &str, id: &str| self.picked.iter().any(|p| p.strip_prefix(prefix) == Some(id));
@@ -2067,7 +2053,6 @@ impl SchemaTree {
         }
     }
 
-    /// The connections a menu on `t` acts on.
     fn conns_of(&self, t: &Target, cx: &App) -> Vec<String> {
         let store = self.store.read(cx);
         match t {
@@ -2487,7 +2472,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Under the tree's last row, still in the list.
     fn below_rows(&self, pos: gpui::Point<gpui::Pixels>) -> bool {
         let st = self.scroll.0.borrow();
         let b = st.base_handle.bounds();
@@ -2577,7 +2561,6 @@ impl SchemaTree {
         }
     }
 
-    /// A new folder (with `conn` in it), open, selected and named in place.
     fn new_folder(&mut self, conns: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_naming(cx);
         self.picked.clear();
@@ -2609,7 +2592,6 @@ impl SchemaTree {
         cx.subscribe_in(&input, window, |t: &mut SchemaTree, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Submit = ev {
                 t.commit_naming(cx);
-                // Back to the tree once the field that had it is gone.
                 cx.defer_in(window, |t, window, cx| window.focus(&t.focus, cx));
             }
         })
@@ -2675,7 +2657,6 @@ impl SchemaTree {
     }
 
     #[cfg(feature = "checks")]
-    /// Scrolls a row into view without selecting it.
     #[cfg(feature = "checks")]
     pub fn demo_scroll_to(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
@@ -3379,7 +3360,6 @@ impl SchemaTree {
     }
 }
 
-/// `conn` in folder `to` (out of any other), or in none.
 fn set_folder(folders: &mut [dataman_core::ConnFolder], conn: &str, to: Option<&str>) {
     for d in folders.iter_mut() {
         if Some(d.id.as_str()) == to {
@@ -3533,7 +3513,6 @@ fn stats_meta(st: &RelStats) -> (String, Option<String>) {
     }
 }
 
-/// A row that can be picked together with others.
 fn pickable(r: &Row) -> bool {
     matches!(r.kind, Kind::Conn { .. } | Kind::Folder { .. })
 }

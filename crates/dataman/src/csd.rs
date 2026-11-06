@@ -138,7 +138,6 @@ fn group(t: &Theme, side: [Option<WindowButton>; 3], window: &Window) -> Option<
 }
 
 impl Workspace {
-    /// The left-hand window buttons, in the room `lead` keeps.
     pub(crate) fn render_window_buttons_left(&self, window: &Window, cx: &App) -> Option<AnyElement> {
         if !drawn(window) {
             return None;
@@ -147,7 +146,6 @@ impl Workspace {
         group(&t, layout(cx).left, window).map(|g| div().pl(px(4.)).h_full().flex_none().child(g).into_any_element())
     }
 
-    /// The menu button and the right-hand window buttons.
     pub(crate) fn render_window_buttons_right(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !NOT_MAC {
             return None;

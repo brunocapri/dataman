@@ -79,15 +79,12 @@ pub struct Entry {
     pub login: Option<String>,
 }
 
-/// What the agent received, past the privacy rules.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Seen {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub columns: Option<u64>,
-    /// Sensitive columns masked, with their mask.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masked: Vec<(String, crate::privacy::Mask)>,
-    /// Values of sensitive data types masked inside the reply, by type.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub values: std::collections::BTreeMap<String, u64>,
 }
@@ -211,7 +208,6 @@ impl Audit {
         append_line(&self.path, &serde_json::to_string(e).map_err(std::io::Error::other)?)
     }
 
-    /// What the agent received, as it left Dataman (after the privacy rules), next to the log.
     pub fn write_reply(&self, id: &str, text: &str) {
         let mut at = text.len().min(REPLY_MAX);
         while !text.is_char_boundary(at) {
@@ -370,12 +366,10 @@ impl Calls {
     }
 }
 
-/// The rotated copy, then the current file.
 fn both(path: &Path) -> [PathBuf; 2] {
     [path.with_extension("1.jsonl"), path.to_path_buf()]
 }
 
-/// The calls a clear at `cutoff` removes, in the log and its rotated copy.
 pub fn count_before(audit: &Path, cutoff: chrono::DateTime<chrono::Utc>) -> usize {
     let mut calls = Calls::default();
     both(audit)
@@ -815,7 +809,6 @@ mod tests {
     fn clearing_takes_the_replies_and_the_rotated_copy() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("mcp-audit.jsonl");
-        // The rotated copy holds the oldest calls.
         let old = log.with_extension("1.jsonl");
         for (id, ts) in [("r1", "2026-06-01T10:00:00Z"), ("r2", "2026-09-30T10:00:00Z")] {
             append_line(&old, &serde_json::to_string(&call(id, ts)).unwrap()).unwrap();

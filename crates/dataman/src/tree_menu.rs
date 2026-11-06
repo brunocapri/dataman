@@ -66,16 +66,12 @@ pub enum Act {
     NewConnection,
     NewFolder,
     CollapseAll,
-    /// Into the n-th folder of the explorer as the menu listed them.
     MoveToFolder(usize),
-    /// A new folder, the connection in it.
     MoveToNewFolder,
     RemoveFromFolder,
     RenameFolder,
-    /// One place up or down among the folders.
     MoveFolder(bool),
     DeleteFolder,
-    /// A swatch by index, or none.
     FolderColor(Option<usize>),
     Connect,
     Disconnect,
@@ -373,7 +369,6 @@ fn conn_entries(conns: &[(String, ConnPhase)]) -> Vec<Entry> {
     v
 }
 
-/// A folder's menu with what its connections can do together on top.
 pub fn with_conns(mut es: Vec<Entry>, conns: &[(String, ConnPhase)]) -> Vec<Entry> {
     let mut v = conn_entries(conns);
     if !v.is_empty() {

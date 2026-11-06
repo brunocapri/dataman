@@ -101,7 +101,6 @@ pub struct Caps {
     /// Its names for a UUID column, in lower case. SQLite takes any type name: `UUID` as declared;
     /// MySQL has none of its own, MariaDB's is `uuid`.
     pub uuid_types: &'static [&'static str],
-    /// It shows a UUID in upper case.
     pub uuid_upper: bool,
     /// An `INTEGER PRIMARY KEY` left out of an INSERT takes the next rowid.
     pub rowid_key: bool,
@@ -168,7 +167,6 @@ impl Caps {
     pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, ..Caps::BASIC };
     pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], ..Caps::BASIC };
 
-    /// The engine's, from its `EngineSpec`.
     pub fn of(engine: Engine) -> Caps {
         engine.spec().caps
     }
@@ -197,7 +195,6 @@ pub fn server_error(e: &anyhow::Error) -> Option<ErrorInfo> {
     })
 }
 
-/// The class of a database's error anywhere in the chain, by the engine that raised it.
 pub fn server_error_class(e: &anyhow::Error) -> Option<crate::result::ErrorClass> {
     use crate::result::ErrorClass;
     e.chain().find_map(|c| {

@@ -105,7 +105,6 @@ impl Request {
             || ep == "_search" && matches!(next, Some("scroll" | "template"))
     }
 
-    /// What the request does, its SQL read as any server would.
     pub fn class(&self) -> WriteClass {
         self.class_in(None)
     }

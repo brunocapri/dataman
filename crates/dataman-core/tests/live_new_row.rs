@@ -31,7 +31,6 @@ impl Case<'_> {
         self.target(table).1.new_row_uuid().map(|(c, _)| c)
     }
 
-    /// Inserts a row with these columns set, the others left to the server. Whether it committed.
     fn insert(&self, table: &str, values: &[(usize, CellValue)]) -> bool {
         let (rs, t) = self.target(table);
         let mut cs = ChangeSet::new();
@@ -44,7 +43,6 @@ impl Case<'_> {
         r.committed && r.outcomes.iter().all(|o| matches!(o.outcome, Outcome::Applied { rows: 1 }))
     }
 
-    /// Every cell of the table's only row.
     fn row(&self, table: &str) -> Vec<Option<String>> {
         let rs = query(self.e, self.c, &format!("SELECT * FROM {table}"));
         let snap = rs.snapshot();

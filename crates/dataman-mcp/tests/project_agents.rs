@@ -134,7 +134,6 @@ fn env(local: &str, favorites: &str, project: Option<&str>) -> Env {
     Env { server: Server::new(hub, reg, "stdio"), human, dir }
 }
 
-/// A TOML string.
 fn tq(s: &str) -> String {
     toml::Value::String(s.to_string()).to_string()
 }

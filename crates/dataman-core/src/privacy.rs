@@ -13,7 +13,6 @@ use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The end of a value Partial shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Side {
     First,
@@ -43,7 +42,6 @@ impl Keep {
     pub const DEFAULT: Keep = Keep { side: Side::Last, count: 4 };
     pub const MAX: u8 = 4;
 
-    /// `count` held to 1–[`Keep::MAX`].
     pub fn new(side: Side, count: u8) -> Keep {
         Keep { side, count: count.clamp(1, Keep::MAX) }
     }
@@ -373,7 +371,6 @@ impl Builtin {
         }
     }
 
-    /// The type as it ships, in the editor's shape.
     pub fn as_custom(&self) -> CustomType {
         CustomType { id: self.id.into(), name: self.name.into(), pattern: self.pattern.into(), mask: self.mask, keep: self.keep(), validator: self.validator, ignore_case: false, on: self.on }
     }
@@ -467,7 +464,6 @@ fn known_builtins<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<Str
 pub const MAX_CUSTOM: usize = 50;
 pub const MAX_PATTERN: usize = 500;
 
-/// One row of the Sensitive data list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeRow {
     pub id: String,
@@ -477,7 +473,6 @@ pub struct TypeRow {
     pub on: bool,
     pub mask: Mask,
     pub custom: bool,
-    /// A built-in type whose definition the user changed.
     pub edited: bool,
     /// The pattern does not compile: reads are refused while it is on.
     pub broken: Option<String>,
@@ -529,14 +524,12 @@ impl TypeSettings {
         }
     }
 
-    /// The definition back to the default; the switch stays as it is.
     pub fn reset_builtin(&mut self, id: &str) {
         if let Some(o) = self.builtin.remove(id).and_then(|o| o.on).map(|on| BuiltinOverride { on: Some(on), ..Default::default() }) {
             self.builtin.insert(id.to_string(), o);
         }
     }
 
-    /// Its definition differs from the default (not counting the switch).
     pub fn builtin_edited(&self, id: &str) -> bool {
         self.builtin.get(id).is_some_and(|o| BuiltinOverride { on: None, ..o.clone() } != BuiltinOverride::default())
     }
@@ -586,7 +579,6 @@ impl TypeSettings {
     }
 }
 
-/// Why a custom pattern cannot be used, in the editor's words.
 pub fn check_pattern(p: &str) -> Result<(), String> {
     if p.chars().count() > MAX_PATTERN {
         return Err("Pattern is too large.".into());
@@ -793,7 +785,6 @@ pub fn mask_value(how: Mask, v: &str) -> String {
     }
 }
 
-/// Values masked in one reply, by type name.
 pub type Counts = BTreeMap<String, u64>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -805,11 +796,9 @@ impl std::fmt::Display for Unfinished {
     }
 }
 
-/// The switched-on types, compiled once per settings change.
 pub struct Types {
     set: Option<RegexSet>,
     kinds: Vec<Kind>,
-    /// Switched-on custom types whose pattern does not compile.
     pub broken: Vec<String>,
 }
 
@@ -1021,8 +1010,6 @@ fn value_code(msg: &str) -> bool {
         .into_iter()
         .any(|e| crate::backend::class::of(e, code).carries_values())
 }
-
-// ---- What the agent sees ----
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1491,7 +1478,6 @@ pub const UNLIMITED: u64 = 0;
 /// Time per call ∞: a statement still stops after a day, so nothing holds a connection forever.
 pub const NO_TIME_LIMIT_S: u64 = 24 * 3600;
 
-/// A row limit as a count, ∞ as the largest.
 pub fn row_cap(limit: u64) -> u64 {
     if limit == UNLIMITED { u64::MAX } else { limit }
 }
@@ -1537,7 +1523,6 @@ impl AgentRules {
         }
     }
 
-    /// Rows per read as a count (∞ as the largest).
     pub fn read_cap(&self) -> u64 {
         row_cap(self.read_rows.unwrap_or(crate::settings::MCP_MAX_ROWS))
     }
@@ -1587,8 +1572,6 @@ pub struct Generated {
     pub column: String,
     pub from: Vec<String>,
 }
-
-// ---- Validators ----
 
 fn digits(s: &str) -> Vec<u32> {
     s.chars().filter_map(|c| c.to_digit(10)).collect()

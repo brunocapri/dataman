@@ -81,7 +81,6 @@ pub enum Cell<'a> {
 }
 
 impl ColChunk {
-    /// The same cells as text, as `kind` shows them.
     fn to_text(&self, kind: Kind, rows: usize) -> ColChunk {
         if matches!(self.data, ColData::Text { .. }) {
             return self.clone();
@@ -324,7 +323,6 @@ pub enum ErrorClass {
 }
 
 impl ErrorClass {
-    /// Errors of these classes quote the row or the values that failed.
     pub fn carries_values(self) -> bool {
         matches!(self, ErrorClass::Unique | ErrorClass::NotNull | ErrorClass::Fk | ErrorClass::Check | ErrorClass::Data)
     }

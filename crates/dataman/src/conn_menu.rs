@@ -12,7 +12,6 @@ use gpui::{AnyElement, App, Global, SharedString, div, prelude::*};
 use crate::theme::{Theme, px};
 use crate::ui;
 
-/// How far a folder's connections sit in.
 pub const INDENT: f32 = 12.;
 
 #[derive(Default)]

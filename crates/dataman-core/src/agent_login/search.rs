@@ -225,8 +225,6 @@ pub fn rotate_step(spec_user: &str, conn: &str, password: &str, os: bool) -> Ste
     http("a new password", "PUT", format!("/_security/user/{}/_password", enc(spec_user)), Some(json!({ "password_hash": h })), Some(json!({ "password_hash": "$2a$10$…" })))
 }
 
-// ---- Live ----
-
 pub(crate) async fn call(c: &Client, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     c.call(method, path, body.cloned().map(Wire::Json)).await
 }
@@ -305,7 +303,6 @@ pub(crate) async fn inventory(c: &Client) -> Result<Inventory> {
     Ok(out)
 }
 
-/// The role as the server has it, as lines.
 pub(crate) async fn have(c: &Client, user: &str, os: bool) -> Result<Vec<String>> {
     let v = call(c, "GET", &role_path(os, user), None).await?;
     let r = &v[user];

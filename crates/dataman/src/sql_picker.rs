@@ -17,19 +17,16 @@ mod hook {
     pub(super) static SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
 }
 
-/// The next open panel (files or a folder) answers `paths`.
 #[cfg(feature = "checks")]
 pub fn set_test_paths(paths: Vec<PathBuf>) {
     *hook::OPEN.lock().unwrap() = Some(paths);
 }
 
-/// The next save panel answers `path`.
 #[cfg(feature = "checks")]
 pub fn set_test_save_path(path: PathBuf) {
     *hook::SAVE.lock().unwrap() = Some(path);
 }
 
-/// What a check stage set for the next open panel to answer.
 pub fn take_test_paths() -> Option<Vec<PathBuf>> {
     #[cfg(feature = "checks")]
     return hook::OPEN.lock().unwrap().take();
@@ -37,7 +34,6 @@ pub fn take_test_paths() -> Option<Vec<PathBuf>> {
     None
 }
 
-/// What a check stage set for the next save panel to answer.
 pub fn take_test_save_path() -> Option<PathBuf> {
     #[cfg(feature = "checks")]
     return hook::SAVE.lock().unwrap().take();

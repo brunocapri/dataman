@@ -199,7 +199,6 @@ pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App
     .detach();
 }
 
-/// The socket agents reach this app through is up.
 #[cfg(feature = "checks")]
 pub(crate) fn listening(cx: &App) -> bool {
     cx.try_global::<McpHost>().is_some_and(|h| h.ipc.is_some())

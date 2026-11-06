@@ -78,7 +78,6 @@ async fn edit_save(ws: &Entity<Workspace>, field: &str, value: serde_json::Value
     by_key
 }
 
-/// Types into the tab's editor and runs it with ⌘↩.
 async fn console(ws: &Entity<Workspace>, text: &str, cx: &mut AsyncWindowContext) -> Option<(String, Result<Output, String>)> {
     run_keys(ws, text, "cmd-enter", cx).await?;
     shown(ws, cx)

@@ -24,7 +24,6 @@ const SAVED_IN: &str = if cfg!(target_os = "macos") {
     "saved in keyring"
 };
 
-/// The user field under a method: its placeholder, and its label.
 fn user_hint(engine: Engine, kind: AuthKind) -> (&'static str, &'static str) {
     match (kind, engine) {
         (AuthKind::EntraId, _) => ("ana@contoso.com, or a group's name", "USER · ENTRA UPN OR GROUP"),
@@ -37,12 +36,10 @@ fn user_hint(engine: Engine, kind: AuthKind) -> (&'static str, &'static str) {
     }
 }
 
-/// The method the host points to, until the user picks one.
 fn preselected(engine: Engine, host: &str) -> AuthKind {
     engine.auth_kinds().iter().copied().find(|k| k.is_token() && cloudauth::host_allowed(*k, host)).unwrap_or(AuthKind::Password)
 }
 
-/// Said under a method whose token goes to a host outside its cloud.
 fn foreign_host_note(kind: AuthKind) -> &'static str {
     match kind {
         AuthKind::EntraId => "Not an Azure host: your token goes to it.",
@@ -128,7 +125,6 @@ const ENVIRONMENTS: [(Environment, &str); 4] = [(Environment::None, "None"), (En
 const SQL_TLS: [(SslMode, &str, &str); 4] = [(SslMode::Disable, "disable", "Disable"), (SslMode::Prefer, "prefer", "Prefer"), (SslMode::Require, "require", "Require"), (SslMode::VerifyFull, "verify-full", "Verify full")];
 const DOC_TLS: [(SslMode, &str, &str); 3] = [(SslMode::Disable, "off", "Off"), (SslMode::Require, "on", "On"), (SslMode::VerifyFull, "verify", "Verify")];
 
-/// How far a tier lets agents go on one kind of statement.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Can {
     No,
@@ -199,7 +195,6 @@ enum Test {
 enum SignIn {
     Unchecked,
     Checking,
-    /// The CLI's own sign-in is open in the browser.
     SigningIn,
     Ok { who: Option<String> },
     Failed { title: String, body: String, fix: Option<Fix> },
@@ -301,12 +296,10 @@ pub struct ConnDialog {
     advanced: Advanced,
     ssh: SshFields,
     conn_str: Entity<TextInput>,
-    /// What is in the string does not read as one.
     str_bad: bool,
-    /// The password in the fields came with the string as it stands.
-    /// What the string gave for each: compared with the fields for the note under them.
     /// A password is really saved for this connection.
     saved_pw: bool,
+    /// What the string gave for each: compared with the fields for the note under them.
     str_user: Option<String>,
     str_pw: Option<String>,
     auto_name: Option<String>,
@@ -324,11 +317,9 @@ pub struct ConnDialog {
     search_len: usize,
     pick_hi: usize,
     options: Entity<TextInput>,
-    /// A file database's file.
     file: Entity<TextInput>,
     /// Picked with New…: the file is created when the connection is tested or saved.
     create_file: bool,
-    /// Save pressed: the connection (and its secrets) being written.
     saving: bool,
     /// DuckDB: SQL may read and write files (`read_csv`, `COPY … TO`, ATTACH).
     file_access: bool,
@@ -662,7 +653,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The string again from the fields, always without the password.
     fn rewrite_string(&mut self, cx: &mut Context<Self>) {
         if self.is_file() {
             return;
@@ -844,7 +834,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// A connection string pasted into the name or the host is read as one.
     fn on_name_or_host(&mut self, which: usize, input: &Entity<TextInput>, cx: &mut Context<Self>) {
         let text = input.read(cx).text().to_string();
         let pasted = text.len() > self.paste_len[which] + 1;
@@ -1035,7 +1024,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The fields of a step, in Tab's order.
     fn connection_inputs(&self) -> Vec<&Entity<TextInput>> {
         let mut v = vec![&self.name];
         if self.is_file() {
@@ -1316,7 +1304,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The target Test and the footer's status name, when there is one.
     fn target(&self, cx: &App) -> String {
         let of = if self.is_file() { &self.file } else { &self.host };
         of.read(cx).text().trim().to_string()
@@ -1427,7 +1414,6 @@ impl ConnDialog {
         self.saving || (self.is_new && self.step == Step::Connection && (self.target(cx).is_empty() || self.str_bad))
     }
 
-    /// The footer's last button, and Enter: on to the next step, or save on the last.
     fn primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_new || self.step == Step::Mcp {
             self.save(window, cx);
@@ -1447,7 +1433,6 @@ impl ConnDialog {
         }
     }
 
-    /// Whether it went on to save. What is wrong shows where it can be fixed.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.saving {
             return false;
@@ -1572,7 +1557,6 @@ impl ConnDialog {
         self.save(window, cx);
     }
 
-    /// No method rolling up or down.
     #[cfg(feature = "checks")]
     pub fn demo_still(&self) -> bool {
         self.unrolls.iter().all(|u| u.is_settled())
@@ -1591,8 +1575,6 @@ impl ConnDialog {
         (s, self.password.read(cx).error)
     }
 
-    /// The method picked, what the password's is called now, whether the note under its fields
-    /// shows, and the status of the method picked.
     #[cfg(feature = "checks")]
     pub fn demo_method(&self, cx: &App) -> (AuthKind, &'static str, bool, String) {
         let line = Cli::of(self.auth).and_then(|c| self.sign_in[self.auth as usize].line(c.program())).map_or(String::new(), |(_, l)| l);
@@ -1756,7 +1738,6 @@ impl ConnDialog {
         self.auth == AuthKind::Password && same(&self.str_user, &self.user) && same(&self.str_pw, &self.password)
     }
 
-    /// A method's fields, in the order shown: a key for the checks, the label, the field.
     fn method_inputs(&self, kind: AuthKind, cx: &App) -> Vec<(&'static str, &'static str, &Entity<TextInput>)> {
         let (_, user_label) = user_hint(self.engine, kind);
         let mut v = Vec::with_capacity(3);
@@ -1978,7 +1959,6 @@ impl ConnDialog {
             .child(ui::probe(format!("field-{probe}"), input.clone()))
     }
 
-    /// An on/off row: the switch and what it turns.
     fn toggle(&self, t: &Theme, id: &'static str, on: bool, label: &'static str) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
@@ -2086,7 +2066,6 @@ impl ConnDialog {
             d.follow_host(cx);
             if d.ssh.on {
                 window.focus(&d.ssh.host.focus_handle(cx), cx);
-                // Its fields come in under the fold.
                 d.body_scroll.scroll_to_bottom();
             }
             d.untest();
@@ -2378,7 +2357,6 @@ impl ConnDialog {
             .children(self.agent_rows(t, cx))
     }
 
-    /// What Test or a save said, at the footer's left of the buttons.
     fn status(&self, t: &Theme) -> Option<gpui::AnyElement> {
         let (glyph, color, title, body): (&str, Hsla, String, String) = match &self.test {
             Test::NotTested => return None,

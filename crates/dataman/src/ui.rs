@@ -53,7 +53,6 @@ pub fn key_hint(text: impl Into<SharedString>) -> Div {
     div().flex_none().text_size(px(crate::theme::text::HINT)).opacity(0.7).child(keys_text(text))
 }
 
-/// A name typed in place over a list row: its field, and ↩ to accept it.
 pub fn name_field(t: &Theme, input: gpui::Entity<crate::input::TextInput>) -> Div {
     div()
         .flex_1()
@@ -126,7 +125,6 @@ pub fn not_reported(t: &Theme) -> Div {
         .child("not reported")
 }
 
-/// A result's state: glyph and label in its color, no badge behind them.
 pub fn status(glyph: &str, label: impl Into<SharedString>, fg: Hsla) -> Div {
     div()
         .flex_none()
@@ -149,7 +147,6 @@ pub fn glyph_el(g: &str, color: Hsla) -> gpui::AnyElement {
 
 pub const PAUSE: &str = "‖";
 
-/// Two bars, shorter and wider than the font's ‖.
 pub fn pause_mark(color: Hsla) -> Div {
     let bar = || div().w(px(2.)).h(px(7.)).bg(color);
     div().flex_none().flex().flex_row().items_center().gap(px(2.5)).child(bar()).child(bar())
@@ -253,7 +250,6 @@ impl CopiedFlash {
         cx.notify();
     }
 
-    /// `id`'s "Copied" opacity while it shows.
     pub fn on(&self, id: &str, cx: &App) -> Option<f32> {
         self.at.as_ref().filter(|(at, _)| at == id).and_then(|(_, since)| crate::motion::copied(*since, std::time::Instant::now(), cx.reduce_motion()))
     }
@@ -384,7 +380,6 @@ pub fn disclosure(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) 
         .into_any_element()
 }
 
-/// A disclosure chevron that turns at once.
 pub fn disclosure_still(open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
     crate::assets::icon(if open { crate::assets::Icon::ChevronDown } else { crate::assets::Icon::ChevronRight }).size(px(size)).text_color(color).into_any_element()
 }
@@ -515,7 +510,6 @@ const TIP_GRACE: Duration = Duration::from_millis(150);
 const TIP_WARM: Duration = Duration::from_millis(500);
 
 thread_local! {
-    /// When a tooltip was last on screen.
     static TIP_SEEN: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
@@ -751,7 +745,6 @@ pub fn copy_error(t: &Theme, id: impl Into<SharedString>, text: impl Into<Shared
     })
 }
 
-/// An error with room around it: all of it, wrapped, and its copy button beside it.
 pub fn error_block(t: &Theme, id: impl Into<SharedString>, text: impl Into<SharedString>) -> Div {
     let (id, text): (SharedString, SharedString) = (id.into(), text.into());
     let body = ElementId::Name(format!("{id}-text").into());
@@ -841,7 +834,6 @@ pub fn modal_header(t: &Theme, leading: Option<gpui::AnyElement>, title: impl In
     modal_header_with(t, leading, title, None, close)
 }
 
-/// A modal's top bar, for the header that holds more than a title.
 pub fn modal_header_bar(t: &Theme) -> Div {
     div().h(px(52.)).flex_none().pl(px(20.)).pr(px(16.)).flex().flex_row().items_center().border_b_1().border_color(t.line)
 }
@@ -861,7 +853,6 @@ pub fn modal_header_with(
         .child(close)
 }
 
-/// Where a stepped flow stands on one of its steps.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CrumbState {
     Current,
@@ -1005,7 +996,6 @@ pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -
         .children(msg.map(|m| div().text_color(t.tx2).line_height(px(18.)).child(m)))
 }
 
-/// A filtered list left with nothing to show: the banner, and the one action that brings it back.
 pub fn no_match(t: &Theme, id: impl Into<ElementId>, reset: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static) -> Div {
     empty_state(t, "[ NO MATCH ]", 20., None).child(button(t, id, Btn::Secondary).child("Reset filters").on_click(reset))
 }
@@ -1124,7 +1114,6 @@ mod probes {
         }
     }
 
-    /// The part of a probed control a scrolling list or panel leaves in view.
     pub fn probed_shown(id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
         SHOWN.with(|p| p.borrow().get(id).copied())
     }
@@ -1201,7 +1190,6 @@ mod probes {
 #[cfg(feature = "checks")]
 pub use probes::*;
 
-/// Without the checks: nothing recorded, nothing wrapped.
 #[cfg(not(feature = "checks"))]
 pub fn clear_probes() {}
 

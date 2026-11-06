@@ -54,19 +54,14 @@ pub enum Item {
     Expr,
 }
 
-/// Where a scope's rows go.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Role {
-    /// The statement's own query.
     #[default]
     Root,
-    /// A WITH query's body.
     Cte,
     /// A set operation's later branch; its columns take the names of the branch before it.
     Branch(usize),
-    /// A derived table in FROM.
     Derived,
-    /// The rows of INSERT … SELECT.
     Insert,
     /// A subquery inside an expression of this clause of the parent.
     Expr(Clause),

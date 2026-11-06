@@ -645,7 +645,6 @@ impl ResultGrid {
         self.land = key;
     }
 
-    /// The sort the grid is on, or on its way to while one runs.
     #[cfg(feature = "checks")]
     pub fn demo_sort_asked(&self) -> Option<(usize, SortDir)> {
         if self.sorting { self.sort_asked } else { self.rs.as_ref().and_then(|r| r.sort_state()) }
@@ -656,7 +655,6 @@ impl ResultGrid {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
     }
 
-    /// The pop now, else the last one that ran its course.
     #[cfg(feature = "checks")]
     pub fn demo_pop_ran(&self) -> Option<((usize, usize), PopStyle)> {
         self.demo_pop().or(self.ran_pop.map(|(c, style)| ((c.row, c.col), style)))
@@ -717,7 +715,6 @@ impl ResultGrid {
         }
     }
 
-    /// What a new row's cells say, and whether each is a grey placeholder.
     #[cfg(feature = "checks")]
     pub fn demo_new_row(&self, i: usize) -> Vec<(Option<String>, bool)> {
         self.decor.as_ref().and_then(|d| d.virtual_rows.get(i)).map_or(Vec::new(), |r| r.cells.iter().map(|c| (c.text.clone().flatten(), c.ghost)).collect())
@@ -2809,7 +2806,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             }
         }
     });
-    // The last row closes the table with a line under it, across the gutter and the columns.
     if rows > 0
         && let Some(end) = frame.cols.last().map(|fc| geo.gutter + fc.x + fc.w)
     {

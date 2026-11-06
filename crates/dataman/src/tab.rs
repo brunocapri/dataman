@@ -611,7 +611,6 @@ impl QueryTab {
         .detach();
     }
 
-    /// Whether the tab still points at `conn`'s `db`, for a read that comes back late.
     fn still_on(&self, conn: &Arc<Connection>, db: &str) -> bool {
         self.conn.as_ref().is_some_and(|c| Arc::ptr_eq(c, conn)) && self.database() == db
     }

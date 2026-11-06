@@ -139,7 +139,6 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
     Ok(i)
 }
 
-/// A new, empty database file (the sheet's New…).
 pub fn create(path: &Path) -> Result<()> {
     if path.exists() {
         bail!("{} exists already", path.display());
@@ -556,7 +555,6 @@ fn json(v: &Value) -> serde_json::Value {
     }
 }
 
-/// A date or time inside a nested value, as the grid would show it.
 fn scalar_text(v: &Value) -> String {
     let mut s = String::new();
     match v {

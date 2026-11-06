@@ -293,7 +293,6 @@ pub fn logo(e: dataman_core::Engine) -> gpui::Img {
     gpui::img(path).flex_none()
 }
 
-/// An agent's one-shape logo, tinted with the svg's text color.
 pub fn agent_logo_mono(path: &'static str) -> Svg {
     svg().path(path).flex_none().size(crate::theme::px(16.))
 }

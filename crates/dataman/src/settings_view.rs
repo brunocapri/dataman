@@ -32,7 +32,6 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum SettingsEvent {
     Close,
-    /// Settings › Project changed what is shared, and the sync that followed changed this side.
     ProjectSynced(dataman_core::project::Synced),
     /// Connect on start was turned on: what is not connected connects now.
     AutoConnect,
@@ -135,7 +134,6 @@ pub(crate) struct Place {
     pub words: &'static str,
 }
 
-/// The sections, then the rows that show now.
 pub(crate) fn places(core: &Core, cx: &App) -> Vec<Place> {
     let settings = core.settings.get();
     let project = core.project.info(&settings);

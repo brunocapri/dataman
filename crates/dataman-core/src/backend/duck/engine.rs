@@ -20,10 +20,8 @@ include!("fingerprint.rs");
 /// The DuckDB the bindings were made from: the engine must be this one.
 pub const VERSION: &str = "v1.5.6";
 
-/// A folder that holds the engine, looked in first.
 pub const ENV: &str = "DATAMAN_DUCKDB";
 
-/// The engine's file name.
 pub const FILE: &str = if cfg!(target_os = "macos") {
     "libdataman_duckdb.dylib"
 } else if cfg!(windows) {
@@ -39,7 +37,6 @@ macro_rules! api {
     ($($n:ident),* $(,)?) => {
         const COUNT: usize = [$(stringify!($n)),*].len();
 
-        /// The struct, from the engine's table in the list's order.
         #[allow(clippy::missing_transmute_annotations)] // The target is each field's type, which the macro does not name.
         unsafe fn api(t: &[*const c_void; COUNT]) -> ffi::duckdb_ext_api_v1 {
             let mut i = 0;
@@ -53,7 +50,6 @@ duckdb_api_v1!(api);
 /// What to do about an engine that is not this one.
 const REBUILD: &str = "reinstall Dataman; a build of one's own: scripts/duckdb-engine.sh";
 
-/// Where the engine came from, once loaded.
 static LOADED: Mutex<Option<PathBuf>> = parking_lot::const_mutex(None);
 
 /// The engine, loaded now or already; the next connection tries again after a failure.
@@ -71,7 +67,6 @@ pub(crate) fn load() -> Result<()> {
     Ok(())
 }
 
-/// The folders looked in, in order.
 fn places() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::env::var_os(ENV).filter(|d| !d.is_empty()).map(PathBuf::from).into_iter().collect();
     if let Some(exe) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
@@ -99,7 +94,6 @@ fn open(path: &Path) -> Result<()> {
     // libduckdb-sys (an older one, in another order, would be called at the wrong functions).
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
     let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint ({REBUILD})", what()))?;
-    // SAFETY: as above.
     let fp = unsafe { fp() };
     if fp != FINGERPRINT {
         bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}; {REBUILD})", what());

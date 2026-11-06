@@ -118,7 +118,6 @@ fn postgres_explain_analyze_options() {
     exec(&e, &c, &["DROP TABLE guard_explain"]);
 }
 
-/// A password written into a statement is kept masked in the history.
 #[test]
 fn history_masks_passwords() {
     let e = env();

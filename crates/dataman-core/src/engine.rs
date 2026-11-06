@@ -12,7 +12,6 @@ pub struct EngineSpec {
     /// Stored in the file and used by the MCP tools and the logos: must not change.
     pub slug: &'static str,
     pub label: &'static str,
-    /// Other names `Engine::parse` takes.
     pub aliases: &'static [&'static str],
     /// Words the engine picker matches (aliases, vendors, uses).
     pub search: &'static str,
@@ -22,12 +21,9 @@ pub struct EngineSpec {
     /// What the connection form calls its family (Elasticsearch is a document store that the
     /// form shows under Search).
     pub family_label: &'static str,
-    /// The extensions its files usually have, the first one for new files.
     pub file_exts: &'static [&'static str],
-    /// Its SQL dialect; none for the NoSQL engines.
     pub dialect: Option<Dialect>,
     pub caps: Caps,
-    /// The status bar's short tag.
     pub badge: &'static str,
     pub logo: &'static str,
     /// What a connection opens when the form leaves the database empty ("" = the login's own).
@@ -36,34 +32,27 @@ pub struct EngineSpec {
     pub default_schema: Option<&'static str>,
     /// Database names match whatever their case (a read-only override names one).
     pub db_names_ignore_case: bool,
-    /// The server's own databases, left out of the simple explorer.
     pub system_dbs: &'static [&'static str],
     /// The schemas the engine keeps for itself (a trailing `*` matches a prefix), left out of
     /// the lists of tables. MySQL's schemas are its databases: its system ones are both.
     pub system_schemas: &'static [&'static str],
     /// Databases are numbered (Redis' 0–15), shown as `db{n}`.
     pub numbered_dbs: Option<u32>,
-    /// What the engine calls a table.
     pub nouns: Nouns,
-    /// The connection form.
     pub form: Form,
 }
 
-/// What the connection form asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Form {
     /// A file instead of a server (host, port, user, password).
     pub file: bool,
-    /// The user is required.
     pub user_required: bool,
-    /// A database field.
     pub database: bool,
     pub database_placeholder: &'static str,
     /// Options as `k=v&k=v` (MongoDB's URI options).
     pub options: bool,
     /// The database field's label ("DB" for Redis' numbered ones).
     pub database_label: &'static str,
-    /// The scheme a connection string for it starts with, as its placeholder shows it.
     pub scheme: &'static str,
 }
 
@@ -335,12 +324,10 @@ impl Engine {
         if self.spec().numbered_dbs.is_some() { format!("db{db}") } else { db.to_string() }
     }
 
-    /// One of the server's own databases (`mysql`, `master`, MongoDB's `admin`…).
     pub fn is_system_db(self, db: &str) -> bool {
         self.spec().system_dbs.contains(&db)
     }
 
-    /// One of the schemas the engine keeps for itself (`pg_catalog`, `sys`, MySQL's `mysql`…).
     pub fn is_system_schema(self, schema: &str) -> bool {
         let s = self.spec();
         s.system_schemas.iter().any(|p| match p.strip_suffix('*') {
@@ -350,12 +337,10 @@ impl Engine {
         })
     }
 
-    /// What the engine calls a table.
     pub fn nouns(self) -> Nouns {
         self.spec().nouns
     }
 
-    /// The default ports, as the MCP schema describes them.
     pub fn port_list() -> String {
         let mut ports: Vec<String> = Vec::new();
         for s in &SPECS {
@@ -367,7 +352,6 @@ impl Engine {
         ports.join(" / ")
     }
 
-    /// Every slug, for the MCP schema's enum.
     pub fn slugs() -> Vec<&'static str> {
         Engine::ALL.iter().map(|e| e.slug()).collect()
     }

@@ -279,7 +279,6 @@ fn postgres_privacy() {
     );
     let q = |sql: String| e.call("run_query", p(json!({"sql": sql})));
 
-    // Hidden tables and columns.
     assert!(q(format!("SELECT * FROM {s}.payments")).unwrap_err().contains("payments is not visible to agents on prod-pg"));
     let err = q(format!("SELECT upper(password_hash) FROM {s}.users")).unwrap_err();
     assert!(err.contains("users.password_hash is hidden from agents"), "{err}");
@@ -313,7 +312,6 @@ fn postgres_privacy() {
     let r = e.ok("sample_rows", p(json!({"table": format!("{s}.customers")})));
     assert_eq!(r["rows"][0][2], "••••••••.com");
 
-    // Introspection.
     let t = e.ok("list_tables", p(json!({"schema": s})));
     let listed = names(&t, 1);
     assert!(listed.contains(&"users".to_string()) && !listed.contains(&"payments".to_string()), "{listed:?}");
@@ -341,7 +339,6 @@ fn postgres_privacy() {
     let rewritten = e.audit().into_iter().find(|x| x["rewritten"].is_string()).unwrap();
     assert!(rewritten["rewritten"].as_str().unwrap().contains("(SELECT"), "{rewritten}");
 
-    // Structure only.
     let st = |x: Value| with("structure-pg", x);
     assert!(e.err("run_query", st(json!({"sql": format!("SELECT * FROM {s}.users")}))).contains("structure only"));
     assert!(e.err("sample_rows", st(json!({"table": format!("{s}.users")}))).contains("structure only"));

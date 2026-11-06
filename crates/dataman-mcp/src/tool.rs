@@ -247,7 +247,6 @@ pub fn params_schema() -> Value {
 
 #[derive(Default, Clone, Debug)]
 pub struct Note {
-    /// The connection's name, for the log.
     pub connection: Option<String>,
     /// The connection the call resolved, by id: what privacy and the log look it up by (two
     /// connections may share a name).
@@ -363,7 +362,6 @@ impl Call {
         }
     }
 
-    /// The connection's rules (none for a call without one).
     pub fn rules_of(&self, args: &Args) -> dataman_core::privacy::AgentRules {
         args.opt_str("connection").and_then(|c| self.hub.profile(c).ok()).map(|p| p.mcp_rules).unwrap_or_default()
     }

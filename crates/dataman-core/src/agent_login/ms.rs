@@ -347,8 +347,6 @@ pub fn rotate_step(user: &str, password: &str, azure: bool) -> Step {
     Step::secret_sql("a new password", sql.replace("{}", &hash::mssql_hash(password)), sql.replace("{}", "0x0200…"))
 }
 
-// ---- Live ----
-
 fn s(v: &Option<String>) -> String {
     v.clone().unwrap_or_default()
 }

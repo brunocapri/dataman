@@ -212,7 +212,6 @@ async fn user_routines(cx: &Call, o: &Opened) -> HashSet<String> {
     out
 }
 
-/// The statement as the connection's rules let agents run it.
 pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, write: bool) -> Result<Checked, ToolError> {
     let mut r = p.mcp_rules.clone();
     let d = p.engine.dialect();
@@ -363,7 +362,6 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
     cx.note_masked_columns(&used);
 }
 
-/// Tells the agent what the rules did to its reply.
 pub fn tell(v: &mut Value, c: &Checked, masked: &[(String, Mask)]) {
     let Some(m) = v.as_object_mut() else { return };
     if c.rewritten {
@@ -552,7 +550,6 @@ pub fn nosql_shape(cx: &Call, a: &Args, p: &ConnectionProfile, text: &str, v: &m
     }
 }
 
-/// What list_connections tells agents about a connection's rules.
 pub fn summary(p: &ConnectionProfile) -> Value {
     let r = &p.mcp_rules;
     let mut m = serde_json::Map::new();
@@ -619,7 +616,6 @@ pub fn not_visible(p: &ConnectionProfile, name: &str) -> ToolError {
     ToolError::Refused(format!("{name} is not visible to agents on {}", p.name))
 }
 
-/// Drops the lines of a definition that name a hidden column, and says how many there were.
 pub fn ddl_without(ddl: &str, hidden: &[String]) -> String {
     if hidden.is_empty() {
         return ddl.to_string();

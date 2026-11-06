@@ -360,7 +360,6 @@ fn postgres_values_stay_kept() {
     let r = q(format!("SELECT * FROM {s}.users")).unwrap();
     assert!(!r.to_string().contains("password_hash"), "{r}");
 
-    // The catalog tools, the schema resource and favorites.
     for (tool, args) in [
         ("describe_table", json!({"table": format!("{s}.users"), "include_ddl": true})),
         ("get_ddl", json!({"object": format!("{s}.users")})),
@@ -634,9 +633,6 @@ fn redis_values_stay_kept() {
     e.done();
 }
 
-/// User tools (mcp-tools.toml) run for agents: the connection's rules and dialect apply to them.
-/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
-/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
 /// Two connections with one name: a call on the Masked one by its id is masked as that
 /// connection's, never looked up again by the name (which is both).
 #[test]
@@ -658,6 +654,8 @@ fn a_shared_name_does_not_unmask_a_reply() {
     e.done();
 }
 
+/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
+/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
 /// any level; writes stop at read and on a read-only connection.
 #[test]
 fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {

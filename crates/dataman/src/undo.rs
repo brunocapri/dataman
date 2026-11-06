@@ -41,7 +41,6 @@ pub(crate) struct DeletedConn {
     pub pins: Vec<Pin>,
     /// Its agent login's password, put back with it (none once the login was dropped).
     pub agent_password: Option<String>,
-    /// The explorer folder it was in.
     pub folder: Option<String>,
 }
 

@@ -107,7 +107,6 @@ fn connects_and_decodes_every_type() {
     assert_eq!((r[23].as_deref(), r[24].as_deref()), (Some("gold"), None));
     let names: Vec<String> = rs.columns().unwrap().iter().map(|c| c.type_name.clone()).collect();
     assert_eq!((names[4].as_str(), names[16].as_str(), names[21].as_str()), ("HUGEINT", "TIMESTAMP_NS", "STRUCT"));
-    // Parameters, numbered or not.
     let rs = sess.execute_with("SELECT name FROM customer WHERE id = $1 OR email = $2 ORDER BY id LIMIT $3", vec![s("2"), s("ana@example.com"), s("5")]);
     rs.fetch_all();
     e.core.block_on(rs.wait_finished());

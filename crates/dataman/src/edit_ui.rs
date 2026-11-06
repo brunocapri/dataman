@@ -1198,7 +1198,6 @@ impl GridEdit {
         self.request(Pending::Edit(row, col), window, cx);
     }
 
-    /// The last commit's conflicts, when it left any.
     #[cfg(feature = "checks")]
     pub fn demo_conflicts(&self) -> usize {
         self.report.as_ref().map_or(0, |r| r.outcomes.iter().filter(|o| matches!(o.outcome, Outcome::Conflict { .. })).count())

@@ -85,7 +85,6 @@ impl EditTarget {
         }
     }
 
-    /// The value a new row offers, with its column.
     pub fn new_row_uuid(&self) -> Option<(usize, CellValue)> {
         let col = self.uuid_key?;
         let id = uuid::Uuid::new_v4().hyphenated();

@@ -12,7 +12,6 @@ use crate::check::{Report, cell, connected, core, draw, pause, result, run_keys,
 use crate::tab::QueryTab;
 use crate::tree_menu::Act;
 
-/// What differs between the two engines along the same path.
 pub struct Case {
     engine: Engine,
     seed: &'static str,
@@ -147,7 +146,6 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
         format!("{conn_acts:?} {db_acts:?}"),
     );
 
-    // The table's grid, an edit, saved.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_relation(&id, db, "main", "customer", window, cx)));
     let Some(t) = crate::check::active(ws, cx) else {
         r.check("the table opens in a tab", false, "no tab");
@@ -178,7 +176,6 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     let now = sql1(&core, &direct, "", "SELECT name FROM customer WHERE id = 2", cx).await;
     r.check("the edit is in the file", now.as_deref() == Some("Bruno C. ü"), format!("{now:?}"));
 
-    // A query in the editor, then its plan.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx)));
     pause(cx, 100).await;
     let q = run_keys(ws, "SELECT status, count(*) AS n FROM orders GROUP BY status ORDER BY status", "cmd-enter", cx).await;

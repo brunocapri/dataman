@@ -37,7 +37,6 @@ pub struct Approval {
     pub counted: bool,
 }
 
-/// Characters that draw as nothing, or reorder what is drawn around them.
 pub(crate) fn invisible(c: char) -> bool {
     matches!(c,
         '\u{80}'..='\u{9F}' | '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
@@ -363,7 +362,6 @@ impl Hub {
         Ok(())
     }
 
-    /// The window did not come forward after all.
     pub fn show_not_used(&self) {
         self.shows.lock().pop_back();
     }
@@ -407,7 +405,6 @@ impl Hub {
         self.audit.write_reply(id, text);
     }
 
-    /// Rows per write as a count (∞ as the largest).
     pub fn row_limit(&self, p: &ConnectionProfile) -> u64 {
         dataman_core::privacy::row_cap(p.mcp_row_limit.unwrap_or(dataman_core::settings::MCP_WRITE_ROW_LIMIT))
     }

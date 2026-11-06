@@ -96,7 +96,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.connections_on_disk(window, cx)));
     until(cx, 5, |cx| names(ws, cx).contains(&"Shop".to_string())).await;
 
-    // Another program of this user writes the file.
     let outside = || ConfigStore::open(&core.dirs).unwrap();
     outside().upsert(ConnectionProfile { mcp: Some(McpAccess::Full), mcp_yolo: true, ..shop.clone() }).unwrap();
     let asked = until(cx, 5, |cx| probed("outside-review-apply", cx).is_some()).await;

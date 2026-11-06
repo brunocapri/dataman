@@ -69,7 +69,6 @@ impl ConnStore {
         ConnStore { core, profiles, folders, states: HashMap::new(), quiet: HashSet::new(), attempts: Attempts::default() }
     }
 
-    /// The folders changed in one write; Err said as is.
     pub fn edit_folders(&mut self, f: impl FnOnce(&mut Vec<ConnFolder>), cx: &mut Context<Self>) -> anyhow::Result<()> {
         let r = self.core.config.edit_folders(f);
         self.folders = self.core.config.folders();
@@ -86,7 +85,6 @@ impl ConnStore {
         }
     }
 
-    /// The folder holding a connection.
     pub fn folder_of(&self, conn: &str) -> Option<&ConnFolder> {
         dataman_core::config::folder_of(&self.folders, conn)
     }
@@ -101,7 +99,6 @@ impl ConnStore {
         cx.notify();
     }
 
-    /// The connections in this order (by id), saved.
     pub fn set_order(&mut self, ids: &[String], cx: &mut Context<Self>) {
         self.profiles.sort_by_key(|p| ids.iter().position(|i| *i == p.id).unwrap_or(usize::MAX));
         if let Err(e) = self.core.config.reorder(ids) {
