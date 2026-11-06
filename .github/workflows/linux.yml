@@ -1,21 +1,22 @@
 name: Linux
 
-# Pushes to main run nothing here: a release's tag runs it all, and the release takes its packages
-# (scripts/github-release.sh). The builds start from what cache.yml saved on main: the Rust cache
-# (read only here) and the DuckDB engine. Tests and packages run side by side.
+# x86_64 only. A pull request runs all of it, so a bug shows before the merge; a release takes its
+# packages from the tag's run (scripts/github-release.sh). The builds start from what cache.yml saved
+# on main: the Rust cache (read only here) and the DuckDB engine. Tests and packages run side by side.
 on:
   push:
     tags: ["v*"]
   pull_request:
+    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# On a pull request the newest push cancels the run under way; a tag's run goes to the end.
+# The newest push cancels the run under way; a tag's run goes to the end.
 concurrency:
   group: linux-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,15 +31,8 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-22.04, arch: x86_64, skip: "" }
-          # No SQL Server image for arm64: the stages that need it run on x86_64.
-          - { os: ubuntu-22.04-arm, arch: aarch64, skip: "newuser-check,connections-check,explorer-check,json-check,dates-check,insert-check,mssql-check,mcp-tools-check" }
-    runs-on: ${{ matrix.os }}
+    name: test (x86_64)
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +44,7 @@ jobs:
       # theirs alone, and would only crowd the repository's 10 GB out).
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-${{ matrix.arch }}
+          shared-key: linux-x86_64
           save-if: false
       - name: Check (no new warnings)
         run: |
@@ -66,7 +60,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: The DuckDB engine
         run: scripts/duckdb-engine.sh
         env:
@@ -74,29 +68,25 @@ jobs:
       - name: Tests, with a Secret Service for the password store
         run: |
           # -e: a failing `cargo test` fails the step, not only the last command.
-          dbus-run-session -- bash -ec '
+          # --workspace on both: `-p dataman-core` has other features, and builds it all again.
+          dbus-run-session -- bash -ec "
             echo -n ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
-            cargo test --release --workspace
-            cargo test --release -p dataman-core --test keychain -- --ignored'
+            cargo test --release --workspace $(scripts/fast-tests.sh)
+            cargo test --release --workspace --test keychain -- --ignored"
       - name: End-to-end under Xvfb
         run: |
           xvfb-run -a -s "-screen 0 1600x1000x24" \
-            cargo run --release -p xtask -- e2e ${{ matrix.skip && format('--skip {0}', matrix.skip) || '' }}
+            cargo run --release -p xtask -- e2e
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-${{ matrix.arch }}
+          name: e2e-x86_64
           path: target/e2e/
           if-no-files-found: ignore
 
   package:
-    name: package (${{ matrix.arch }})
-    strategy:
-      matrix:
-        include:
-          - { os: ubuntu-22.04, arch: x86_64 }
-          - { os: ubuntu-22.04-arm, arch: aarch64 }
-    runs-on: ${{ matrix.os }}
+    name: package (x86_64)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: System packages
@@ -106,16 +96,16 @@ jobs:
       # The test job's cache: the same dependencies, built the same way.
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-${{ matrix.arch }}
+          shared-key: linux-x86_64
           save-if: false
       - name: The DuckDB engine, cached
         id: duckdb
         uses: actions/cache/restore@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: AppImage and .deb
-        run: scripts/linux/build.sh ${{ matrix.arch }}
+        run: scripts/linux/build.sh x86_64
         env:
           DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
       - name: The AppImage starts
@@ -126,5 +116,5 @@ jobs:
           sudo apt-get install -y ./dist/linux/*.deb && dataman --version
       - uses: actions/upload-artifact@v4
         with:
-          name: dataman-linux-${{ matrix.arch }}
+          name: dataman-linux-x86_64
           path: dist/linux/

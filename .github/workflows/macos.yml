@@ -1,0 +1,106 @@
+name: macOS
+
+# Apple silicon, the Mac the app ships for; the release's .dmg itself is built and signed on a
+# workstation (scripts/release.sh). A pull request runs all of it, so a bug shows before the merge.
+# The servers beyond PostgreSQL are Linux's: no Docker on a Mac runner. The builds start from what
+# cache.yml saved on main: the Rust cache (read only here) and the DuckDB engine.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The newest push cancels the run under way; a tag's run goes to the end.
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
+
+jobs:
+  test:
+    name: test (aarch64)
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-aarch64
+          save-if: false
+      - name: Check (no new warnings)
+        run: |
+          cargo check --release --workspace --all-targets --features dataman/checks 2>&1 | tee check.log
+          # The two `unused Result` warnings in the live sweeps are known; anything else fails.
+          known="unused \`Result\`"
+          n=$(grep -c "^warning: $known" check.log || true)
+          others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
+          [ -z "$others" ] || { echo "$others"; exit 1; }
+          [ "$n" -le 2 ]
+      - name: The DuckDB engine, cached
+        id: duckdb
+        uses: actions/cache/restore@v4
+        with:
+          path: target/duckdb
+          key: duckdb-${{ runner.os }}-aarch64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+      - name: The DuckDB engine
+        run: scripts/duckdb-engine.sh
+        env:
+          DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
+      - name: Tests
+        run: cargo test --release --workspace --no-fail-fast $(scripts/fast-tests.sh)
+      # The runner's desktop as a workstation's, as windows.yml does: 1024x768 clamps the 1400x900
+      # window the checks lay out for, animations on, which the app honours (Reduce motion), the real
+      # pointer off the window, whose hover would move what the checks drive with their own events,
+      # and an unlocked keychain, since a locked one would ask.
+      - name: Desktop for the check stages
+        if: ${{ !cancelled() }}
+        run: |
+          defaults write com.apple.universalaccess reduceMotion -bool false
+          defaults read com.apple.universalaccess reduceMotion
+          security create-keychain -p ci ci.keychain
+          security list-keychains -d user -s ci.keychain
+          security default-keychain -s ci.keychain
+          security unlock-keychain -p ci ci.keychain
+          security set-keychain-settings ci.keychain
+          cat > "$RUNNER_TEMP/desktop.swift" <<'SWIFT'
+          import AppKit
+          let display = CGMainDisplayID()
+          let modes = CGDisplayCopyAllDisplayModes(display, nil) as! [CGDisplayMode]
+          let mode = modes.first { $0.width == 1920 && $0.height == 1080 }!
+          var config: CGDisplayConfigRef?
+          CGBeginDisplayConfiguration(&config)
+          CGConfigureDisplayWithDisplayMode(config, display, mode, nil)
+          let done = CGCompleteDisplayConfiguration(config, .permanently)
+          precondition(done == .success, "the display mode: \(done.rawValue)")
+          CGWarpMouseCursorPosition(CGPoint(x: 1919, y: 1079))
+          print("screen:", CGDisplayPixelsWide(display), CGDisplayPixelsHigh(display), "reduce motion:", NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+          SWIFT
+          swift "$RUNNER_TEMP/desktop.swift"
+      # The runner's own PostgreSQL in place of the compose container. It runs when the tests fail
+      # too, so its results still show.
+      - name: End-to-end on PostgreSQL and the file databases
+        if: ${{ !cancelled() }}
+        run: |
+          brew install --quiet postgresql@17
+          pgbin="$(brew --prefix postgresql@17)/bin"
+          echo dataman > "$RUNNER_TEMP/pw"
+          "$pgbin/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=scram-sha-256 --pwfile="$RUNNER_TEMP/pw" > /dev/null
+          "$pgbin/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 5432" -l "$RUNNER_TEMP/pg.log" -w start
+          PGPASSWORD=dataman "$pgbin/createdb" -h 127.0.0.1 -U postgres dataman
+          DATAMAN_E2E_PSQL="$pgbin/psql" DATAMAN_E2E_PG_PORT=5432 \
+            cargo run --release -p xtask -- e2e --no-compose --needs pg
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-macos-aarch64
+          path: target/e2e/
+          if-no-files-found: ignore

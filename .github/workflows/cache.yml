@@ -1,13 +1,12 @@
 name: Cache
 
-# The caches the Linux and Windows workflows start from, saved on main: a cache saved by a tag or a
-# pull request is theirs alone, and main's is the one every run can read. Two per platform and
-# architecture:
-#   - the Rust cache (Swatinem/rust-cache, shared-key linux-<arch> / windows-<arch>): what the
+# The caches the Linux, Windows and macOS workflows start from, saved on main: a cache saved by a tag or a
+# pull request is theirs alone, and main's is the one every run can read. Two per platform:
+#   - the Rust cache (Swatinem/rust-cache, shared-key linux-x86_64 / windows-x86_64 / macos-aarch64): what the
 #     tests, the check stages and the packages build, minus the workspace's own crates;
 #   - the DuckDB engine (target/duckdb), keyed on engines/duckdb and scripts/duckdb-engine.sh:
 #     its C++ takes 10+ minutes, and only those files change it.
-# Together about 8 GB of the repository's 10. linux.yml and windows.yml only read them.
+# Together about 8 GB of the repository's 10. linux.yml, windows.yml and macos.yml only read them.
 #
 # A run builds only what is missing: a Cargo.lock or toolchain already cached skips the Rust
 # build, an engine already cached skips DuckDB. The weekly run keeps them read: GitHub drops a
@@ -24,6 +23,7 @@ on:
       - .github/workflows/cache.yml
       - .github/workflows/linux.yml
       - .github/workflows/windows.yml
+      - .github/workflows/macos.yml
   schedule:
     - cron: "17 6 * * 1,4"
   workflow_dispatch:
@@ -43,15 +43,9 @@ env:
 
 jobs:
   linux:
-    name: linux (${{ matrix.arch }})
+    name: linux (x86_64)
     if: github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-22.04, arch: x86_64 }
-          - { os: ubuntu-22.04-arm, arch: aarch64 }
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
       # linux.yml's.
@@ -69,13 +63,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: rust
         with:
-          shared-key: linux-${{ matrix.arch }}
+          shared-key: linux-x86_64
       - name: The DuckDB engine, cached
         id: duckdb
         uses: actions/cache@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: The DuckDB engine
         if: steps.duckdb.outputs.cache-hit != 'true'
         run: scripts/duckdb-engine.sh
@@ -85,23 +79,50 @@ jobs:
         if: steps.rust.outputs.cache-hit != 'true'
         run: |
           cargo check --release --workspace --all-targets --features dataman/checks
-          cargo test --release --workspace --no-run
+          cargo test --release --workspace --no-run $(scripts/fast-tests.sh)
           cargo build --release -p dataman -p dataman-mcp --features dataman/checks
           cargo build --release -p xtask
           cargo build --release --locked -p dataman
       # The engine's own build has its cache above: kept out of the Rust one.
       - run: rm -rf target/duckdb-engine
 
-  windows:
-    name: windows (${{ matrix.arch }})
+  macos:
+    name: macos (aarch64)
     if: github.ref == 'refs/heads/main'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, arch: x86_64 }
-          - { os: windows-11-arm, arch: aarch64 }
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+        id: rust
+        with:
+          shared-key: macos-aarch64
+      - name: The DuckDB engine, cached
+        id: duckdb
+        uses: actions/cache@v4
+        with:
+          path: target/duckdb
+          key: duckdb-${{ runner.os }}-aarch64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+      - name: The DuckDB engine
+        if: steps.duckdb.outputs.cache-hit != 'true'
+        run: scripts/duckdb-engine.sh
+      # What macos.yml builds: the check, the tests, the app for the check stages, and xtask.
+      - name: The builds macos.yml makes
+        if: steps.rust.outputs.cache-hit != 'true'
+        run: |
+          cargo check --release --workspace --all-targets --features dataman/checks
+          cargo test --release --workspace --no-run $(scripts/fast-tests.sh)
+          cargo build --release -p dataman -p dataman-mcp --features dataman/checks
+          cargo build --release -p xtask
+      # The engine's own build has its cache above: kept out of the Rust one.
+      - run: rm -rf target/duckdb-engine
+
+  windows:
+    name: windows (x86_64)
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
     timeout-minutes: 120
     env:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
@@ -118,13 +139,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: rust
         with:
-          shared-key: windows-${{ matrix.arch }}
+          shared-key: windows-x86_64
       - name: The DuckDB engine, cached
         id: duckdb
         uses: actions/cache@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: The DuckDB engine
         if: steps.duckdb.outputs.cache-hit != 'true'
         shell: bash
@@ -133,17 +154,13 @@ jobs:
       # package's binaries (scripts/windows/package.ps1).
       - name: The builds windows.yml makes
         if: steps.rust.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           cargo check --release --workspace --all-targets --features dataman/checks
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          cargo test --release --workspace --no-run
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo test --release --workspace --no-run $(scripts/fast-tests.sh)
           cargo build --release -p dataman -p dataman-mcp --features dataman/checks
-          if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo build --release -p xtask
-          if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo build --release -p dataman -p dataman-mcp
-          if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: The engine's own build has its cache above, kept out of the Rust one
         shell: bash
         run: rm -rf target/duckdb-engine

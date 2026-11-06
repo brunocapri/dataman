@@ -12,7 +12,7 @@ Claude Code and any other MCP client can work with your databases through it, an
 [![Release](https://img.shields.io/github/v/release/brunocapri/dataman?style=flat-square&color=2440C8&label=release)](https://github.com/brunocapri/dataman/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2440C8?style=flat-square)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-Apple%20silicon-080E40?style=flat-square&logo=apple)
-![Linux](https://img.shields.io/badge/Linux-x86__64%20%C2%B7%20arm64-080E40?style=flat-square&logo=linux&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-x86__64-080E40?style=flat-square&logo=linux&logoColor=white)
 
 [**Download for macOS**](https://github.com/brunocapri/dataman/releases/latest) · [Website](https://getdataman.com) · [Release notes](https://github.com/brunocapri/dataman/releases)
 
@@ -585,7 +585,7 @@ Commit a `.dataman/project.toml` next to your code, and the team shares connecti
 | Platform | How |
 |---|---|
 | **macOS** 11+ (Apple silicon) | [Download the .dmg](https://github.com/brunocapri/dataman/releases/latest). It is signed, notarized and updates itself. |
-| **Linux** x86_64 / arm64 | AppImage and .deb packages are coming to the releases. Until then, build from source. |
+| **Linux** x86_64 | AppImage and .deb packages are coming to the releases. Until then, build from source. |
 | **Windows** | Not yet. |
 
 Updates are signed with ed25519 and checked before they install, and a downgrade is refused.
@@ -598,11 +598,11 @@ You need Rust 1.99 or newer. On Linux, you also need the GPUI dependencies: `cla
 git clone https://github.com/brunocapri/dataman
 cd dataman
 scripts/duckdb-engine.sh                 # DuckDB, once: its C++ builds apart, into target/duckdb
-cargo run --release -p dataman
+cargo run -p dataman
 ```
 
 ```bash
-cargo test --release --workspace         # unit and integration tests
+cargo test --workspace                   # unit and integration tests
 cargo run --release -p xtask -- e2e      # end-to-end on every engine (needs Docker)
 ```
 

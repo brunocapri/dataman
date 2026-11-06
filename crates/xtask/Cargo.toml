@@ -12,7 +12,8 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
-# The same versions (and resvg's features) GPUI already builds.
-resvg = "0.46"
+# Exactly the features GPUI builds: `default` alone would make Cargo build gpui and its platform
+# crates twice, once for `cargo build -p dataman` and once for `cargo test --workspace`.
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
 ring = "0.17"
 data-encoding = "2"

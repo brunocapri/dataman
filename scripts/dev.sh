@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds release, signs target/release/dataman as the released app and runs it.
+# Builds the dev profile, signs target/debug/dataman as the released app and runs it.
 #
 # The Keychain trusts a binary by its designated requirement. An ad hoc build changes it on
 # every build, so each saved password asks again; signed with the Developer ID and the release's
@@ -9,7 +9,7 @@
 #   DATAMAN_SIGN_IDENTITY   e.g. "Developer ID Application: Name (TEAMID)" (unset: the first
 #                           Developer ID Application identity in the keychain, else ad hoc)
 #   DATAMAN_BUNDLE_ID       identifier signed in (default dev.dataman, as scripts/bundle.sh)
-#   DATAMAN_SKIP_BUILD=1    sign and run target/release as it is
+#   DATAMAN_SKIP_BUILD=1    sign and run target/debug as it is
 #
 #   scripts/dev.sh [args for dataman]
 set -euo pipefail
@@ -24,12 +24,12 @@ if [ -z "$identity" ]; then
   identity=-
 fi
 
-# Same settings as a plain `cargo build --release`, so the two share what they compiled.
+# Same settings as `cargo run` and `cargo test`, so the three share what they compiled.
 if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
-  cargo build --release -p dataman
+  cargo build -p dataman
 fi
 
-bin=target/release/dataman
+bin=target/debug/dataman
 codesign --force --options runtime --timestamp=none --identifier "$bundle_id" \
   --entitlements packaging/entitlements.plist --sign "$identity" "$bin"
 codesign --verify --strict "$bin"

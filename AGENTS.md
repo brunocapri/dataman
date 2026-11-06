@@ -93,3 +93,13 @@ it, and `dataman-mcp` serves it to agents.
   I/O or walk a whole result on the UI thread. Anything that grows with use has a cap or streams.
   Performance claims come with numbers, before and after, from the `--bench-*` modes (`checks`
   feature), never as "should be faster".
+
+## Building and testing
+
+- **The edit loop is the dev profile.** `cargo run -p dataman`, `cargo test` and `scripts/dev.sh`
+  share `target/debug`. Build `--release` only for the end-to-end stages or a package.
+- **Test what you touched.** `cargo test -p <crate> <name>` or `--test live_mysql`. Without the
+  servers up, `live_*` tests skip themselves and pass: `docker compose -f e2e/compose.yaml up -d
+  --wait <service>` first when the change depends on an engine.
+- **A check never retries and never sleeps its way to green.** A stage that fails on CI is a bug,
+  in the check or in the app. Wait on the condition with `crate::check::until`, not a fixed pause.
