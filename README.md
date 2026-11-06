@@ -328,7 +328,7 @@ Anything that reaches the files or programs on the database server always waits 
 - **MySQL:** `INTO OUTFILE`, `DUMPFILE` and `LOAD DATA INFILE`.
 - **SQL Server:** `BULK INSERT`, `BACKUP`, `RESTORE`, `OPENROWSET`, `xp_cmdshell` and the other `xp_` / `sp_oa` procedures.
 
-ClickHouse never lets an agent reach outside its tables, not even with your Allow: `file`, `url`, `s3`, `remote`, `mysql`, `postgresql`, `executable` and the other table functions, engines and dictionary sources like them, `merge`, `dictGet`, `COLUMNS('…')`, `INTO OUTFILE`, `BACKUP`, `RESTORE`, `ATTACH` and `DETACH`.
+ClickHouse never lets an agent reach outside its tables, not even with your Allow. A table function or engine is refused unless it is on a short list known to stay inside the database, which also shuts out any a newer server adds, and so is every dictionary source. Also refused: `merge`, `dictGet`, `COLUMNS('…')`, `INTO OUTFILE`, `BACKUP`, `RESTORE`, `ATTACH` and `DETACH`.
 
 SQLite and DuckDB never let an agent touch other files, not even with your Allow: `ATTACH`, `COPY`, `INSTALL` / `LOAD`, `read_csv` / `read_parquet` / `read_json`, file paths in place of tables, and the scanners for other databases are all refused.
 

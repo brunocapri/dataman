@@ -1363,6 +1363,9 @@ fn file_access_in(t: &Toks) -> Option<String> {
             return Some(format!("{name}() reaches files or code outside the database"));
         }
     }
+    if t.dialect == Dialect::ClickHouse {
+        return clickhouse_not_known_plain(t);
+    }
     if t.dialect != Dialect::DuckDb {
         return None;
     }
@@ -1392,6 +1395,66 @@ fn file_access_in(t: &Toks) -> Option<String> {
             TokenKind::String | TokenKind::DollarString if at_table => return Some("a file named in FROM is read from disk".into()),
             TokenKind::QuotedIdent if at_table && path_like(tok.text(t.src)) => return Some("a file named in FROM is read from disk".into()),
             _ => {}
+        }
+    }
+    None
+}
+
+/// What stands where a table, an engine or a dictionary's source goes and is not known to stay
+/// inside the database: the list of those is short and read, the servers' lists grow. Scalar
+/// functions are too many for that, and stay `CLICKHOUSE_FILE`'s.
+fn clickhouse_not_known_plain(t: &Toks) -> Option<String> {
+    let creates = ["CREATE", "ATTACH", "REPLACE", "ALTER"].iter().any(|w| t.is(0, w));
+    let describes = t.is(0, "DESCRIBE") || t.is(0, "DESC");
+    const CLAUSE_END: &[&str] = &["WHERE", "PREWHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET", "SETTINGS", "FORMAT", "UNION", "EXCEPT", "INTERSECT", "WINDOW", "QUALIFY", "INTO", "VALUES"];
+    // Per parenthesis: whether a comma or a `(` here is still where tables go, and whether this
+    // level is a query (`extract(DAY FROM f(x))` has a FROM that names no table).
+    let mut levels = vec![(false, true)];
+    for i in 0..t.t.len() {
+        let table_place = i > 0 && {
+            let &(from, _) = levels.last().unwrap_or(&(false, false));
+            let after_from = (t.is(i - 1, "FROM") && from) || (t.is(i - 1, "JOIN") && from && !(i > 1 && t.is(i - 2, "ARRAY")));
+            after_from
+                || (from && (t.punct(i - 1, ",") || t.punct(i - 1, "(")))
+                || t.is(i - 1, "FUNCTION")
+                || (describes && (t.is(i - 1, "DESCRIBE") || t.is(i - 1, "DESC") || t.is(i - 1, "TABLE")))
+                || (creates && t.is(i - 1, "AS") && !t.is(1, "FUNCTION"))
+        };
+        if t.punct(i, "(") {
+            levels.push((table_place, false));
+            continue;
+        }
+        if t.punct(i, ")") {
+            if levels.len() > 1 {
+                levels.pop();
+            }
+            continue;
+        }
+        if let Some(w) = t.word(i)
+            && let Some(level) = levels.last_mut()
+        {
+            let first = i == 0 || t.punct(i - 1, "(");
+            if w == "SELECT" {
+                *level = (false, true);
+            } else if (w == "FROM" && (level.1 || first)) || (w == "JOIN" && level.1) {
+                level.0 = true;
+            } else if CLAUSE_END.contains(&w.as_str()) {
+                level.0 = false;
+            }
+        }
+        if !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+            continue;
+        }
+        let name = crate::sql::ident_value_in(t.src, &t.t[i], t.dialect);
+        if table_place && t.punct(i + 1, "(") && !functions::clickhouse_plain_table_function(&name) {
+            return Some(format!("{name}() is not known to stay inside the database"));
+        }
+        let engine = i > 0 && (t.is(i - 1, "ENGINE") || (i > 1 && t.op(i - 1, "=") && t.is(i - 2, "ENGINE")));
+        if creates && engine && !functions::clickhouse_plain_engine(&name) {
+            return Some(format!("the engine {name} is not known to stay inside the database"));
+        }
+        if creates && t.is(i, "SOURCE") && t.punct(i + 1, "(") && !t.is(i + 2, "NULL") {
+            return Some("a dictionary's source reaches outside the database".into());
         }
     }
     None

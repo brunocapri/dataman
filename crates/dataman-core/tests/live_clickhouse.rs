@@ -10,6 +10,7 @@ use dataman_core::edit::Editability;
 use dataman_core::result::{Cell, ErrorClass, format_cell};
 use dataman_core::schema::RelKind;
 use dataman_core::value::Kind;
+use dataman_core::sql::functions;
 use dataman_core::{ResultSet, Session, guard};
 
 const DB: &str = "dataman_ch";
@@ -188,6 +189,86 @@ fn line_ends_the_server_was_told_to_change_are_still_line_ends() {
     assert_eq!(rs.snapshot().source_cell(0, 1), Cell::Null);
     let rs = ok(&e, &s, "SELECT '__exception__' AS a SETTINGS output_format_tsv_crlf_end_of_line = 1");
     assert_eq!(shown(&rs, 0, 0).as_deref(), Some("__exception__"), "a value, not a failure");
+}
+
+#[test]
+fn a_login_that_may_set_nothing_still_sees_a_failure_as_one() {
+    let e = env();
+    let Some(admin) = open(&e, profile(""), &password()) else { return };
+    let a = admin.session(None);
+    ok(&e, &a, "DROP USER IF EXISTS dataman_ro_json");
+    ok(&e, &a, "CREATE USER dataman_ro_json IDENTIFIED WITH plaintext_password BY 'pw' SETTINGS readonly = 1");
+    ok(&e, &a, "GRANT SELECT ON *.* TO dataman_ro_json");
+    let c = open(&e, ConnectionProfile { user: "dataman_ro_json".into(), ..profile("") }, "pw").expect("connects");
+    let s = c.session(None);
+    for format in ["JSONEachRow", "JSON"] {
+        let rs = run(&e, &s, &format!("SELECT number, throwIf(number = 2000000, 'boom') AS t FROM numbers(3000000) FORMAT {format}"));
+        assert_eq!(rs.phase(), Phase::Failed, "{format}");
+        assert!(rs.status().error.unwrap().message.contains("boom"), "{format}");
+    }
+    assert_eq!(ok(&e, &s, "SELECT 1 AS a FORMAT JSONEachRow").rows(), 1);
+    ok(&e, &a, "DROP USER dataman_ro_json");
+}
+
+#[test]
+fn a_redirect_is_not_followed() {
+    use std::io::{Read, Write};
+    let e = env();
+    let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    let there = target.local_addr().unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let answering = std::thread::spawn(move || {
+        let (mut c, _) = server.accept().unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = c.read(&mut buf);
+        write!(c, "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{there}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let p = ConnectionProfile { host: "127.0.0.1".into(), port, ..profile("") };
+    let err = e.core.block_on(e.core.connect(p, Some("secret".into()))).err().expect("no ClickHouse there");
+    answering.join().unwrap();
+    assert!(format!("{err:#}").contains("HTTP 307"), "{err:#}");
+    assert!(matches!(target.accept(), Err(x) if x.kind() == std::io::ErrorKind::WouldBlock), "the statement and the password went on");
+}
+
+#[test]
+fn bool_keeps_the_words_the_server_was_told_to_use() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let rs = ok(&e, &s, "SELECT (number % 2 = 0)::Bool AS b FROM numbers(2) ORDER BY number SETTINGS bool_true_representation = 'yes', bool_false_representation = 'no'");
+    assert_eq!((shown(&rs, 0, 0).as_deref(), shown(&rs, 1, 0).as_deref()), (Some("yes"), Some("no")));
+    let rs = ok(&e, &s, "SELECT (number % 2 = 0)::Bool AS b FROM numbers(2) ORDER BY number SETTINGS bool_true_representation = '1', bool_false_representation = 'no'");
+    assert_eq!((shown(&rs, 0, 0).as_deref(), shown(&rs, 1, 0).as_deref()), (Some("1"), Some("no")), "not `true`");
+}
+
+#[test]
+fn a_value_shown_as_hex_filters_by_its_bytes() {
+    let e = env();
+    let Some(c) = seeded(&e, "dataman_ch_hexf") else { return };
+    let s = c.session(None);
+    ok(&e, &s, "CREATE TABLE t (v String) ENGINE = MergeTree ORDER BY v");
+    ok(&e, &s, r"INSERT INTO t SELECT unhex('ff00') UNION ALL SELECT '\\xff00' UNION ALL SELECT 'other'");
+    let f = |op| dataman_core::dataview::Filter::new("v", Kind::Text, op, r"\xff00").sql_in(CH);
+    let count = |w: String| shown(&ok(&e, &s, &format!("SELECT count() FROM t WHERE {w}")), 0, 0);
+    assert_eq!(count(f(dataman_core::dataview::Op::Eq)).as_deref(), Some("2"), "the bytes, and the text that reads the same");
+    assert_eq!(count(f(dataman_core::dataview::Op::Ne)).as_deref(), Some("1"));
+    ok(&e, &s, "DROP DATABASE dataman_ch_hexf");
+}
+
+#[test]
+fn final_and_sample_run_inside_a_narrowed_table() {
+    let e = env();
+    let Some(c) = seeded(&e, "dataman_ch_final") else { return };
+    let s = c.session(None);
+    ok(&e, &s, "CREATE TABLE users (id UInt64, name String, secret String) ENGINE = ReplacingMergeTree ORDER BY id SAMPLE BY id");
+    ok(&e, &s, "INSERT INTO users VALUES (1, 'a', 's')");
+    ok(&e, &s, "INSERT INTO users VALUES (1, 'b', 's')");
+    // What `agent_sql::check` makes of `SELECT name FROM users FINAL SAMPLE 1`.
+    let rs = ok(&e, &s, "SELECT name FROM (SELECT id, name FROM users FINAL SAMPLE 1) users");
+    assert_eq!((rs.rows(), shown(&rs, 0, 0).as_deref()), (1, Some("b")));
+    ok(&e, &s, "DROP DATABASE dataman_ch_final");
 }
 
 #[test]
@@ -581,17 +662,6 @@ fn own(e: &Env, name: &str) -> Option<(Arc<Connection>, Arc<Session>)> {
     Some((c, s))
 }
 
-/// Read nothing but their arguments. Every other function the server lists has to be in
-/// `CLICKHOUSE_FILE`: a server upgrade that adds one fails here before it reaches an agent.
-const PLAIN_TABLE_FUNCTIONS: &[&str] = &["format", "fuzzJSON", "fuzzQuery", "generateRandom", "generateSeries", "generate_series", "null", "numbers", "numbers_mt", "values", "zeros", "zeros_mt"];
-
-/// Hold their data on this server's own disks. `Replicated…` coordinate through its own Keeper.
-const PLAIN_TABLE_ENGINES: &[&str] = &[
-    "AggregatingMergeTree", "CoalescingMergeTree", "CollapsingMergeTree", "EmbeddedRocksDB", "FuzzJSON", "FuzzQuery", "GenerateRandom", "GraphiteMergeTree", "Join", "LiveView", "Log", "MaterializedView",
-    "Memory", "MergeTree", "Null", "ReplacingMergeTree", "Set", "StripeLog", "SummingMergeTree", "TimeSeries", "TinyLog", "VersionedCollapsingMergeTree", "View", "WindowView",
-];
-
-const PLAIN_DATABASE_ENGINES: &[&str] = &["Atomic", "Lazy", "Memory", "Ordinary", "Replicated"];
 
 #[test]
 fn every_table_function_the_server_lists_is_refused_or_known_to_read_nothing() {
@@ -600,9 +670,9 @@ fn every_table_function_the_server_lists_is_refused_or_known_to_read_nothing() {
     let s = c.session(None);
     let listed = column(&e, &s, "SELECT name FROM system.table_functions ORDER BY name");
     assert!(listed.iter().any(|n| n == "file"), "{listed:?}");
-    let unknown: Vec<&String> = listed.iter().filter(|n| !PLAIN_TABLE_FUNCTIONS.contains(&n.as_str()) && guard::file_access(&format!("SELECT * FROM {n}('x')"), CH).is_none()).collect();
+    let unknown: Vec<&String> = listed.iter().filter(|n| !functions::CLICKHOUSE_PLAIN_TABLE_FUNCTIONS.contains(&n.as_str()) && guard::file_access(&format!("SELECT * FROM {n}('x')"), CH).is_none()).collect();
     assert!(unknown.is_empty(), "the server has table functions nothing refuses: {unknown:?}. Add them to CLICKHOUSE_FILE, or to the allowlist if they read only their arguments");
-    for n in PLAIN_TABLE_FUNCTIONS {
+    for n in functions::CLICKHOUSE_PLAIN_TABLE_FUNCTIONS {
         assert!(listed.iter().any(|l| l == n), "{n} is gone from the server: drop it from the allowlist");
         assert_eq!(guard::file_access(&format!("SELECT * FROM {n}('x')"), CH), None, "{n}");
     }
@@ -616,12 +686,50 @@ fn every_engine_the_server_lists_is_refused_or_keeps_to_its_own_disks() {
     let tables = column(&e, &s, "SELECT name FROM system.table_engines ORDER BY name");
     let unknown: Vec<&String> = tables
         .iter()
-        .filter(|n| !PLAIN_TABLE_ENGINES.contains(&n.as_str()) && !n.starts_with("Replicated") && guard::file_access(&format!("CREATE TABLE t (a Int8) ENGINE = {n}('x')"), CH).is_none())
+        .filter(|n| !functions::CLICKHOUSE_PLAIN_TABLE_ENGINES.contains(&n.as_str()) && !n.starts_with("Replicated") && guard::file_access(&format!("CREATE TABLE t (a Int8) ENGINE = {n}('x')"), CH).is_none())
         .collect();
     assert!(unknown.is_empty(), "table engines nothing refuses: {unknown:?}");
     let databases = column(&e, &s, "SELECT name FROM system.database_engines ORDER BY name");
-    let unknown: Vec<&String> = databases.iter().filter(|n| !PLAIN_DATABASE_ENGINES.contains(&n.as_str()) && guard::file_access(&format!("CREATE DATABASE d ENGINE = {n}('x')"), CH).is_none()).collect();
+    let unknown: Vec<&String> = databases.iter().filter(|n| !functions::CLICKHOUSE_PLAIN_DATABASE_ENGINES.contains(&n.as_str()) && guard::file_access(&format!("CREATE DATABASE d ENGINE = {n}('x')"), CH).is_none()).collect();
     assert!(unknown.is_empty(), "database engines nothing refuses: {unknown:?}");
+    // What no list names yet is refused where it stands, and a word that is no table stays free.
+    for sql in [
+        "SELECT * FROM aNewFunction('x')",
+        "SELECT 1 FROM t, aNewFunction('x')",
+        "SELECT 1 FROM t JOIN aNewFunction('x') ON 1",
+        "SELECT 1 FROM t JOIN u ON a = b, aNewFunction('x')",
+        "SELECT * FROM (aNewFunction('x'))",
+        "SELECT * FROM (SELECT 1 FROM aNewFunction('x'))",
+        "SELECT * FROM (SELECT 1) AS a, aNewFunction('x')",
+        "SELECT (SELECT 1 FROM aNewFunction('x'))",
+        "FROM aNewFunction('x') SELECT 1",
+        "SELECT * FROM (FROM aNewFunction('x') SELECT 1)",
+        "SELECT 1 WHERE a IN (SELECT 1 FROM aNewFunction('x'))",
+        "DESCRIBE TABLE aNewFunction('x')",
+        "DESC aNewFunction('x')",
+        "INSERT INTO FUNCTION aNewFunction('x') SELECT 1",
+        "CREATE TABLE t AS aNewFunction('x')",
+        "CREATE TABLE t (a Int8) ENGINE = ANewEngine('x')",
+        "CREATE DATABASE d ENGINE = ANewEngine",
+        "CREATE DICTIONARY d (a Int8) PRIMARY KEY a SOURCE(ANEWSOURCE(HOST 'h')) LAYOUT(FLAT()) LIFETIME(0)",
+    ] {
+        assert!(guard::file_access(sql, CH).is_some(), "{sql}");
+    }
+    for sql in [
+        "SELECT extract(DAY FROM toDate(x)) FROM t",
+        "SELECT trim(BOTH ' ' FROM upper(s)) FROM t",
+        "SELECT 1 FROM t ARRAY JOIN arrayMap(x -> x, a) AS b",
+        "SELECT 1 FROM t JOIN u ON lower(a) = lower(b)",
+        "SELECT 1 FROM t JOIN u ON (lower(a), 1) = (lower(b), 1)",
+        "SELECT f(a, g(b)) FROM t WHERE h(a) GROUP BY i(a) ORDER BY j(a)",
+        "SELECT 1 FROM numbers(3), zeros(1)",
+        "SELECT name FROM system.tables WHERE engine = other",
+        "INSERT INTO t (a) VALUES (1)",
+        "CREATE TABLE t (a Int8) ENGINE = ReplicatedMergeTree('/x', 'r') ORDER BY a",
+        "CREATE DICTIONARY d (a Int8) PRIMARY KEY a SOURCE(NULL()) LAYOUT(FLAT()) LIFETIME(0)",
+    ] {
+        assert_eq!(guard::file_access(sql, CH), None, "{sql}");
+    }
     // `Filesystem` serves the server's own files, and takes no argument.
     assert!(guard::file_access("CREATE DATABASE d ENGINE = Filesystem", CH).is_some());
     assert!(guard::file_access("CREATE DATABASE d ENGINE=Filesystem", CH).is_some());

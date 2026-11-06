@@ -218,7 +218,7 @@ fn bytes_literal(d: Dialect, hex: &str) -> Option<String> {
     }
 }
 
-fn hex_bytes(s: &str) -> Option<&str> {
+pub(crate) fn hex_bytes(s: &str) -> Option<&str> {
     let h = s.strip_prefix("\\x")?;
     (h.len() % 2 == 0 && h.bytes().all(|c| c.is_ascii_hexdigit())).then_some(h)
 }

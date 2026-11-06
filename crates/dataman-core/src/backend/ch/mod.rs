@@ -120,7 +120,15 @@ pub(crate) struct Client {
 pub(crate) type Canceller = Arc<Client>;
 
 fn builder(mode: SslMode) -> reqwest::ClientBuilder {
-    let b = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).tcp_keepalive(Duration::from_secs(60)).tcp_nodelay(true).user_agent("Dataman");
+    // A proxy in the environment would take the password, and leave the SSH tunnel; a redirect is
+    // no answer a database gives, and would carry the statement somewhere else.
+    let b = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_keepalive(Duration::from_secs(60))
+        .tcp_nodelay(true)
+        .user_agent("Dataman")
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none());
     if matches!(mode, SslMode::Prefer | SslMode::Require) { b.danger_accept_invalid_certs(true) } else { b }
 }
 
@@ -228,8 +236,13 @@ impl Client {
             if resp.status().is_success() {
                 return Ok(resp);
             }
+            let status = resp.status().as_u16();
             let code = header(resp.headers(), "x-clickhouse-exception-code").map(str::to_string);
             let body = resp.bytes().await.map_err(|e| transport(&self.base, &e))?;
+            // Whatever answers this is not ClickHouse saying why (a proxy, another service).
+            if code.is_none() && !body.windows(6).any(|w| w == b"Code: ") {
+                return Err(ChError::Server { code: format!("HTTP {status}"), message: format!("the server answered HTTP {status}, not as ClickHouse does"), position: None });
+            }
             let err = server_error(code.as_deref(), &body);
             match &err {
                 ChError::Server { code, .. } if code == CODE_SESSION_LOCKED && tries < 20 => {
@@ -428,6 +441,10 @@ fn spawn_reader(mut resp: reqwest::Response) -> mpsc::UnboundedReceiver<Piece> {
     rx
 }
 
+fn contains(text: &[u8], what: &[u8]) -> bool {
+    text.windows(what.len()).any(|w| w == what)
+}
+
 fn exception_at(buf: &[u8]) -> Option<usize> {
     let mark = buf.windows(EXCEPTION_MARK.len()).position(|w| w == EXCEPTION_MARK)?;
     let after = buf.get(mark + EXCEPTION_MARK.len()..)?;
@@ -529,6 +546,10 @@ impl ChRows {
                 // In a format of the statement's own it may follow what was written on that line.
                 let text = &self.buf[line.clone()];
                 if cr && !self.crlf && (text.starts_with(EXCEPTION_MARK) || (self.raw && text[..text.len() - 1].ends_with(EXCEPTION_MARK))) {
+                    return self.server_failure().await;
+                }
+                // A login that may set nothing gets a JSON format's own ending: the error as a field.
+                if self.raw && self.client.locked && contains(text, b"\"exception\"") && contains(text, b"DB::Exception") {
                     return self.server_failure().await;
                 }
                 self.pos = line.end + 1;
@@ -696,8 +717,9 @@ fn push_cell(b: &mut ChunkBuilder, i: usize, kind: Kind, cell: &[u8], scratch: &
     }
     match kind {
         Kind::Bool => match cell {
-            b"true" | b"1" => b.push_bool(i, true),
-            b"false" | b"0" => b.push_bool(i, false),
+            // Anything else is `bool_true_representation`'s, kept as the server wrote it.
+            b"true" => b.push_bool(i, true),
+            b"false" => b.push_bool(i, false),
             _ => return false,
         },
         Kind::Int => match cell_str(cell).and_then(|s| s.parse().ok()) {

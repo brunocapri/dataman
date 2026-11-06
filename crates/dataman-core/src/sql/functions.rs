@@ -45,6 +45,30 @@ const fn or(a: Does, b: Does) -> Does {
     Does(a.0 | b.0)
 }
 
+/// ClickHouse's table functions that read only their arguments. A table function is refused for
+/// agents unless it is here: a server's new one stays closed until someone reads what it does.
+pub const CLICKHOUSE_PLAIN_TABLE_FUNCTIONS: &[&str] = &["format", "fuzzJSON", "fuzzQuery", "generateRandom", "generateSeries", "generate_series", "null", "numbers", "numbers_mt", "values", "zeros", "zeros_mt"];
+
+/// Table engines that keep to the server's own disks, and the same rule. `Replicated…` too.
+pub const CLICKHOUSE_PLAIN_TABLE_ENGINES: &[&str] = &[
+    "AggregatingMergeTree", "CoalescingMergeTree", "CollapsingMergeTree", "EmbeddedRocksDB", "FuzzJSON", "FuzzQuery", "GenerateRandom", "GraphiteMergeTree", "Join", "LiveView", "Log", "MaterializedView",
+    "Memory", "MergeTree", "Null", "ReplacingMergeTree", "Set", "StripeLog", "SummingMergeTree", "TimeSeries", "TinyLog", "VersionedCollapsingMergeTree", "View", "WindowView",
+];
+
+pub const CLICKHOUSE_PLAIN_DATABASE_ENGINES: &[&str] = &["Atomic", "Lazy", "Memory", "Ordinary", "Replicated"];
+
+fn listed(list: &[&str], name: &str) -> bool {
+    list.iter().any(|n| n.eq_ignore_ascii_case(name))
+}
+
+pub fn clickhouse_plain_table_function(name: &str) -> bool {
+    listed(CLICKHOUSE_PLAIN_TABLE_FUNCTIONS, name)
+}
+
+pub fn clickhouse_plain_engine(name: &str) -> bool {
+    listed(CLICKHOUSE_PLAIN_TABLE_ENGINES, name) || listed(CLICKHOUSE_PLAIN_DATABASE_ENGINES, name) || name.to_ascii_lowercase().starts_with("replicated")
+}
+
 macro_rules! table {
     ($(($name:literal, $first:ident $(| $more:ident)*)),* $(,)?) => {
         /// Lowercase names.

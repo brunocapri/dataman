@@ -273,3 +273,25 @@ fn clickhouse_through_the_tunnel() {
     let s = c.session(None);
     assert_eq!(ok(&e, &s, "SELECT currentDatabase()"), "system");
 }
+
+/// A certificate someone vouches for is taken under verify-full. `DATAMAN_TLS_CA` is the compose
+/// service's own: `docker cp <container>:/etc/clickhouse-server/ca.crt ca.crt`.
+#[test]
+fn clickhouse_verify_full_takes_a_certificate_it_trusts() {
+    if !setup().ca || answers("127.0.0.1:18443").is_none() {
+        return;
+    }
+    let prof = ConnectionProfile {
+        engine: dataman_core::config::Engine::ClickHouse,
+        host: "localhost".into(),
+        port: 18443,
+        user: "default".into(),
+        database: String::new(),
+        sslmode: SslMode::VerifyFull,
+        ..ConnectionProfile::new("clickhouse-verify")
+    };
+    let e = env();
+    let c = connect(&e, &prof).unwrap();
+    assert!(c.tls_in_use());
+    assert_eq!(ok(&e, &c.session(None), "SELECT 1"), "1");
+}

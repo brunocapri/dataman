@@ -103,6 +103,35 @@ const CLICKHOUSE_IN_FUNCTIONS: &[&str] = &[
     "GLOBALINIGNORESET", "GLOBALNOTINIGNORESET", "GLOBALNULLINIGNORESET", "GLOBALNOTNULLINIGNORESET",
 ];
 
+/// `FINAL`, `SAMPLE 1/10 OFFSET 1/2` or both, after a table that ends at `end` and its alias.
+fn clickhouse_table_modifiers(sql: &str, toks: &[Token], end: usize) -> Option<std::ops::Range<usize>> {
+    let is = |i: usize, w: &str| toks.get(i).and_then(|t| word(sql, t)).is_some_and(|x| x == w);
+    let mut i = toks.iter().position(|t| t.start >= end)?;
+    if is(i, "AS") {
+        i += 1;
+    }
+    if !is(i, "FINAL") && !is(i, "SAMPLE") {
+        i += 1;
+    }
+    let first = i;
+    let fraction = |mut k: usize| {
+        while toks.get(k).is_some_and(|t| t.kind == TokenKind::Number || t.text(sql) == "/") {
+            k += 1;
+        }
+        k
+    };
+    if is(i, "FINAL") {
+        i += 1;
+    }
+    if is(i, "SAMPLE") {
+        i = fraction(i + 1);
+        if is(i, "OFFSET") {
+            i = fraction(i + 1);
+        }
+    }
+    (i > first).then(|| toks[first].start..toks[i - 1].end)
+}
+
 /// ClickHouse reads a table on the right of `IN` with no FROM for the analysis to follow: `x IN t`,
 /// `x IN (db.t)`, `in(x, t)`, `globalNotIn(x, t)`. The last thing in the parentheses is what a call
 /// would take as its set; a list that ends in a bare name means nothing else to the server.
@@ -489,7 +518,13 @@ fn statement(
             if cols.is_empty() {
                 return Err(format!("no column of {} is visible to agents on {conn}", n.table.name));
             }
-            let mut text = format!("(SELECT {} FROM {})", cols.join(", "), d.qualified(Some(&n.table.schema), &n.table.name));
+            // `FINAL` and `SAMPLE` belong to a table, and a derived table takes neither: they go in.
+            let modifiers = if d == Dialect::ClickHouse { clickhouse_table_modifiers(sql, toks, src.name_range.end) } else { None };
+            let inside = modifiers.as_ref().map_or(String::new(), |r| format!(" {}", &sql[r.clone()]));
+            if let Some(r) = modifiers {
+                edits.push((r, String::new()));
+            }
+            let mut text = format!("(SELECT {} FROM {}{inside})", cols.join(", "), d.qualified(Some(&n.table.schema), &n.table.name));
             if src.alias.is_none() {
                 text.push(' ');
                 text.push_str(&d.quote_ident(&n.table.name));
@@ -991,6 +1026,20 @@ mod tests {
             assert!(check(sql, false, &cx).is_ok(), "{sql}: {:?}", check(sql, false, &cx));
         }
         assert!(check("INSERT INTO TABLE orders (id) VALUES (1)", true, &cx).is_ok());
+    }
+
+    #[test]
+    fn clickhouse_modifiers_go_inside_a_narrowed_table() {
+        let r = AgentRules { visible: Visible { mode: VisibleMode::Except, items: vec![VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }] }, ..Default::default() };
+        let routines = HashSet::new();
+        let cx = Context { rules: &r, connection: "ch", dialect: Dialect::ClickHouse, tables: &tables, routines: &routines, views: &[] };
+        for (sql, want) in [
+            ("SELECT id FROM users FINAL", "SELECT id FROM (SELECT id, name, email, created_at FROM public.users FINAL) users "),
+            ("SELECT u.id FROM users AS u FINAL SAMPLE 1/10 OFFSET 1/2 WHERE u.id = 1", "SELECT u.id FROM (SELECT id, name, email, created_at FROM public.users FINAL SAMPLE 1/10 OFFSET 1/2) AS u  WHERE u.id = 1"),
+            ("SELECT u.id FROM users u SAMPLE 0.1", "SELECT u.id FROM (SELECT id, name, email, created_at FROM public.users SAMPLE 0.1) u "),
+        ] {
+            assert_eq!(check(sql, false, &cx).unwrap().sql, want, "{sql}");
+        }
     }
 
     #[test]
