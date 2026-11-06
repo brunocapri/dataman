@@ -18,7 +18,9 @@ use crate::stamp::FileStamp;
 pub enum ThemePref {
     #[default]
     Dark,
+    Black,
     Light,
+    Solarized,
     System,
 }
 
@@ -26,7 +28,9 @@ impl ThemePref {
     pub fn label(self) -> &'static str {
         match self {
             ThemePref::Dark => "dark",
+            ThemePref::Black => "black",
             ThemePref::Light => "light",
+            ThemePref::Solarized => "solarized",
             ThemePref::System => "system",
         }
     }
@@ -462,6 +466,11 @@ mod tests {
         assert_eq!(s.get().translucency, Translucency::Off);
         s.update(|s| s.theme = ThemePref::System).unwrap();
         assert_eq!(SettingsStore::open(&dirs).get().theme, ThemePref::System);
+        for pref in [ThemePref::Black, ThemePref::Solarized] {
+            s.update(|s| s.theme = pref).unwrap();
+            assert!(std::fs::read_to_string(dirs.settings_file()).unwrap().contains(&format!("theme = \"{}\"", pref.label())));
+            assert_eq!(SettingsStore::open(&dirs).get().theme, pref);
+        }
         std::fs::write(dirs.settings_file(), "theme = \"light\"\nfuture = 3\n").unwrap();
         assert_eq!(SettingsStore::open(&dirs).get().theme, ThemePref::Light);
         std::fs::write(dirs.settings_file(), "theme = 12").unwrap();

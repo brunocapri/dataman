@@ -2757,22 +2757,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             let color = if e.hot { t.acc_t } else { t.tx3 };
             let _ = window.paint_svg(icon, SharedString::from(Icon::View.path()), None, gpui::TransformationMatrix::unit(), color, cx);
         }
-        if let Some(s) = sel
-            && focused
-            && click_pop.is_none()
-            && let Some(fc) = frame.cols.iter().find(|fc| fc.d == s.head.col)
-            && (!s.rows || s.anchor.row == s.head.row)
-        {
-            let y = HEADER_H + ry(s.head.row);
-            window.paint_quad(gpui::quad(
-                rect(geo.gutter + fc.x, y, fc.w - 1., ROW_H),
-                px(CELL_RADIUS),
-                gpui::transparent_black(),
-                px(1.5),
-                t.acc,
-                gpui::BorderStyle::Solid,
-            ));
-        }
     });
     window.with_content_mask(Some(gpui::ContentMask { bounds: body }), |window| {
         for rm in &frame.row_marks {
@@ -2788,6 +2772,25 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
         let y = HEADER_H + ry(rows) - 1.;
         window.with_content_mask(Some(rows_area.clone()), |window| {
             window.paint_quad(fill(rect(0., y, end.min(geo.gutter + geo.body_w), 1.), t.grid_line));
+        });
+    }
+    // After that line: on the last row it would cover the cursor's bottom edge.
+    if let Some(s) = sel
+        && focused
+        && click_pop.is_none()
+        && let Some(fc) = frame.cols.iter().find(|fc| fc.d == s.head.col)
+        && (!s.rows || s.anchor.row == s.head.row)
+    {
+        let y = HEADER_H + ry(s.head.row);
+        window.with_content_mask(Some(gpui::ContentMask { bounds: body }), |window| {
+            window.paint_quad(gpui::quad(
+                rect(geo.gutter + fc.x, y, fc.w - 1., ROW_H),
+                px(CELL_RADIUS),
+                gpui::transparent_black(),
+                px(1.5),
+                t.acc,
+                gpui::BorderStyle::Solid,
+            ));
         });
     }
     if let (Some(p), Some((_, _, b)), true) = (click_pop, pop_rect, focused) {
@@ -2848,11 +2851,11 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             if let Some(a) = &h.arrow {
                 let _ = a.paint(at(x0 + h.w - PAD - a.width.pt(), 0.), hl, TextAlign::Left, None, window, cx);
             }
-            window.paint_quad(fill(rect(x0 + h.w - 1., 0., 1., HEADER_H), t.line));
+            window.paint_quad(fill(rect(x0 + h.w - 1., 0., 1., HEADER_H), t.pane_line));
         }
     });
     window.paint_quad(fill(rect(0., HEADER_H - 1., full_w, 1.), t.line2));
-    window.paint_quad(fill(rect(geo.gutter - 1., 0., 1., bounds.size.height.pt()), t.line));
+    window.paint_quad(fill(rect(geo.gutter - 1., 0., 1., bounds.size.height.pt()), t.pane_line));
     let thumb = |b: Bounds<Pixels>| fill(b, t.line2);
     if geo.content_h > geo.body_h as f64 {
         window.paint_quad(thumb(rect(geo.gutter + geo.body_w + 2., HEADER_H + vthumb.0, 6., vthumb.1)));

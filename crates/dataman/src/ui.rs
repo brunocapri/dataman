@@ -482,6 +482,12 @@ pub fn menu_sep(t: &Theme) -> Div {
     div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(t.line)
 }
 
+/// On a tab's right edge, well under its height. Fainter than any line: it only groups the titles.
+pub fn tab_divider(t: &Theme) -> Div {
+    const H: f32 = 10.;
+    div().absolute().right_0().top(px((crate::theme::metrics::TAB_H - H) / 2.)).w(px(1.)).h(px(H)).bg(crate::theme::mix(t.pane_line, t.bg, 0.4))
+}
+
 /// Every tooltip in the app goes through here: it stays while the pointer is on it, so it can be
 /// read through, and goes once the pointer has left the control and the tooltip both (after a
 /// short grace to cross from one to the other). Right after one was shown, the next shows at once.

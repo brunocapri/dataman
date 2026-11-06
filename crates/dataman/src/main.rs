@@ -344,9 +344,11 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Focus Grid", FocusGrid),
             MenuItem::action("Next Region", CycleFocus),
             MenuItem::separator(),
-            MenuItem::action("Toggle Theme (dark → light → system)", ToggleTheme),
+            MenuItem::action("Toggle Theme", ToggleTheme),
             MenuItem::action("Dark Theme", ThemeDark),
+            MenuItem::action("Black Theme", ThemeBlack),
             MenuItem::action("Light Theme", ThemeLight),
+            MenuItem::action("Solarized Theme", ThemeSolarized),
             MenuItem::action("Theme Follows System", ThemeSystem),
             MenuItem::separator(),
             MenuItem::submenu(Menu::new("Transparency").items([
@@ -495,6 +497,8 @@ fn main() {
         let pref = match std::env::var("DATAMAN_THEME").ok().as_deref() {
             Some("light") => ThemePref::Light,
             Some("dark") => ThemePref::Dark,
+            Some("black") => ThemePref::Black,
+            Some("solarized") => ThemePref::Solarized,
             Some("system") => ThemePref::System,
             _ => core.settings.get().theme,
         };

@@ -71,7 +71,9 @@ actions!(
         ReviewProject,
         ToggleTheme,
         ThemeDark,
+        ThemeBlack,
         ThemeLight,
+        ThemeSolarized,
         ThemeSystem,
         TranslucencyOn,
         TranslucencyOff,
@@ -2815,7 +2817,7 @@ impl Render for Workspace {
             // The work column's fill, painted here and only here: every region inside is transparent,
             // so no overlap darkens.
             .bg(t.panel)
-            .when(left_shown, |d| d.border_l_1().border_color(t.line))
+            .when(left_shown, |d| d.border_l_1().border_color(t.pane_line))
             .overflow_hidden()
             .child(div().h(px(metrics::TITLE_H)).flex_none())
             .child(
@@ -2824,7 +2826,7 @@ impl Render for Workspace {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .when(!production, |d| d.border_t_1().border_color(t.line))
+                    .when(!production, |d| d.border_t_1().border_color(t.pane_line))
                     .when(production, |d| d.border_t_2().border_color(t.err))
                     .child(div().flex_1().min_w_0().h_full().flex().child(surface)),
             );
@@ -3020,7 +3022,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &crate::row_actions::CopyConnectionString, _, cx| w.copy_connection_string(cx)))
             .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::set_pref(theme::next_pref(theme::pref(cx)), cx)))
             .on_action(cx.listener(|_, _: &ThemeDark, _, cx| theme::set_pref(dataman_core::ThemePref::Dark, cx)))
+            .on_action(cx.listener(|_, _: &ThemeBlack, _, cx| theme::set_pref(dataman_core::ThemePref::Black, cx)))
             .on_action(cx.listener(|_, _: &ThemeLight, _, cx| theme::set_pref(dataman_core::ThemePref::Light, cx)))
+            .on_action(cx.listener(|_, _: &ThemeSolarized, _, cx| theme::set_pref(dataman_core::ThemePref::Solarized, cx)))
             .on_action(cx.listener(|_, _: &ThemeSystem, _, cx| theme::set_pref(dataman_core::ThemePref::System, cx)))
             .on_action(cx.listener(|_, _: &TranslucencyOn, w, cx| theme::set_translucency(Translucency::On, w, cx)))
             .on_action(cx.listener(|_, _: &TranslucencyOff, w, cx| theme::set_translucency(Translucency::Off, w, cx)))
