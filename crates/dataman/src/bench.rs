@@ -15,6 +15,7 @@ pub enum Mode {
     Scroll,
     Tree,
     Typing,
+    Frames,
     Demo,
 }
 
@@ -25,6 +26,7 @@ impl Mode {
             "--bench-scroll" => Some(Mode::Scroll),
             "--bench-tree" => Some(Mode::Tree),
             "--bench-typing" => Some(Mode::Typing),
+            "--bench-frames" => Some(Mode::Frames),
             "--demo" => Some(Mode::Demo),
             _ => None,
         })
@@ -116,6 +118,19 @@ fn every_frame(window: &mut Window, step: impl FnMut(&mut Window, &mut App) -> b
     go(step, window);
 }
 
+/// Like `every_frame`, without redrawing the window: what the frame draws is up to `step`.
+fn each_frame(window: &mut Window, step: impl FnMut(&mut Window, &mut App) -> bool + 'static) {
+    let step = Rc::new(RefCell::new(step));
+    fn go(step: Rc<RefCell<dyn FnMut(&mut Window, &mut App) -> bool>>, window: &mut Window) {
+        window.on_next_frame(move |window, cx| {
+            if (step.borrow_mut())(window, cx) {
+                go(step, window);
+            }
+        });
+    }
+    go(step, window);
+}
+
 fn when(window: &mut Window, timeout: Duration, mut ready: impl FnMut(&mut App) -> bool + 'static, then: impl FnOnce(&mut Window, &mut App) + 'static) {
     let start = Instant::now();
     let mut then = Some(then);
@@ -181,6 +196,7 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
         Mode::Scroll => scroll(ws, window, cx),
         Mode::Tree => tree(ws, window, cx),
         Mode::Typing => typing(ws, window, cx),
+        Mode::Frames => frames(ws, window, cx),
         Mode::Demo => demo(ws, window, cx),
     }
 }
@@ -1257,6 +1273,108 @@ fn tree(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             });
         },
     );
+}
+
+/// The animations a user sees, each one's way in and out: what `frames` times.
+const ANIMATIONS: &[(&str, &[fn() -> Box<dyn gpui::Action>])] = {
+    use crate::app::{CloseTab, CommandPalette, NewTab, ToggleExplorer, ToggleResultZoom, ToggleSidePanel};
+    &[
+        ("explorer panel", &[|| Box::new(ToggleExplorer), || Box::new(ToggleExplorer)]),
+        ("side panel", &[|| Box::new(ToggleSidePanel), || Box::new(ToggleSidePanel)]),
+        ("result zoom", &[|| Box::new(ToggleResultZoom), || Box::new(ToggleResultZoom)]),
+        ("tab open and close", &[|| Box::new(NewTab), || Box::new(CloseTab)]),
+        ("command palette", &[|| Box::new(CommandPalette), || Box::new(crate::app::Cancel)]),
+    ]
+};
+
+/// Frame pacing over the demo scene: time between frames and the UI thread's time per frame, at
+/// rest, with the whole window redrawn every frame (what each move of a window costs GPUI), and
+/// through each animation. Same scene on every platform, so the numbers compare.
+fn frames(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    const FRAMES: usize = 180;
+    const CYCLES: usize = 6;
+    const WATCH: Duration = Duration::from_millis(450);
+    if std::env::var_os("DATAMAN_BENCH_MAXIMIZED").is_some() {
+        window.zoom_window();
+    }
+    let (prof, pw) = bench_profile(None);
+    let id = prof.id.clone();
+    let db = prof.database.clone();
+    connect(&ws, prof, pw, cx);
+    let ws2 = ws.clone();
+    when(window, Duration::from_secs(30), move |cx| connected(&ws2, &id, cx), move |window, cx| {
+        let tab = ws.read(cx).active_tab().unwrap().clone();
+        // With nothing focused an action reaches only the window's root, not the workspace.
+        window.focus(&tab.read(cx).editor.focus_handle(cx), cx);
+        tab.update(cx, |t, cx| t.run(vec!["SELECT * FROM orders".into()], cx));
+        let tree = ws.read(cx).tree.clone();
+        let c = format!("c:{}", ws.read(cx).store.read(cx).core.config.connections()[0].id);
+        let s = format!("{c}/d:{db}/s:public");
+        tree.update(cx, |t, cx| {
+            t.expand_id(&s, cx);
+            t.expand_id(&format!("{s}/tables"), cx);
+        });
+        let settled = Instant::now();
+        let mut phase = 0;
+        let mut seen = 0;
+        let mut step = 0;
+        let mut step_at = Instant::now();
+        let mut last = None::<Instant>;
+        let gaps: Rc<RefCell<Vec<Duration>>> = Rc::default();
+        let busy: Rc<RefCell<Vec<Duration>>> = Rc::default();
+        each_frame(window, move |window, cx| {
+            // The first seconds load the scene: nothing is timed.
+            if settled.elapsed() < Duration::from_secs(3) {
+                return true;
+            }
+            let now = Instant::now();
+            if let Some(l) = last {
+                gaps.borrow_mut().push(now - l);
+            }
+            last = Some(now);
+            // The UI thread's next free moment: this frame's draw and present are over by then.
+            let busy2 = busy.clone();
+            cx.foreground_executor().spawn(async move { busy2.borrow_mut().push(now.elapsed()) }).detach();
+            seen += 1;
+            let done = match phase {
+                0 => seen >= FRAMES,
+                1 => {
+                    window.refresh();
+                    seen >= FRAMES
+                }
+                n => {
+                    let (_, ways) = ANIMATIONS[n - 2];
+                    if step == 0 || now - step_at >= WATCH {
+                        step_at = now;
+                        step += 1;
+                        if step <= CYCLES * ways.len() {
+                            window.dispatch_action(ways[(step - 1) % ways.len()](), cx);
+                        }
+                    }
+                    step > CYCLES * ways.len()
+                }
+            };
+            if !done {
+                return true;
+            }
+            let name = match phase {
+                0 => "at rest",
+                1 => "full redraw",
+                n => ANIMATIONS[n - 2].0,
+            };
+            println!("{}", Stats(gaps.take()).line(&format!("{name}: between frames")));
+            println!("{}", Stats(busy.take()).line(&format!("{name}: UI thread per frame")));
+            phase += 1;
+            seen = 0;
+            step = 0;
+            last = None;
+            if phase == 2 + ANIMATIONS.len() {
+                cx.quit();
+                return false;
+            }
+            true
+        });
+    });
 }
 
 fn typing(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {

@@ -615,6 +615,8 @@ fn main() {
                 cx.activate(true);
             })
             .expect("window update");
+        #[cfg(windows)]
+        cx.update_window(window.into(), |_, window, _| csd::quiet_moves(window)).expect("window update");
         #[cfg(feature = "checks")]
         if let Some(mode) = bench {
             let ws = window.entity(cx).expect("workspace");
