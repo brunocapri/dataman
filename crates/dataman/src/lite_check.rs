@@ -2,10 +2,10 @@
 //! would hand it over, the sheet fills itself in, then the explorer, the table's grid, an edit
 //! saved, a query and its plan in the editor, and the disconnect.
 
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::{ConnectionProfile, Engine};
 use dataman_core::edit::CellValue;
 use dataman_core::result::Phase;
+use gpui::{AsyncWindowContext, Entity};
 
 use crate::app::Workspace;
 use crate::check::{Report, cell, connected, core, draw, pause, result, run_keys, sql1, state, until};
@@ -21,7 +21,8 @@ pub struct Case {
     explain: &'static str,
 }
 
-pub const SQLITE: Case = Case { engine: Engine::Sqlite, seed: include_str!("../../../seeds/sqlite.sql"), ext: "sqlite", db: "main", explain: "EXPLAIN QUERY PLAN SELECT" };
+pub const SQLITE: Case =
+    Case { engine: Engine::Sqlite, seed: include_str!("../../../seeds/sqlite.sql"), ext: "sqlite", db: "main", explain: "EXPLAIN QUERY PLAN SELECT" };
 pub const DUCKDB: Case = Case { engine: Engine::DuckDb, seed: include_str!("../../../seeds/duckdb.sql"), ext: "duckdb", db: "shop", explain: "EXPLAIN SELECT" };
 
 fn dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Entity<crate::conn_dialog::ConnDialog>> {
@@ -89,7 +90,11 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     draw(cx);
     let probes: Vec<bool> = ["file-browse", "file-new"].iter().map(|id| crate::check::probed(id, cx).is_some()).collect();
     let server: Vec<bool> = ["tls-prefer", "field-CONNECTION STRING"].iter().map(|id| crate::check::probed(id, cx).is_some()).collect();
-    r.check("Browse… and New… are there; TLS and the connection string are not", probes == [true, true] && server == [false, false], format!("{probes:?} {server:?}"));
+    r.check(
+        "Browse… and New… are there; TLS and the connection string are not",
+        probes == [true, true] && server == [false, false],
+        format!("{probes:?} {server:?}"),
+    );
     let access = crate::check::probed("file-access", cx).is_some();
     r.check("the file access option is DuckDB's", access == (case.engine == Engine::DuckDb), access);
     let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_test(cx)));
@@ -154,7 +159,11 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     table_page(&t, cx).await;
     let (phase, rows, err) = result(&t, cx);
     let sql = cx.update(|_, cx| t.read(cx).editor.read(cx).text().to_string()).unwrap_or_default();
-    r.check("the table opens with its 3 rows", phase == Some(Phase::Done) && rows == 3 && sql.contains("FROM main.customer"), format!("{phase:?} {rows} {err} {sql}"));
+    r.check(
+        "the table opens with its 3 rows",
+        phase == Some(Phase::Done) && rows == 3 && sql.contains("FROM main.customer"),
+        format!("{phase:?} {rows} {err} {sql}"),
+    );
     let Some(name) = col(&t, "name", cx) else {
         r.check("the grid has the name column", false, "");
         return;

@@ -12,8 +12,8 @@ use fallible_iterator_03::FallibleIterator;
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use rusqlite::{Batch, OpenFlags, ffi};
 
-use super::embed::{self, Columns, Sink, Val, Worker};
 use super::Ran;
+use super::embed::{self, Columns, Sink, Val, Worker};
 use crate::config::ConnectionProfile;
 use crate::result::{ColumnInfo, ErrorInfo, NamedOrigin, ResultSet};
 use crate::server::ServerInfo;
@@ -90,7 +90,26 @@ pub(crate) fn authorize(agent: Agent, a: &rusqlite::hooks::AuthAction<'_>) -> ru
         A::Function { function_name } if crate::sql::functions::is(function_name, crate::sql::functions::SQLITE_FILE) => Deny,
         // Settings that weaken the file or the checks, or hold for the whole process (heap limits,
         // directories), are not an agent's at any level.
-        A::Pragma { pragma_name, pragma_value } if pragma_value.is_some() && ["writable_schema", "trusted_schema", "journal_mode", "locking_mode", "query_only", "cell_size_check", "mmap_size", "hard_heap_limit", "soft_heap_limit", "temp_store_directory", "data_store_directory"].iter().any(|p| p.eq_ignore_ascii_case(pragma_name)) => Deny,
+        A::Pragma { pragma_name, pragma_value }
+            if pragma_value.is_some()
+                && [
+                    "writable_schema",
+                    "trusted_schema",
+                    "journal_mode",
+                    "locking_mode",
+                    "query_only",
+                    "cell_size_check",
+                    "mmap_size",
+                    "hard_heap_limit",
+                    "soft_heap_limit",
+                    "temp_store_directory",
+                    "data_store_directory",
+                ]
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(pragma_name)) =>
+        {
+            Deny
+        }
         A::Pragma { pragma_name, pragma_value } if read && crate::guard::pragma_sets(pragma_name, pragma_value.is_some()) => Deny,
         A::Insert { .. }
         | A::Update { .. }

@@ -3,17 +3,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
-    Font, FontStyle, FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Subscription, Task, TextAlign, TextRun, Window, actions,
-    anchored, canvas, deferred, div, fill, font, point, prelude::*, size,
-};
 use crate::theme::{Pt, px};
 use dataman_core::find::{CellHits, Matcher, nearest_index, next_index, prev_index, search_rows};
 use dataman_core::fknav::{FkJump, ForeignKeys};
-use dataman_core::result::{CopyFormat, Phase, ResultSet, SortDir, Snapshot};
+use dataman_core::result::{CopyFormat, Phase, ResultSet, Snapshot, SortDir};
 use dataman_core::value::Kind;
+use gpui::{
+    AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, Font, FontStyle,
+    FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, SharedString,
+    StrikethroughStyle, Subscription, Task, TextAlign, TextRun, Window, actions, anchored, canvas, deferred, div, fill, font, point, prelude::*, size,
+};
 
 use crate::assets::Icon;
 use crate::find::{self, Count, FindBar, FindBarEvent};
@@ -271,11 +270,7 @@ impl Selection {
         self.anchor.row.min(self.head.row)..=self.anchor.row.max(self.head.row)
     }
     fn cols(&self, ncols: usize) -> std::ops::RangeInclusive<usize> {
-        if self.rows {
-            0..=ncols.saturating_sub(1)
-        } else {
-            self.anchor.col.min(self.head.col)..=self.anchor.col.max(self.head.col)
-        }
+        if self.rows { 0..=ncols.saturating_sub(1) } else { self.anchor.col.min(self.head.col)..=self.anchor.col.max(self.head.col) }
     }
     fn single(&self) -> bool {
         !self.rows && self.anchor == self.head
@@ -571,9 +566,12 @@ impl ResultGrid {
     }
 
     pub fn hide_column(&mut self, c: usize, cx: &mut Context<Self>) {
-        self.change_layout(|l| {
-            l.hide(c);
-        }, cx);
+        self.change_layout(
+            |l| {
+                l.hide(c);
+            },
+            cx,
+        );
     }
 
     pub fn show_all_columns(&mut self, cx: &mut Context<Self>) {
@@ -1163,10 +1161,7 @@ impl ResultGrid {
                 (true, Some(s)) => s.anchor,
                 _ => cell,
             };
-            let fresh = ev.click_count == 1
-                && !ev.modifiers.shift
-                && !ev.modifiers.secondary()
-                && !self.sel.is_some_and(|s| s.single() && s.head == cell);
+            let fresh = ev.click_count == 1 && !ev.modifiers.shift && !ev.modifiers.secondary() && !self.sel.is_some_and(|s| s.single() && s.head == cell);
             if fresh {
                 self.pop = FindPop::start(cell, PopStyle::Select, cx);
             } else if self.pop.as_ref().is_some_and(|p| p.style == PopStyle::Select) {
@@ -1591,9 +1586,7 @@ impl ResultGrid {
 
     #[cfg(feature = "checks")]
     pub fn demo_menu_run(&mut self, label: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let ix = self.menu.as_ref().and_then(|m| {
-            m.entries.iter().position(|e| matches!(e, MenuEntry::Item(it) if it.look().1.as_ref() == label))
-        });
+        let ix = self.menu.as_ref().and_then(|m| m.entries.iter().position(|e| matches!(e, MenuEntry::Item(it) if it.look().1.as_ref() == label)));
         if ix.is_some() {
             self.menu_run(ix, window, cx);
         }
@@ -1752,10 +1745,8 @@ impl ResultGrid {
             return;
         }
         let cur = self.sel.map(|s| s.head).unwrap_or(CellPos { row: 0, col: 0 });
-        let head = CellPos {
-            row: (cur.row as isize + dr).clamp(0, rows as isize - 1) as usize,
-            col: (cur.col as isize + dc).clamp(0, ncols as isize - 1) as usize,
-        };
+        let head =
+            CellPos { row: (cur.row as isize + dr).clamp(0, rows as isize - 1) as usize, col: (cur.col as isize + dc).clamp(0, ncols as isize - 1) as usize };
         let anchor = match (extend, self.sel) {
             (true, Some(s)) => s.anchor,
             _ => head,
@@ -1849,22 +1840,14 @@ impl ResultGrid {
         if rows == 0 || ncols == 0 {
             return;
         }
-        self.sel = Some(Selection {
-            anchor: CellPos { row: 0, col: 0 },
-            head: CellPos { row: rows - 1, col: ncols - 1 },
-            rows: true,
-        });
+        self.sel = Some(Selection { anchor: CellPos { row: 0, col: 0 }, head: CellPos { row: rows - 1, col: ncols - 1 }, rows: true });
         cx.notify();
     }
 
     #[cfg(feature = "checks")]
     pub fn select_cells(&mut self, rows: std::ops::RangeInclusive<usize>, col: usize, cx: &mut Context<Self>) {
         let col = self.dc(col).unwrap_or(col);
-        self.sel = Some(Selection {
-            anchor: CellPos { row: *rows.start(), col },
-            head: CellPos { row: *rows.end(), col },
-            rows: false,
-        });
+        self.sel = Some(Selection { anchor: CellPos { row: *rows.start(), col }, head: CellPos { row: *rows.end(), col }, rows: false });
         cx.notify();
     }
 
@@ -2162,14 +2145,8 @@ impl ResultGrid {
 
     fn push_find_count(&self, cx: &mut Context<Self>) {
         let Some(f) = &self.find else { return };
-        let c = Count {
-            cur: f.cur,
-            total: f.hits.len(),
-            capped: f.capped,
-            busy: f.task.is_some(),
-            invalid: f.invalid,
-            query: f.matcher.is_some() || f.invalid,
-        };
+        let c =
+            Count { cur: f.cur, total: f.hits.len(), capped: f.capped, busy: f.task.is_some(), invalid: f.invalid, query: f.matcher.is_some() || f.invalid };
         f.bar.update(cx, |b, cx| b.set_count(c, cx));
     }
 
@@ -2279,16 +2256,11 @@ impl ResultGrid {
         let pop = self.pop_frame(window);
         let message = match phase {
             Phase::Paused => Some((format!("┄┄ {} rows · paused", ui_count(data_rows)), t.info, t.info_s)),
-            Phase::Cancelled if data_rows > 0 => Some((
-                format!("⊘ cancelled{}", status.elapsed.map(|e| format!(" at {}", fmt_clock(e))).unwrap_or_default()),
-                t.warn,
-                t.warn_s,
-            )),
+            Phase::Cancelled if data_rows > 0 => {
+                Some((format!("⊘ cancelled{}", status.elapsed.map(|e| format!(" at {}", fmt_clock(e))).unwrap_or_default()), t.warn, t.warn_s))
+            }
             Phase::Failed if data_rows > 0 => Some((
-                format!(
-                    "✕ {}",
-                    status.error.as_ref().map(|e| format!("{} {}", e.code.clone().unwrap_or_default(), e.message)).unwrap_or_default()
-                ),
+                format!("✕ {}", status.error.as_ref().map(|e| format!("{} {}", e.code.clone().unwrap_or_default(), e.message)).unwrap_or_default()),
                 t.err,
                 gpui::transparent_black(),
             )),
@@ -2302,14 +2274,7 @@ impl ResultGrid {
         let h = bounds.size.height.pt();
         let content_w: f32 = (0..self.dcols()).map(|d| self.dwidth(d)).sum();
         let content_h = (rows + message.is_some() as usize) as f64 * ROW_H as f64;
-        self.geo = Geometry {
-            bounds,
-            gutter,
-            body_w: (w - gutter - BAR).max(0.),
-            body_h: (h - HEADER_H - BAR).max(0.),
-            content_w,
-            content_h,
-        };
+        self.geo = Geometry { bounds, gutter, body_w: (w - gutter - BAR).max(0.), body_h: (h - HEADER_H - BAR).max(0.), content_w, content_h };
         self.clamp_scroll();
         let (sx, sy) = self.scroll;
         let first = (sy / ROW_H as f64).floor() as usize;
@@ -2505,14 +2470,7 @@ impl ResultGrid {
                 let ty_room = ((room.saturating_sub(name.chars().count() + 1)) as f32 * 12. / 10.5) as usize;
                 let ty_name = if status.text_mode { format!("{}?", col.type_name) } else { col.type_name.clone() };
                 let ty = if ty_room >= 3 { fit(&ty_name, ty_room) } else { String::new() };
-                Header {
-                    x: cx_,
-                    w: wd,
-                    name: shape(name, &bold, size12, t.tx),
-                    ty: shape(ty, &normal, px(10.5), t.tx3),
-                    arrow,
-                    right: col.kind.is_numeric(),
-                }
+                Header { x: cx_, w: wd, name: shape(name, &bold, size12, t.tx), ty: shape(ty, &normal, px(10.5), t.tx3), arrow, right: col.kind.is_numeric() }
             })
             .collect();
         let message = message.map(|(a, color, bg)| (ry(rows), shape(a, &normal, px(11.5), color), bg));
@@ -2548,24 +2506,7 @@ impl ResultGrid {
             let hot = self.hover_eye && self.hover == Some(*c);
             eyes.push(Eye { bounds: b, hot, hit: window.insert_hitbox(hit, gpui::HitboxBehavior::Normal) });
         }
-        Some(Frame {
-            body_hit,
-            eyes,
-            resize_hits,
-            cells,
-            nulls,
-            found,
-            gutter_lines,
-            headers,
-            cols,
-            first,
-            last,
-            message,
-            hash,
-            row_marks,
-            cell_marks,
-            pop,
-        })
+        Some(Frame { body_hit, eyes, resize_hits, cells, nulls, found, gutter_lines, headers, cols, first, last, message, hash, row_marks, cell_marks, pop })
     }
 }
 
@@ -3096,18 +3037,13 @@ impl Render for ResultGrid {
                 root = root.child(center(ui::empty_state(&t, "[ NO RESULT ]", 22., None)));
             }
             Some((Phase::Done, _, 0)) if has_cols && self.virtual_rows() == 0 => {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(HEADER_H))
-                        .bottom_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(ui::empty_state(&t, "[ 0 ROWS ]", 28., None)),
-                );
+                root =
+                    root.child(div().absolute().left_0().right_0().top(px(HEADER_H)).bottom_0().flex().items_center().justify_center().child(ui::empty_state(
+                        &t,
+                        "[ 0 ROWS ]",
+                        28.,
+                        None,
+                    )));
             }
             Some((Phase::Done, s, _)) if !has_cols => {
                 let verb = rs.as_ref().map(|r| statement_verb(&r.sql)).unwrap_or_default();
@@ -3121,11 +3057,7 @@ impl Render for ResultGrid {
         }
         // The find bar, docked at the top right of the rows, beside the grid's key context (its
         // field must not get the grid's keys).
-        let bar = self
-            .find
-            .as_ref()
-            .filter(|f| f.open && has_cols)
-            .map(|f| div().absolute().top(px(HEADER_H + 6.)).right(px(BAR + 6.)).child(f.bar.clone()));
+        let bar = self.find.as_ref().filter(|f| f.open && has_cols).map(|f| div().absolute().top(px(HEADER_H + 6.)).right(px(BAR + 6.)).child(f.bar.clone()));
         div().size_full().relative().child(root).children(bar)
     }
 }

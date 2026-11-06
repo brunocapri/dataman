@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, point};
 use serde_json::{Value, json};
 
 use crate::app::Workspace;
@@ -43,12 +43,17 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
         }
     }
     check("the app's socket answers", up, String::new());
-    let (err, out) = call(&ipc, "create_connection", json!({"name": "first by agent", "host": "127.0.0.1", "port": 9, "user": "x", "password": "hidden-1"})).await;
+    let (err, out) =
+        call(&ipc, "create_connection", json!({"name": "first by agent", "host": "127.0.0.1", "port": 9, "user": "x", "password": "hidden-1"})).await;
     let made = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["id"].as_str().map(str::to_string)).unwrap_or_default();
     pause(cx, 150).await;
     draw(cx);
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
-    check("an agent's connection shows at once: the welcome screen gives way to it", !err && !first_run(cx) && row.as_deref() == Some("first by agent"), format!("{out} {row:?}"));
+    check(
+        "an agent's connection shows at once: the welcome screen gives way to it",
+        !err && !first_run(cx) && row.as_deref() == Some("first by agent"),
+        format!("{out} {row:?}"),
+    );
     let mut p = dataman_core::ConnectionProfile::new("written elsewhere");
     (p.host, p.port) = ("127.0.0.1".into(), 9);
     let other = p.id.clone();
@@ -68,7 +73,11 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     pause(cx, 150).await;
     draw(cx);
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
-    check("an agent's edit relabels the explorer at once", !err && row.as_deref() == Some("renamed by agent") && !out.contains("hidden-1"), format!("{out} {row:?}"));
+    check(
+        "an agent's edit relabels the explorer at once",
+        !err && row.as_deref() == Some("renamed by agent") && !out.contains("hidden-1"),
+        format!("{out} {row:?}"),
+    );
     p.name = "renamed elsewhere".into();
     let _ = dataman_core::ConfigStore::open(&core.dirs).and_then(|s| s.upsert(p));
     let mut row = None;
@@ -149,7 +158,16 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 
 fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }));
-    input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+    input(
+        cx,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: p,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+    );
     input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count: 1 }));
 }
 
@@ -257,14 +275,19 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let allowed = edit_profile(ws, id, |p| _ = p.mcp_allow(&[entry.as_str()]), cx).await;
     let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": update("r", 1)})).await;
     check("an allowed query runs in tier read, unasked", allowed && !err && out.contains("[\"UPDATE\",1]") && !sheet_open(cx), out);
-    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'r' WHERE id = 1 OR true")})).await;
+    let (err, out) =
+        call(ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'r' WHERE id = 1 OR true")})).await;
     check("… its shape only: one value for each ?, not more SQL", err && out.contains("reads only"), out);
     let ro = edit_profile(ws, id, |p| p.set_read_only_for(db, true), cx).await;
     let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": update("ro", 2)})).await;
     check("a read-only database still refuses it", ro && err && out.contains("read-only"), out);
     edit_profile(ws, id, |p| p.set_read_only_for(db, false), cx).await;
     let log = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default();
-    check("the audit says an allowed query let it through", log.contains(&format!("\"allowed_by\":{{\"by\":\"allowlist\",\"entries\":[\"{entry}\"]}}")), String::new());
+    check(
+        "the audit says an allowed query let it through",
+        log.contains(&format!("\"allowed_by\":{{\"by\":\"allowlist\",\"entries\":[\"{entry}\"]}}")),
+        String::new(),
+    );
 
     edit_profile(ws, id, |p| p.mcp = Some(dataman_core::McpAccess::Full), cx).await;
     let ddl = format!("ALTER TABLE {s}.t ADD COLUMN IF NOT EXISTS extra int");
@@ -297,7 +320,11 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
         cx,
     )
     .await;
-    check("the connection stayed connected through the edits", back && cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id).is_some()).unwrap_or(false), String::new());
+    check(
+        "the connection stayed connected through the edits",
+        back && cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id).is_some()).unwrap_or(false),
+        String::new(),
+    );
 
     let Some(mut p) = core.config.get(id) else { return false };
     p.env = dataman_core::Environment::Production;
@@ -331,9 +358,7 @@ pub(crate) async fn serve(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindow
     p.mcp = Some(dataman_core::McpAccess::Full);
     core.config.upsert(p).ok()?;
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
-    core.settings
-        .update(|s| s.mcp_enabled = true)
-        .ok()?;
+    core.settings.update(|s| s.mcp_enabled = true).ok()?;
     let _ = cx.update(|_, cx| crate::mcp::apply(&core, cx));
     let ipc = Arc::new(Ipc { dirs: core.dirs.clone() });
     for _ in 0..200 {
@@ -367,11 +392,19 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let conn = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(id).map(|p| p.name.clone())).ok().flatten().unwrap_or_default();
     let read_sql = "SELECT p.id, p.status, p.total\nFROM   orders p\nORDER  BY p.id\nLIMIT  12";
 
-    let (err, out) = call(&agent_ipc,"open_query", json!({"connection": conn, "database": db, "sql": read_sql, "max_rows": 5})).await;
+    let (err, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": read_sql, "max_rows": 5})).await;
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
-    check("open_query answers the agent with its bounded rows", !err && v["row_count"] == json!(5) && v["truncated"] == json!("rows") && v["in_tab"] == json!(true), out.clone());
+    check(
+        "open_query answers the agent with its bounded rows",
+        !err && v["row_count"] == json!(5) && v["truncated"] == json!("rows") && v["in_tab"] == json!(true),
+        out.clone(),
+    );
     let tabs = agent_tabs(ws, cx);
-    check("one agent tab, the one that was empty in front", tabs.len() == 1 && cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) == 1, format!("{}", tabs.len()));
+    check(
+        "one agent tab, the one that was empty in front",
+        tabs.len() == 1 && cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) == 1,
+        format!("{}", tabs.len()),
+    );
     let Some(agent) = tabs.first().cloned() else { return false };
     settled(&agent, cx).await;
     check("the agent tab holds the SQL", text(&agent, cx) == read_sql, text(&agent, cx));
@@ -383,16 +416,24 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("no transaction left open in the tab", !open_tx, String::new());
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).unwrap();
     let hist = core.history.load(id, 5).unwrap_or_default();
-    check("the history marks the agent's statement", hist.first().is_some_and(|h| h.sql == read_sql && h.source.as_deref() == Some("agent")), format!("{:?}", hist.first().map(|h| (&h.sql, &h.source))));
+    check(
+        "the history marks the agent's statement",
+        hist.first().is_some_and(|h| h.sql == read_sql && h.source.as_deref() == Some("agent")),
+        format!("{:?}", hist.first().map(|h| (&h.sql, &h.source))),
+    );
 
     if stage == "mcp-tab" {
         return true;
     }
 
-    let (err, _) = call(&agent_ipc,"open_query", json!({"connection": conn, "database": db, "sql": "SELECT count(*) FROM orders"})).await;
-    let (err2, _) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": "SELECT count(*) AS customers FROM customer"})).await;
+    let (err, _) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": "SELECT count(*) FROM orders"})).await;
+    let (err2, _) = call(&agent_ipc, "run_query", json!({"connection": conn, "database": db, "sql": "SELECT count(*) AS customers FROM customer"})).await;
     let n = agent_tabs(ws, cx).len();
-    check("open_query and run_query reuse the agent tab", !err && !err2 && n == 1 && text(&agent, cx).contains("customers"), format!("{n} tabs, {}", text(&agent, cx)));
+    check(
+        "open_query and run_query reuse the agent tab",
+        !err && !err2 && n == 1 && text(&agent, cx).contains("customers"),
+        format!("{n} tabs, {}", text(&agent, cx)),
+    );
     let editor = cx.update(|_, cx| agent.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
         let f = editor.focus_handle(cx);
@@ -405,10 +446,14 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     key(cx, "space");
     key(cx, "x");
     let edited = text(&agent, cx);
-    let (err, _) = call(&agent_ipc,"open_query", json!({"connection": conn, "database": db, "sql": "SELECT 1 AS another"})).await;
+    let (err, _) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": "SELECT 1 AS another"})).await;
     let tabs = agent_tabs(ws, cx);
     let active_is_users = cx.update(|_, cx| ws.read(cx).active_tab() == Some(&agent)).unwrap_or(false);
-    check("a tab the user edited is left alone: a new agent tab", !err && tabs.len() == 2 && text(&agent, cx) == edited && edited.ends_with(" x"), format!("{} tabs", tabs.len()));
+    check(
+        "a tab the user edited is left alone: a new agent tab",
+        !err && tabs.len() == 2 && text(&agent, cx) == edited && edited.ends_with(" x"),
+        format!("{} tabs", tabs.len()),
+    );
     check("the new agent tab opens behind the user's", active_is_users, String::new());
 
     let several = "SELECT 1 AS one;\nSELECT 'two' AS two;\nSELECT generate_series(1, 4) AS n";
@@ -417,16 +462,25 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let rows: Vec<Value> = v["results"].as_array().map(|r| r.iter().map(|x| x["rows"].clone()).collect()).unwrap_or_default();
     check(
         "several reads: the agent gets every result, in order",
-        !err && v["statements"] == json!(3) && rows == [json!([[1]]), json!([["two"]]), json!([[1], [2]])] && v["results"][2]["truncated"] == json!("rows") && v["in_tab"] == json!(true),
+        !err && v["statements"] == json!(3)
+            && rows == [json!([[1]]), json!([["two"]]), json!([[1], [2]])]
+            && v["results"][2]["truncated"] == json!("rows")
+            && v["in_tab"] == json!(true),
         out.clone(),
     );
     let shown = agent_tabs(ws, cx).into_iter().find(|t| text(t, cx) == several);
-    let tabs_of_run = shown.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).batch_items().iter().filter(|b| b.rs.as_ref().is_some_and(|r| r.phase().is_finished())).count()).ok());
+    let tabs_of_run = shown
+        .as_ref()
+        .and_then(|t| cx.update(|_, cx| t.read(cx).batch_items().iter().filter(|b| b.rs.as_ref().is_some_and(|r| r.phase().is_finished())).count()).ok());
     check("the agent tab shows them as three result tabs", tabs_of_run == Some(3), format!("{tabs_of_run:?}"));
     let n_rows = shown.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).batch_items().last().and_then(|b| b.rs.as_ref().map(|r| r.rows()))).ok().flatten());
     check("the whole last result stays in the tab", n_rows == Some(4), format!("{n_rows:?}"));
 
-    let favs = [("Orders by day", "SELECT 'day' AS per;"), ("Orders by month", "SELECT 'month' AS per;"), ("Top customers", "SELECT c.name FROM customer c ORDER BY c.id LIMIT 3;")];
+    let favs = [
+        ("Orders by day", "SELECT 'day' AS per;"),
+        ("Orders by month", "SELECT 'month' AS per;"),
+        ("Top customers", "SELECT c.name FROM customer c ORDER BY c.id LIMIT 3;"),
+    ];
     for (name, sql) in favs {
         let mut f = dataman_core::Favorite::new(name, sql);
         f.connection_id = Some(id.to_string());
@@ -437,7 +491,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("list_favorites has them", !err && favs.iter().all(|(n, _)| out.contains(n)), out);
     let (err, out) = call(&agent_ipc, "run_favorite", json!({"name": "top custmers", "max_rows": 2})).await;
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
-    check("run_favorite runs \"top custmers\" as Top customers", !err && v["favorite"]["name"] == json!("Top customers") && v["row_count"] == json!(2) && v["in_tab"] == json!(true), out.clone());
+    check(
+        "run_favorite runs \"top custmers\" as Top customers",
+        !err && v["favorite"]["name"] == json!("Top customers") && v["row_count"] == json!(2) && v["in_tab"] == json!(true),
+        out.clone(),
+    );
     let fav_tab = agent_tabs(ws, cx).into_iter().find(|t| text(t, cx) == favs[2].1);
     let fav_rows = fav_tab.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).result().map(|r| r.rows())).ok().flatten());
     check("its SQL and whole result are in the agent tab", fav_rows == Some(3), format!("{fav_rows:?}"));
@@ -445,7 +503,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
     let names: Vec<&str> = v["candidates"].as_array().map(|c| c.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
     pause(cx, 100).await;
-    let ran = core.history.load(id, 50).unwrap_or_default().iter().any(|h| h.sql.contains("AS per")) || agent_tabs(ws, cx).iter().any(|t| text(t, cx).contains("AS per"));
+    let ran = core.history.load(id, 50).unwrap_or_default().iter().any(|h| h.sql.contains("AS per"))
+        || agent_tabs(ws, cx).iter().any(|t| text(t, cx).contains("AS per"));
     check("an unclear name: the candidates, nothing run", !err && v["matched"] == json!(false) && names == ["Orders by day", "Orders by month"] && !ran, out);
     for f in core.favorites.list().into_iter().filter(|f| favs.iter().any(|(n, _)| *n == f.name)) {
         let _ = core.favorites.remove(&f.id);
@@ -456,11 +515,20 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     }
 
     let s = format!("mcp_check_{}", std::process::id());
-    let (err, out) = call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int PRIMARY KEY, note text)")})).await;
+    let (err, out) = call(
+        &agent_ipc,
+        "execute",
+        json!({"connection": conn, "database": db, "sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int PRIMARY KEY, note text)")}),
+    )
+    .await;
     check("new objects run on tier full without a question", !err && !sheet_open(cx) && out.contains("\"committed\":true") && !out.contains("approved"), out);
     let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("ALTER TABLE {s}.t ALTER COLUMN note SET DEFAULT 'n'")}));
     let q = sheet(cx).await;
-    check("DDL on what exists waits for Allow, asked before it runs", q.as_ref().is_some_and(|q| q.affected.is_none() && q.reasons.iter().any(|r| r == "ALTER TABLE") && q.destructive), format!("{q:?}"));
+    check(
+        "DDL on what exists waits for Allow, asked before it runs",
+        q.as_ref().is_some_and(|q| q.affected.is_none() && q.reasons.iter().any(|r| r == "ALTER TABLE") && q.destructive),
+        format!("{q:?}"),
+    );
     check("Allow clicked", answer(ws, true, cx), String::new());
     let (err, out) = rx.await.unwrap_or((true, String::new()));
     check("the DDL committed after Allow", !err && out.contains("\"committed\":true") && out.contains("approved"), out);
@@ -468,7 +536,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let prod = edit_profile(ws, id, |p| p.env = dataman_core::Environment::Production, cx).await;
     let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE TABLE {s}.on_prod (a int)")}));
     let q = sheet(cx).await;
-    check("on production a new table waits for Allow", prod && q.as_ref().is_some_and(|q| q.reasons.iter().any(|r| r == "CREATE TABLE") && q.reasons.iter().any(|r| r == "production")), format!("{q:?}"));
+    check(
+        "on production a new table waits for Allow",
+        prod && q.as_ref().is_some_and(|q| q.reasons.iter().any(|r| r == "CREATE TABLE") && q.reasons.iter().any(|r| r == "production")),
+        format!("{q:?}"),
+    );
     check("Allow clicked", answer(ws, true, cx), String::new());
     let (err, out) = rx.await.unwrap_or((true, String::new()));
     check("… and is made after it", !err && out.contains("approved"), out);
@@ -477,13 +549,21 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (err, out) = call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE TABLE {s}.on_ro (a int)")})).await;
     check("a read-only database refuses a new table", ro && err && !sheet_open(cx) && out.contains("read-only"), out);
     edit_profile(ws, id, |p| p.set_read_only_for(db, false), cx).await;
-    let (err, out) = call(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("INSERT INTO {s}.t VALUES (1, 'a'), (2, 'b'), (3, NULL)")})).await;
+    let (err, out) =
+        call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("INSERT INTO {s}.t VALUES (1, 'a'), (2, 'b'), (3, NULL)")}))
+            .await;
     check("a safe INSERT commits without a question", !err && !sheet_open(cx) && out.contains("[\"INSERT\",3]"), out);
     let shown = agent_tabs(ws, cx).into_iter().find(|t| cx.update(|_, cx| t.read(cx).result().is_some_and(|r| r.sql.contains("INSERT INTO"))).unwrap_or(false));
     check("the write shows in an agent tab", shown.is_some(), String::new());
-    let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("DELETE FROM {s}.t RETURNING id")}));
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("DELETE FROM {s}.t RETURNING id")}));
     let q = sheet(cx).await;
-    check("a DELETE without WHERE is held and asked about", q.as_ref().is_some_and(|q| q.affected == Some(3) && q.reasons.iter().any(|r| r == "DELETE without WHERE") && q.preview.as_ref().is_some_and(|p| p.1.len() == 3)), format!("{q:?}"));
+    check(
+        "a DELETE without WHERE is held and asked about",
+        q.as_ref().is_some_and(|q| {
+            q.affected == Some(3) && q.reasons.iter().any(|r| r == "DELETE without WHERE") && q.preview.as_ref().is_some_and(|p| p.1.len() == 3)
+        }),
+        format!("{q:?}"),
+    );
     let front = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.entity_id().as_u64())).ok().flatten();
     check("its agent tab comes to the front", q.as_ref().and_then(|q| q.tab).is_some() && q.as_ref().and_then(|q| q.tab) == front, format!("{front:?}"));
     if stage == "mcp-sheet" {
@@ -492,17 +572,18 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("Deny clicked", answer(ws, false, cx), String::new());
     let (err, out) = rx.await.unwrap_or((false, String::new()));
     check("Deny rolls back", err && out.contains("denied") && out.contains("rolled back"), out);
-    let (_, out) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
+    let (_, out) = call(&agent_ipc, "run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
     check("the rows are still there", out.contains("[[3]]"), out);
     let (err, out) = call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'x'")})).await;
     check("right after a Deny the same client's next question waits", err && out.contains("just denied") && !sheet_open(cx), out);
     pause(cx, dataman_mcp::hub::AFTER_DENY.as_millis() as u64 + 100).await;
-    let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'x'")}));
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'x'")}));
     let q = sheet(cx).await;
     check("an UPDATE without WHERE is asked about", q.is_some_and(|q| q.affected == Some(3)), String::new());
     check("Allow clicked", answer(ws, true, cx), String::new());
     let (err, out) = rx.await.unwrap_or((true, String::new()));
-    let (_, n) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t WHERE note = 'x'")})).await;
+    let (_, n) =
+        call(&agent_ipc, "run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t WHERE note = 'x'")})).await;
     check("Allow commits", !err && n.contains("[[3]]"), format!("{out} / {n}"));
 
     let delete = format!("DELETE FROM {s}.t");
@@ -517,20 +598,33 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
     check(
         "a draft answers drafted, its tab, connection and database (no rows)",
-        !err && v["drafted"] == json!(true) && v["tab"].as_str().is_some_and(|t| !t.is_empty()) && v["connection"] == json!(conn) && v["database"] == json!(db) && v.get("rows").is_none(),
+        !err && v["drafted"] == json!(true)
+            && v["tab"].as_str().is_some_and(|t| !t.is_empty())
+            && v["connection"] == json!(conn)
+            && v["database"] == json!(db)
+            && v.get("rows").is_none(),
         out.clone(),
     );
     pause(cx, 200).await;
     draw(cx);
     let tabs = agent_tabs(ws, cx);
     let drafted = tabs.iter().find(|t| text(t, cx) == delete).cloned();
-    check("the draft reuses the free agent tab", tabs.len() == tabs_before.len() && drafted.is_some() && had_result, format!("{} → {} tabs", tabs_before.len(), tabs.len()));
+    check(
+        "the draft reuses the free agent tab",
+        tabs.len() == tabs_before.len() && drafted.is_some() && had_result,
+        format!("{} → {} tabs", tabs_before.len(), tabs.len()),
+    );
     let Some(drafted) = drafted else { return false };
     let facts = cx
         .update(|_, cx| {
             let t = drafted.read(cx);
             let sel = t.editor.read(cx).demo_selection();
-            (t.result().is_none() && t.run_phase().is_none() && !t.has_run && !t.is_running(), sel == (delete.len()..delete.len()), t.database().to_string(), t.connection().map(|c| c.profile.id.clone()))
+            (
+                t.result().is_none() && t.run_phase().is_none() && !t.has_run && !t.is_running(),
+                sel == (delete.len()..delete.len()),
+                t.database().to_string(),
+                t.connection().map(|c| c.profile.id.clone()),
+            )
         })
         .ok();
     check(
@@ -542,7 +636,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let hist = core.history.load(id, 50).unwrap_or_default();
     check("no statement in the history", hist.len() == hist_before && !hist.iter().any(|h| h.sql == delete), format!("{hist_before} → {}", hist.len()));
     let (_, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
-    check("an agent's run leaves the draft alone; the rows are all there", out.contains("[[3]]") && text(&drafted, cx) == delete && agent_tabs(ws, cx).len() == tabs.len() + 1, out);
+    check(
+        "an agent's run leaves the draft alone; the rows are all there",
+        out.contains("[[3]]") && text(&drafted, cx) == delete && agent_tabs(ws, cx).len() == tabs.len() + 1,
+        out,
+    );
     let editor = cx.update(|_, cx| drafted.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| w.activate_tab(&drafted, window, cx));
@@ -574,7 +672,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     });
     key(cx, "cmd-enter");
     settled(&drafted, cx).await;
-    let (_, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t WHERE note = 'y'")})).await;
+    let (_, out) =
+        call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t WHERE note = 'y'")})).await;
     let hist = core.history.load(id, 50).unwrap_or_default();
     let mine = hist.iter().find(|h| h.sql == update);
     check("the user's run commits, no question asked", out.contains("[[1]]") && !sheet_open(cx), out);
@@ -609,7 +708,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (err, out) = rx.await.unwrap_or((true, String::new()));
     check("… a moment later it does", !err && out.contains("approved"), out);
 
-    let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("DROP SCHEMA {s} CASCADE")}));
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("DROP SCHEMA {s} CASCADE")}));
     let q = sheet(cx).await;
     key(cx, "cmd-enter");
     let (err, out) = rx.await.unwrap_or((true, String::new()));
@@ -642,7 +741,13 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let shown = cx.update(|_, cx| log.read(cx).demo_entries()[ix].sql.clone()).ok().flatten();
     check("the log row shows it redacted", shown.as_deref() == Some(format!("UPDATE {s}.t SET note = ?").as_str()), format!("{shown:?}"));
     let draft_row = cx
-        .update(|_, cx| log.read(cx).demo_entries().iter().find(|e| e.draft && e.query.as_deref() == Some(delete.as_str())).map(|e| (crate::mcp::row_what(e), e.sql.clone(), e.outcome)))
+        .update(|_, cx| {
+            log.read(cx)
+                .demo_entries()
+                .iter()
+                .find(|e| e.draft && e.query.as_deref() == Some(delete.as_str()))
+                .map(|e| (crate::mcp::row_what(e), e.sql.clone(), e.outcome))
+        })
         .ok()
         .flatten();
     check(
@@ -679,13 +784,19 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let facts = tab.as_ref().and_then(|t| {
         cx.update(|_, cx| {
             let t = t.read(cx);
-            (t.editor.read(cx).text().to_string(), t.connection().map(|c| c.profile.id.clone()).or(t.want.clone().map(|w| w.0)), t.database().to_string(), t.has_run || t.run_phase().is_some())
+            (
+                t.editor.read(cx).text().to_string(),
+                t.connection().map(|c| c.profile.id.clone()).or(t.want.clone().map(|w| w.0)),
+                t.database().to_string(),
+                t.has_run || t.run_phase().is_some(),
+            )
         })
         .ok()
     });
     check(
         "double-click opens it in a new tab, not run, on its connection and database",
-        after == before + 1 && facts.as_ref().is_some_and(|(text, conn, database, ran)| *text == format!("{update};") && conn.as_deref() == Some(id) && database == db && !ran),
+        after == before + 1
+            && facts.as_ref().is_some_and(|(text, conn, database, ran)| *text == format!("{update};") && conn.as_deref() == Some(id) && database == db && !ran),
         format!("{before} → {after} tabs, {facts:?}"),
     );
     let edits = connection_edits(ws, &agent_ipc, id, &conn, db, cx).await;
@@ -705,9 +816,14 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     draw(cx);
     let shown = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&made).map(|p| p.name.clone())).ok().flatten();
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
-    check("create_connection: the new connection shows at once (explorer too), no restart", !err && shown.as_deref() == Some("agent made") && row.as_deref() == Some("agent made"), format!("{out} {shown:?} {row:?}"));
+    check(
+        "create_connection: the new connection shows at once (explorer too), no restart",
+        !err && shown.as_deref() == Some("agent made") && row.as_deref() == Some("agent made"),
+        format!("{out} {shown:?} {row:?}"),
+    );
     check("… its password is not in the answer", !out.contains(secret), out.clone());
-    let (err, out) = call(ipc, "update_connection", json!({"connection": "agent made", "name": "agent renamed", "color": "violet", "password": "another-secret"})).await;
+    let (err, out) =
+        call(ipc, "update_connection", json!({"connection": "agent made", "name": "agent renamed", "color": "violet", "password": "another-secret"})).await;
     pause(cx, 150).await;
     draw(cx);
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
@@ -722,7 +838,10 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     check("list_connections never shows a password", !list.to_lowercase().contains("password") && !list.contains(secret), String::new());
 
     let old = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id)).ok().flatten();
-    let tab = cx.update(|_, cx| ws.read(cx).tabs.iter().find(|t| t.read(cx).connection().is_some_and(|c| c.profile.id == id) && !t.read(cx).tx_open()).cloned()).ok().flatten();
+    let tab = cx
+        .update(|_, cx| ws.read(cx).tabs.iter().find(|t| t.read(cx).connection().is_some_and(|c| c.profile.id == id) && !t.read(cx).tx_open()).cloned())
+        .ok()
+        .flatten();
     let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "amber"})).await;
     let mut fresh = None;
     for _ in 0..200 {
@@ -735,7 +854,11 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     draw(cx);
     let reconnected = fresh.as_ref().zip(old.as_ref()).is_some_and(|(a, b)| !Arc::ptr_eq(a, b) && a.profile.color.as_deref() == Some("amber"));
     check("a live connection edited reconnects with its new settings", !err && reconnected, out);
-    let moved = tab.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).connection().cloned()).ok().flatten()).zip(fresh.clone()).is_some_and(|(a, b)| Arc::ptr_eq(&a, &b));
+    let moved = tab
+        .as_ref()
+        .and_then(|t| cx.update(|_, cx| t.read(cx).connection().cloned()).ok().flatten())
+        .zip(fresh.clone())
+        .is_some_and(|(a, b)| Arc::ptr_eq(&a, &b));
     check("… and its idle tabs move to the new connection", moved, String::new());
 
     let user_tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
@@ -752,7 +875,11 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     settled(&user_tab, cx).await;
     let open = cx.update(|_, cx| user_tab.read(cx).tx_open()).unwrap_or(false);
     let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "teal"})).await;
-    check("an edit while a transaction is open on it is refused, with the tab named", open && err && out.contains("transaction open") && out.contains("roll back"), format!("open {open}: {out}"));
+    check(
+        "an edit while a transaction is open on it is refused, with the tab named",
+        open && err && out.contains("transaction open") && out.contains("roll back"),
+        format!("open {open}: {out}"),
+    );
     let still = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(id).and_then(|p| p.color.clone())).ok().flatten();
     check("… nothing changed", still.as_deref() == Some("amber") && cx.update(|_, cx| user_tab.read(cx).tx_open()).unwrap_or(false), format!("{still:?}"));
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.end_active_tx(false, cx)));
@@ -768,7 +895,11 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     // Moving a connection to another server, and reading files of this Mac, wait for the user.
     let rx = start(ipc, "update_connection", json!({"connection": "agent renamed", "host": "10.9.9.9"}));
     let q = sheet(cx).await;
-    check("a move to another server asks, showing the change", q.as_ref().is_some_and(|q| q.sql.contains("host: 127.0.0.1 → 10.9.9.9") && q.reasons.iter().any(|r| r.contains("another server"))), format!("{q:?}"));
+    check(
+        "a move to another server asks, showing the change",
+        q.as_ref().is_some_and(|q| q.sql.contains("host: 127.0.0.1 → 10.9.9.9") && q.reasons.iter().any(|r| r.contains("another server"))),
+        format!("{q:?}"),
+    );
     answer(ws, false, cx);
     let (err, out) = rx.await.unwrap_or((false, String::new()));
     let host = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&made).map(|p| p.host.clone())).ok().flatten();
@@ -781,7 +912,11 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let _ = std::fs::write(&file, "SELECT 'from a file'");
     let rx = start(ipc, "import_favorites", json!({"paths": [file.display().to_string()]}));
     let q = sheet(cx).await;
-    check("import_favorites asks before reading, naming the file", q.as_ref().is_some_and(|q| q.connection == "Import favorites" && q.connection_id.is_empty() && q.sql.contains("imported by agent.sql")), format!("{q:?}"));
+    check(
+        "import_favorites asks before reading, naming the file",
+        q.as_ref().is_some_and(|q| q.connection == "Import favorites" && q.connection_id.is_empty() && q.sql.contains("imported by agent.sql")),
+        format!("{q:?}"),
+    );
     answer(ws, false, cx);
     let (err, out) = rx.await.unwrap_or((false, String::new()));
     let (_, list) = call(ipc, "list_favorites", json!({})).await;

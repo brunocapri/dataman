@@ -11,7 +11,6 @@ use crate::hub::{Front, TabWrite};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Opened, ToolError};
 
-
 fn query_prop() -> Value {
     json!({"type": "string", "maxLength": 200000, "description": "One statement in the connection's language (list_connections' language). MongoDB's shell: db.users.find({age: {$gt: 30}}).sort({name: 1}).limit(20), db.orders.aggregate([...]), db.users.countDocuments({}), show collections; or a mongosh script (JavaScript: const/let, new Date(), Date.now(), loops, functions, cursor.forEach / toArray / map, print / printjson; the last value is the result, a cursor's as documents; printed lines come back as printed). A script's writes (by method name and written-out filter) decide its tier before it runs, and every call is held to that as it runs. Elasticsearch / OpenSearch, Kibana's console: a method line, then the JSON body on the next lines (GET /orders/_search, newline, {\"query\": {\"match\": {\"status\": \"paid\"}}}), or GET _cat/indices. Redis: one command as redis-cli takes it (HGETALL user:1, SCAN 0 MATCH user:* COUNT 100, SET k v EX 60)."})
 }
@@ -111,18 +110,22 @@ impl Shown {
         let Some(front) = cx.tab_front() else { return Ok(Shown { front: None, tab: None }) };
         let p = cx.target(a, Need::Read)?;
         let database = a.opt_str("database").map(str::to_string).unwrap_or_else(|| p.database.clone());
-        let w = TabWrite { client: cx.client.clone(), connection_id: p.id.clone(), database, sql: text.to_string(), title: a.opt_str("title").map(str::to_string) };
+        let w =
+            TabWrite { client: cx.client.clone(), connection_id: p.id.clone(), database, sql: text.to_string(), title: a.opt_str("title").map(str::to_string) };
         let tab = front.show_doc(w).await;
         Ok(Shown { front: Some(front), tab })
     }
 
     fn done<T>(&self, r: &Result<T, ToolError>, ran: Option<&nosql::Ran>) {
         if let (Some(f), Some(tab)) = (&self.front, self.tab) {
-            f.doc_done(tab, match (r, ran) {
-                (Ok(_), Some(ran)) => Ok(ran.clone()),
-                (Err(e), _) => Err(e.message()),
-                (Ok(_), None) => Err("nothing ran".into()),
-            });
+            f.doc_done(
+                tab,
+                match (r, ran) {
+                    (Ok(_), Some(ran)) => Ok(ran.clone()),
+                    (Err(e), _) => Err(e.message()),
+                    (Ok(_), None) => Err("nothing ran".into()),
+                },
+            );
         }
     }
 }
@@ -257,12 +260,24 @@ pub(super) async fn databases(cx: &Call, o: &Opened) -> Result<Value, ToolError>
         .map(|i| vec![json!(i.name), i.size.map_or(Value::Null, |b| json!(dataman_core::schema::objects::human_size(b as i64)))])
         .collect();
     cx.note_rows(rows.len());
-    let note = if o.conn.engine() == dataman_core::Engine::MongoDb { "a database holds collections: pass it as database to the other tools" } else { "no databases here: list_tables lists the indices" };
+    let note = if o.conn.engine() == dataman_core::Engine::MongoDb {
+        "a database holds collections: pass it as database to the other tools"
+    } else {
+        "no databases here: list_tables lists the indices"
+    };
     Ok(json!({"databases": table(&["database", "size"], rows), "note": note}))
 }
 
 pub(super) async fn collections(cx: &Call, o: &Opened, limit: usize) -> Result<Value, ToolError> {
-    let items: Vec<_> = o.conn.nosql_tree(Some(&o.database)).await.map_err(failed)?.iter().filter(|i| rules::table_visible(&o.profile, &o.database, &i.name)).cloned().collect();
+    let items: Vec<_> = o
+        .conn
+        .nosql_tree(Some(&o.database))
+        .await
+        .map_err(failed)?
+        .iter()
+        .filter(|i| rules::table_visible(&o.profile, &o.database, &i.name))
+        .cloned()
+        .collect();
     let more = items.len() > limit;
     let rows: Vec<Vec<Value>> = items
         .iter()
@@ -290,7 +305,12 @@ pub(super) async fn search(cx: &Call, o: &Opened, pattern: &str, limit: usize) -
     for db in o.conn.nosql_tree(None).await.map_err(failed)?.iter().filter(|i| i.kind == ItemKind::Database && rules::schema_visible(&o.profile, &i.name)) {
         for c in o.conn.nosql_tree(Some(&db.name)).await.map_err(failed)?.iter() {
             if like(&c.name) && rules::table_visible(&o.profile, &db.name, &c.name) {
-                rows.push(vec![json!(if c.kind == ItemKind::View { "view" } else { "collection" }), json!(db.name), json!(c.name), c.count.map_or(Value::Null, |n| json!(format!("{n} documents")))]);
+                rows.push(vec![
+                    json!(if c.kind == ItemKind::View { "view" } else { "collection" }),
+                    json!(db.name),
+                    json!(c.name),
+                    c.count.map_or(Value::Null, |n| json!(format!("{n} documents"))),
+                ]);
             }
             if rows.len() > limit {
                 break;
@@ -317,7 +337,9 @@ pub(super) async fn describe(cx: &Call, o: &Opened, coll: &str) -> Result<Value,
     }
     let mut fields = o.conn.sample_fields(&o.database, coll).await.map_err(failed)?;
     // Hidden fields go at any depth, as they do from documents.
-    fields.retain(|(path, _)| !path.split('.').any(|seg| rules::column_hidden(&o.profile, &o.database, coll, seg)) && !rules::column_hidden(&o.profile, &o.database, coll, path));
+    fields.retain(|(path, _)| {
+        !path.split('.').any(|seg| rules::column_hidden(&o.profile, &o.database, coll, seg)) && !rules::column_hidden(&o.profile, &o.database, coll, path)
+    });
     let mut out = Map::new();
     out.insert("collection".into(), json!(coll));
     out.insert("database".into(), json!(o.database));

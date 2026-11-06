@@ -16,7 +16,7 @@ use crate::tool::{Args, BoxFut, Call, Registry, Schema, Tool, ToolError};
 
 pub(crate) use catalog::view_open;
 
-pub type Handler =for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolError>>;
+pub type Handler = for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolError>>;
 
 /// Every built-in tool: what it does, and what its `connection` must be allowed before the
 /// handler runs (None: the handler judges its connection itself). Writes through the tier are
@@ -92,7 +92,16 @@ impl Tool for Builtin {
 }
 
 pub fn register(r: &mut Registry) {
-    for t in catalog::tools().into_iter().chain(query::tools()).chain(activity::tools()).chain(favorites::tools()).chain(connections::tools()).chain(login::tools()).chain(show::tools()).chain(nosql::tools()) {
+    for t in catalog::tools()
+        .into_iter()
+        .chain(query::tools())
+        .chain(activity::tools())
+        .chain(favorites::tools())
+        .chain(connections::tools())
+        .chain(login::tools())
+        .chain(show::tools())
+        .chain(nosql::tools())
+    {
         r.register(std::sync::Arc::new(t));
     }
 }
@@ -125,7 +134,14 @@ pub fn read_json(o: &bounded::Outcome, max_rows: usize, statements: &[String]) -
         .parts
         .iter()
         .map(|p| {
-            let part = bounded::Outcome { columns: p.columns.clone(), rows: p.rows.clone(), truncated: p.truncated, cut_cells: p.cut_cells, elapsed: p.elapsed, ..Default::default() };
+            let part = bounded::Outcome {
+                columns: p.columns.clone(),
+                rows: p.rows.clone(),
+                truncated: p.truncated,
+                cut_cells: p.cut_cells,
+                elapsed: p.elapsed,
+                ..Default::default()
+            };
             let mut v = result_json(&part, max_rows);
             if let Some(m) = v.as_object_mut() {
                 let mut head = Map::new();
@@ -143,7 +159,11 @@ pub fn read_json(o: &bounded::Outcome, max_rows: usize, statements: &[String]) -
     let reached = o.parts.last().map_or(0, |p| p.statement + 1);
     if o.parts.last().is_some_and(|p| p.truncated == Some(bounded::Truncation::Bytes)) && reached < statements.len() {
         m.insert("truncated".into(), json!("bytes"));
-        let rest = if reached + 1 == statements.len() { format!("statement {}", statements.len()) } else { format!("statements {}–{}", reached + 1, statements.len()) };
+        let rest = if reached + 1 == statements.len() {
+            format!("statement {}", statements.len())
+        } else {
+            format!("statements {}–{}", reached + 1, statements.len())
+        };
         m.insert("note".into(), json!(format!("the results grew too large at statement {reached}: {rest} not returned; run them on their own or select less")));
     }
     m.insert("ms".into(), json!(ms(o.elapsed)));
@@ -228,9 +248,30 @@ mod tests {
         let tools = r.all();
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         for want in [
-            "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows", "run_query",
-            "open_query", "explain", "explain_analyze", "execute", "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
-            "list_favorites", "run_favorite", "create_connection", "update_connection", "create_agent_login", "show_in_dataman", "nosql_query", "nosql_execute",
+            "list_connections",
+            "list_schemas",
+            "list_tables",
+            "search_objects",
+            "describe_table",
+            "get_ddl",
+            "sample_rows",
+            "run_query",
+            "open_query",
+            "explain",
+            "explain_analyze",
+            "execute",
+            "activity_sessions",
+            "activity_locks",
+            "cancel_backend",
+            "terminate_backend",
+            "list_favorites",
+            "run_favorite",
+            "create_connection",
+            "update_connection",
+            "create_agent_login",
+            "show_in_dataman",
+            "nosql_query",
+            "nosql_execute",
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
@@ -240,13 +281,23 @@ mod tests {
             assert_eq!(s.0["additionalProperties"], false, "{}", t.name());
             assert!(t.description().len() > 40 && t.description().len() < 900, "{}: {} chars", t.name(), t.description().len());
             assert!(t.name().chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", t.name());
-            assert_eq!(t.need().is_some(), s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"), "{}", t.name());
+            assert_eq!(
+                t.need().is_some(),
+                s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"),
+                "{}",
+                t.name()
+            );
             for (k, v) in s.properties() {
                 assert!(v.get("type").is_some(), "{}.{k}", t.name());
                 assert!(v.get("description").is_some_and(|d| d.as_str().is_some_and(|d| !d.is_empty())), "{}.{k} has no description", t.name());
             }
             assert!(meta(t.name()).is_some(), "{} is not in META", t.name());
-            assert_eq!(t.gate().is_some(), s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"), "{}", t.name());
+            assert_eq!(
+                t.gate().is_some(),
+                s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"),
+                "{}",
+                t.name()
+            );
             // Gated for writes: what no allowed statement nor tier judgement lets a read tier run.
             assert_eq!(t.gate() == Some(Need::Write), matches!(t.name(), "cancel_backend" | "terminate_backend" | "nosql_execute"), "{}", t.name());
             // What may write to a database is never announced read-only.

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::super::objects::{
-    Constraint, ConstraintKind, Extension, FuncKind, Function, Grant, ObjectCounts, Partition, Privileges, RelStats, Role, Rows, Sequence,
-    TableExtras, Trigger, TypeKind, UserType, get, split_args, trigger_events,
+    Constraint, ConstraintKind, Extension, FuncKind, Function, Grant, ObjectCounts, Partition, Privileges, RelStats, Role, Rows, Sequence, TableExtras,
+    Trigger, TypeKind, UserType, get, split_args, trigger_events,
 };
 use super::super::{lit, parse_bool};
 
@@ -96,10 +96,7 @@ pub fn sequences_sql(schema: &str) -> [String; 3] {
             "SELECT c.relname, NULL, NULL, NULL FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              WHERE {w} AND c.relkind = 'S' ORDER BY c.relname"
         ),
-        format!(
-            "SELECT sequence_name, data_type, NULL, NULL FROM information_schema.sequences WHERE sequence_schema = {} ORDER BY 1",
-            lit(schema)
-        ),
+        format!("SELECT sequence_name, data_type, NULL, NULL FROM information_schema.sequences WHERE sequence_schema = {} ORDER BY 1", lit(schema)),
     ]
 }
 
@@ -379,7 +376,9 @@ mod tests {
             parse_counts(&row(&[Some("3"), Some("0"), None, Some("x")])),
             ObjectCounts { functions: Some(3), sequences: Some(0), types: None, triggers: None }
         );
-        let f = parse_function(&row(&[Some("1234"), Some("add"), Some("f"), Some("a integer, b integer"), Some("integer, integer"), Some("integer"), Some("f")])).unwrap();
+        let f =
+            parse_function(&row(&[Some("1234"), Some("add"), Some("f"), Some("a integer, b integer"), Some("integer, integer"), Some("integer"), Some("f")]))
+                .unwrap();
         assert_eq!((f.oid, f.kind, f.arg_types.len(), f.result.as_deref(), f.returns_set), (1234, FuncKind::Function, 2, Some("integer"), false));
         let p = parse_function(&row(&[Some("9"), Some("archive"), Some("p"), Some(""), Some(""), None, Some("f")])).unwrap();
         assert_eq!((p.kind, p.arg_types.len(), p.result), (FuncKind::Procedure, 0, None));
@@ -399,7 +398,8 @@ mod tests {
         assert_eq!(gis.relations, [16390, 16402], "spatial_ref_sys and its views belong to the extension");
         assert_eq!(parse_extension(&row(&[Some("plpgsql"), Some("1.0"), None, Some("1.0")])).unwrap().update(), None);
         assert!(parse_role(&row(&[Some("pg_monitor"), Some("f"), Some("f")])).is_none());
-        let r = parse_role(&row(&[Some("app"), Some("f"), Some("t"), Some("f"), Some("f"), Some("f"), Some("t"), Some("f"), Some("10"), Some("infinity")])).unwrap();
+        let r = parse_role(&row(&[Some("app"), Some("f"), Some("t"), Some("f"), Some("f"), Some("f"), Some("t"), Some("f"), Some("10"), Some("infinity")]))
+            .unwrap();
         assert_eq!((r.login, r.superuser, r.conn_limit, r.valid_until), (true, false, 10, None));
         let r = parse_role(&row(&[Some("old"), Some("t"), Some("f")])).unwrap();
         assert_eq!((r.superuser, r.inherit, r.conn_limit), (true, true, -1));

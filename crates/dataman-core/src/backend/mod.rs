@@ -1,10 +1,10 @@
 // Without their feature, the file engines connect to nothing (and say so).
+pub mod class;
 #[cfg(feature = "duckdb")]
 pub(crate) mod duck;
 #[cfg(not(feature = "duckdb"))]
 #[path = "duck/off.rs"]
 pub(crate) mod duck;
-pub mod class;
 pub(crate) mod embed;
 #[cfg(feature = "sqlite")]
 pub(crate) mod lite;
@@ -166,10 +166,32 @@ impl Caps {
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
 
     pub const MYSQL: Caps = Caps { schemas: false, functions: true, triggers: true, uuid_types: &["uuid"], ..Caps::BASIC };
-    pub const SQL_SERVER: Caps =
-        Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, uuid_types: &["uniqueidentifier"], uuid_upper: true, ..Caps::BASIC };
-    pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, ..Caps::BASIC };
-    pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], ..Caps::BASIC };
+    pub const SQL_SERVER: Caps = Caps {
+        transactional_ddl: true,
+        functions: true,
+        sequences: true,
+        types: true,
+        triggers: true,
+        toggle_triggers: true,
+        server_parse_check: true,
+        uuid_types: &["uniqueidentifier"],
+        uuid_upper: true,
+        ..Caps::BASIC
+    };
+    pub const SQLITE: Caps = Caps {
+        schemas: false,
+        transactional_ddl: true,
+        explain: true,
+        triggers: true,
+        drop_database: false,
+        truncate: false,
+        file: true,
+        uuid_types: &["uuid"],
+        rowid_key: true,
+        ..Caps::BASIC
+    };
+    pub const DUCKDB: Caps =
+        Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], ..Caps::BASIC };
 
     pub fn of(engine: Engine) -> Caps {
         engine.spec().caps
@@ -573,12 +595,7 @@ pub(crate) fn wants_more(demand: &tokio::sync::watch::Receiver<Demand>, have: us
     !d.abort && (d.all || have < d.rows)
 }
 
-pub(crate) async fn wait_for_demand(
-    rs: &ResultSet,
-    demand: &mut tokio::sync::watch::Receiver<Demand>,
-    have: usize,
-    on_pause: &(dyn Fn() + Sync),
-) -> bool {
+pub(crate) async fn wait_for_demand(rs: &ResultSet, demand: &mut tokio::sync::watch::Receiver<Demand>, have: usize, on_pause: &(dyn Fn() + Sync)) -> bool {
     loop {
         let d = *demand.borrow_and_update();
         if d.abort {

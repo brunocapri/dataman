@@ -1,10 +1,10 @@
 use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, point, px};
 
 use crate::app::{Region, Workspace};
-use dataman_core::layout::NavView;
 use crate::history::HistoryPanel;
-use crate::history_check::{click, draw, drag, filed, input, key, menu_at, menu_click, named_point, pause, rows, typ};
+use crate::history_check::{click, drag, draw, filed, input, key, menu_at, menu_click, named_point, pause, rows, typ};
 use crate::tree_menu::Act;
+use dataman_core::layout::NavView;
 
 pub fn is_stage(s: &str) -> bool {
     s == "undo-check"
@@ -130,10 +130,22 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
     }
     r.check(
         "⌘D adds a favorite; ⌘Z on the explorer takes it back, the notice says what was undone",
-        added.contains(&"SELECT 'undo-check' AS marker".to_string()) && label.as_deref() == Some("Add favorite 'SELECT 'undo-check' AS marker'") && undone.is_empty() && said == "Undid: Add favorite 'SELECT 'undo-check' AS marker'",
+        added.contains(&"SELECT 'undo-check' AS marker".to_string())
+            && label.as_deref() == Some("Add favorite 'SELECT 'undo-check' AS marker'")
+            && undone.is_empty()
+            && said == "Undid: Add favorite 'SELECT 'undo-check' AS marker'",
         format!("added {added:?} label {label:?} undone {undone:?} notice {said:?}"),
     );
-    let items: Vec<(String, bool)> = cx.update(|_, cx| ws.read(cx).palette_items(cx).into_iter().filter(|i| i.label.starts_with("Undo") || i.label.starts_with("Redo")).map(|i| (i.label, i.disabled)).collect()).unwrap_or_default();
+    let items: Vec<(String, bool)> = cx
+        .update(|_, cx| {
+            ws.read(cx)
+                .palette_items(cx)
+                .into_iter()
+                .filter(|i| i.label.starts_with("Undo") || i.label.starts_with("Redo"))
+                .map(|i| (i.label, i.disabled))
+                .collect()
+        })
+        .unwrap_or_default();
     r.check(
         "the palette offers \"Redo Add favorite …\" (and a dim Undo, nothing left)",
         items == [("Undo".to_string(), true), ("Redo Add favorite 'SELECT 'undo-check' AS marker'".to_string(), false)],
@@ -141,7 +153,11 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
     );
     key(cx, "cmd-shift-z");
     let redone = fav_names(ws, cx);
-    r.check("⇧⌘Z adds it again", redone == ["SELECT 'undo-check' AS marker"] && notice(ws, cx).starts_with("Redid: Add favorite"), format!("{redone:?} {:?}", notice(ws, cx)));
+    r.check(
+        "⇧⌘Z adds it again",
+        redone == ["SELECT 'undo-check' AS marker"] && notice(ws, cx).starts_with("Redid: Add favorite"),
+        format!("{redone:?} {:?}", notice(ws, cx)),
+    );
 
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_rename(0, "Marker", window, cx)));
     focus_favorites(ws, cx);
@@ -220,7 +236,11 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
     typ(cx, "Reports");
     key(cx, "enter");
     let label = next_undo(ws, cx).0;
-    r.check("\"+ folder\" named in place is one step: \"New folder 'Reports'\"", label.as_deref() == Some("New folder 'Reports'") && folder_names(ws, cx) == ["Reports"], format!("{label:?} {:?}", folder_names(ws, cx)));
+    r.check(
+        "\"+ folder\" named in place is one step: \"New folder 'Reports'\"",
+        label.as_deref() == Some("New folder 'Reports'") && folder_names(ws, cx) == ["Reports"],
+        format!("{label:?} {:?}", folder_names(ws, cx)),
+    );
 
     if let (Some(from), Some(to)) = (named_point(history, "Marker", cx).await, named_point(history, "Reports", cx).await) {
         drag(cx, from, to, |_| {}).await;
@@ -237,7 +257,11 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
     let refiled = filed(history, "Marker", cx);
     r.check(
         "a favorite dragged into a folder: ⌘Z takes it out, ⌘Z again the folder; ⇧⌘Z ⇧⌘Z both back",
-        in_it == Some(Some("Reports".into())) && out == Some(None) && gone.is_empty() && back == (vec!["Reports".to_string()], Some(None)) && refiled == Some(Some("Reports".into())),
+        in_it == Some(Some("Reports".into()))
+            && out == Some(None)
+            && gone.is_empty()
+            && back == (vec!["Reports".to_string()], Some(None))
+            && refiled == Some(Some("Reports".into())),
         format!("in {in_it:?} out {out:?} gone {gone:?} back {back:?} refiled {refiled:?}"),
     );
 
@@ -295,7 +319,9 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
     let restored = (folder_names(ws, cx), filed(history, "Marker", cx));
     r.check(
         "a folder deleted with its query: ⌃Z on the grid brings both back, the query filed in it",
-        deleted == (vec!["Archive".to_string()], vec![]) && label.as_deref() == Some("Delete folder 'Monthly'") && restored == (vec!["Archive".to_string(), "Monthly".to_string()], Some(Some("Monthly".into()))),
+        deleted == (vec!["Archive".to_string()], vec![])
+            && label.as_deref() == Some("Delete folder 'Monthly'")
+            && restored == (vec!["Archive".to_string(), "Monthly".to_string()], Some(Some("Monthly".into()))),
         format!("deleted {deleted:?} label {label:?} restored {restored:?} rows {:?}", rows(history, cx)),
     );
     key(cx, "ctrl-shift-z");
@@ -339,7 +365,9 @@ async fn choose(tree: &Entity<crate::tree::SchemaTree>, id: &str, act: Act, cx: 
 
 async fn pins(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, conn: &str, db: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     let rel = format!("c:{conn}/d:{db}/s:public/r:orders");
-    let pinned = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.pins.of(conn).into_iter().map(|p| p.name).collect::<Vec<_>>()).unwrap_or_default();
+    let pinned = |cx: &mut AsyncWindowContext| {
+        cx.update(|_, cx| ws.read(cx).store.read(cx).core.pins.of(conn).into_iter().map(|p| p.name).collect::<Vec<_>>()).unwrap_or_default()
+    };
     focus(ws, Region::Explorer, cx);
     choose(tree, &rel, Act::Pin, cx).await;
     let on = pinned(cx);
@@ -348,7 +376,11 @@ async fn pins(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, co
     let off = pinned(cx);
     key(cx, "cmd-shift-z");
     let again = pinned(cx);
-    r.check("a table pinned: ⌘Z on the explorer unpins it, ⇧⌘Z pins it again", on == ["orders"] && off.is_empty() && again == ["orders"], format!("{on:?} {off:?} {again:?}"));
+    r.check(
+        "a table pinned: ⌘Z on the explorer unpins it, ⇧⌘Z pins it again",
+        on == ["orders"] && off.is_empty() && again == ["orders"],
+        format!("{on:?} {off:?} {again:?}"),
+    );
     choose(tree, &rel, Act::Unpin, cx).await;
     let off = pinned(cx);
     focus(ws, Region::Explorer, cx);
@@ -356,7 +388,15 @@ async fn pins(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, co
     r.check("unpinned: ⌃Z pins it back", off.is_empty() && pinned(cx) == ["orders"], format!("{off:?} {:?}", pinned(cx)));
 }
 
-async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, core: &std::sync::Arc<dataman_core::Core>, conn: &str, db: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
+async fn connections(
+    ws: &Entity<Workspace>,
+    tree: &Entity<crate::tree::SchemaTree>,
+    core: &std::sync::Arc<dataman_core::Core>,
+    conn: &str,
+    db: &str,
+    r: &mut Report,
+    cx: &mut AsyncWindowContext,
+) {
     let (mut p2, pw2) = crate::bench::bench_profile(None);
     p2.name = "second".into();
     p2.save_password = true;
@@ -379,7 +419,16 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
         let from = point(b.left() + px(40.), b.center().y);
         let to = point(a.left() + px(40.), a.top() + px(4.));
         input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: from, pressed_button: None, modifiers: Modifiers::default() }));
-        input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: from, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+        input(
+            cx,
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+        );
         for p in [point(from.x, from.y - px(6.)), point(to.x, to.y + px(6.)), to] {
             input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }));
             draw(cx);
@@ -400,14 +449,28 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
     );
 
     let _ = cx.update(|_, _| {
-        let entry = dataman_core::HistoryEntry { ts: chrono::Utc::now(), database: db.into(), sql: "SELECT 'second'".into(), duration_ms: 1., rows: Some(1), outcome: dataman_core::Outcome::Ok, error: None, source: None };
+        let entry = dataman_core::HistoryEntry {
+            ts: chrono::Utc::now(),
+            database: db.into(),
+            sql: "SELECT 'second'".into(),
+            duration_ms: 1.,
+            rows: Some(1),
+            outcome: dataman_core::Outcome::Ok,
+            error: None,
+            source: None,
+        };
         let _ = core.history.append(&second, &entry);
         let _ = core.pins.pin(dataman_core::pins::Pin::new(&second, db, "public", "customer", dataman_core::schema::RelKind::Table));
     });
     let kept = |cx: &mut AsyncWindowContext| -> (bool, Option<String>, usize, usize) {
         cx.update(|_, cx| {
             let s = ws.read(cx).store.read(cx);
-            (s.profile(&second).is_some(), s.core.secrets.get(&second).ok().flatten(), s.core.history.load(&second, 10).unwrap_or_default().len(), s.core.pins.of(&second).len())
+            (
+                s.profile(&second).is_some(),
+                s.core.secrets.get(&second).ok().flatten(),
+                s.core.history.load(&second, 10).unwrap_or_default().len(),
+                s.core.pins.of(&second).len(),
+            )
         })
         .unwrap_or_default()
     };
@@ -422,12 +485,20 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
     r.check(
         "a connection deleted (password, history, pins gone with it): ⌃Z brings it back at its place, the password in the keychain again",
         had == (true, Some(pw2.clone()), 1, 1) && gone == (false, None, 0, 0) && restored == had && order == moved,
-        format!("had {:?} gone {gone:?} restored {:?} order {order:?}", (had.0, had.1.is_some(), had.2, had.3), (restored.0, restored.1.is_some(), restored.2, restored.3)),
+        format!(
+            "had {:?} gone {gone:?} restored {:?} order {order:?}",
+            (had.0, had.1.is_some(), had.2, had.3),
+            (restored.0, restored.1.is_some(), restored.2, restored.3)
+        ),
     );
     key(cx, "ctrl-shift-z");
     let redone = kept(cx);
     key(cx, "cmd-z");
-    r.check("⌃⇧Z deletes it again (password too), ⌘Z restores it again", redone == (false, None, 0, 0) && kept(cx) == had, format!("{:?}", (redone.0, redone.1.is_some())));
+    r.check(
+        "⌃⇧Z deletes it again (password too), ⌘Z restores it again",
+        redone == (false, None, 0, 0) && kept(cx) == had,
+        format!("{:?}", (redone.0, redone.1.is_some())),
+    );
 }
 
 async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
@@ -469,7 +540,12 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
     let state = |cx: &mut AsyncWindowContext| -> (usize, Option<(String, Option<String>)>, bool) {
         cx.update(|_, cx| {
             let w = ws.read(cx);
-            let found = w.tabs.iter().map(|t| t.read(cx)).find(|t| t.editor.read(cx).text() == sql).map(|t| (t.editor.read(cx).text().to_string(), t.connection().map(|c| c.profile.id.clone())));
+            let found = w
+                .tabs
+                .iter()
+                .map(|t| t.read(cx))
+                .find(|t| t.editor.read(cx).text() == sql)
+                .map(|t| (t.editor.read(cx).text().to_string(), t.connection().map(|c| c.profile.id.clone())));
             (w.tabs.len(), found, w.split.is_some())
         })
         .unwrap_or_default()
@@ -495,7 +571,11 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
     key(cx, "cmd-shift-z");
     let reclosed = state(cx);
     key(cx, "cmd-z");
-    r.check("⇧⌘Z closes it again, ⌘Z reopens it again", reclosed.0 == n0 && reclosed.1.is_none() && state(cx).1.is_some(), format!("{reclosed:?} {:?}", state(cx)));
+    r.check(
+        "⇧⌘Z closes it again, ⌘Z reopens it again",
+        reclosed.0 == n0 && reclosed.1.is_none() && state(cx).1.is_some(),
+        format!("{reclosed:?} {:?}", state(cx)),
+    );
 
     let _ = cx.update(|window, cx| {
         let ix = ws.read(cx).tabs.iter().position(|t| t.read(cx).editor.read(cx).text() == sql).unwrap_or(0);
@@ -517,7 +597,13 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
     let back = cx
         .update(|_, cx| {
             let w = ws.read(cx);
-            w.split.as_ref().map(|s| s.right.iter().filter_map(|id| w.tabs.iter().find(|t| t.entity_id() == *id)).map(|t| t.read(cx).editor.read(cx).text().to_string()).collect::<Vec<_>>())
+            w.split.as_ref().map(|s| {
+                s.right
+                    .iter()
+                    .filter_map(|id| w.tabs.iter().find(|t| t.entity_id() == *id))
+                    .map(|t| t.read(cx).editor.read(cx).text().to_string())
+                    .collect::<Vec<_>>()
+            })
         })
         .ok()
         .flatten();

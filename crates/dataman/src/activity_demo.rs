@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::activity::{Signal, State, StatementRow, Statements, Thresholds};
 use dataman_core::result::Phase;
 use dataman_core::{Connection, TxStatus};
+use gpui::{AsyncWindowContext, Entity};
 use tokio_postgres::NoTls;
 
 use crate::activity::{ActivityView, Every, Section};
@@ -91,9 +91,25 @@ fn sample_statements() -> Vec<StatementRow> {
         plan_ms: Some(calls as f64 * 0.04),
     };
     vec![
-        s("SELECT p.id, p.total, c.name FROM orders p JOIN customer c ON c.id = p.customer WHERE p.status = $1 ORDER BY p.id DESC LIMIT $2", 48_210, 913_402.5, 2_410_500, 9_120_330, 412_008, 0),
+        s(
+            "SELECT p.id, p.total, c.name FROM orders p JOIN customer c ON c.id = p.customer WHERE p.status = $1 ORDER BY p.id DESC LIMIT $2",
+            48_210,
+            913_402.5,
+            2_410_500,
+            9_120_330,
+            412_008,
+            0,
+        ),
         s("UPDATE dataman_activity_demo.accounts SET balance = balance - $1 WHERE id = $2", 211_377, 402_118.9, 211_377, 1_980_440, 2_118, 0),
-        s("SELECT c.country, count(*), sum(p.total) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY c.country ORDER BY 3 DESC", 96, 288_034.7, 1_920, 310_922, 801_455, 61_440),
+        s(
+            "SELECT c.country, count(*), sum(p.total) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY c.country ORDER BY 3 DESC",
+            96,
+            288_034.7,
+            1_920,
+            310_922,
+            801_455,
+            61_440,
+        ),
         s("INSERT INTO dataman_activity_demo.orders (customer, total) VALUES ($1, $2) RETURNING id", 390_552, 118_930.2, 390_552, 2_760_110, 9_802, 0),
         s("SELECT * FROM customer WHERE email = $1", 1_204_877, 96_321.4, 1_204_877, 4_819_508, 33, 0),
         s("DELETE FROM dataman_activity_demo.orders WHERE id % $1 = $2", 12, 42_877.0, 1_200_000, 99_402, 18_220, 0),
@@ -156,7 +172,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, password: &str, 
         pause(cx, 1200).await;
         return true;
     }
-    if section == Section::Statements && !matches!(cx.update(|_, cx| m.read(cx).statements_state().cloned()).ok().flatten(), Some(Statements::Rows(r)) if !r.is_empty()) {
+    if section == Section::Statements
+        && !matches!(cx.update(|_, cx| m.read(cx).statements_state().cloned()).ok().flatten(), Some(Statements::Rows(r)) if !r.is_empty())
+    {
         let _ = cx.update(|_, cx| m.update(cx, |m, cx| m.demo_statements(sample_statements(), cx)));
     }
     pause(cx, 1200).await;
@@ -223,14 +241,22 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     let avail = cx.update(|_, cx| m.read(cx).avail).unwrap();
     report("PostgreSQL reports sessions, locks and tables", probed && avail[..3].iter().all(|a| *a == crate::activity::Avail::Yes), format!("{avail:?}"));
     let st = cx.update(|_, cx| m.read(cx).statements_state().cloned()).unwrap();
-    report("pg_stat_statements: its state or its rows", matches!(st, Some(Statements::NotInstalled | Statements::NotLoaded | Statements::Rows(_))), format!("{st:?}"));
+    report(
+        "pg_stat_statements: its state or its rows",
+        matches!(st, Some(Statements::NotInstalled | Statements::NotLoaded | Statements::Rows(_))),
+        format!("{st:?}"),
+    );
     let tabs = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_activity(id, window, cx)));
     let tabs2 = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
     report("a second open goes to the same tab", tabs == tabs2, format!("{tabs} → {tabs2}"));
 
     let shown = cx.update(|_, cx| m.read(cx).shown_sessions().to_vec()).unwrap();
-    report("idle and background sessions are hidden by default", !shown.is_empty() && shown.iter().all(|s| s.shown_by_default()), format!("{} shown", shown.len()));
+    report(
+        "idle and background sessions are hidden by default",
+        !shown.is_empty() && shown.iter().all(|s| s.shown_by_default()),
+        format!("{} shown", shown.len()),
+    );
     let own_mark = cx
         .update(|_, cx| {
             let g = m.read(cx).sessions_grid.read(cx);
@@ -246,12 +272,16 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     report("the toggles show idle and background sessions", all > shown.len(), format!("{all} vs {}", shown.len()));
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| m.set_filters(false, false, cx)));
 
-    exec(conn, &[
-        &format!("DROP SCHEMA IF EXISTS {SCHEMA}_check CASCADE"),
-        &format!("CREATE SCHEMA {SCHEMA}_check"),
-        &format!("CREATE TABLE {SCHEMA}_check.acct (id int PRIMARY KEY, balance int)"),
-        &format!("INSERT INTO {SCHEMA}_check.acct VALUES (1, 100)"),
-    ], cx)
+    exec(
+        conn,
+        &[
+            &format!("DROP SCHEMA IF EXISTS {SCHEMA}_check CASCADE"),
+            &format!("CREATE SCHEMA {SCHEMA}_check"),
+            &format!("CREATE TABLE {SCHEMA}_check.acct (id int PRIMARY KEY, balance int)"),
+            &format!("INSERT INTO {SCHEMA}_check.acct VALUES (1, 100)"),
+        ],
+        cx,
+    )
     .await;
     let holder = conn.session(None);
     for sql in ["BEGIN", &format!("UPDATE {SCHEMA}_check.acct SET balance = 1 WHERE id = 1")] {
@@ -273,10 +303,12 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     .await;
     report("the blocking tree: the holder on top, the waiter under it", tree_ok, format!("{hp} / {wp}"));
 
-    let _ = cx.update(|_, cx| m.update(cx, |m, cx| {
-        m.select_pid(Some(wp), cx);
-        m.request_signal(Signal::Cancel, cx);
-    }));
+    let _ = cx.update(|_, cx| {
+        m.update(cx, |m, cx| {
+            m.select_pid(Some(wp), cx);
+            m.request_signal(Signal::Cancel, cx);
+        })
+    });
     pause(cx, 100).await;
     let sheet = cx.update(|_, cx| ws.read(cx).active_tab().is_some_and(|t| matches!(t.read(cx).confirm, Some(crate::tab::TabConfirm::Monitor(_))))).unwrap();
     report("Cancel asks first (the sheet)", sheet, String::new());
@@ -286,10 +318,12 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     let cancelled = until(cx, 5000, move |_| b2.phase().is_finished()).await && blocked.phase() == Phase::Cancelled;
     report("⌘↩ cancels the waiter's statement", cancelled, format!("{:?}", blocked.phase()));
 
-    let _ = cx.update(|_, cx| m.update(cx, |m, cx| {
-        m.select_pid(Some(hp), cx);
-        m.request_signal(Signal::Terminate, cx);
-    }));
+    let _ = cx.update(|_, cx| {
+        m.update(cx, |m, cx| {
+            m.select_pid(Some(hp), cx);
+            m.request_signal(Signal::Terminate, cx);
+        })
+    });
     pause(cx, 100).await;
     let own = cx
         .update(|_, cx| {
@@ -318,9 +352,8 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     let _ = cx.update(|window, cx| m.update(cx, |m, cx| m.set_section(Section::Sessions, window, cx)));
     pause(cx, 300).await;
     let tabs_before = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
-    let _ = cx.update(|_, cx| {
-        m.update(cx, |_, cx| cx.emit(crate::activity::ActivityEvent::OpenSql { sql: "SELECT count(*) FROM pg_class;".into(), explain: true }))
-    });
+    let _ = cx
+        .update(|_, cx| m.update(cx, |_, cx| cx.emit(crate::activity::ActivityEvent::OpenSql { sql: "SELECT count(*) FROM pg_class;".into(), explain: true })));
     let planned = until(cx, 8000, |cx| ws.read(cx).active_tab().is_some_and(|t| t.read(cx).shows_plan(cx))).await;
     let tabs_after = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
     report("Explain opens the query in a new tab with its plan", planned && tabs_after == tabs_before + 1, String::new());
@@ -355,18 +388,22 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
         format!("{} reads, {} frames, {} redraws", r1 - r0, f1 - f0, d1 - d0),
     );
 
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
-        w.assume_active = Some(false);
-        w.sync_monitors(window, cx);
-    }));
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| {
+            w.assume_active = Some(false);
+            w.sync_monitors(window, cx);
+        })
+    });
     let r0 = cx.update(|_, cx| m.read(cx).refreshes).unwrap();
     pause(cx, 3000).await;
     let r1 = cx.update(|_, cx| m.read(cx).refreshes).unwrap();
     report("the window inactive: no reads", r1 == r0 && !cx.update(|_, cx| m.read(cx).ticking()).unwrap(), format!("{} reads", r1 - r0));
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
-        w.assume_active = Some(true);
-        w.sync_monitors(window, cx);
-    }));
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| {
+            w.assume_active = Some(true);
+            w.sync_monitors(window, cx);
+        })
+    });
 
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| m.set_every(Every::Off, cx)));
     let r0 = cx.update(|_, cx| m.read(cx).refreshes).unwrap();

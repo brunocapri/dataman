@@ -118,7 +118,12 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             let create = format!("CREATE SQL SECURITY DEFINER VIEW {} AS {body}", qual(&spec.space, &name));
             grants.push(Grant::Table { schema: spec.space.clone(), name: name.clone(), privilege: "SELECT".into() });
             grants.push(Grant::View { name: name.clone(), hash: hash.clone() });
-            views.push(ViewDef { name: name.clone(), create, hash, map: ViewMap { schema: a.schema.clone(), table: a.name.clone(), view: qual(&spec.space, &name), masked: a.masked.clone() } });
+            views.push(ViewDef {
+                name: name.clone(),
+                create,
+                hash,
+                map: ViewMap { schema: a.schema.clone(), table: a.name.clone(), view: qual(&spec.space, &name), masked: a.masked.clone() },
+            });
         }
         ok.push(a);
     }
@@ -153,7 +158,11 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
     if !spec.code {
         v.push(line("Run code off", "no EXECUTE granted", Who::Database));
     }
-    v.push(line(if spec.activity { "Server activity" } else { "No server activity" }, if spec.activity { "PROCESS" } else { "no PROCESS: only its own threads" }, Who::Database));
+    v.push(line(
+        if spec.activity { "Server activity" } else { "No server activity" },
+        if spec.activity { "PROCESS" } else { "no PROCESS: only its own threads" },
+        Who::Database,
+    ));
     if probe.flavor.mariadb {
         v.push(line(time_label(spec.time_limit_s), "MAX_STATEMENT_TIME on the user", Who::Database));
     } else {
@@ -220,7 +229,10 @@ fn create_user(spec: &Spec, password: &str, probe: &Probe) -> Step {
     let (auth, shown) = if probe.flavor.mariadb {
         (format!("IDENTIFIED BY PASSWORD {}", lit(&hash::mariadb_native(password))), "IDENTIFIED BY PASSWORD '*…'".to_string())
     } else {
-        (format!("IDENTIFIED WITH caching_sha2_password AS {}", lit(&hash::mysql_caching_sha2(password))), "IDENTIFIED WITH caching_sha2_password AS '$A$005$…'".to_string())
+        (
+            format!("IDENTIFIED WITH caching_sha2_password AS {}", lit(&hash::mysql_caching_sha2(password))),
+            "IDENTIFIED WITH caching_sha2_password AS '$A$005$…'".to_string(),
+        )
     };
     Step::secret_sql(g, format!("CREATE USER {} {auth}{tail}", account(&spec.user)), format!("CREATE USER {} {shown}{tail}", account(&spec.user)))
 }
@@ -235,7 +247,8 @@ fn view_marks(spec: &Spec, d: &Desired, gone: &[String], probe: &Probe) -> Vec<S
     }
     if probe.flavor.mariadb {
         let t = format!("{}.{}", q(&spec.space), q(MARIADB_MARKS));
-        let mut steps = vec![Step::sql("the views", format!("CREATE TABLE IF NOT EXISTS {t} (name VARCHAR(64) NOT NULL PRIMARY KEY, hash VARCHAR(64) NOT NULL)"))];
+        let mut steps =
+            vec![Step::sql("the views", format!("CREATE TABLE IF NOT EXISTS {t} (name VARCHAR(64) NOT NULL PRIMARY KEY, hash VARCHAR(64) NOT NULL)"))];
         for g in gone {
             steps.push(Step::sql("the views", format!("DELETE FROM {t} WHERE name = {}", lit(g))));
         }
@@ -264,7 +277,13 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
         steps.extend(view_steps(spec, &d, true, probe.flavor.mariadb));
     }
     for (s, n, cols) in granted_objects(&d.grants) {
-        let group = if s == spec.space { "the views".to_string() } else if cols { "tables with hidden or masked columns: only the others".to_string() } else { format!("tables the agent may use ({})", d.access.len()) };
+        let group = if s == spec.space {
+            "the views".to_string()
+        } else if cols {
+            "tables with hidden or masked columns: only the others".to_string()
+        } else {
+            format!("tables the agent may use ({})", d.access.len())
+        };
         steps.push(Step::sql(&group, format!("GRANT {} ON {} TO {}", privilege_list(&d.grants, &s, &n, &q), qual(&s, &n), account(&spec.user))));
     }
     for g in d.grants.iter().filter(|g| !matches!(g, Grant::Limit(_) | Grant::Setting { .. } | Grant::Table { .. } | Grant::Column { .. })) {
@@ -447,10 +466,28 @@ pub(crate) async fn inventory(db: &Db, login: &str) -> Result<Inventory> {
         ),
     )
     .await?;
-    let global: Vec<(String, bool)> = text_rows(db, &format!("SELECT PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = {}", lit(&grantee))).await?.iter().map(|r| (s(&r[0]), s(&r[1]) == "YES")).collect();
-    let schema: Vec<(String, String, bool)> = text_rows(db, &format!("SELECT TABLE_SCHEMA, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.SCHEMA_PRIVILEGES WHERE GRANTEE = {}", lit(&grantee))).await?.iter().map(|r| (s(&r[0]), s(&r[1]), s(&r[2]) == "YES")).collect();
-    let table: Vec<(String, String, String, bool)> =
-        text_rows(db, &format!("SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.TABLE_PRIVILEGES WHERE GRANTEE = {}", lit(&grantee))).await?.iter().map(|r| (s(&r[0]), s(&r[1]), s(&r[2]), s(&r[3]) == "YES")).collect();
+    let global: Vec<(String, bool)> =
+        text_rows(db, &format!("SELECT PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = {}", lit(&grantee)))
+            .await?
+            .iter()
+            .map(|r| (s(&r[0]), s(&r[1]) == "YES"))
+            .collect();
+    let schema: Vec<(String, String, bool)> = text_rows(
+        db,
+        &format!("SELECT TABLE_SCHEMA, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.SCHEMA_PRIVILEGES WHERE GRANTEE = {}", lit(&grantee)),
+    )
+    .await?
+    .iter()
+    .map(|r| (s(&r[0]), s(&r[1]), s(&r[2]) == "YES"))
+    .collect();
+    let table: Vec<(String, String, String, bool)> = text_rows(
+        db,
+        &format!("SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.TABLE_PRIVILEGES WHERE GRANTEE = {}", lit(&grantee)),
+    )
+    .await?
+    .iter()
+    .map(|r| (s(&r[0]), s(&r[1]), s(&r[2]), s(&r[3]) == "YES"))
+    .collect();
     let holds = |sch: &str, t: &str, p: &str| {
         global.iter().any(|(x, g)| x == p && *g)
             || schema.iter().any(|(s, x, g)| s.eq_ignore_ascii_case(sch) && x == p && *g)
@@ -463,7 +500,15 @@ pub(crate) async fn inventory(db: &Db, login: &str) -> Result<Inventory> {
             let view = ty.contains("VIEW");
             let need: &[&str] = if view { &["SELECT"] } else { &["SELECT", "INSERT", "UPDATE", "DELETE"] };
             let grantable = need.iter().all(|p| holds(&sch, &name, p));
-            out.objects.push(Obj { schema: sch.clone(), name: name.clone(), kind: if view { ObjKind::View } else { ObjKind::Table }, columns: Vec::new(), grantable, owner: String::new(), sequences: Vec::new() });
+            out.objects.push(Obj {
+                schema: sch.clone(),
+                name: name.clone(),
+                kind: if view { ObjKind::View } else { ObjKind::Table },
+                columns: Vec::new(),
+                grantable,
+                owner: String::new(),
+                sequences: Vec::new(),
+            });
         }
         let o = out.objects.last_mut().expect("pushed");
         o.columns.push(Col { name: col, generated: extra.to_ascii_uppercase().contains("GENERATED") });
@@ -488,7 +533,10 @@ pub(crate) async fn have(db: &Db, user: &str, space: &str, mariadb: bool) -> Res
     for r in text_rows(db, &format!("SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE FROM information_schema.TABLE_PRIVILEGES WHERE GRANTEE = {g}")).await? {
         out.push(Grant::Table { schema: s(&r[0]), name: s(&r[1]), privilege: s(&r[2]) });
     }
-    for r in text_rows(db, &format!("SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = {g}")).await? {
+    for r in
+        text_rows(db, &format!("SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = {g}"))
+            .await?
+    {
         out.push(Grant::Column { schema: s(&r[0]), name: s(&r[1]), column: s(&r[2]), privilege: s(&r[3]) });
     }
     for r in text_rows(db, &format!("SELECT PRIVILEGE_TYPE FROM information_schema.USER_PRIVILEGES WHERE GRANTEE = {g}")).await? {
@@ -498,7 +546,9 @@ pub(crate) async fn have(db: &Db, user: &str, space: &str, mariadb: bool) -> Res
         }
     }
     let create = text_rows(db, &format!("SHOW CREATE USER {}", account(user))).await?.first().map(|r| s(&r[0])).unwrap_or_default();
-    let num_after = |k: &str| create.split(k).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok());
+    let num_after = |k: &str| {
+        create.split(k).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
+    };
     if let Some(n) = num_after("MAX_USER_CONNECTIONS").filter(|n| *n > 0) {
         out.push(Grant::Limit(n));
     }
@@ -523,7 +573,11 @@ pub(crate) async fn have(db: &Db, user: &str, space: &str, mariadb: bool) -> Res
             }
         }
     }
-    let existing: Vec<String> = text_rows(db, &format!("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = {}", lit(space))).await?.iter().map(|r| s(&r[0])).collect();
+    let existing: Vec<String> = text_rows(db, &format!("SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA = {}", lit(space)))
+        .await?
+        .iter()
+        .map(|r| s(&r[0]))
+        .collect();
     views.retain(|(n, _)| existing.contains(n));
     for (n, h) in &views {
         out.push(Grant::View { name: n.clone(), hash: h.clone() });

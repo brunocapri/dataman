@@ -49,20 +49,10 @@ mod no_verify {
         ) -> Result<ServerCertVerified, rustls::Error> {
             Ok(ServerCertVerified::assertion())
         }
-        fn verify_tls12_signature(
-            &self,
-            m: &[u8],
-            c: &CertificateDer<'_>,
-            d: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        fn verify_tls12_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
             verify_tls12_signature(m, c, d, &self.0.signature_verification_algorithms)
         }
-        fn verify_tls13_signature(
-            &self,
-            m: &[u8],
-            c: &CertificateDer<'_>,
-            d: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        fn verify_tls13_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
             verify_tls13_signature(m, c, d, &self.0.signature_verification_algorithms)
         }
         fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -92,10 +82,7 @@ pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig
         }
         builder.with_root_certificates(roots).with_no_client_auth()
     } else {
-        builder
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(no_verify::NoVerify(provider)))
-            .with_no_client_auth()
+        builder.dangerous().with_custom_certificate_verifier(Arc::new(no_verify::NoVerify(provider))).with_no_client_auth()
     };
     Ok(Some(cfg))
 }
@@ -279,15 +266,11 @@ fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&st
             cfg.host(&p.host).port(p.port);
         }
     }
-    cfg.user(&p.user)
-        .dbname(database.unwrap_or(&p.database))
-        .application_name("Dataman")
-        .connect_timeout(Duration::from_secs(10))
-        .ssl_mode(match sslmode {
-            SslMode::Disable => tokio_postgres::config::SslMode::Disable,
-            SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
-            SslMode::Require | SslMode::VerifyFull => tokio_postgres::config::SslMode::Require,
-        });
+    cfg.user(&p.user).dbname(database.unwrap_or(&p.database)).application_name("Dataman").connect_timeout(Duration::from_secs(10)).ssl_mode(match sslmode {
+        SslMode::Disable => tokio_postgres::config::SslMode::Disable,
+        SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
+        SslMode::Require | SslMode::VerifyFull => tokio_postgres::config::SslMode::Require,
+    });
     if let Some(pw) = password {
         cfg.password(pw);
     }
@@ -498,10 +481,8 @@ pub(crate) async fn start(client: &Client, stmt: &Statement, columns: &[ColumnIn
 
 const BINARY_DECODED: &[&str] = &["vector", "halfvec", "sparsevec", "hstore", "ltree", "lquery", "ltxtquery", "citext"];
 
-const REG_TYPES: &[&str] = &[
-    "regclass", "regproc", "regprocedure", "regoper", "regoperator", "regtype", "regnamespace", "regrole", "regconfig", "regdictionary",
-    "regcollation",
-];
+const REG_TYPES: &[&str] =
+    &["regclass", "regproc", "regprocedure", "regoper", "regoperator", "regtype", "regnamespace", "regrole", "regconfig", "regdictionary", "regcollation"];
 
 /// `aclitem` has no binary output function (the server fails the whole query), and an
 /// extension type the grid has no decoder for would show as hex.
@@ -606,13 +587,7 @@ pub(crate) fn error_info(e: &tokio_postgres::Error) -> ErrorInfo {
     }
 }
 
-pub(crate) async fn run(
-    client: &Client,
-    rs: &Arc<ResultSet>,
-    started: Instant,
-    on_pause: &(dyn Fn() + Sync),
-    aborted: &(dyn Fn() -> bool + Sync),
-) -> Ran {
+pub(crate) async fn run(client: &Client, rs: &Arc<ResultSet>, started: Instant, on_pause: &(dyn Fn() + Sync), aborted: &(dyn Fn() -> bool + Sync)) -> Ran {
     let executing = || rs.executing.store(true, std::sync::atomic::Ordering::Release);
     // COPY over the client's own channel: the extended protocol cannot carry it (the server's
     // reply kills the connection), so it never gets there.
@@ -681,7 +656,9 @@ enum Copy {
 
 fn copy_channel(sql: &str) -> Option<Copy> {
     let toks: Vec<_> = crate::sql::tokenize(sql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
-    let word = |i: usize, w: &str| toks.get(i).is_some_and(|t| matches!(t.kind, crate::sql::TokenKind::Keyword | crate::sql::TokenKind::Ident) && t.text(sql).eq_ignore_ascii_case(w));
+    let word = |i: usize, w: &str| {
+        toks.get(i).is_some_and(|t| matches!(t.kind, crate::sql::TokenKind::Keyword | crate::sql::TokenKind::Ident) && t.text(sql).eq_ignore_ascii_case(w))
+    };
     if !word(0, "COPY") {
         return None;
     }
@@ -699,12 +676,7 @@ fn copy_channel(sql: &str) -> Option<Copy> {
     }
 }
 
-async fn fetch_copy_out(
-    client: &Client,
-    rs: &Arc<ResultSet>,
-    started: Instant,
-    on_pause: &(dyn Fn() + Sync),
-) -> Result<Option<u64>, tokio_postgres::Error> {
+async fn fetch_copy_out(client: &Client, rs: &Arc<ResultSet>, started: Instant, on_pause: &(dyn Fn() + Sync)) -> Result<Option<u64>, tokio_postgres::Error> {
     let cols = vec![ColumnInfo { name: "copy".into(), type_name: "text".into(), type_oid: 25, kind: Kind::Text }];
     rs.set_columns(cols.clone());
     let stream = client.copy_out(rs.sql.as_str()).await?;
@@ -785,10 +757,7 @@ async fn fetch_extended(
     on_pause: &(dyn Fn() + Sync),
 ) -> Result<Option<u64>, tokio_postgres::Error> {
     rs.set_origins(
-        stmt.columns()
-            .iter()
-            .map(|c| ColumnOrigin { table_oid: c.table_oid().filter(|o| *o != 0), column_id: c.column_id().filter(|n| *n > 0) })
-            .collect(),
+        stmt.columns().iter().map(|c| ColumnOrigin { table_oid: c.table_oid().filter(|o| *o != 0), column_id: c.column_id().filter(|n| *n > 0) }).collect(),
     );
     rs.set_columns(column_infos(stmt));
     let cols = rs.columns().unwrap_or_default();
@@ -966,12 +935,7 @@ pub(crate) fn push_row(b: &mut ChunkBuilder, row: &tokio_postgres::Row, types: &
     b.end_row();
 }
 
-async fn fetch_simple(
-    client: &Client,
-    rs: &Arc<ResultSet>,
-    started: Instant,
-    on_pause: &(dyn Fn() + Sync),
-) -> Result<Option<u64>, tokio_postgres::Error> {
+async fn fetch_simple(client: &Client, rs: &Arc<ResultSet>, started: Instant, on_pause: &(dyn Fn() + Sync)) -> Result<Option<u64>, tokio_postgres::Error> {
     let stream = client.simple_query_raw(&rs.sql).await?;
     futures_util::pin_mut!(stream);
     let mut b: Option<ChunkBuilder> = None;
@@ -986,10 +950,8 @@ async fn fetch_simple(
         match msg? {
             SimpleQueryMessage::RowDescription(cols) => {
                 if b.is_none() && !first_done {
-                    let info: Vec<ColumnInfo> = cols
-                        .iter()
-                        .map(|c| ColumnInfo { name: c.name().to_string(), type_name: "text".into(), type_oid: 25, kind: Kind::Text })
-                        .collect();
+                    let info: Vec<ColumnInfo> =
+                        cols.iter().map(|c| ColumnInfo { name: c.name().to_string(), type_name: "text".into(), type_oid: 25, kind: Kind::Text }).collect();
                     ncols = info.len();
                     b = Some(ChunkBuilder::new(&info));
                     rs.set_columns(info);

@@ -22,7 +22,9 @@ fn pg() -> Option<(String, u16)> {
     let v = std::env::var("DATAMAN_PG").unwrap_or_else(|_| "127.0.0.1:55432".into());
     let (h, p) = v.rsplit_once(':')?;
     let p: u16 = p.parse().ok()?;
-    std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().ok()?, Duration::from_secs(1)).ok().filter(|s| s.local_addr().ok() != s.peer_addr().ok())?;
+    std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().ok()?, Duration::from_secs(1))
+        .ok()
+        .filter(|s| s.local_addr().ok() != s.peer_addr().ok())?;
     Some((h.to_string(), p))
 }
 
@@ -46,7 +48,11 @@ fn replies_hold_only_what_the_agent_received() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("dataman");
     std::fs::create_dir_all(&cfg).unwrap();
-    let conn = |id: &str, extra: &str| format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{h}\"\nport = {p}\nuser = \"postgres\"\ndatabase = \"dataman\"\nsslmode = \"disable\"\n{extra}\n");
+    let conn = |id: &str, extra: &str| {
+        format!(
+            "[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{h}\"\nport = {p}\nuser = \"postgres\"\ndatabase = \"dataman\"\nsslmode = \"disable\"\n{extra}\n"
+        )
+    };
     let rules = "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"people.email\", how = \"partial\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"people.secret\", kind = \"column\" }]\n".to_string();
     std::fs::write(cfg.join("connections.toml"), [conn("admin", "mcp = \"full\""), conn("agent", &rules)].concat()).unwrap();
     let pgpass = dir.path().join("pgpass");
@@ -72,11 +78,20 @@ fn replies_hold_only_what_the_agent_received() {
     .unwrap();
 
     let got = call(&srv, "run_query", json!({"connection": "agent", "sql": format!("SELECT * FROM {s}.people")})).unwrap();
-    let err = call(&srv, "execute", json!({"connection": "agent", "sql": format!("INSERT INTO {s}.people (id, name, email) VALUES (2, 'Bia', 'ana@acme.com')")})).unwrap_err();
+    let err =
+        call(&srv, "execute", json!({"connection": "agent", "sql": format!("INSERT INTO {s}.people (id, name, email) VALUES (2, 'Bia', 'ana@acme.com')")}))
+            .unwrap_err();
 
     let log = cfg.join("mcp-audit.jsonl");
     let entries: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let id_of = |tool: &str, ok: bool| entries.iter().rev().find(|e| e["tool"] == tool && e["connection"] == "agent" && (e["outcome"] == "ok") == ok).and_then(|e| e["id"].as_str()).map(str::to_string);
+    let id_of = |tool: &str, ok: bool| {
+        entries
+            .iter()
+            .rev()
+            .find(|e| e["tool"] == tool && e["connection"] == "agent" && (e["outcome"] == "ok") == ok)
+            .and_then(|e| e["id"].as_str())
+            .map(str::to_string)
+    };
     let read_id = id_of("run_query", true).expect("the read is logged with an id");
     let kept = dataman_core::audit::reply(&log, &read_id).expect("its reply is on disk");
     assert_eq!(serde_json::from_str::<Value>(&kept.reply).unwrap(), got, "the reply on disk is exactly what the agent received");

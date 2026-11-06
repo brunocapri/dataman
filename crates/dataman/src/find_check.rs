@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::find::FindOptions;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::editor::CodeEditor;
@@ -144,7 +144,11 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let l3 = ed(cx).1;
     key(cx, "cmd-g");
     let l4 = ed(cx).1;
-    report("↩ / ⇧↩ / ⌘G step through the matches, around the ends", (l1.as_str(), l2.as_str(), l3.as_str(), l4.as_str()) == ("2/6", "1/6", "6/6", "1/6"), format!("{l1} {l2} {l3} {l4}"));
+    report(
+        "↩ / ⇧↩ / ⌘G step through the matches, around the ends",
+        (l1.as_str(), l2.as_str(), l3.as_str(), l4.as_str()) == ("2/6", "1/6", "6/6", "1/6"),
+        format!("{l1} {l2} {l3} {l4}"),
+    );
     key(cx, "escape");
     let (open, _, _, focused, ..) = ed(cx);
     report("esc closes the bar and gives the focus back to the editor", !open && focused, format!("open {open} focused {focused}"));
@@ -154,7 +158,11 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
     key(cx, "cmd-g");
     let (open, label, field, focused, ..) = ed(cx);
-    report("⌘G with the bar closed reopens it on the last query, the focus stays", open && label == "2/6" && focused && !field, format!("{open} {label} {focused} {field}"));
+    report(
+        "⌘G with the bar closed reopens it on the last query, the focus stays",
+        open && label == "2/6" && focused && !field,
+        format!("{open} {label} {focused} {field}"),
+    );
 
     key(cx, "cmd-alt-f");
     key(cx, "tab");
@@ -183,7 +191,11 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let _ = cx.update(|_, cx| bar.update(cx, |_, cx| cx.emit(FindBarEvent::ReplaceAll)));
     draw(cx);
     let text = ed(cx).5;
-    report("a regular expression replaces with $1", label.ends_with("/6") && text.contains("id_p, status_p") && !text.contains("p."), format!("{label} {text:?}"));
+    report(
+        "a regular expression replaces with $1",
+        label.ends_with("/6") && text.contains("id_p, status_p") && !text.contains("p."),
+        format!("{label} {text:?}"),
+    );
     key(cx, "escape");
     key(cx, "cmd-z");
     report("…and undoes in one step", ed(cx).5 == original, String::new());
@@ -217,7 +229,12 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     });
     let key_ms = t1.elapsed().as_secs_f64() * 1e3;
     println!("     2,000 lines: search {open_ms:.2} ms ({label}); a key {closed_ms:.2} ms with the bar closed, {key_ms:.2} ms open");
-    report("a 2,000-line script searches and edits fast", open_ms < crate::check::budget(Duration::from_millis(8)).as_secs_f64() * 1e3 && key_ms < crate::check::budget(Duration::from_millis(4)).as_secs_f64() * 1e3, format!("{open_ms:.2} {key_ms:.2}"));
+    report(
+        "a 2,000-line script searches and edits fast",
+        open_ms < crate::check::budget(Duration::from_millis(8)).as_secs_f64() * 1e3
+            && key_ms < crate::check::budget(Duration::from_millis(4)).as_secs_f64() * 1e3,
+        format!("{open_ms:.2} {key_ms:.2}"),
+    );
     key(cx, "escape");
     key(cx, "escape");
     let _ = cx.update(|_, cx| editor.update(cx, |e, cx| e.set_text(&original, cx)));
@@ -243,7 +260,11 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     );
     let total = hits.len();
     let active = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).demo_selection().map(|s| s.1)).unwrap();
-    report("the first match from the active cell becomes active", active(cx) == Some((hits[0].0 as usize, hits[0].1 as usize)) && label == format!("1/{}", crate::grid::ui_count(total)), format!("{label} {:?}", active(cx)));
+    report(
+        "the first match from the active cell becomes active",
+        active(cx) == Some((hits[0].0 as usize, hits[0].1 as usize)) && label == format!("1/{}", crate::grid::ui_count(total)),
+        format!("{label} {:?}", active(cx)),
+    );
     key(cx, "enter");
     let a1 = active(cx);
     key(cx, "shift-enter");

@@ -3,9 +3,9 @@
 //! with the app there, so they come from the command line. On Windows the socket is a named pipe
 //! whose random name is in `instance.pipe` in the config folder (the user's own).
 
+use std::io::Write as _;
 #[cfg(unix)]
 use std::io::{BufRead as _, BufReader};
-use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 #[cfg(unix)]

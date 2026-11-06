@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use gpui::{AsyncWindowContext, Bounds, Entity, Pixels};
 use dataman_core::{Auth, AuthKind, Engine, Environment, McpAccess};
+use gpui::{AsyncWindowContext, Bounds, Entity, Pixels};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -39,8 +39,15 @@ pub fn prepare() {
     let az = format!(
         "echo \"az $*\" >> '{r}/runs'\ncase \"$1\" in\naccount)\n  [ -f '{r}/signed-in' ] || {{ echo \"ERROR: Please run 'az login' to setup account.\" >&2; exit 1; }}\n  echo '{{\"accessToken\":\"{token}\",\"expires_on\":4102444800}}' ;;\nlogin)\n  if [ -f '{r}/hold' ]; then sleep 60 & echo $! > '{r}/login.pid'; wait; fi\n  while [ -f '{r}/gate' ]; do sleep 0.1; done\n  touch '{r}/signed-in' ;;\nesac\n"
     );
-    let aws = format!("echo \"aws $*\" >> '{r}/runs'\ncase \"$1\" in\nrds) echo 'aws-iam-token' ;;\nsts) echo '{{\"Arn\":\"arn:aws:iam::1:user/aws-identity\"}}' ;;\nesac\n");
-    let scripts = [("az", az), ("aws", aws), ("claude", format!("echo \"claude $*\" >> '{r}/runs'\n")), ("codex", format!("echo \"codex $*\" >> '{r}/runs'\necho 'no config' >&2\nexit 1\n"))];
+    let aws = format!(
+        "echo \"aws $*\" >> '{r}/runs'\ncase \"$1\" in\nrds) echo 'aws-iam-token' ;;\nsts) echo '{{\"Arn\":\"arn:aws:iam::1:user/aws-identity\"}}' ;;\nesac\n"
+    );
+    let scripts = [
+        ("az", az),
+        ("aws", aws),
+        ("claude", format!("echo \"claude $*\" >> '{r}/runs'\n")),
+        ("codex", format!("echo \"codex $*\" >> '{r}/runs'\necho 'no config' >&2\nexit 1\n")),
+    ];
     #[cfg(unix)]
     for (name, script) in scripts {
         use std::os::unix::fs::PermissionsExt as _;
@@ -128,7 +135,11 @@ async fn database_step(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWin
         r.check("⌘N opens the sheet", false, "");
         return;
     };
-    r.check("the sheet opens on Database, with no footer", step(&d, cx) == Some(Step::Database) && probed("dlg-save", cx).is_none(), format!("{:?}", step(&d, cx)));
+    r.check(
+        "the sheet opens on Database, with no footer",
+        step(&d, cx) == Some(Step::Database) && probed("dlg-save", cx).is_none(),
+        format!("{:?}", step(&d, cx)),
+    );
     let card: Option<Bounds<Pixels>> = probed("dlg-card", cx);
     typ(cx, "oracle");
     draw(cx);
@@ -158,7 +169,11 @@ async fn database_step(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWin
     r.check("Sign-in asks for the user before going on", step(&d, cx) == Some(Step::SignIn) && status.contains("user"), &status);
     fill("USER", "ana", cx);
     cont(cx).await;
-    r.check("then MCP, with Skip and no Test", step(&d, cx) == Some(Step::Mcp) && probed("dlg-skip", cx).is_some() && probed("dlg-test", cx).is_none(), format!("{:?}", step(&d, cx)));
+    r.check(
+        "then MCP, with Skip and no Test",
+        step(&d, cx) == Some(Step::Mcp) && probed("dlg-skip", cx).is_some() && probed("dlg-test", cx).is_none(),
+        format!("{:?}", step(&d, cx)),
+    );
     same &= probed("dlg-card", cx) == card;
     r.check("the modal keeps its one size through the steps", same && card.is_some(), format!("{card:?}"));
     shut(ws, cx).await;
@@ -177,12 +192,20 @@ async fn strings(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("the password stays visible only in the string", string(&d, cx).contains("hunter22"), string(&d, cx));
     cont(cx).await;
     let m = method(&d, cx);
-    r.check("from a string: Keep user & password, with the note", m.0 == AuthKind::Password && m.1 == "Keep user & password" && m.2 && probed("from-string", cx).is_some(), format!("{m:?}"));
+    r.check(
+        "from a string: Keep user & password, with the note",
+        m.0 == AuthKind::Password && m.1 == "Keep user & password" && m.2 && probed("from-string", cx).is_some(),
+        format!("{m:?}"),
+    );
     click_probe("crumb-Connection", cx);
     pause(cx, 50).await;
     fill("HOST", "other.internal", cx);
     let text = string(&d, cx);
-    r.check("editing a field rewrites the string, without the password", text.contains("other.internal") && text.contains("ana@") && !text.contains("hunter22"), &text);
+    r.check(
+        "editing a field rewrites the string, without the password",
+        text.contains("other.internal") && text.contains("ana@") && !text.contains("hunter22"),
+        &text,
+    );
     let (p, pw) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
     r.check("the password stays in its field, never in what is saved as text", pw == "hunter22" && !p.url().contains("hunter22"), p.url());
     cont(cx).await;
@@ -198,7 +221,11 @@ async fn strings(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     draw(cx);
     let bad = cx.update(|_, cx| d.read(cx).conn_str_invalid(cx)).unwrap_or(false);
     cont(cx).await;
-    r.check("what can't be read says so under the field, and Continue stays", bad && probed("string-bad", cx).is_some() && step(&d, cx) == Some(Step::Connection), bad);
+    r.check(
+        "what can't be read says so under the field, and Continue stays",
+        bad && probed("string-bad", cx).is_some() && step(&d, cx) == Some(Step::Connection),
+        bad,
+    );
     shut(ws, cx).await;
 
     // Pasted in the search (typed all at once, as a paste comes): straight to Connection.
@@ -209,12 +236,18 @@ async fn strings(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "enter");
     pause(cx, 50).await;
     let (p, pw) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
-    r.check("a string in the search goes to Connection, filled", step(&d, cx) == Some(Step::Connection) && p.host == "db.internal" && pw == "hunter22", format!("{:?} {}", step(&d, cx), p.host));
+    r.check(
+        "a string in the search goes to Connection, filled",
+        step(&d, cx) == Some(Step::Connection) && p.host == "db.internal" && pw == "hunter22",
+        format!("{:?} {}", step(&d, cx), p.host),
+    );
     shut(ws, cx).await;
 }
 
 async fn hosts_pick_methods(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    for (host, want) in [(AZURE, AuthKind::EntraId), (RDS, AuthKind::AwsIam), ("orders.europe-west1.sql.goog", AuthKind::GoogleIam), ("db.internal", AuthKind::Password)] {
+    for (host, want) in
+        [(AZURE, AuthKind::EntraId), (RDS, AuthKind::AwsIam), ("orders.europe-west1.sql.goog", AuthKind::GoogleIam), ("db.internal", AuthKind::Password)]
+    {
         let Some(d) = sheet(ws, "pg", cx).await else { return };
         fill("HOST", host, cx);
         cont(cx).await;
@@ -222,7 +255,11 @@ async fn hosts_pick_methods(ws: &Entity<Workspace>, r: &mut Report, cx: &mut Asy
         r.check(&format!("{host} preselects {want:?}"), m.0 == want, format!("{m:?}"));
         if want != AuthKind::Password {
             let tls = cx.update(|_, cx| d.read(cx).current(cx).0.sslmode).unwrap();
-            r.check(&format!("{want:?} raises SSL to Require or Verify"), matches!(tls, dataman_core::SslMode::Require | dataman_core::SslMode::VerifyFull), format!("{tls:?}"));
+            r.check(
+                &format!("{want:?} raises SSL to Require or Verify"),
+                matches!(tls, dataman_core::SslMode::Require | dataman_core::SslMode::VerifyFull),
+                format!("{tls:?}"),
+            );
         }
         shut(ws, cx).await;
     }
@@ -246,12 +283,20 @@ async fn hosts_pick_methods(ws: &Entity<Workspace>, r: &mut Report, cx: &mut Asy
     let Some(d) = sheet(ws, "redis", cx).await else { return };
     fill("HOST", "db.internal", cx);
     cont(cx).await;
-    r.check("an engine with one method shows its fields, no list", probed("auth-password", cx).is_none() && probed("field-USER (OPTIONAL)", cx).is_some() && probed("field-PASSWORD", cx).is_some(), format!("{:?}", step(&d, cx)));
+    r.check(
+        "an engine with one method shows its fields, no list",
+        probed("auth-password", cx).is_none() && probed("field-USER (OPTIONAL)", cx).is_some() && probed("field-PASSWORD", cx).is_some(),
+        format!("{:?}", step(&d, cx)),
+    );
     shut(ws, cx).await;
     let Some(_) = sheet(ws, "mssql", cx).await else { return };
     fill("HOST", "orders.database.windows.net", cx);
     cont(cx).await;
-    r.check("SQL Server with Entra asks for no user", probed("auth-entra-id", cx).is_some() && probed("field-USER", cx).is_none() && probed("field-TENANT", cx).is_some(), "");
+    r.check(
+        "SQL Server with Entra asks for no user",
+        probed("auth-entra-id", cx).is_some() && probed("field-USER", cx).is_none() && probed("field-TENANT", cx).is_some(),
+        "",
+    );
     shut(ws, cx).await;
 }
 
@@ -305,7 +350,11 @@ async fn sign_in(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let waiting = until(cx, 10, |cx| method(&d, cx).3 == "Waiting for the browser").await;
     until(cx, 5, |_| runs().contains("az login")).await;
     let log = runs();
-    r.check("Sign in asks for a token, and with none runs the CLI's login", waiting && log.contains("az account get-access-token") && log.contains("az login"), &log);
+    r.check(
+        "Sign in asks for a token, and with none runs the CLI's login",
+        waiting && log.contains("az account get-access-token") && log.contains("az login"),
+        &log,
+    );
     until(cx, 5, |_| root().join("login.pid").is_file()).await;
     let pid = std::fs::read_to_string(root().join("login.pid")).unwrap_or_default();
     r.check("the login is running, and the button is Cancel", alive(&pid) && probed("auth-action-entra-id", cx).is_some(), &pid);
@@ -318,7 +367,11 @@ async fn sign_in(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let signed = until(cx, 10, |cx| method(&d, cx).3 == "ana@contoso.com").await;
     let log = runs();
     let after: Vec<&str> = log.lines().skip(at).collect();
-    r.check("signed out, Sign in goes straight to the login, then says who", signed && after.first().is_some_and(|l| l.starts_with("az login")) && after.iter().any(|l| l.contains("get-access-token")), format!("{:?} {after:?}", method(&d, cx)));
+    r.check(
+        "signed out, Sign in goes straight to the login, then says who",
+        signed && after.first().is_some_and(|l| l.starts_with("az login")) && after.iter().any(|l| l.contains("get-access-token")),
+        format!("{:?} {after:?}", method(&d, cx)),
+    );
     r.check("signed in, the button goes", probed("auth-action-entra-id", cx).is_none(), "");
     shut(ws, cx).await;
 }
@@ -335,7 +388,12 @@ async fn colors(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
     click_probe("env-none", cx);
     click_probe("env-production", cx);
-    let picked = cx.update(|_, cx| { let p = d.read(cx); (p.demo_color().1, p.demo_tier()) }).unwrap();
+    let picked = cx
+        .update(|_, cx| {
+            let p = d.read(cx);
+            (p.demo_color().1, p.demo_tier())
+        })
+        .unwrap();
     r.check("Production's tier defaults to Off", picked.1 == McpAccess::Off, format!("{picked:?}"));
     click_probe("env-none", cx);
     r.check("leaving Production brings the color back", color(cx).0 == 3, format!("{:?}", color(cx)));
@@ -347,7 +405,11 @@ async fn colors(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     click_probe("dlg-skip", cx);
     until(cx, 5, |cx| saved(ws, &id, cx).is_some()).await;
     let p = saved(ws, &id, cx);
-    r.check("saved on Production, it is production's red", p.as_ref().is_some_and(|p| p.env == Environment::Production && p.prod_red() && p.color.as_deref() == Some(crate::theme::SWATCHES[3])), format!("{:?}", p.map(|p| (p.env, p.color, p.color_picked))));
+    r.check(
+        "saved on Production, it is production's red",
+        p.as_ref().is_some_and(|p| p.env == Environment::Production && p.prod_red() && p.color.as_deref() == Some(crate::theme::SWATCHES[3])),
+        format!("{:?}", p.map(|p| (p.env, p.color, p.color_picked))),
+    );
     until(cx, 5, |cx| dialog(ws, cx).is_none()).await;
 }
 
@@ -364,7 +426,11 @@ async fn breadcrumb(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     click_probe("engine-MySQL", cx);
     pause(cx, 50).await;
     let (s, p) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0)).unwrap();
-    r.check("changing the database goes back to the step it was changed from", s == Step::SignIn && p.engine == Engine::MySql && p.port == 3306, format!("{s:?} {:?} {}", p.engine, p.port));
+    r.check(
+        "changing the database goes back to the step it was changed from",
+        s == Step::SignIn && p.engine == Engine::MySql && p.port == 3306,
+        format!("{s:?} {:?} {}", p.engine, p.port),
+    );
     shut(ws, cx).await;
 }
 
@@ -391,7 +457,11 @@ async fn scrolling(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowC
 
 async fn files(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let Some(d) = sheet(ws, "sqlite", cx).await else { return };
-    r.check("a file database's Connection has Test", probed("dlg-test", cx).is_some() && probed("field-FILE", cx).is_some() && probed("field-CONNECTION STRING", cx).is_none(), "");
+    r.check(
+        "a file database's Connection has Test",
+        probed("dlg-test", cx).is_some() && probed("field-FILE", cx).is_some() && probed("field-CONNECTION STRING", cx).is_none(),
+        "",
+    );
     let file = root().join("shop.sqlite");
     dataman_core::import::create_database(Engine::Sqlite, &file).expect("a database file");
     fill("FILE", &file.to_string_lossy(), cx);
@@ -424,13 +494,21 @@ async fn agents(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     r.check("Add runs in the background, with the user scope", done && log.lines().any(|l| l.starts_with("claude mcp add -s user dataman -- ")), &log);
     click_probe("agent-add-codex", cx);
     let failed = until(cx, 10, |cx| state("codex", cx).starts_with("failed")).await;
-    r.check("an agent that fails says so, and the other keeps its answer", failed && state("codex", cx).contains("no config") && state("claude", cx) == "done", state("codex", cx));
+    r.check(
+        "an agent that fails says so, and the other keeps its answer",
+        failed && state("codex", cx).contains("no config") && state("claude", cx) == "done",
+        state("codex", cx),
+    );
     click_probe("agent-add-windsurf", cx);
     let done = until(cx, 10, |cx| state("windsurf", cx) == "done").await;
     let home = dataman_core::os::home().unwrap_or_default();
     let file = home.join(".codeium").join("windsurf").join("mcp_config.json");
     let text = std::fs::read_to_string(&file).unwrap_or_default();
-    r.check("Windsurf's settings get the server, under this check's own home", done && file.starts_with(root()) && text.contains("mcpServers") && text.contains("dataman"), &text);
+    r.check(
+        "Windsurf's settings get the server, under this check's own home",
+        done && file.starts_with(root()) && text.contains("mcpServers") && text.contains("dataman"),
+        &text,
+    );
     click_probe("agent-copy-claude", cx);
     let want = cx.update(|_, cx| d.read(cx).demo_copy("claude")).ok().flatten().unwrap_or_default();
     r.check("Copy gives the command", want.starts_with("claude mcp add -s user dataman -- ") && clipboard(cx) == want, clipboard(cx));
@@ -454,9 +532,17 @@ async fn saving(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     click_probe("dlg-skip", cx);
     until(cx, 5, |cx| saved(ws, &id, cx).is_some()).await;
     let p = saved(ws, &id, cx);
-    r.check("Skip saves with no tier, even after picking one, and a failed connect stays saved", p.as_ref().is_some_and(|p| p.mcp.is_none()), format!("{:?}", p.map(|p| p.mcp)));
+    r.check(
+        "Skip saves with no tier, even after picking one, and a failed connect stays saved",
+        p.as_ref().is_some_and(|p| p.mcp.is_none()),
+        format!("{:?}", p.map(|p| p.mcp)),
+    );
     until(cx, 5, |cx| dialog(ws, cx).is_none()).await;
-    r.check("an unnamed connection is called after its host", saved(ws, &id, cx).is_some_and(|p| p.name == "127.0.0.1"), format!("{:?}", saved(ws, &id, cx).map(|p| p.name)));
+    r.check(
+        "an unnamed connection is called after its host",
+        saved(ws, &id, cx).is_some_and(|p| p.name == "127.0.0.1"),
+        format!("{:?}", saved(ws, &id, cx).map(|p| p.name)),
+    );
 
     let Some(d) = sheet_to_mcp(cx).await else { return };
     let id2 = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
@@ -473,7 +559,11 @@ async fn saving(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     draw(cx);
     let form = probed("field-HOST", cx).is_some() && probed("field-USER", cx).is_some() && probed("mcp-read", cx).is_some();
     let extras = ["crumb-Database", "agent-copy-claude", "dlg-skip"].iter().any(|p| probed(p, cx).is_some());
-    r.check("Edit is one form: connection, sign-in and tiers, no breadcrumb, Skip or agents", form && !extras && probed("dlg-delete", cx).is_some() && probed("dlg-test", cx).is_some(), format!("{form} {extras}"));
+    r.check(
+        "Edit is one form: connection, sign-in and tiers, no breadcrumb, Skip or agents",
+        form && !extras && probed("dlg-delete", cx).is_some() && probed("dlg-test", cx).is_some(),
+        format!("{form} {extras}"),
+    );
     fill("NAME", "renamed", cx);
     click_probe("dlg-save", cx);
     until(cx, 5, |cx| saved(ws, &id, cx).is_some_and(|p| p.name == "renamed")).await;
@@ -511,7 +601,11 @@ async fn a_password_stays_with_its_string(ws: &Entity<Workspace>, r: &mut Report
     let Some(d) = sheet(ws, "pg", cx).await else { return };
     paste("CONNECTION STRING", STRING, cx).await;
     paste("HOST", OTHER, cx).await;
-    r.check("a string pasted in HOST drops it too", password(&d, cx).is_empty() && cx.update(|_, cx| d.read(cx).demo_field(1, cx)).unwrap_or_default() == "other.internal", password(&d, cx));
+    r.check(
+        "a string pasted in HOST drops it too",
+        password(&d, cx).is_empty() && cx.update(|_, cx| d.read(cx).demo_field(1, cx)).unwrap_or_default() == "other.internal",
+        password(&d, cx),
+    );
     shut(ws, cx).await;
 
     let Some(d) = sheet(ws, "pg", cx).await else { return };
@@ -553,9 +647,17 @@ async fn a_changed_host_goes_through_sign_in(ws: &Entity<Workspace>, r: &mut Rep
         cont(cx).await;
         let m = method(&d, cx);
         if chosen {
-            r.check(&format!("{how}: Entra picked by hand stays, warning where the token goes"), step(&d, cx) == Some(Step::SignIn) && m.0 == AuthKind::EntraId && probed("foreign-host", cx).is_some(), format!("{:?} {m:?}", step(&d, cx)));
+            r.check(
+                &format!("{how}: Entra picked by hand stays, warning where the token goes"),
+                step(&d, cx) == Some(Step::SignIn) && m.0 == AuthKind::EntraId && probed("foreign-host", cx).is_some(),
+                format!("{:?} {m:?}", step(&d, cx)),
+            );
         } else {
-            r.check(&format!("{how}: Entra only from the host goes with it"), step(&d, cx) == Some(Step::SignIn) && m.0 == AuthKind::Password, format!("{:?} {m:?}", step(&d, cx)));
+            r.check(
+                &format!("{how}: Entra only from the host goes with it"),
+                step(&d, cx) == Some(Step::SignIn) && m.0 == AuthKind::Password,
+                format!("{:?} {m:?}", step(&d, cx)),
+            );
         }
         shut(ws, cx).await;
     }
@@ -673,7 +775,11 @@ async fn engine_changes_land_where_they_can_be_fixed(ws: &Entity<Workspace>, r: 
     click_probe("dlg-skip", cx);
     pause(cx, 100).await;
     let said = cx.update(|_, cx| d.read(cx).demo_status(cx)).map(|s| s.0).unwrap_or_default();
-    r.check("a Skip that can't save goes where it is fixed, and says why", step(&d, cx) == Some(Step::SignIn) && said.starts_with("invalid") && probed("field-USER", cx).is_some(), format!("{:?} {said}", step(&d, cx)));
+    r.check(
+        "a Skip that can't save goes where it is fixed, and says why",
+        step(&d, cx) == Some(Step::SignIn) && said.starts_with("invalid") && probed("field-USER", cx).is_some(),
+        format!("{:?} {said}", step(&d, cx)),
+    );
     r.check("and the tier picked is still picked", cx.update(|_, cx| d.read(cx).demo_tier()).ok() == Some(McpAccess::Write), "");
     shut(ws, cx).await;
 }

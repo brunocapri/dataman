@@ -12,7 +12,9 @@ fn panic_writes_a_report() {
     let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
     assert_eq!(files.len(), 1, "{files:?}");
     let text = std::fs::read_to_string(&files[0]).unwrap();
-    for want in ["Dataman 9.9.9 crash report", "thread    worker-7", "panic     deliberate 42", "crash_hook.rs", "backtrace", "before the panic", "then, on thread"] {
+    for want in
+        ["Dataman 9.9.9 crash report", "thread    worker-7", "panic     deliberate 42", "crash_hook.rs", "backtrace", "before the panic", "then, on thread"]
+    {
         assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }
     let p = dataman_core::crash::take_pending(&dir, &tmp.path().join("none")).unwrap();

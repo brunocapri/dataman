@@ -100,7 +100,11 @@ fn counts_stop_and_enum_labels() {
     assert!(t0.elapsed() < Duration::from_secs(10));
     let s = "dataman_dataview_enum";
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {s} CASCADE")]);
-    exec(&e, &c, &[&format!("CREATE SCHEMA {s}"), &format!("CREATE TYPE {s}.mood AS ENUM ('sad', 'ok', 'happy')"), &format!("CREATE TABLE {s}.t (m {s}.mood)")]);
+    exec(
+        &e,
+        &c,
+        &[&format!("CREATE SCHEMA {s}"), &format!("CREATE TYPE {s}.mood AS ENUM ('sad', 'ok', 'happy')"), &format!("CREATE TABLE {s}.t (m {s}.mood)")],
+    );
     let rs = query(&e, &c, &format!("SELECT m, 1 AS n FROM {s}.t"));
     let cols = rs.columns().unwrap();
     let labels = e.core.block_on(c.enum_labels(c.database(), cols[0].type_oid)).unwrap();

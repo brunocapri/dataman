@@ -11,7 +11,13 @@ pub struct Entry {
 
 impl std::fmt::Debug for Entry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Entry").field("host", &self.host).field("port", &self.port).field("database", &self.database).field("user", &self.user).field("password", &crate::mask::MASK).finish()
+        f.debug_struct("Entry")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &crate::mask::MASK)
+            .finish()
     }
 }
 

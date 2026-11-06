@@ -177,7 +177,14 @@ mod tests {
     fn codes_mean_what_their_engine_says() {
         // 1205: MySQL's lock wait, SQL Server's deadlock.
         assert_eq!((of(Engine::MySql, "1205"), of(Engine::SqlServer, "1205")), (LockTimeout, Deadlock));
-        for (e, c) in [(Engine::Postgres, "28P01"), (Engine::Postgres, "28000"), (Engine::MySql, "1045"), (Engine::SqlServer, "18456"), (Engine::MongoDb, "18"), (Engine::Redis, "WRONGPASS")] {
+        for (e, c) in [
+            (Engine::Postgres, "28P01"),
+            (Engine::Postgres, "28000"),
+            (Engine::MySql, "1045"),
+            (Engine::SqlServer, "18456"),
+            (Engine::MongoDb, "18"),
+            (Engine::Redis, "WRONGPASS"),
+        ] {
             assert_eq!(of(e, c), Auth, "{e:?} {c}");
         }
         assert_eq!(of(Engine::Postgres, "42501"), Permission);

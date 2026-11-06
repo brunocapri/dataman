@@ -4,35 +4,204 @@ use super::shell::ParseError;
 use crate::guard::WriteClass;
 
 const READS: &[&str] = &[
-    "GET", "MGET", "GETRANGE", "STRLEN", "EXISTS", "TYPE", "TTL", "PTTL", "EXPIRETIME", "KEYS", "SCAN", "RANDOMKEY", "DBSIZE",
-    "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS", "HSTRLEN", "HSCAN", "HRANDFIELD", "LRANGE", "LINDEX",
-    "LLEN", "LPOS", "SMEMBERS", "SISMEMBER", "SMISMEMBER", "SCARD", "SSCAN", "SRANDMEMBER", "SINTER", "SUNION", "SDIFF",
-    "SINTERCARD", "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANGEBYLEX", "ZSCORE", "ZMSCORE", "ZRANK",
-    "ZREVRANK", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZSCAN", "ZRANDMEMBER", "XRANGE", "XREVRANGE", "XLEN", "XINFO", "PING",
-    "ECHO", "TIME", "INFO", "LASTSAVE", "ROLE", "OBJECT", "MEMORY", "DUMP", "BITCOUNT", "BITPOS", "GETBIT", "PFCOUNT",
-    "GEOPOS", "GEODIST", "GEOHASH", "GEOSEARCH", "GEORADIUS_RO", "SLOWLOG", "LOLWUT", "COMMAND", "SELECT", "JSON.GET",
-    "JSON.TYPE", "JSON.MGET", "JSON.OBJKEYS", "JSON.STRLEN", "JSON.ARRLEN", "FT.SEARCH", "FT.INFO", "FT._LIST",
+    "GET",
+    "MGET",
+    "GETRANGE",
+    "STRLEN",
+    "EXISTS",
+    "TYPE",
+    "TTL",
+    "PTTL",
+    "EXPIRETIME",
+    "KEYS",
+    "SCAN",
+    "RANDOMKEY",
+    "DBSIZE",
+    "HGET",
+    "HMGET",
+    "HGETALL",
+    "HKEYS",
+    "HVALS",
+    "HLEN",
+    "HEXISTS",
+    "HSTRLEN",
+    "HSCAN",
+    "HRANDFIELD",
+    "LRANGE",
+    "LINDEX",
+    "LLEN",
+    "LPOS",
+    "SMEMBERS",
+    "SISMEMBER",
+    "SMISMEMBER",
+    "SCARD",
+    "SSCAN",
+    "SRANDMEMBER",
+    "SINTER",
+    "SUNION",
+    "SDIFF",
+    "SINTERCARD",
+    "ZRANGE",
+    "ZREVRANGE",
+    "ZRANGEBYSCORE",
+    "ZREVRANGEBYSCORE",
+    "ZRANGEBYLEX",
+    "ZSCORE",
+    "ZMSCORE",
+    "ZRANK",
+    "ZREVRANK",
+    "ZCARD",
+    "ZCOUNT",
+    "ZLEXCOUNT",
+    "ZSCAN",
+    "ZRANDMEMBER",
+    "XRANGE",
+    "XREVRANGE",
+    "XLEN",
+    "XINFO",
+    "PING",
+    "ECHO",
+    "TIME",
+    "INFO",
+    "LASTSAVE",
+    "ROLE",
+    "OBJECT",
+    "MEMORY",
+    "DUMP",
+    "BITCOUNT",
+    "BITPOS",
+    "GETBIT",
+    "PFCOUNT",
+    "GEOPOS",
+    "GEODIST",
+    "GEOHASH",
+    "GEOSEARCH",
+    "GEORADIUS_RO",
+    "SLOWLOG",
+    "LOLWUT",
+    "COMMAND",
+    "SELECT",
+    "JSON.GET",
+    "JSON.TYPE",
+    "JSON.MGET",
+    "JSON.OBJKEYS",
+    "JSON.STRLEN",
+    "JSON.ARRLEN",
+    "FT.SEARCH",
+    "FT.INFO",
+    "FT._LIST",
 ];
 
 const SAFE_WRITES: &[&str] = &[
-    "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "APPEND", "SETRANGE", "INCR", "INCRBY", "INCRBYFLOAT", "DECR",
-    "DECRBY", "GETSET", "GETDEL", "GETEX", "DEL", "UNLINK", "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST",
-    "RENAME", "RENAMENX", "COPY", "HSET", "HSETNX", "HMSET", "HDEL", "HINCRBY", "HINCRBYFLOAT", "LPUSH", "RPUSH", "LPUSHX",
-    "RPUSHX", "LPOP", "RPOP", "LSET", "LREM", "LINSERT", "LTRIM", "LMOVE", "RPOPLPUSH", "SADD", "SREM", "SPOP", "SMOVE",
-    "SINTERSTORE", "SUNIONSTORE", "SDIFFSTORE", "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZREMRANGEBYRANK",
-    "ZREMRANGEBYSCORE", "ZREMRANGEBYLEX", "ZRANGESTORE", "XADD", "XDEL", "XTRIM", "SETBIT", "PFADD", "PFMERGE", "GEOADD",
-    "JSON.SET", "JSON.DEL", "JSON.ARRAPPEND", "JSON.NUMINCRBY", "PUBLISH",
+    "SET",
+    "SETEX",
+    "PSETEX",
+    "SETNX",
+    "MSET",
+    "MSETNX",
+    "APPEND",
+    "SETRANGE",
+    "INCR",
+    "INCRBY",
+    "INCRBYFLOAT",
+    "DECR",
+    "DECRBY",
+    "GETSET",
+    "GETDEL",
+    "GETEX",
+    "DEL",
+    "UNLINK",
+    "EXPIRE",
+    "PEXPIRE",
+    "EXPIREAT",
+    "PEXPIREAT",
+    "PERSIST",
+    "RENAME",
+    "RENAMENX",
+    "COPY",
+    "HSET",
+    "HSETNX",
+    "HMSET",
+    "HDEL",
+    "HINCRBY",
+    "HINCRBYFLOAT",
+    "LPUSH",
+    "RPUSH",
+    "LPUSHX",
+    "RPUSHX",
+    "LPOP",
+    "RPOP",
+    "LSET",
+    "LREM",
+    "LINSERT",
+    "LTRIM",
+    "LMOVE",
+    "RPOPLPUSH",
+    "SADD",
+    "SREM",
+    "SPOP",
+    "SMOVE",
+    "SINTERSTORE",
+    "SUNIONSTORE",
+    "SDIFFSTORE",
+    "ZADD",
+    "ZREM",
+    "ZINCRBY",
+    "ZPOPMIN",
+    "ZPOPMAX",
+    "ZREMRANGEBYRANK",
+    "ZREMRANGEBYSCORE",
+    "ZREMRANGEBYLEX",
+    "ZRANGESTORE",
+    "XADD",
+    "XDEL",
+    "XTRIM",
+    "SETBIT",
+    "PFADD",
+    "PFMERGE",
+    "GEOADD",
+    "JSON.SET",
+    "JSON.DEL",
+    "JSON.ARRAPPEND",
+    "JSON.NUMINCRBY",
+    "PUBLISH",
 ];
 
 const REFUSED: &[&str] = &[
-    "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "MONITOR", "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH", "BLPOP", "BRPOP",
-    "BLMOVE", "BRPOPLPUSH", "BZPOPMIN", "BZPOPMAX", "BLMPOP", "BZMPOP", "XREAD", "XREADGROUP", "WAIT", "AUTH", "HELLO",
-    "QUIT", "RESET", "CLIENT", "SYNC", "PSYNC", "SHUTDOWN",
+    "SUBSCRIBE",
+    "PSUBSCRIBE",
+    "SSUBSCRIBE",
+    "MONITOR",
+    "MULTI",
+    "EXEC",
+    "DISCARD",
+    "WATCH",
+    "UNWATCH",
+    "BLPOP",
+    "BRPOP",
+    "BLMOVE",
+    "BRPOPLPUSH",
+    "BZPOPMIN",
+    "BZPOPMAX",
+    "BLMPOP",
+    "BZMPOP",
+    "XREAD",
+    "XREADGROUP",
+    "WAIT",
+    "AUTH",
+    "HELLO",
+    "QUIT",
+    "RESET",
+    "CLIENT",
+    "SYNC",
+    "PSYNC",
+    "SHUTDOWN",
 ];
 
 const CLIENT_READS: &[&str] = &["CLIENT LIST", "CLIENT INFO", "CLIENT GETNAME", "CLIENT ID"];
 
-const OTHERS: &[&str] = &["FLUSHDB", "FLUSHALL", "CONFIG", "EVAL", "EVALSHA", "SCRIPT", "FUNCTION", "SAVE", "BGSAVE", "SWAPDB", "MOVE", "DEBUG", "CLUSTER", "ACL", "LATENCY"];
+const OTHERS: &[&str] =
+    &["FLUSHDB", "FLUSHALL", "CONFIG", "EVAL", "EVALSHA", "SCRIPT", "FUNCTION", "SAVE", "BGSAVE", "SWAPDB", "MOVE", "DEBUG", "CLUSTER", "ACL", "LATENCY"];
 
 pub fn commands() -> impl Iterator<Item = &'static str> {
     READS.iter().chain(SAFE_WRITES).chain(OTHERS).chain(REFUSED).copied()
@@ -51,7 +220,10 @@ pub fn is_command(word: &str) -> bool {
 pub fn name(args: &[String]) -> String {
     let first = args.first().map(|a| a.to_ascii_uppercase()).unwrap_or_default();
     match (first.as_str(), args.get(1)) {
-        ("CONFIG" | "SCRIPT" | "FUNCTION" | "CLUSTER" | "ACL" | "LATENCY" | "MEMORY" | "OBJECT" | "XINFO" | "XGROUP" | "CLIENT" | "SLOWLOG" | "COMMAND", Some(sub)) => {
+        (
+            "CONFIG" | "SCRIPT" | "FUNCTION" | "CLUSTER" | "ACL" | "LATENCY" | "MEMORY" | "OBJECT" | "XINFO" | "XGROUP" | "CLIENT" | "SLOWLOG" | "COMMAND",
+            Some(sub),
+        ) => {
             format!("{first} {}", sub.to_ascii_uppercase())
         }
         _ => first,
@@ -61,7 +233,22 @@ pub fn name(args: &[String]) -> String {
 pub fn class(args: &[String]) -> WriteClass {
     let n = name(args);
     let first = n.split(' ').next().unwrap_or("");
-    let read_sub = CLIENT_READS.contains(&n.as_str()) || matches!(n.as_str(), "CONFIG GET" | "SCRIPT EXISTS" | "FUNCTION LIST" | "CLUSTER INFO" | "CLUSTER NODES" | "ACL WHOAMI" | "ACL LIST" | "LATENCY LATEST" | "MEMORY USAGE" | "MEMORY STATS" | "SLOWLOG GET" | "SLOWLOG LEN");
+    let read_sub = CLIENT_READS.contains(&n.as_str())
+        || matches!(
+            n.as_str(),
+            "CONFIG GET"
+                | "SCRIPT EXISTS"
+                | "FUNCTION LIST"
+                | "CLUSTER INFO"
+                | "CLUSTER NODES"
+                | "ACL WHOAMI"
+                | "ACL LIST"
+                | "LATENCY LATEST"
+                | "MEMORY USAGE"
+                | "MEMORY STATS"
+                | "SLOWLOG GET"
+                | "SLOWLOG LEN"
+        );
     if read_sub || READS.contains(&first) && !n.contains(' ') || matches!(first, "OBJECT" | "XINFO" | "COMMAND") {
         WriteClass::Read
     } else if SAFE_WRITES.contains(&first) {
@@ -262,7 +449,25 @@ mod tests {
         assert_eq!(c("SLOWLOG GET 10"), WriteClass::Read);
         assert_eq!(c("COMMAND DOCS get"), WriteClass::Read);
         assert!(c("SLOWLOG RESET").is_destructive());
-        for cmd in ["FUNCTION LOAD x", "MODULE LOAD /tmp/x.so", "DEBUG SLEEP 0", "MIGRATE h 1 k 0 1", "REPLICAOF h 1", "SLAVEOF h 1", "FLUSHALL", "SCRIPT FLUSH", "EVALSHA x 0", "\"\\x46LUSHALL\"", "flushall", "ACL SETUSER x on", "LATENCY RESET", "MEMORY PURGE", "SORT k STORE d", "BGREWRITEAOF", "FCALL f 0"] {
+        for cmd in [
+            "FUNCTION LOAD x",
+            "MODULE LOAD /tmp/x.so",
+            "DEBUG SLEEP 0",
+            "MIGRATE h 1 k 0 1",
+            "REPLICAOF h 1",
+            "SLAVEOF h 1",
+            "FLUSHALL",
+            "SCRIPT FLUSH",
+            "EVALSHA x 0",
+            "\"\\x46LUSHALL\"",
+            "flushall",
+            "ACL SETUSER x on",
+            "LATENCY RESET",
+            "MEMORY PURGE",
+            "SORT k STORE d",
+            "BGREWRITEAOF",
+            "FCALL f 0",
+        ] {
             assert!(c(cmd).is_destructive(), "{cmd}");
         }
         assert!(refusal(&parse("SUBSCRIBE ch").unwrap()).is_some());

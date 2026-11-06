@@ -22,7 +22,18 @@ fn shape(rs: &[Arc<ResultSet>]) -> Vec<String> {
     rs.iter()
         .map(|r| {
             let cols: Vec<String> = r.columns().map(|c| c.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
-            format!("{:?} {:?} rows={} aff={:?} msgs={:?} err={}", r.phase(), cols, r.rows(), r.status().affected, { let (m, more) = r.messages(); (m.iter().take(3).cloned().collect::<Vec<_>>(), m.len(), more) }, r.status().error.as_ref().map(|e| e.message.clone()).unwrap_or_default())
+            format!(
+                "{:?} {:?} rows={} aff={:?} msgs={:?} err={}",
+                r.phase(),
+                cols,
+                r.rows(),
+                r.status().affected,
+                {
+                    let (m, more) = r.messages();
+                    (m.iter().take(3).cloned().collect::<Vec<_>>(), m.len(), more)
+                },
+                r.status().error.as_ref().map(|e| e.message.clone()).unwrap_or_default()
+            )
         })
         .collect()
 }
@@ -109,7 +120,10 @@ fn money_and_times_keep_every_digit() {
         (0..6).map(|col| snap.text(r, col).map(|t| t.into_owned())).collect::<Vec<_>>()
     };
     let some = |v: &[&str]| v.iter().map(|t| Some(t.to_string())).collect::<Vec<_>>();
-    assert_eq!(row(0), some(&["922337203685477.5807", "-214748.3648", "-922337203685477.5808", "2026-01-01 00:00:00.0000001", "12:00:00.1234567", "2026-01-01 00:00:00.25"]));
+    assert_eq!(
+        row(0),
+        some(&["922337203685477.5807", "-214748.3648", "-922337203685477.5808", "2026-01-01 00:00:00.0000001", "12:00:00.1234567", "2026-01-01 00:00:00.25"])
+    );
     let r1 = row(1);
     assert_eq!((r1[0].as_deref(), r1[1].as_deref(), r1[2].as_deref()), (Some("9007199254740.9931"), Some("0.0001"), None));
     assert_eq!((r1[3].as_deref(), r1[4].as_deref(), r1[5].as_deref()), (Some("9999-12-31 23:59:59.9999999"), Some("23:59:59.9999999"), None));
@@ -131,7 +145,9 @@ fn numbered_placeholders_bind_their_values() {
     assert_eq!(o.rows, vec![vec![serde_json::json!("model")]]);
     let o = run("SELECT $1 AS literal", &[]).unwrap();
     assert_eq!(o.rows, vec![vec![serde_json::json!("1.0000")]], "without values it is T-SQL's money literal");
-    for (sql, params, why) in [("SELECT 1", &["3"][..], "no placeholder"), ("SELECT $2", &["3"][..], "uses $2"), ("SELECT $2", &["3", "4"][..], "never uses $1")] {
+    for (sql, params, why) in
+        [("SELECT 1", &["3"][..], "no placeholder"), ("SELECT $2", &["3"][..], "uses $2"), ("SELECT $2", &["3", "4"][..], "never uses $1")]
+    {
         assert!(matches!(run(sql, params), Err(Stop::Refused(r)) if r.contains(why)), "{sql}");
     }
 }

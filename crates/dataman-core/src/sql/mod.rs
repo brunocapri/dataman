@@ -95,12 +95,8 @@ pub fn first_table_in(sql: &str, d: Dialect) -> Option<String> {
 
 pub fn statement_verb(sql: &str) -> String {
     const MODIFIERS: &[&str] = &["TEMP", "TEMPORARY", "UNLOGGED", "UNIQUE", "OR", "REPLACE", "GLOBAL", "LOCAL", "IF", "RECURSIVE", "TRUSTED", "PROCEDURAL"];
-    let mut words = sql
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.starts_with("--"))
-        .flat_map(|l| l.split_whitespace())
-        .map(|w| w.trim_end_matches(';').to_ascii_uppercase());
+    let mut words =
+        sql.lines().map(str::trim).filter(|l| !l.starts_with("--")).flat_map(|l| l.split_whitespace()).map(|w| w.trim_end_matches(';').to_ascii_uppercase());
     let Some(first) = words.next() else { return "DONE".into() };
     match first.as_str() {
         "CREATE" | "DROP" | "ALTER" | "TRUNCATE" => match words.find(|w| !MODIFIERS.contains(&w.as_str())) {
@@ -113,7 +109,8 @@ pub fn statement_verb(sql: &str) -> String {
 
 pub fn decode_script(bytes: &[u8]) -> String {
     let utf16 = |b: &[u8], le: bool| {
-        let units: Vec<u16> = b.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> =
+            b.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
         String::from_utf16_lossy(&units)
     };
     match bytes {

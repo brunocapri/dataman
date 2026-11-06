@@ -153,7 +153,6 @@ fn linux_label(keystroke: &str) -> String {
     parts.join("+")
 }
 
-
 pub fn typed_key(k: &str) -> &str {
     match k {
         "↩" => "enter",
@@ -200,11 +199,14 @@ fn glyph_token(t: &str) -> String {
             _ => "cmd",
         })
         .collect();
-    let names: Vec<&str> = spelled.iter().map(|m| match *m {
-        "ctrl" | "cmd" => "Ctrl",
-        "alt" => "Alt",
-        _ => "⇧",
-    }).collect();
+    let names: Vec<&str> = spelled
+        .iter()
+        .map(|m| match *m {
+            "ctrl" | "cmd" => "Ctrl",
+            "alt" => "Alt",
+            _ => "⇧",
+        })
+        .collect();
     if let Some(rest) = key.strip_prefix("-click").or_else(|| key.strip_prefix("click")) {
         return format!("{}+click{rest}", names.join("+"));
     }

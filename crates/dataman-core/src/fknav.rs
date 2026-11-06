@@ -34,11 +34,7 @@ pub struct FkTarget {
 
 impl FkTarget {
     pub fn label(&self) -> String {
-        if self.to_schema == self.from_schema {
-            format!("Go to \"{}\"", self.to_table)
-        } else {
-            format!("Go to \"{}.{}\"", self.to_schema, self.to_table)
-        }
+        if self.to_schema == self.from_schema { format!("Go to \"{}\"", self.to_table) } else { format!("Go to \"{}.{}\"", self.to_schema, self.to_table) }
     }
 }
 
@@ -121,11 +117,7 @@ pub struct FkJump {
 const SHOWN: usize = 32;
 
 fn shorten(s: &str) -> String {
-    if s.chars().count() <= SHOWN {
-        s.to_string()
-    } else {
-        s.chars().take(SHOWN - 1).collect::<String>() + "…"
-    }
+    if s.chars().count() <= SHOWN { s.to_string() } else { s.chars().take(SHOWN - 1).collect::<String>() + "…" }
 }
 
 pub fn jump(t: &FkTarget, values: &[(Kind, Cell<'_>)]) -> Option<FkJump> {
@@ -182,7 +174,9 @@ impl Connection {
         }
         let origins = rs.origins().unwrap_or_default();
         let oids: BTreeSet<u32> = origins.iter().filter_map(|o| o.table_oid).collect();
-        if !oids.is_empty() && let Some(s) = self.sources_from_catalog(db, &origins, &oids).await {
+        if !oids.is_empty()
+            && let Some(s) = self.sources_from_catalog(db, &origins, &oids).await
+        {
             return s;
         }
         self.sources_from_sql(db, rs, n).await.unwrap_or_else(|| vec![None; n])

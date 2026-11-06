@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use dataman_core::Core;
 use dataman_core::agents_config::Change;
-use dataman_core::project::Synced;
 use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
+use dataman_core::project::Synced;
 use gpui::{AnyElement, App, Context, FontWeight, MouseButton, SharedString, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
@@ -68,7 +68,11 @@ impl Workspace {
                         Synced::default()
                     }
                 };
-                let alive = if synced.local() || synced.review { this.update_in(cx, |w, window, cx| w.project_synced(synced, window, cx)).is_ok() } else { this.upgrade().is_some() };
+                let alive = if synced.local() || synced.review {
+                    this.update_in(cx, |w, window, cx| w.project_synced(synced, window, cx)).is_ok()
+                } else {
+                    this.upgrade().is_some()
+                };
                 if !alive {
                     break;
                 }
@@ -129,7 +133,13 @@ impl Workspace {
         }
         let started = std::time::Instant::now();
         let result = core.project.accept(core.stores(), &r);
-        let reasons: Vec<String> = r.conns.iter().flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what))).chain(r.settings.iter().filter(|x| x.loosens).map(|x| x.what.clone())).take(20).collect();
+        let reasons: Vec<String> = r
+            .conns
+            .iter()
+            .flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what)))
+            .chain(r.settings.iter().filter(|x| x.loosens).map(|x| x.what.clone()))
+            .take(20)
+            .collect();
         let root = core.project.info(&core.settings.get()).map(|i| dataman_core::config::tilde(&i.root.to_string_lossy())).unwrap_or_default();
         let (outcome, error) = match &result {
             Ok(_) => (Outcome::Ok, None),
@@ -196,7 +206,14 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().flex().flex_row().gap(px(8.)).child(ui::caps(&t, title)).children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .child(ui::caps(&t, title))
+                            .children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))),
+                    )
                     .children(rows),
             );
         };
@@ -230,7 +247,12 @@ impl Workspace {
                 .child(
                     ui::modal(&t, "project-review-card")
                         .w(px(680.))
-                        .child(ui::modal_header(&t, None, format!("Review the project {name}"), ui::modal_close(&t, "project-review-close").on_click(cx.listener(|w, _, window, cx| w.close_project_review(false, window, cx)))))
+                        .child(ui::modal_header(
+                            &t,
+                            None,
+                            format!("Review the project {name}"),
+                            ui::modal_close(&t, "project-review-close").on_click(cx.listener(|w, _, window, cx| w.close_project_review(false, window, cx))),
+                        ))
                         .child(div().id("project-review-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(
                             ui::modal_footer(&t)
@@ -330,7 +352,16 @@ pub(crate) fn change_row(t: &Theme, prefix: &str, k: usize, c: &Change) -> AnyEl
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(c.what.clone()))
         .child(div().flex_none().max_w(px(170.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(c.from.clone()))
         .child(div().flex_none().text_color(t.tx3).child("→"))
-        .child(div().flex_none().max_w(px(170.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if c.loosens { t.warn } else { t.tx2 }).child(c.to.clone()))
+        .child(
+            div()
+                .flex_none()
+                .max_w(px(170.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_color(if c.loosens { t.warn } else { t.tx2 })
+                .child(c.to.clone()),
+        )
         .child(div().flex_none().w(px(64.)).text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(if c.loosens { "loosens" } else { "" }))
         .into_any_element()
 }

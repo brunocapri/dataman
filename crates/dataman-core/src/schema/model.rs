@@ -79,12 +79,7 @@ pub struct SchemaSnapshot {
 }
 
 impl SchemaSnapshot {
-    pub fn new(
-        search_path: Vec<String>,
-        schemas: Vec<String>,
-        relations: Vec<Relation>,
-        columns: HashMap<usize, Vec<Column>>,
-    ) -> Self {
+    pub fn new(search_path: Vec<String>, schemas: Vec<String>, relations: Vec<Relation>, columns: HashMap<usize, Vec<Column>>) -> Self {
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, r) in relations.iter().enumerate() {
             by_name.entry(r.name.to_lowercase()).or_default().push(i);
@@ -102,16 +97,13 @@ impl SchemaSnapshot {
     }
 
     pub fn search_path_loaded(&self) -> bool {
-        !self.search_path.is_empty()
-            && self.search_path.iter().filter(|s| self.schemas.is_empty() || self.schemas.contains(s)).all(|s| self.loaded.contains(s))
+        !self.search_path.is_empty() && self.search_path.iter().filter(|s| self.schemas.is_empty() || self.schemas.contains(s)).all(|s| self.loaded.contains(s))
     }
 
     pub fn resolve(&self, schema: Option<&str>, name: &str) -> Option<usize> {
         let cands = self.by_name.get(&name.to_lowercase())?;
         let exact = |i: &&usize| self.relations[**i].name == name;
-        let pick = |pred: &dyn Fn(&usize) -> bool| {
-            cands.iter().filter(|i| pred(i)).find(exact).or_else(|| cands.iter().find(|i| pred(i))).copied()
-        };
+        let pick = |pred: &dyn Fn(&usize) -> bool| cands.iter().filter(|i| pred(i)).find(exact).or_else(|| cands.iter().find(|i| pred(i))).copied();
         match schema {
             Some(s) => pick(&|i| self.relations[*i].schema.eq_ignore_ascii_case(s)),
             None => {

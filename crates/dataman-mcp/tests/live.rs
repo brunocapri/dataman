@@ -16,7 +16,8 @@ fn addr(var: &str, default: &str) -> (String, u16) {
 }
 
 fn up(host: &str, port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
+    std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +74,9 @@ fn env() -> Env {
     let (eh, ep) = addr("DATAMAN_ES", "127.0.0.1:9201");
     let (rh, rp) = addr("DATAMAN_REDIS", "127.0.0.1:63790");
     let conn = |id: &str, host: &str, port: u16, user: &str, db: &str, extra: &str| {
-        format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{host}\"\nport = {port}\nuser = \"{user}\"\ndatabase = \"{db}\"\nsslmode = \"disable\"\n{extra}\n")
+        format!(
+            "[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{host}\"\nport = {port}\nuser = \"{user}\"\ndatabase = \"{db}\"\nsslmode = \"disable\"\n{extra}\n"
+        )
     };
     let my = "engine = \"mysql\"\nsave_password = true\n";
     let ms = "engine = \"sql-server\"\nsave_password = true\n";
@@ -220,10 +223,16 @@ fn postgres_tools() {
     assert!(r.get("approved").is_none() && e.asked().is_empty(), "new objects run unasked on full: {r}");
     // A CREATE beside something that needs the Allow waits with it, before anything runs.
     e.answer(&[Deny]);
-    assert!(e.err("execute", f(json!({"sql": format!("CREATE TABLE {s}.held (a int); ALTER TABLE {s}.customer ADD COLUMN held int")}))).contains("denied in Dataman"));
+    assert!(
+        e.err("execute", f(json!({"sql": format!("CREATE TABLE {s}.held (a int); ALTER TABLE {s}.customer ADD COLUMN held int")})))
+            .contains("denied in Dataman")
+    );
     let q = e.asked();
     assert_eq!(q.len(), 1);
-    assert_eq!((q[0].reasons.clone(), q[0].affected, q[0].connection.as_str(), q[0].tool.as_str()), (vec!["CREATE TABLE".to_string(), "ALTER TABLE".into()], None, "pgf", "execute"));
+    assert_eq!(
+        (q[0].reasons.clone(), q[0].affected, q[0].connection.as_str(), q[0].tool.as_str()),
+        (vec!["CREATE TABLE".to_string(), "ALTER TABLE".into()], None, "pgf", "execute")
+    );
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM pg_tables WHERE schemaname = '{s}' AND tablename = 'held'")), json!(0), "denied before it ran");
     // Past the row limit the whole call rolls back, the new table with it.
     e.answer(&[Deny]);
@@ -251,7 +260,11 @@ fn postgres_tools() {
     assert!(err.contains("23505"), "{err}");
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.customer")), json!(2), "rolled back as a whole");
 
-    for sql in [format!("UPDATE {s}.customer SET note = 'x'"), format!("UPDATE {s}.customer SET note = 'x' WHERE 1 = 1"), format!("UPDATE {s}.customer SET note = 'x' WHERE id = id")] {
+    for sql in [
+        format!("UPDATE {s}.customer SET note = 'x'"),
+        format!("UPDATE {s}.customer SET note = 'x' WHERE 1 = 1"),
+        format!("UPDATE {s}.customer SET note = 'x' WHERE id = id"),
+    ] {
         let err = e.err("execute", w(json!({"sql": sql, "confirm": true})));
         assert!(err.contains("destructive"), "{sql}: {err}");
     }
@@ -277,7 +290,11 @@ fn postgres_tools() {
     assert!(err.contains("needs approval in Dataman; open the app"), "{err}");
     let err = e.err("execute", w(json!({"sql": format!("UPDATE {s}.orders SET total = total WHERE id > 0")})));
     assert!(err.contains("500 rows (limit 100)") && err.contains("open the app") && err.contains("rolled back"), "{err}");
-    assert_eq!(e.ok("execute", w(json!({"sql": format!("UPDATE {s}.orders SET total = total WHERE id <= 3")})))["statements"][0], json!(["UPDATE", 3]), "within the limit it runs");
+    assert_eq!(
+        e.ok("execute", w(json!({"sql": format!("UPDATE {s}.orders SET total = total WHERE id <= 3")})))["statements"][0],
+        json!(["UPDATE", 3]),
+        "within the limit it runs"
+    );
     e.server.hub.set_front(Some(e.human.clone()));
     e.answer(&[Allow]);
     let prod = json!({"connection": "pgprod", "sql": format!("UPDATE {s}.customer SET note = 'y' WHERE id = 1")});
@@ -368,7 +385,8 @@ fn postgres_tools() {
     let d = e.ok("describe_table", c(json!({"table": format!("{s}.customer")})));
     assert!(d["referenced_by"][0][1].as_str().unwrap().ends_with(".orders"), "{d}");
     let r = e.ok("search_objects", c(json!({"pattern": "customer", "kinds": ["table", "column"], "limit": 500})));
-    let found: Vec<(String, String)> = r["rows"].as_array().unwrap().iter().filter(|x| x[1] == json!(s)).map(|x| (x[0].as_str().unwrap().into(), x[2].as_str().unwrap().into())).collect();
+    let found: Vec<(String, String)> =
+        r["rows"].as_array().unwrap().iter().filter(|x| x[1] == json!(s)).map(|x| (x[0].as_str().unwrap().into(), x[2].as_str().unwrap().into())).collect();
     assert!(found.contains(&("table".into(), "customer".into())) && found.contains(&("column".into(), "orders.customer_id".into())), "{found:?}");
     let r = e.ok("search_objects", c(json!({"pattern": "sneak", "kinds": ["function"]})));
     assert_eq!(r["rows"][0][0], "function", "{r}");
@@ -448,7 +466,9 @@ fn approvals_hold_no_locks() {
     let hub = e.server.hub.clone();
     let profile = hub.profile("pg").unwrap();
     let c = hub.core.block_on(hub.core.connect(profile, None)).unwrap();
-    let run = |c: &Arc<dataman_core::Connection>, sql: &str, mode: Mode| hub.core.block_on(c.bounded(Some("dataman"), sql, vec![], mode, Limits::default(), std::future::pending())).unwrap();
+    let run = |c: &Arc<dataman_core::Connection>, sql: &str, mode: Mode| {
+        hub.core.block_on(c.bounded(Some("dataman"), sql, vec![], mode, Limits::default(), std::future::pending())).unwrap()
+    };
     run(&c, "DROP TABLE IF EXISTS mcp_nolock; CREATE TABLE mcp_nolock (id int); INSERT INTO mcp_nolock SELECT generate_series(1, 200)", Mode::Write);
     let holders = {
         let c = c.clone();
@@ -480,7 +500,10 @@ fn approvals_hold_no_locks() {
             let c = c.clone();
             Box::pin(async move {
                 let ins = "INSERT INTO mcp_nolock SELECT generate_series(301, 305)";
-                c.bounded(Some("dataman"), ins, vec![], Mode::Write, Limits::default(), std::future::pending()).await.map(|_| "grew".to_string()).unwrap_or_else(|e| e.to_string())
+                c.bounded(Some("dataman"), ins, vec![], Mode::Write, Limits::default(), std::future::pending())
+                    .await
+                    .map(|_| "grew".to_string())
+                    .unwrap_or_else(|e| e.to_string())
             })
         });
         p
@@ -501,7 +524,10 @@ fn several_reads() {
     let (h, p) = addr("DATAMAN_PG", "127.0.0.1:55432");
     if up(&h, p) {
         let pg = |x: Value| with("pg", x);
-        let r = e.ok("run_query", pg(json!({"sql": "SELECT 1 AS a;\nSELECT 'x' AS b, 2 AS c;\n-- five rows\nSELECT generate_series(1, 5) AS n;\nVALUES (true)", "max_rows": 3})));
+        let r = e.ok(
+            "run_query",
+            pg(json!({"sql": "SELECT 1 AS a;\nSELECT 'x' AS b, 2 AS c;\n-- five rows\nSELECT generate_series(1, 5) AS n;\nVALUES (true)", "max_rows": 3})),
+        );
         assert_eq!(r["statements"], json!(4), "{r}");
         let res = r["results"].as_array().unwrap();
         let shape: Vec<(Value, Value, Value)> = res.iter().map(|x| (x["statement"].clone(), x["sql"].clone(), x["rows"].clone())).collect();
@@ -546,13 +572,28 @@ fn several_reads() {
     }
     let (h, p) = addr("DATAMAN_MSSQL", "127.0.0.1:14330");
     if up(&h, p) {
-        let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT TOP 10 object_id FROM sys.objects ORDER BY object_id; SELECT 'b' AS b", "max_rows": 3}));
+        let r = e.ok(
+            "run_query",
+            json!({"connection": "msw", "sql": "SELECT TOP 10 object_id FROM sys.objects ORDER BY object_id; SELECT 'b' AS b", "max_rows": 3}),
+        );
         let res = r["results"].as_array().unwrap();
-        assert_eq!((res.len(), res[0]["row_count"].clone(), res[0]["truncated"].clone(), res[1]["rows"].clone()), (2, json!(3), json!("rows"), json!([["b"]])), "{r}");
+        assert_eq!(
+            (res.len(), res[0]["row_count"].clone(), res[0]["truncated"].clone(), res[1]["rows"].clone()),
+            (2, json!(3), json!("rows"), json!([["b"]])),
+            "{r}"
+        );
         let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nSELECT 2 AS b\nSELECT 3 AS c"}));
         let res = r["results"].as_array().unwrap();
         let shape: Vec<(Value, Value, Value)> = res.iter().map(|x| (x["statement"].clone(), x["sql"].clone(), x["rows"].clone())).collect();
-        assert_eq!(shape, vec![(json!(1), json!("SELECT 1 AS a"), json!([[1]])), (json!(1), json!("SELECT 2 AS b"), json!([[2]])), (json!(1), json!("SELECT 3 AS c"), json!([[3]]))], "{r}");
+        assert_eq!(
+            shape,
+            vec![
+                (json!(1), json!("SELECT 1 AS a"), json!([[1]])),
+                (json!(1), json!("SELECT 2 AS b"), json!([[2]])),
+                (json!(1), json!("SELECT 3 AS c"), json!([[3]]))
+            ],
+            "{r}"
+        );
         let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nGO\nSELECT 2 AS b\nGO"}));
         assert_eq!((r["statements"].clone(), r["results"][1]["rows"].clone()), (json!(2), json!([[2]])), "{r}");
         assert!(e.err("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nDELETE FROM sys.objects WHERE 1 = 0"})).contains("not a read"));
@@ -570,7 +611,12 @@ fn run_favorite_by_name() {
         return;
     }
     let e = env();
-    for (name, sql, conn) in [("Orders by day", "SELECT 1 AS day", Some("pg")), ("Orders by month", "SELECT 2 AS month", Some("pg")), ("Top customers", "SELECT 3 AS top;\nSELECT 4 AS more", Some("pg")), ("Loose one", "SELECT 5", None)] {
+    for (name, sql, conn) in [
+        ("Orders by day", "SELECT 1 AS day", Some("pg")),
+        ("Orders by month", "SELECT 2 AS month", Some("pg")),
+        ("Top customers", "SELECT 3 AS top;\nSELECT 4 AS more", Some("pg")),
+        ("Loose one", "SELECT 5", None),
+    ] {
         let mut a = json!({"name": name, "sql": sql});
         if let Some(c) = conn {
             a["connection"] = json!(c);
@@ -653,7 +699,12 @@ fn sql_server_tiers() {
     assert!(e.asked().is_empty(), "new objects run unasked on full");
     let r = e.ok("execute", json!({"connection": "msw", "sql": format!("SET NOCOUNT OFF; INSERT INTO dbo.{t} VALUES (1, 0), (2, 0), (3, 0)")}));
     assert!(r["statements"].as_array().unwrap().iter().any(|s| s == &json!(["INSERT", 3])), "{r}");
-    for sql in [format!("DELETE TOP (1) FROM dbo.{t}"), format!("DELETE FROM dbo.{t} WHERE 1=1"), format!("EXEC('DROP TABLE dbo.{t}')"), format!("TRUNCATE TABLE dbo.{t}")] {
+    for sql in [
+        format!("DELETE TOP (1) FROM dbo.{t}"),
+        format!("DELETE FROM dbo.{t} WHERE 1=1"),
+        format!("EXEC('DROP TABLE dbo.{t}')"),
+        format!("TRUNCATE TABLE dbo.{t}"),
+    ] {
         assert!(e.err("execute", json!({"connection": "msw", "sql": sql})).contains("destructive"), "{sql}");
     }
     e.answer(&[Deny]);
@@ -728,7 +779,10 @@ fn mongodb_tools() {
     let v = e.ok("execute", w(json!({"sql": "db.items.deleteOne({n: 4})"})));
     assert_eq!(v["affected"], 1, "{v}");
 
-    let v = e.ok("nosql_query", r(json!({"query": "let n = 0\ndb.items.find().forEach(d => { n += d.n })\nprint('sum', n)\ndb.items.find({}, {_id: 0}).sort({n: 1})"})));
+    let v = e.ok(
+        "nosql_query",
+        r(json!({"query": "let n = 0\ndb.items.find().forEach(d => { n += d.n })\nprint('sum', n)\ndb.items.find({}, {_id: 0}).sort({n: 1})"})),
+    );
     assert_eq!((v["printed"][0].clone(), v["documents"][0]["n"].clone(), v["count"].clone()), (json!("sum 6"), json!(1), json!(3)), "{v}");
     let script = "for (const n of [7, 8]) db.items.insertOne({n})\ndb.items.countDocuments({n: {$gte: 7}})";
     assert!(e.err("nosql_query", r(json!({"query": script}))).contains("nosql_execute"));
@@ -796,7 +850,9 @@ fn search_tools() {
     let err = e.err("nosql_execute", w(json!({"query": format!("POST /{idx}/_delete_by_query?refresh=true\n{{\"query\": {{\"term\": {{\"k\": \"a\"}}}}}}")})));
     assert!(err.contains("denied") && err.contains("4 rows (limit 3)"), "{err}");
     let _ = e.asked();
-    assert!(e.err("nosql_execute", w(json!({"query": format!("POST /{idx}/_delete_by_query\n{{\"query\": {{\"match_all\": {{}}}}}}")}))).contains("destructive"));
+    assert!(
+        e.err("nosql_execute", w(json!({"query": format!("POST /{idx}/_delete_by_query\n{{\"query\": {{\"match_all\": {{}}}}}}")}))).contains("destructive")
+    );
     assert!(e.err("nosql_query", r(json!({"query": format!("DELETE /{idx}/_doc/1")}))).contains("nosql_execute"));
     let v = e.ok("run_query", r(json!({"sql": format!("GET /{idx}/_count")})));
     assert_eq!(v["value"]["count"], 4, "{v}");

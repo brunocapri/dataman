@@ -113,11 +113,7 @@ pub enum SslMode {
 /// This machine: a socket, a loopback address or a `localhost` name.
 pub fn is_local_host(host: &str) -> bool {
     let h = host.trim().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
-    h.is_empty()
-        || h.starts_with('/')
-        || h == "localhost"
-        || h.ends_with(".localhost")
-        || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    h.is_empty() || h.starts_with('/') || h == "localhost" || h.ends_with(".localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// What a new connection starts with until the user picks: opportunistic (`prefer`, which is
@@ -758,12 +754,7 @@ impl ConnectionProfile {
             let db = if self.database.is_empty() { String::new() } else { format!(";database={}", self.database) };
             return format!("sqlserver://{}:{}{db};user={};{enc}", self.host, self.port, self.user);
         }
-        format!(
-            "postgresql://{user}{host}:{}/{}?sslmode={}",
-            self.port,
-            percent_encode(&self.database),
-            self.sslmode.label()
-        )
+        format!("postgresql://{user}{host}:{}/{}?sslmode={}", self.port, percent_encode(&self.database), self.sslmode.label())
     }
 }
 
@@ -784,7 +775,9 @@ pub fn expand_home(path: &str) -> PathBuf {
 pub fn tilde(path: &str) -> String {
     let expanded = expand_home(path);
     match crate::os::home() {
-        Some(h) if expanded.starts_with(&h) && expanded != h => format!("~{}{}", std::path::MAIN_SEPARATOR, expanded.strip_prefix(&h).unwrap_or(&expanded).display()),
+        Some(h) if expanded.starts_with(&h) && expanded != h => {
+            format!("~{}{}", std::path::MAIN_SEPARATOR, expanded.strip_prefix(&h).unwrap_or(&expanded).display())
+        }
         _ => expanded.display().to_string(),
     }
 }
@@ -947,7 +940,11 @@ struct Inner {
 
 impl Inner {
     fn resolve(&mut self) {
-        let r = if self.kept.on() { approved::resolve(&self.file, self.kept.found().map(Vec::as_slice)) } else { approved::Resolved { connections: self.file.clone(), held: Vec::new() } };
+        let r = if self.kept.on() {
+            approved::resolve(&self.file, self.kept.found().map(Vec::as_slice))
+        } else {
+            approved::Resolved { connections: self.file.clone(), held: Vec::new() }
+        };
         (self.connections, self.held) = (r.connections, r.held);
     }
 
@@ -1004,7 +1001,8 @@ fn parse_file(s: &str) -> Result<Loaded> {
     let mut out: Loaded = Default::default();
     // A folder that does not read is only not shown: the connections are what matters.
     if let Some(toml::Value::Array(list)) = table.remove("folder") {
-        out.folders = list.into_iter().filter_map(|v| v.try_into::<ConnFolder>().inspect_err(|e| log::warn!("skipping an explorer folder: {e}")).ok()).collect();
+        out.folders =
+            list.into_iter().filter_map(|v| v.try_into::<ConnFolder>().inspect_err(|e| log::warn!("skipping an explorer folder: {e}")).ok()).collect();
         tidy_folders(&mut out.folders);
     }
     let Some(list) = table.remove("connection") else { return Ok(out) };
@@ -1101,7 +1099,8 @@ impl ConfigStore {
         let before = g.connections.clone();
         let mut next = before.clone();
         f(&mut next);
-        let untouched = |n: &ConnectionProfile| before.iter().find(|b| b.id == n.id).is_some_and(|b| approved::protections_of(b) == approved::protections_of(n));
+        let untouched =
+            |n: &ConnectionProfile| before.iter().find(|b| b.id == n.id).is_some_and(|b| approved::protections_of(b) == approved::protections_of(n));
         let mut file: Vec<ConnectionProfile> = next
             .iter()
             .map(|n| match g.file.iter().find(|p| p.id == n.id) {
@@ -1110,7 +1109,8 @@ impl ConfigStore {
             })
             .collect();
         // Held and never approved: not shown, so not `f`'s to change.
-        let hidden: Vec<ConnectionProfile> = g.file.iter().filter(|p| g.held(&p.id) && !before.iter().any(|b| b.id == p.id) && !next.iter().any(|n| n.id == p.id)).cloned().collect();
+        let hidden: Vec<ConnectionProfile> =
+            g.file.iter().filter(|p| g.held(&p.id) && !before.iter().any(|b| b.id == p.id) && !next.iter().any(|n| n.id == p.id)).cloned().collect();
         file.extend(hidden);
         let changed: Vec<String> = next.iter().filter(|n| !untouched(n)).map(|n| n.id.clone()).collect();
         if matches!(g.kept, Kept::Unreadable) && !changed.is_empty() {
@@ -1226,7 +1226,14 @@ mod tests {
         p.normalize();
         assert_eq!((p.port, p.database.as_str()), (5432, "postgres"));
         assert!(p.validate().is_ok());
-        let mut r = ConnectionProfile { engine: Engine::Redis, host: "h".into(), port: 0, database: "16".into(), sslmode: SslMode::Prefer, ..ConnectionProfile::new("r") };
+        let mut r = ConnectionProfile {
+            engine: Engine::Redis,
+            host: "h".into(),
+            port: 0,
+            database: "16".into(),
+            sslmode: SslMode::Prefer,
+            ..ConnectionProfile::new("r")
+        };
         r.normalize();
         assert_eq!((r.port, r.sslmode), (6379, SslMode::Disable));
         assert!(r.validate().is_err());
@@ -1507,7 +1514,11 @@ mod tests {
         assert_eq!(text.matches("read_only_databases").count(), 1, "{text}");
         assert!(text.contains("scratch = false") && text.contains("\"my db\" = false"), "{text}");
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![a, b]);
-        std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\nread_only = true\n").unwrap();
+        std::fs::write(
+            dirs.connections_file(),
+            "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\nread_only = true\n",
+        )
+        .unwrap();
         let old = &ConfigStore::open(&dirs).unwrap().connections()[0];
         assert!(old.read_only_databases.is_empty() && old.read_only_for("d") && old.read_only_for("other"));
     }
@@ -1537,8 +1548,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
         std::fs::create_dir_all(&dirs.config).unwrap();
-        let conn = |id: &str, extra: &str| format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n{extra}\n");
-        let old = [conn("w", "mcp = \"write\""), conn("r", "mcp = \"read\""), conn("o", "mcp = \"off\""), conn("p", "env = \"production\""), conn("n", "")].concat();
+        let conn = |id: &str, extra: &str| {
+            format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n{extra}\n")
+        };
+        let old =
+            [conn("w", "mcp = \"write\""), conn("r", "mcp = \"read\""), conn("o", "mcp = \"off\""), conn("p", "env = \"production\""), conn("n", "")].concat();
         std::fs::write(dirs.connections_file(), old).unwrap();
         let got: Vec<(String, McpAccess, Option<u64>)> =
             ConfigStore::open(&dirs).unwrap().connections().into_iter().map(|p| (p.id.clone(), p.mcp_access(), p.mcp_row_limit)).collect();
@@ -1572,7 +1586,10 @@ mod tests {
         let store = ConfigStore::open(&dirs).unwrap();
         let mut p = ConnectionProfile::new("staging");
         p.env = Environment::Staging;
-        assert_eq!(p.mcp_allow(&["TRUNCATE audit_tmp;", "DELETE FROM sessions WHERE expires_at < ?", "BEGIN", "a; b"]), ["TRUNCATE audit_tmp", "DELETE FROM sessions WHERE expires_at < ?"]);
+        assert_eq!(
+            p.mcp_allow(&["TRUNCATE audit_tmp;", "DELETE FROM sessions WHERE expires_at < ?", "BEGIN", "a; b"]),
+            ["TRUNCATE audit_tmp", "DELETE FROM sessions WHERE expires_at < ?"]
+        );
         assert!(p.mcp_allow(&["delete from sessions where expires_at < 5", "truncate AUDIT_TMP"]).is_empty());
         p.mcp_yolo = true;
         assert_eq!(p.mcp_yolo_on(), MCP_ADVANCED, "in effect only with the advanced options on");
@@ -1637,7 +1654,8 @@ mod tests {
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].auth, Auth::Password);
         // A method of a newer version: the connection is kept in the file, not used.
-        let newer = "[[connection]]\nid = \"k\"\nname = \"krb\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n\n[connection.auth]\nmethod = \"kerberos\"\n";
+        let newer =
+            "[[connection]]\nid = \"k\"\nname = \"krb\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n\n[connection.auth]\nmethod = \"kerberos\"\n";
         std::fs::write(dirs.connections_file(), newer).unwrap();
         let s = ConfigStore::open(&dirs).unwrap();
         assert!(s.connections().is_empty());
@@ -1652,7 +1670,12 @@ mod tests {
         assert_eq!(p.tls_mode(), SslMode::Disable);
         for a in [AuthKind::EntraId, AuthKind::AwsIam, AuthKind::GoogleIam] {
             p.auth = a.fresh();
-            for (m, want) in [(SslMode::Disable, SslMode::Require), (SslMode::Prefer, SslMode::Require), (SslMode::Require, SslMode::Require), (SslMode::VerifyFull, SslMode::VerifyFull)] {
+            for (m, want) in [
+                (SslMode::Disable, SslMode::Require),
+                (SslMode::Prefer, SslMode::Require),
+                (SslMode::Require, SslMode::Require),
+                (SslMode::VerifyFull, SslMode::VerifyFull),
+            ] {
                 p.sslmode = m;
                 assert_eq!(p.tls_mode(), want, "{a:?} {m:?}");
             }

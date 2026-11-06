@@ -207,23 +207,62 @@ pub fn tsql_returns_rows(sql: &str) -> bool {
     let f = classify_in(sql, Dialect::TSql);
     match f.verb.as_str() {
         "SELECT" | "EXEC" => true,
-        "INSERT" | "UPDATE" | "DELETE" | "MERGE" => top.iter().enumerate().any(|(k, &i)| {
-            t.is(i, "OUTPUT") && !top[k + 1..].iter().any(|&j| t.is(j, "INTO"))
-        }),
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE" => top.iter().enumerate().any(|(k, &i)| t.is(i, "OUTPUT") && !top[k + 1..].iter().any(|&j| t.is(j, "INTO"))),
         _ => false,
     }
 }
 
 const TSQL_HEADS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "CREATE", "ALTER", "EXEC", "EXECUTE", "BULK", "GRANT",
-    "REVOKE", "DENY", "BEGIN", "COMMIT", "ROLLBACK", "SAVE", "DECLARE", "USE", "PRINT", "IF", "WHILE", "RETURN", "WAITFOR",
-    "RAISERROR", "THROW", "DBCC", "BACKUP", "RESTORE", "KILL",
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
+    "TRUNCATE",
+    "DROP",
+    "CREATE",
+    "ALTER",
+    "EXEC",
+    "EXECUTE",
+    "BULK",
+    "GRANT",
+    "REVOKE",
+    "DENY",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "SAVE",
+    "DECLARE",
+    "USE",
+    "PRINT",
+    "IF",
+    "WHILE",
+    "RETURN",
+    "WAITFOR",
+    "RAISERROR",
+    "THROW",
+    "DBCC",
+    "BACKUP",
+    "RESTORE",
+    "KILL",
 ];
 
 /// Reserved words that only ever start a statement.
 const TSQL_MORE_HEADS: &[&str] = &[
-    "CHECKPOINT", "DEALLOCATE", "GOTO", "READTEXT", "RECONFIGURE", "SETUSER", "SHUTDOWN", "UPDATETEXT", "WRITETEXT", "REVERT",
-    "OPEN", "CLOSE", "BREAK", "CONTINUE",
+    "CHECKPOINT",
+    "DEALLOCATE",
+    "GOTO",
+    "READTEXT",
+    "RECONFIGURE",
+    "SETUSER",
+    "SHUTDOWN",
+    "UPDATETEXT",
+    "WRITETEXT",
+    "REVERT",
+    "OPEN",
+    "CLOSE",
+    "BREAK",
+    "CONTINUE",
 ];
 
 /// Statements T-SQL runs without a `;` before them, beyond `TSQL_HEADS`: what is not split off
@@ -236,9 +275,11 @@ fn tsql_head(t: &Toks, i: usize, w: &str, head: &str, prev: &str, start: usize) 
         "MOVE" | "GET" | "END" => t.is(i + 1, "CONVERSATION"),
         "RECEIVE" => t.is(i + 1, "TOP") || t.punct(i + 1, "(") || t.t.get(i + 1).is_some_and(|x| x.text(t.src) == "*"),
         // `UPDATE t SET`, `THEN UPDATE SET`, `ON DELETE SET NULL`, `ALTER … SET`.
-        "SET" => !(matches!(head, "ALTER" | "CREATE" | "GRANT" | "REVOKE" | "DENY")
-            || matches!(prev, "UPDATE" | "DELETE")
-            || head == "UPDATE" && !(start..i).any(|j| t.is(j, "SET"))),
+        "SET" => {
+            !(matches!(head, "ALTER" | "CREATE" | "GRANT" | "REVOKE" | "DENY")
+                || matches!(prev, "UPDATE" | "DELETE")
+                || head == "UPDATE" && !(start..i).any(|j| t.is(j, "SET")))
+        }
         _ => false,
     }
 }
@@ -405,12 +446,61 @@ fn absorb(f: &mut Facts, c: Facts) {
 }
 
 const OBJECT_WORDS: &[&str] = &[
-    "TABLE", "VIEW", "MATERIALIZED", "INDEX", "SEQUENCE", "SCHEMA", "DATABASE", "FUNCTION", "PROCEDURE", "ROUTINE",
-    "TRIGGER", "TYPE", "DOMAIN", "EXTENSION", "FOREIGN", "ROLE", "USER", "GROUP", "POLICY", "RULE", "OWNED", "BY",
-    "AGGREGATE", "OPERATOR", "CLASS", "FAMILY", "COLLATION", "CONVERSION", "EVENT", "PUBLICATION", "SUBSCRIPTION",
-    "SERVER", "TABLESPACE", "STATISTICS", "TEXT", "SEARCH", "CONFIGURATION", "DICTIONARY", "PARSER", "TEMPLATE",
-    "LANGUAGE", "PROCEDURAL", "ACCESS", "METHOD", "CAST", "TRANSFORM", "DATA", "WRAPPER", "MAPPING", "FOR",
-    "LARGE", "OBJECT", "SYSTEM", "DEFAULT", "PRIVILEGES",
+    "TABLE",
+    "VIEW",
+    "MATERIALIZED",
+    "INDEX",
+    "SEQUENCE",
+    "SCHEMA",
+    "DATABASE",
+    "FUNCTION",
+    "PROCEDURE",
+    "ROUTINE",
+    "TRIGGER",
+    "TYPE",
+    "DOMAIN",
+    "EXTENSION",
+    "FOREIGN",
+    "ROLE",
+    "USER",
+    "GROUP",
+    "POLICY",
+    "RULE",
+    "OWNED",
+    "BY",
+    "AGGREGATE",
+    "OPERATOR",
+    "CLASS",
+    "FAMILY",
+    "COLLATION",
+    "CONVERSION",
+    "EVENT",
+    "PUBLICATION",
+    "SUBSCRIPTION",
+    "SERVER",
+    "TABLESPACE",
+    "STATISTICS",
+    "TEXT",
+    "SEARCH",
+    "CONFIGURATION",
+    "DICTIONARY",
+    "PARSER",
+    "TEMPLATE",
+    "LANGUAGE",
+    "PROCEDURAL",
+    "ACCESS",
+    "METHOD",
+    "CAST",
+    "TRANSFORM",
+    "DATA",
+    "WRAPPER",
+    "MAPPING",
+    "FOR",
+    "LARGE",
+    "OBJECT",
+    "SYSTEM",
+    "DEFAULT",
+    "PRIVILEGES",
 ];
 const MODIFIERS: &[&str] =
     &["TEMP", "TEMPORARY", "UNLOGGED", "UNIQUE", "OR", "REPLACE", "ALTER", "GLOBAL", "LOCAL", "RECURSIVE", "TRUSTED", "CLUSTERED", "NONCLUSTERED"];
@@ -702,21 +792,88 @@ fn is_file_dialect(d: Dialect) -> bool {
 
 /// PRAGMAs that only report, with or without an argument (SQLite and DuckDB names).
 const READ_PRAGMAS: &[&str] = &[
-    "application_id", "auto_vacuum", "automatic_index", "busy_timeout", "cache_size", "cache_spill", "case_sensitive_like",
-    "cell_size_check", "checkpoint_fullfsync", "collation_list", "compile_options", "data_version", "database_list", "database_size",
-    "defer_foreign_keys", "encoding", "foreign_key_check", "foreign_key_list", "foreign_keys", "freelist_count", "fullfsync",
-    "function_list", "functions", "hard_heap_limit", "ignore_check_constraints", "index_info", "index_list", "index_xinfo",
-    "integrity_check", "journal_mode", "journal_size_limit", "legacy_alter_table", "locking_mode", "max_page_count", "metadata_info",
-    "mmap_size", "module_list", "page_count", "page_size", "platform", "pragma_list", "query_only", "quick_check", "read_uncommitted",
-    "recursive_triggers", "reverse_unordered_selects", "schema_version", "secure_delete", "show", "show_databases", "show_tables",
-    "show_tables_expanded", "soft_heap_limit", "storage_info", "synchronous", "table_info", "table_list", "table_xinfo", "temp_store",
-    "threads", "trusted_schema", "user_agent", "user_version", "version", "wal_autocheckpoint", "writable_schema",
+    "application_id",
+    "auto_vacuum",
+    "automatic_index",
+    "busy_timeout",
+    "cache_size",
+    "cache_spill",
+    "case_sensitive_like",
+    "cell_size_check",
+    "checkpoint_fullfsync",
+    "collation_list",
+    "compile_options",
+    "data_version",
+    "database_list",
+    "database_size",
+    "defer_foreign_keys",
+    "encoding",
+    "foreign_key_check",
+    "foreign_key_list",
+    "foreign_keys",
+    "freelist_count",
+    "fullfsync",
+    "function_list",
+    "functions",
+    "hard_heap_limit",
+    "ignore_check_constraints",
+    "index_info",
+    "index_list",
+    "index_xinfo",
+    "integrity_check",
+    "journal_mode",
+    "journal_size_limit",
+    "legacy_alter_table",
+    "locking_mode",
+    "max_page_count",
+    "metadata_info",
+    "mmap_size",
+    "module_list",
+    "page_count",
+    "page_size",
+    "platform",
+    "pragma_list",
+    "query_only",
+    "quick_check",
+    "read_uncommitted",
+    "recursive_triggers",
+    "reverse_unordered_selects",
+    "schema_version",
+    "secure_delete",
+    "show",
+    "show_databases",
+    "show_tables",
+    "show_tables_expanded",
+    "soft_heap_limit",
+    "storage_info",
+    "synchronous",
+    "table_info",
+    "table_list",
+    "table_xinfo",
+    "temp_store",
+    "threads",
+    "trusted_schema",
+    "user_agent",
+    "user_version",
+    "version",
+    "wal_autocheckpoint",
+    "writable_schema",
 ];
 
 /// PRAGMAs whose argument names what to report on (a table, an index, a schema).
 const ARG_READ_PRAGMAS: &[&str] = &[
-    "foreign_key_check", "foreign_key_list", "index_info", "index_list", "index_xinfo", "integrity_check", "quick_check", "show",
-    "storage_info", "table_info", "table_list", "table_xinfo",
+    "foreign_key_check",
+    "foreign_key_list",
+    "index_info",
+    "index_list",
+    "index_xinfo",
+    "integrity_check",
+    "quick_check",
+    "show",
+    "storage_info",
+    "table_info",
+    "table_list",
+    "table_xinfo",
 ];
 
 /// PRAGMAs that act when merely named.
@@ -740,11 +897,7 @@ fn pragma(t: &Toks, f: &mut Facts) {
     f.verb = format!("PRAGMA {name}").trim_end().to_string();
     let reads = READ_PRAGMAS.contains(&name.as_str());
     let sets = t.op(i + 1, "=") || (t.punct(i + 1, "(") && !ARG_READ_PRAGMAS.contains(&name.as_str()));
-    f.effect = if sets || ACTING_PRAGMAS.contains(&name.as_str()) || (t.dialect == Dialect::DuckDb && !reads) {
-        Effect::Write
-    } else {
-        Effect::Read
-    };
+    f.effect = if sets || ACTING_PRAGMAS.contains(&name.as_str()) || (t.dialect == Dialect::DuckDb && !reads) { Effect::Write } else { Effect::Read };
 }
 
 fn top_clause(t: &Toks, i: usize) -> usize {
@@ -759,9 +912,28 @@ fn top_clause(t: &Toks, i: usize) -> usize {
 }
 
 const READ_ONLY_PROCEDURES: &[&str] = &[
-    "sp_help", "sp_helptext", "sp_helpindex", "sp_helpconstraint", "sp_helpdb", "sp_helpuser", "sp_helprole", "sp_helpsrvrole",
-    "sp_columns", "sp_tables", "sp_stored_procedures", "sp_who", "sp_who2", "sp_lock", "sp_spaceused", "sp_depends",
-    "sp_describe_first_result_set", "sp_server_info", "sp_databases", "sp_pkeys", "sp_fkeys", "sp_statistics",
+    "sp_help",
+    "sp_helptext",
+    "sp_helpindex",
+    "sp_helpconstraint",
+    "sp_helpdb",
+    "sp_helpuser",
+    "sp_helprole",
+    "sp_helpsrvrole",
+    "sp_columns",
+    "sp_tables",
+    "sp_stored_procedures",
+    "sp_who",
+    "sp_who2",
+    "sp_lock",
+    "sp_spaceused",
+    "sp_depends",
+    "sp_describe_first_result_set",
+    "sp_server_info",
+    "sp_databases",
+    "sp_pkeys",
+    "sp_fkeys",
+    "sp_statistics",
 ];
 
 fn tx(f: &mut Facts, cmd: TxCmd) {
@@ -803,9 +975,46 @@ const WHERE_END: &[&str] = &["RETURNING", "ORDER", "LIMIT", "OFFSET", "OPTION", 
 
 /// Reserved words only: a column may be named `date` or `user`.
 const PREDICATE_WORDS: &[&str] = &[
-    "AND", "OR", "NOT", "IS", "NULL", "TRUE", "FALSE", "UNKNOWN", "IN", "BETWEEN", "SYMMETRIC", "LIKE", "ILIKE", "SIMILAR", "TO", "ESCAPE",
-    "EXISTS", "ANY", "ALL", "SOME", "CASE", "WHEN", "THEN", "ELSE", "END", "DISTINCT", "FROM", "COLLATE", "CURRENT_DATE", "CURRENT_TIME",
-    "CURRENT_TIMESTAMP", "LOCALTIME", "LOCALTIMESTAMP", "CURRENT_USER", "SESSION_USER", "CURRENT_ROLE", "SYSDATE", "REGEXP", "RLIKE", "DIV",
+    "AND",
+    "OR",
+    "NOT",
+    "IS",
+    "NULL",
+    "TRUE",
+    "FALSE",
+    "UNKNOWN",
+    "IN",
+    "BETWEEN",
+    "SYMMETRIC",
+    "LIKE",
+    "ILIKE",
+    "SIMILAR",
+    "TO",
+    "ESCAPE",
+    "EXISTS",
+    "ANY",
+    "ALL",
+    "SOME",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "DISTINCT",
+    "FROM",
+    "COLLATE",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "LOCALTIME",
+    "LOCALTIMESTAMP",
+    "CURRENT_USER",
+    "SESSION_USER",
+    "CURRENT_ROLE",
+    "SYSDATE",
+    "REGEXP",
+    "RLIKE",
+    "DIV",
     "XOR",
 ];
 
@@ -966,11 +1175,7 @@ pub fn check(sql: &str, env: Environment) -> Option<(&'static Rule, Facts)> {
 
 pub fn check_in(sql: &str, env: Environment, dialect: Dialect) -> Option<(&'static Rule, Facts)> {
     let f = classify_in(sql, dialect);
-    RULES
-        .iter()
-        .filter(|r| r.scope == Scope::Always || env.is_production())
-        .find(|r| matches(r.test, &f))
-        .map(|r| (r, f))
+    RULES.iter().filter(|r| r.scope == Scope::Always || env.is_production()).find(|r| matches(r.test, &f)).map(|r| (r, f))
 }
 
 pub fn review<S: AsRef<str>>(stmts: &[S], env: Environment) -> Vec<Finding> {
@@ -1074,8 +1279,11 @@ pub fn changes_structure(sql: &str, dialect: Dialect) -> bool {
             };
             // Any DDL verb in the block, or SQL built at run time: a block reads its statements
             // as `BEGIN … END`, which no statement classifier follows.
-            const DDL: &[&str] = &["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "GRANT", "REVOKE", "COMMENT", "EXECUTE", "EXEC", "SP_EXECUTESQL", "PREPARE"];
-            significant(&body, dialect).iter().any(|k| matches!(k.kind, TokenKind::Keyword | TokenKind::Ident) && DDL.iter().any(|w| k.text(&body).eq_ignore_ascii_case(w)))
+            const DDL: &[&str] =
+                &["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "GRANT", "REVOKE", "COMMENT", "EXECUTE", "EXEC", "SP_EXECUTESQL", "PREPARE"];
+            significant(&body, dialect)
+                .iter()
+                .any(|k| matches!(k.kind, TokenKind::Keyword | TokenKind::Ident) && DDL.iter().any(|w| k.text(&body).eq_ignore_ascii_case(w)))
         })
     })
 }
@@ -1212,7 +1420,10 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         {
             return Some(e);
         }
-        if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO") {
+        if matches!(
+            f.verb.as_str(),
+            "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO"
+        ) {
             return Some(format!("{} reaches files outside the database", f.verb));
         }
         // A DuckDB file is one instance in the process: its settings (log and temp paths, memory,
@@ -1301,7 +1512,25 @@ fn file_access_in(t: &Toks) -> Option<String> {
         return None;
     }
     // A string (or a quoted name that looks like a path) where a table goes: DuckDB reads the file.
-    const CLAUSE_END: &[&str] = &["WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "QUALIFY", "WINDOW", "UNION", "EXCEPT", "INTERSECT", "ON", "USING", "SELECT", "SET", "VALUES", "RETURNING", "OFFSET"];
+    const CLAUSE_END: &[&str] = &[
+        "WHERE",
+        "GROUP",
+        "ORDER",
+        "HAVING",
+        "LIMIT",
+        "QUALIFY",
+        "WINDOW",
+        "UNION",
+        "EXCEPT",
+        "INTERSECT",
+        "ON",
+        "USING",
+        "SELECT",
+        "SET",
+        "VALUES",
+        "RETURNING",
+        "OFFSET",
+    ];
     let mut in_from = false;
     for i in 0..t.t.len() {
         let tok = &t.t[i];
@@ -1320,7 +1549,9 @@ fn file_access_in(t: &Toks) -> Option<String> {
         while j >= 2 && t.punct(j - 1, ".") && matches!(t.t[j - 2].kind, TokenKind::Ident | TokenKind::QuotedIdent) {
             j -= 2;
         }
-        let at_table = j > 0 && (matches!(t.word(j - 1).as_deref(), Some("FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" | "DESCRIBE" | "SUMMARIZE" | "PIVOT" | "UNPIVOT")) || (in_from && t.punct(j - 1, ",")));
+        let at_table = j > 0
+            && (matches!(t.word(j - 1).as_deref(), Some("FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" | "DESCRIBE" | "SUMMARIZE" | "PIVOT" | "UNPIVOT"))
+                || (in_from && t.punct(j - 1, ",")));
         let path_like = |s: &str| s.contains(['.', '/', '\\', '~', ':', '*']);
         match tok.kind {
             TokenKind::String | TokenKind::DollarString if at_table => return Some("a file named in FROM is read from disk".into()),
@@ -1355,8 +1586,12 @@ pub enum WriteClass {
     Read,
     SafeWrite,
     /// New objects and nothing else (`plain_create`), with any safe writes beside them.
-    Create { what: Vec<String> },
-    Destructive { reasons: Vec<String> },
+    Create {
+        what: Vec<String>,
+    },
+    Destructive {
+        reasons: Vec<String>,
+    },
 }
 
 impl WriteClass {
@@ -1392,9 +1627,23 @@ pub enum Preview {
 }
 
 const TSQL_SESSION_SETTINGS: &[&str] = &[
-    "NOCOUNT", "XACT_ABORT", "ANSI_NULLS", "ANSI_WARNINGS", "ANSI_PADDING", "ANSI_NULL_DFLT_ON", "QUOTED_IDENTIFIER", "ARITHABORT",
-    "CONCAT_NULL_YIELDS_NULL", "NUMERIC_ROUNDABORT", "DATEFORMAT", "DATEFIRST", "LOCK_TIMEOUT", "DEADLOCK_PRIORITY", "TEXTSIZE",
-    "ROWCOUNT", "STATISTICS",
+    "NOCOUNT",
+    "XACT_ABORT",
+    "ANSI_NULLS",
+    "ANSI_WARNINGS",
+    "ANSI_PADDING",
+    "ANSI_NULL_DFLT_ON",
+    "QUOTED_IDENTIFIER",
+    "ARITHABORT",
+    "CONCAT_NULL_YIELDS_NULL",
+    "NUMERIC_ROUNDABORT",
+    "DATEFORMAT",
+    "DATEFIRST",
+    "LOCK_TIMEOUT",
+    "DEADLOCK_PRIORITY",
+    "TEXTSIZE",
+    "ROWCOUNT",
+    "STATISTICS",
 ];
 
 pub fn agent_pieces(sql: &str, dialect: Dialect) -> Vec<String> {
@@ -1549,7 +1798,12 @@ const MY_TABLE_OPTIONS: &[&str] = &["CHARSET", "COLLATE", "AUTO_INCREMENT", "COM
 fn plain_table_options(t: &Toks, mut i: usize) -> bool {
     let n = t.t.len();
     match t.dialect {
-        Dialect::Postgres => i == n || (t.is(i, "ON") && t.is(i + 1, "COMMIT") && (i + 3 == n && t.is(i + 2, "DROP") || i + 4 == n && (t.is(i + 2, "DELETE") || t.is(i + 2, "PRESERVE")) && t.is(i + 3, "ROWS"))),
+        Dialect::Postgres => {
+            i == n
+                || (t.is(i, "ON")
+                    && t.is(i + 1, "COMMIT")
+                    && (i + 3 == n && t.is(i + 2, "DROP") || i + 4 == n && (t.is(i + 2, "DELETE") || t.is(i + 2, "PRESERVE")) && t.is(i + 3, "ROWS")))
+        }
         Dialect::TSql => i == n || (i + 2 == n && t.is(i, "ON") && t.t[i + 1].text(t.src).trim_matches(['[', ']']).eq_ignore_ascii_case("PRIMARY")),
         Dialect::DuckDb => i == n,
         Dialect::Sqlite => {
@@ -1797,11 +2051,7 @@ pub fn allowlisted(sql: &str, dialect: Dialect, allowed: &[String]) -> (Vec<Stri
 }
 
 pub fn allowlist_candidates(sql: &str, dialect: Dialect) -> Vec<String> {
-    agent_pieces(sql, dialect)
-        .into_iter()
-        .filter(|p| agent_write_class(p, dialect).is_write())
-        .filter_map(|p| allowlist_entry(&p, dialect).ok())
-        .collect()
+    agent_pieces(sql, dialect).into_iter().filter(|p| agent_write_class(p, dialect).is_write()).filter_map(|p| allowlist_entry(&p, dialect).ok()).collect()
 }
 
 #[cfg(test)]
@@ -1809,7 +2059,11 @@ mod tests {
     #[test]
     fn commands_on_the_server_say_so() {
         let reasons = |sql: &str, d: Dialect| agent_write_class(sql, d).reasons().join(", ");
-        assert!(reasons("COPY t TO PROGRAM 'rm -rf /'", Dialect::Postgres).contains("runs a command"), "{}", reasons("COPY t TO PROGRAM 'x'", Dialect::Postgres));
+        assert!(
+            reasons("COPY t TO PROGRAM 'rm -rf /'", Dialect::Postgres).contains("runs a command"),
+            "{}",
+            reasons("COPY t TO PROGRAM 'x'", Dialect::Postgres)
+        );
         assert!(reasons("EXEC xp_cmdshell 'whoami'", Dialect::TSql).contains("runs a command"));
         assert!(reasons("EXEC master..[xp_cmdshell] 'whoami'", Dialect::TSql).contains("runs a command"));
         assert!(!reasons("COPY t TO STDOUT", Dialect::Postgres).contains("runs a command"));
@@ -2440,8 +2694,16 @@ mod tests {
             (Pg, "CREATE TEMP VIEW v (x) AS WITH c AS (SELECT 1 AS a) SELECT a FROM c", &["CREATE VIEW"]),
             (Pg, "CREATE SCHEMA s", &["CREATE SCHEMA"]),
             (Pg, "CREATE SCHEMA IF NOT EXISTS s", &["CREATE SCHEMA"]),
-            (Pg, "CREATE SCHEMA s; CREATE TABLE s.t (a int); CREATE INDEX i ON s.t (a); INSERT INTO s.t VALUES (1)", &["CREATE SCHEMA", "CREATE TABLE", "CREATE INDEX"]),
-            (My, "CREATE TABLE `t` (id INT AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='x'", &["CREATE TABLE"]),
+            (
+                Pg,
+                "CREATE SCHEMA s; CREATE TABLE s.t (a int); CREATE INDEX i ON s.t (a); INSERT INTO s.t VALUES (1)",
+                &["CREATE SCHEMA", "CREATE TABLE", "CREATE INDEX"],
+            ),
+            (
+                My,
+                "CREATE TABLE `t` (id INT AUTO_INCREMENT PRIMARY KEY) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='x'",
+                &["CREATE TABLE"],
+            ),
             (My, "CREATE TABLE t (a int) ENGINE InnoDB, DEFAULT CHARACTER SET utf8mb4", &["CREATE TABLE"]),
             (My, "/*!50000 CREATE TABLE t (a int) */", &["CREATE TABLE"]),
             (My, "CREATE INDEX i ON t (a) USING BTREE", &["CREATE INDEX"]),

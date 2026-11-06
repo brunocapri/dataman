@@ -106,11 +106,15 @@ fn each_destination_arrives_as_its_place() {
 #[test]
 fn a_new_connection_is_filled_marked_and_never_saved() {
     let r = Rig::new(vec![]);
-    let (err, text) = r.call(json!({"destination": "new_connection", "name": "orders", "engine": "mysql", "host": "db.acme.io", "user": "app", "database": "orders"}));
+    let (err, text) =
+        r.call(json!({"destination": "new_connection", "name": "orders", "engine": "mysql", "host": "db.acme.io", "user": "app", "database": "orders"}));
     assert!(!err && text.contains("\"connection\":\"orders\""), "{text}");
     let places = r.places();
     let [Place::NewConnection(p)] = places.as_slice() else { panic!("{places:?}") };
-    assert_eq!((p.name.as_str(), p.engine.slug(), p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()), ("orders", "mysql", "db.acme.io", 3306, "app", "orders"));
+    assert_eq!(
+        (p.name.as_str(), p.engine.slug(), p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()),
+        ("orders", "mysql", "db.acme.io", 3306, "app", "orders")
+    );
     assert!(p.agent_made, "the dialog says who filled it");
     assert_eq!(p.mcp, None, "agents get what a new connection gets");
     assert_eq!(r.hub.core.secrets.get(&p.id).unwrap(), None, "no password anywhere");

@@ -3,10 +3,7 @@
 //! The frame adds no inset: the app's layout keeps the whole window. On Windows GPUI hides the
 //! title bar and keeps the resize border and shadow: the buttons and the menu are ours there too.
 
-use gpui::{
-    AnyElement, App, Context, CursorStyle, Decorations, MouseButton, ResizeEdge, Tiling, Window, WindowButton, WindowButtonLayout, div,
-    prelude::*,
-};
+use gpui::{AnyElement, App, Context, CursorStyle, Decorations, MouseButton, ResizeEdge, Tiling, Window, WindowButton, WindowButtonLayout, div, prelude::*};
 
 use crate::app::Workspace;
 use crate::assets::Icon;
@@ -187,10 +184,8 @@ impl Workspace {
                 cx.notify();
             }))
         };
-        let mut menu = ui::popover(&t)
-            .w(px(240.))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+        let mut menu =
+            ui::popover(&t).w(px(240.)).on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).on_mouse_down_out(cx.listener(|w, _, _, cx| {
                 w.app_menu = None;
                 ui::menu_shut("app-menu");
                 cx.notify();
@@ -209,7 +204,11 @@ impl Workspace {
             .child(ui::menu_sep(&t))
             .child(item("am-quit", "Quit Dataman".into(), crate::keymap::key("quit"), Box::new(crate::app::Quit)));
         let at = gpui::point(at.x - px(240.), at.y + px(14.));
-        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("app-menu-in", menu))).priority(3).into_any_element())
+        Some(
+            gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("app-menu-in", menu)))
+                .priority(3)
+                .into_any_element(),
+        )
     }
 
     /// Resize handles along the border (none on a tiled edge).

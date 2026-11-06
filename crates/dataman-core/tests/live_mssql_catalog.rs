@@ -28,7 +28,16 @@ fn explorer_levels_and_objects() {
     assert!(!schemas.iter().any(|s| s == "guest" || s.starts_with("db_")), "{schemas:?}");
     let rels = e.core.block_on(c.relations(db, "dbo")).unwrap();
     let names: Vec<(&str, RelKind)> = rels.iter().map(|r| (r.name.as_str(), r.kind)).collect();
-    assert_eq!(names, vec![("customer", RelKind::Table), ("documents", RelKind::Table), ("item", RelKind::Table), ("orders", RelKind::Table), ("v_order_customer", RelKind::View)]);
+    assert_eq!(
+        names,
+        vec![
+            ("customer", RelKind::Table),
+            ("documents", RelKind::Table),
+            ("item", RelKind::Table),
+            ("orders", RelKind::Table),
+            ("v_order_customer", RelKind::View)
+        ]
+    );
     let cols = e.core.block_on(c.columns(db, "dbo", "customer")).unwrap();
     assert!(cols[0].primary_key);
     assert_eq!(cols[0].default.as_deref(), Some("IDENTITY(1,1)"));
@@ -66,9 +75,15 @@ fn explorer_levels_and_objects() {
     assert_eq!((seqs[0].name.as_str(), seqs[0].type_name.as_deref()), ("seq_invoice", Some("bigint")));
     assert_eq!(e.core.block_on(c.sequence_value(db, "dbo", "seq_invoice")).unwrap(), Some(("1000".to_string(), false)));
     let types = e.core.block_on(c.types(db, "dbo")).unwrap();
-    assert_eq!(types.iter().map(|t| (t.name.as_str(), t.kind)).collect::<Vec<_>>(), vec![("national_id", TypeKind::Domain), ("order_items", TypeKind::Composite)]);
+    assert_eq!(
+        types.iter().map(|t| (t.name.as_str(), t.kind)).collect::<Vec<_>>(),
+        vec![("national_id", TypeKind::Domain), ("order_items", TypeKind::Composite)]
+    );
     assert_eq!(types[0].base.as_deref(), Some("varchar(11)"));
-    assert_eq!(e.core.block_on(c.type_definition(db, "dbo", "national_id")).unwrap().as_deref(), Some("CREATE TYPE dbo.national_id FROM varchar(11) NOT NULL;"));
+    assert_eq!(
+        e.core.block_on(c.type_definition(db, "dbo", "national_id")).unwrap().as_deref(),
+        Some("CREATE TYPE dbo.national_id FROM varchar(11) NOT NULL;")
+    );
     assert!(e.core.block_on(c.type_definition(db, "dbo", "order_items")).unwrap().unwrap().contains("product nvarchar(60) NOT NULL"));
     let x = e.core.block_on(c.table_extras(db, "dbo", "item")).unwrap();
     let cons = x.constraints.unwrap();
@@ -82,7 +97,11 @@ fn explorer_levels_and_objects() {
 
     let ddl = e.core.block_on(c.table_ddl(db, "dbo", "item")).unwrap();
     assert!(ddl.starts_with("-- dbo.item: generated from the catalog of dataman_t_cat\nCREATE TABLE dbo.item (\n    order_id int NOT NULL,"), "{ddl}");
-    assert!(ddl.contains("    subtotal AS ([qty]*[price]) PERSISTED,") && ddl.contains("CONSTRAINT FK_item_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"), "{ddl}");
+    assert!(
+        ddl.contains("    subtotal AS ([qty]*[price]) PERSISTED,")
+            && ddl.contains("CONSTRAINT FK_item_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"),
+        "{ddl}"
+    );
     let ddl = e.core.block_on(c.table_ddl(db, "dbo", "orders")).unwrap();
     assert!(ddl.contains("CREATE NONCLUSTERED INDEX IX_orders_status ON dbo.orders (status, created_at DESC) INCLUDE (total);"), "{ddl}");
     let v = e.core.block_on(c.view_definition(db, "dbo", "v_order_customer")).unwrap().unwrap();
@@ -240,7 +259,13 @@ fn exports_and_bounded_statements() {
     let Some(c) = mssql_seeded(&e, db) else { return };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("c.csv");
-    let x = c.export_query(Some(db), "SELECT id, name, balance, created, birth_date FROM dbo.customer ORDER BY id", &path, ExportOptions::new(ExportFormat::Csv), None);
+    let x = c.export_query(
+        Some(db),
+        "SELECT id, name, balance, created, birth_date FROM dbo.customer ORDER BY id",
+        &path,
+        ExportOptions::new(ExportFormat::Csv),
+        None,
+    );
     let s = e.core.block_on(x.task).unwrap();
     assert_eq!(s.rows, 5);
     let csv = std::fs::read_to_string(&path).unwrap();
@@ -257,11 +282,18 @@ fn exports_and_bounded_statements() {
     for st in dataman_core::sql::split_in(&sql, Dialect::TSql) {
         query(&e, &c, &sql[st.range]);
     }
-    let back = query(&e, &c, "SELECT a.name FROM dbo.copied a JOIN dbo.customer b ON b.id = a.id AND b.name = a.name AND b.active = a.active AND b.created = a.created AND (b.seen = a.seen OR b.seen IS NULL) AND (b.photo = a.photo OR b.photo IS NULL)");
+    let back = query(
+        &e,
+        &c,
+        "SELECT a.name FROM dbo.copied a JOIN dbo.customer b ON b.id = a.id AND b.name = a.name AND b.active = a.active AND b.created = a.created AND (b.seen = a.seen OR b.seen IS NULL) AND (b.photo = a.photo OR b.photo IS NULL)",
+    );
     assert_eq!(back.rows(), 5, "round trip");
 
     let lim = Limits { max_rows: 2, ..Default::default() };
-    let o = e.core.block_on(c.bounded(Some(db), "SELECT id, name, active FROM dbo.customer ORDER BY id", vec![], Mode::Read, lim, std::future::pending::<()>())).unwrap();
+    let o = e
+        .core
+        .block_on(c.bounded(Some(db), "SELECT id, name, active FROM dbo.customer ORDER BY id", vec![], Mode::Read, lim, std::future::pending::<()>()))
+        .unwrap();
     assert_eq!(o.rows.len(), 2);
     assert_eq!(o.rows[0][2], serde_json::json!(true));
     assert!(o.truncated.is_some());
@@ -269,13 +301,34 @@ fn exports_and_bounded_statements() {
         let r = e.core.block_on(c.bounded(Some(db), bad, vec![], Mode::Read, Limits::default(), std::future::pending::<()>()));
         assert!(matches!(r, Err(Stop::Refused(_))), "{bad}");
     }
-    let o = e.core
-        .block_on(c.bounded(Some(db), "UPDATE dbo.orders SET notes = @P1 WHERE id = @P2", vec![Some("x".into()), Some("2".into())], Mode::Write, Limits::default(), std::future::pending::<()>()))
+    let o = e
+        .core
+        .block_on(c.bounded(
+            Some(db),
+            "UPDATE dbo.orders SET notes = @P1 WHERE id = @P2",
+            vec![Some("x".into()), Some("2".into())],
+            Mode::Write,
+            Limits::default(),
+            std::future::pending::<()>(),
+        ))
         .unwrap();
     assert_eq!(o.statements[0].affected, Some(1));
-    let o = e.core.block_on(c.bounded(Some(db), "SELECT notes FROM dbo.orders WHERE id = @P1", vec![Some("2".into())], Mode::Read, Limits::default(), std::future::pending::<()>())).unwrap();
+    let o = e
+        .core
+        .block_on(c.bounded(
+            Some(db),
+            "SELECT notes FROM dbo.orders WHERE id = @P1",
+            vec![Some("2".into())],
+            Mode::Read,
+            Limits::default(),
+            std::future::pending::<()>(),
+        ))
+        .unwrap();
     assert_eq!(o.rows[0][0], serde_json::json!("x"));
-    let o = e.core.block_on(c.bounded(Some(db), "DELETE FROM dbo.item WHERE order_id = 1", vec![], Mode::Rollback, Limits::default(), std::future::pending::<()>())).unwrap();
+    let o = e
+        .core
+        .block_on(c.bounded(Some(db), "DELETE FROM dbo.item WHERE order_id = 1", vec![], Mode::Rollback, Limits::default(), std::future::pending::<()>()))
+        .unwrap();
     assert_eq!(o.statements[0].affected, Some(2));
     assert_eq!(query(&e, &c, "SELECT COUNT(*) FROM dbo.item WHERE order_id = 1").snapshot().text(0, 0).as_deref(), Some("2"), "rolled back");
     drop(c);

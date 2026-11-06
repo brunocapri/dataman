@@ -44,14 +44,16 @@ fn admin(engine: Engine, id: &str) -> (ConnectionProfile, String) {
         _ => unreachable!(),
     };
     let (host, port) = addr(var, default);
-    let mut p = ConnectionProfile { host, port, user: user.into(), database: db.into(), sslmode: ssl, engine, save_password: true, ..ConnectionProfile::new(id) };
+    let mut p =
+        ConnectionProfile { host, port, user: user.into(), database: db.into(), sslmode: ssl, engine, save_password: true, ..ConnectionProfile::new(id) };
     p.id = id.into();
     p.name = id.into();
     (p, password)
 }
 
 fn up(p: &ConnectionProfile) -> bool {
-    std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
+    std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
 
 #[derive(Default)]
@@ -182,7 +184,11 @@ fn whoami(e: &Env, id: &str, engine: Engine, database: Option<&str>) -> Result<S
             me
         }
         Engine::MySql => v["rows"][0][0].as_str().unwrap_or("").split('@').next().unwrap_or("").to_string(),
-        Engine::MongoDb => v["value"]["authInfo"]["authenticatedUsers"][0]["user"].as_str().or(v["documents"][0]["authInfo"]["authenticatedUsers"][0]["user"].as_str()).unwrap_or("").to_string(),
+        Engine::MongoDb => v["value"]["authInfo"]["authenticatedUsers"][0]["user"]
+            .as_str()
+            .or(v["documents"][0]["authInfo"]["authenticatedUsers"][0]["user"].as_str())
+            .unwrap_or("")
+            .to_string(),
         Engine::Redis => v["value"].as_str().unwrap_or("").to_string(),
         Engine::Elasticsearch => v["value"]["username"].as_str().or(v["documents"][0]["username"].as_str()).unwrap_or("").to_string(),
         _ => v["value"]["user_name"].as_str().or(v["documents"][0]["user_name"].as_str()).unwrap_or("").to_string(),
@@ -294,13 +300,21 @@ fn postgres() {
         assert_eq!(last["login"], "you", "{last}");
         let owner = e.ok("run_query", json!({"connection": id, "sql": "SELECT tableowner FROM pg_tables WHERE tablename = 'au_ddl'"}));
         assert_eq!(owner["rows"][0][0], "postgres");
-        assert!(e.ok("run_query", json!({"connection": id, "sql": "SELECT has_table_privilege('public.au_ddl', 'SELECT')"}))["rows"][0][0] == json!(false), "the agent's login has no grant on what the user made since (fail closed)");
+        assert!(
+            e.ok("run_query", json!({"connection": id, "sql": "SELECT has_table_privilege('public.au_ddl', 'SELECT')"}))["rows"][0][0] == json!(false),
+            "the agent's login has no grant on what the user made since (fail closed)"
+        );
     });
 }
 
 #[test]
 fn mysql() {
-    let seed = ["CREATE DATABASE IF NOT EXISTS au_mcp", "DROP TABLE IF EXISTS au_mcp.au_t", "CREATE TABLE au_mcp.au_t (id INT PRIMARY KEY, name VARCHAR(10))", "INSERT INTO au_mcp.au_t VALUES (1, 'a')"];
+    let seed = [
+        "CREATE DATABASE IF NOT EXISTS au_mcp",
+        "DROP TABLE IF EXISTS au_mcp.au_t",
+        "CREATE TABLE au_mcp.au_t (id INT PRIMARY KEY, name VARCHAR(10))",
+        "INSERT INTO au_mcp.au_t VALUES (1, 'a')",
+    ];
     if on() {
         let (p, password) = admin(Engine::MySql, "aumcpmy01");
         if up(&p) {
@@ -330,7 +344,11 @@ fn sql_server() {
             core.block_on(rs.wait_finished());
         }
     }
-    let seed = ["IF OBJECT_ID('dbo.au_t') IS NOT NULL DROP TABLE dbo.au_t", "CREATE TABLE dbo.au_t (id INT PRIMARY KEY, name NVARCHAR(10))", "INSERT INTO dbo.au_t VALUES (1, N'a')"];
+    let seed = [
+        "IF OBJECT_ID('dbo.au_t') IS NOT NULL DROP TABLE dbo.au_t",
+        "CREATE TABLE dbo.au_t (id INT PRIMARY KEY, name NVARCHAR(10))",
+        "INSERT INTO dbo.au_t VALUES (1, N'a')",
+    ];
     round(Engine::SqlServer, "aumcpms01", &seed, |e, p, user| {
         e.ok("list_tables", json!({"connection": p.id}));
         let r = e.ok("execute", json!({"connection": p.id, "sql": "INSERT INTO dbo.au_t VALUES (2, N'b')"}));
@@ -347,7 +365,8 @@ fn mongodb() {
         let r = e.ok("nosql_query", json!({"connection": p.id, "query": "db.au_t.find({})"}));
         assert_eq!(r["count"], 1);
         // The shell: a script runs as the agent too.
-        let r = e.ok("nosql_query", json!({"connection": p.id, "query": "const s = db.runCommand({connectionStatus: 1}); s.authInfo.authenticatedUsers[0].user"}));
+        let r =
+            e.ok("nosql_query", json!({"connection": p.id, "query": "const s = db.runCommand({connectionStatus: 1}); s.authInfo.authenticatedUsers[0].user"}));
         assert!(r.to_string().contains(user), "{r}");
         e.ok("nosql_execute", json!({"connection": p.id, "query": "db.au_t.insertOne({name: 'b'})"}));
     });
@@ -403,7 +422,10 @@ fn postgres_masked_through_views() {
     p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "users.email".into(), how: dataman_core::privacy::Mask::PARTIAL, on: true });
     p.mcp_rules.visible.items.push(dataman_core::privacy::VisibleItem { name: "users.password_hash".into(), kind: dataman_core::privacy::ItemKind::Column });
     let e = env();
-    let seed = ["CREATE TABLE public.users (id int PRIMARY KEY, name text, email text, password_hash text)", "INSERT INTO public.users VALUES (1, 'Ana', 'ana@acme.co', 'h1')"];
+    let seed = [
+        "CREATE TABLE public.users (id int PRIMARY KEY, name text, email text, password_hash text)",
+        "INSERT INTO public.users VALUES (1, 'Ana', 'ana@acme.co', 'h1')",
+    ];
     let (p, _) = setup(&e, p, &password, &seed);
     let user = p.agent_login.as_ref().unwrap().user.clone();
     assert_eq!(p.agent_login.as_ref().unwrap().views.len(), 1);
@@ -450,7 +472,11 @@ fn sql_server_masked_through_views() {
     }
     p.mcp = Some(McpAccess::Read);
     p.mcp_rules.view = dataman_core::privacy::AgentView::Masked;
-    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "documents.body".into(), how: dataman_core::privacy::Mask::Partial(dataman_core::privacy::Keep::new(dataman_core::privacy::Side::First, 4)), on: true });
+    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol {
+        col: "documents.body".into(),
+        how: dataman_core::privacy::Mask::Partial(dataman_core::privacy::Keep::new(dataman_core::privacy::Side::First, 4)),
+        on: true,
+    });
     p.mcp_rules.visible.items.push(dataman_core::privacy::VisibleItem { name: "documents.secret".into(), kind: dataman_core::privacy::ItemKind::Column });
     let e = env();
     let seed = [
@@ -515,7 +541,13 @@ fn sql_server_database_made_again() {
     };
     let admin_p = p.clone();
     let made_again = || {
-        assert_eq!(sql(&root, "IF DB_ID('au_again') IS NOT NULL BEGIN ALTER DATABASE au_again SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_again; END; CREATE DATABASE au_again"), None);
+        assert_eq!(
+            sql(
+                &root,
+                "IF DB_ID('au_again') IS NOT NULL BEGIN ALTER DATABASE au_again SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_again; END; CREATE DATABASE au_again"
+            ),
+            None
+        );
         let db = root_core.block_on(root_core.connect(admin_p.clone(), Some(password.clone()))).unwrap();
         assert_eq!(sql(&db, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(10)); INSERT INTO dbo.t VALUES (1, N'a')"), None);
         db.close();

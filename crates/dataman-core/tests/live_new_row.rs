@@ -5,7 +5,7 @@ mod common;
 
 use common::*;
 use dataman_core::config::{ConnectionProfile, Engine};
-use dataman_core::edit::{Blank, CellValue, ChangeSet, Editability, EditTarget, Outcome};
+use dataman_core::edit::{Blank, CellValue, ChangeSet, EditTarget, Editability, Outcome};
 
 struct Case<'a> {
     e: &'a Env,
@@ -63,7 +63,11 @@ impl Case<'_> {
                 &format!("CREATE TABLE nr_profile (id {uuid} NOT NULL PRIMARY KEY REFERENCES nr_items (id))"),
             ],
         );
-        assert_eq!(self.blanks("nr_items")[1..], [Blank::Required, Blank::Null, Blank::Default], "a NOT NULL column with no default is required, not a default");
+        assert_eq!(
+            self.blanks("nr_items")[1..],
+            [Blank::Required, Blank::Null, Blank::Default],
+            "a NOT NULL column with no default is required, not a default"
+        );
         assert_eq!(self.offered("nr_items"), Some(0));
         assert_eq!(self.offered("nr_served"), None, "the server's generator stays");
         assert_eq!(self.blanks("nr_served")[0], Blank::Default);
@@ -102,7 +106,9 @@ fn postgres() {
         &[
             &format!("CREATE DOMAIN {schema}.must AS int NOT NULL"),
             &format!("CREATE DOMAIN {schema}.five AS int DEFAULT 5"),
-            &format!("CREATE TABLE {session} (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, s serial, calc int GENERATED ALWAYS AS (1) STORED, a {schema}.must, b {schema}.five, c int NOT NULL, d int)"),
+            &format!(
+                "CREATE TABLE {session} (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, s serial, calc int GENERATED ALWAYS AS (1) STORED, a {schema}.must, b {schema}.five, c int NOT NULL, d int)"
+            ),
             &format!("CREATE TABLE {schema}.nr_uuid (id uuid PRIMARY KEY, n int NOT NULL)"),
             &format!("CREATE TABLE {schema}.nr_gen (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), n int NOT NULL)"),
             &format!("CREATE DOMAIN {schema}.guid AS uuid"),

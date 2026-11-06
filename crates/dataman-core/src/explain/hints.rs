@@ -71,7 +71,13 @@ pub fn find(p: &Plan) -> Vec<Hint> {
             && let Some(b) = n.num("Hash Batches")
             && b > 1.
         {
-            out.push(Hint { node: i, rule: Rule::HashBatches, chip: format!("{b:.0} batches"), text: format!("Hash batches {b:.0}"), fix: Some(work_mem.clone()) });
+            out.push(Hint {
+                node: i,
+                rule: Rule::HashBatches,
+                chip: format!("{b:.0} batches"),
+                text: format!("Hash batches {b:.0}"),
+                fix: Some(work_mem.clone()),
+            });
         }
         if n.op.contains("Nested Loop")
             && let Some(&inner) = n.children.iter().find(|&&c| p.nodes[c].relationship() == Some("Inner"))
@@ -80,7 +86,13 @@ pub fn find(p: &Plan) -> Vec<Hint> {
         {
             let outer = n.children.iter().find(|&&c| p.nodes[c].relationship() == Some("Outer")).and_then(|&c| p.nodes[c].misestimate());
             let fix = outer.filter(|m| m.factor >= 10.).map(|m| format!("outer rows misestimated ×{}", fmt_count(m.factor.round())));
-            out.push(Hint { node: i, rule: Rule::NestedLoops, chip: format!("{} loops", fmt_count(l)), text: format!("Nested Loop with {} loops", fmt_count(l)), fix });
+            out.push(Hint {
+                node: i,
+                rule: Rule::NestedLoops,
+                chip: format!("{} loops", fmt_count(l)),
+                text: format!("Nested Loop with {} loops", fmt_count(l)),
+                fix,
+            });
         }
         if let Some(r) = rel
             && let Some(m) = n.misestimate()
@@ -175,10 +187,8 @@ mod tests {
 
     #[test]
     fn seq_scan_filter_names_the_column() {
-        let s = include_str!("fixtures/seqscan.json").replace(
-            "((customer.city = 'Berlin'::text) OR ((customer.name || ''::text) = 'x'::text))",
-            "(customer.city = 'Berlin'::text)",
-        );
+        let s = include_str!("fixtures/seqscan.json")
+            .replace("((customer.city = 'Berlin'::text) OR ((customer.name || ''::text) = 'x'::text))", "(customer.city = 'Berlin'::text)");
         let p = Plan::parse(&s);
         assert_eq!(p.hints[0].fix.as_deref(), Some("index on customer (city)"));
     }
@@ -222,7 +232,9 @@ mod tests {
         assert_eq!(p.hints[0].fix.as_deref(), Some("ANALYZE customer"));
         assert!(p.hints[0].chip.is_empty(), "the row's ×200 says it");
         assert!(!rules(&fixture("parallel")).contains(&Rule::Misestimate));
-        let tiny = include_str!("fixtures/misestimate.json").replace("\"Plan Rows\":500", "\"Plan Rows\":2").replace("\"Actual Rows\":100000.00", "\"Actual Rows\":300.00");
+        let tiny = include_str!("fixtures/misestimate.json")
+            .replace("\"Plan Rows\":500", "\"Plan Rows\":2")
+            .replace("\"Actual Rows\":100000.00", "\"Actual Rows\":300.00");
         assert!(!rules(&Plan::parse(&tiny)).contains(&Rule::Misestimate));
     }
 

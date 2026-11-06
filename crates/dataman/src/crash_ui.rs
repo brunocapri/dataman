@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use gpui::{AnyElement, App, Context, FontWeight, WeakEntity, div, prelude::*};
 use crate::theme::px;
 use dataman_core::crash;
+use gpui::{AnyElement, App, Context, FontWeight, WeakEntity, div, prelude::*};
 
 use crate::app::Workspace;
 use crate::assets::Icon;
@@ -59,14 +59,22 @@ impl Workspace {
         let text = p.text();
         let can_send = crash::reporter(self.store.read(cx).core.settings.get().crash_report_url.as_deref()).is_some();
         let note = self.crash_note;
-        let small = |id: &'static str, label: &'static str| ui::button(&t, id, Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(crate::theme::text::UI)).child(label);
+        let small =
+            |id: &'static str, label: &'static str| ui::button(&t, id, Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(crate::theme::text::UI)).child(label);
         Some(
             crate::chrome::toast(&t, t.err)
                 .right(px(28.))
                 .bottom(px(48.))
                 .items_center()
                 .py(px(10.))
-                .child(div().text_size(px(crate::theme::text::UI)).text_color(t.tx).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(format!("Crashed last session · {when}")))
+                .child(
+                    div()
+                        .text_size(px(crate::theme::text::UI))
+                        .text_color(t.tx)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .whitespace_nowrap()
+                        .child(format!("Crashed last session · {when}")),
+                )
                 .child(
                     div()
                         .flex()
@@ -85,12 +93,10 @@ impl Workspace {
                             };
                             d.child(small("crash-send", label).on_click(cx.listener(move |w, _, _, cx| w.send_crash(text.clone(), cx))))
                         })
-                        .child(
-                            ui::icon_button(&t, "crash-hide", Icon::Close, 24., 12.).on_click(cx.listener(|w, _, _, cx| {
-                                w.crash = None;
-                                cx.notify();
-                            })),
-                        ),
+                        .child(ui::icon_button(&t, "crash-hide", Icon::Close, 24., 12.).on_click(cx.listener(|w, _, _, cx| {
+                            w.crash = None;
+                            cx.notify();
+                        }))),
                 )
                 .into_any_element(),
         )

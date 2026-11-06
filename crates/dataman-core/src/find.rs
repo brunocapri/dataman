@@ -37,12 +37,7 @@ impl Matcher {
             return Ok(None);
         }
         let pattern = if opts.regex { query.to_string() } else { regex::escape(query) };
-        let re = RegexBuilder::new(&pattern)
-            .case_insensitive(!opts.case)
-            .multi_line(true)
-            .size_limit(1 << 22)
-            .build()
-            .map_err(|e| e.to_string())?;
+        let re = RegexBuilder::new(&pattern).case_insensitive(!opts.case).multi_line(true).size_limit(1 << 22).build().map_err(|e| e.to_string())?;
         let null = !opts.regex && if opts.case { query == "NULL" } else { query.eq_ignore_ascii_case("null") };
         Ok(Some(Matcher { re, opts, null }))
     }
@@ -324,8 +319,7 @@ mod tests {
 
     #[test]
     fn grid_hits_across_chunks_and_sort() {
-        let rows: Vec<(i64, Option<&str>)> =
-            vec![(10, Some("ana")), (11, None), (12, Some("Bruno")), (110, Some("")), (13, Some("analu")), (14, Some("x11"))];
+        let rows: Vec<(i64, Option<&str>)> = vec![(10, Some("ana")), (11, None), (12, Some("Bruno")), (110, Some("")), (13, Some("analu")), (14, Some("x11"))];
         let rs = result(&rows, &[0, 3]);
         let snap = rs.snapshot();
         let no = AtomicBool::new(false);

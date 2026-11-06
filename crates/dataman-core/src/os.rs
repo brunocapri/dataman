@@ -103,7 +103,8 @@ pub fn config_home() -> Option<PathBuf> {
 pub fn downloads_dir() -> Option<PathBuf> {
     let home = home()?;
     if LINUX
-        && let Some(dir) = config_home().and_then(|c| std::fs::read_to_string(c.join("user-dirs.dirs")).ok()).and_then(|t| user_dir(&t, "XDG_DOWNLOAD_DIR", &home))
+        && let Some(dir) =
+            config_home().and_then(|c| std::fs::read_to_string(c.join("user-dirs.dirs")).ok()).and_then(|t| user_dir(&t, "XDG_DOWNLOAD_DIR", &home))
     {
         return Some(dir);
     }

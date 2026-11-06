@@ -128,7 +128,13 @@ pub(crate) async fn connect(
     }
 }
 
-async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, watch: Option<&Arc<TxWatch>>) -> Result<Arc<Client>> {
+async fn open(
+    p: &ConnectionProfile,
+    password: Option<&str>,
+    database: Option<&str>,
+    via: Option<SocketAddr>,
+    watch: Option<&Arc<TxWatch>>,
+) -> Result<Arc<Client>> {
     super::install_tls_provider();
     let named = split_instance(&p.host).1.is_some();
     let mut last = None;
@@ -597,7 +603,8 @@ pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let edition: i32 = get(1).parse().unwrap_or(0);
     let flavor = if matches!(edition, 5 | 8 | 9) { crate::server::Flavor::Azure } else { crate::server::Flavor::Standard };
-    let mut info = ServerInfo { database: get(2), user: get(3), ..ServerInfo::of(crate::config::Engine::SqlServer, flavor, version_label(&get(0), edition), &get(0)) };
+    let mut info =
+        ServerInfo { database: get(2), user: get(3), ..ServerInfo::of(crate::config::Engine::SqlServer, flavor, version_label(&get(0), edition), &get(0)) };
     let schema = get(4);
     info.search_path = if schema.is_empty() { vec!["dbo".into()] } else { vec![schema] };
     Ok(info)
@@ -655,7 +662,8 @@ pub(crate) fn error_info_at(e: &MsError, sql: &str, batch: usize) -> ErrorInfo {
 }
 
 fn near_token(message: &str) -> Option<&str> {
-    let start = message.find(" near the keyword '").map(|i| i + " near the keyword '".len()).or_else(|| message.find(" near '").map(|i| i + " near '".len()))?;
+    let start =
+        message.find(" near the keyword '").map(|i| i + " near the keyword '".len()).or_else(|| message.find(" near '").map(|i| i + " near '".len()))?;
     let rest = &message[start..];
     Some(&rest[..rest.find('\'')?]).filter(|t| !t.is_empty())
 }

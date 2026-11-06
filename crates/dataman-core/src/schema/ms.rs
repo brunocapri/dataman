@@ -34,14 +34,7 @@ pub(crate) fn is_system_db(db: &str) -> bool {
 }
 
 pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
-    let rows = first_ok(
-        c,
-        &[
-            "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1",
-            "SELECT name FROM sys.databases",
-        ],
-    )
-    .await?;
+    let rows = first_ok(c, &["SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1", "SELECT name FROM sys.databases"]).await?;
     let mut v: Vec<String> = rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect();
     v.sort_by(|a, b| is_system_db(a).cmp(&is_system_db(b)).then_with(|| a.to_lowercase().cmp(&b.to_lowercase())));
     v.dedup();
@@ -57,10 +50,7 @@ pub(super) async fn schemas(c: &Db) -> Result<Vec<String>> {
 }
 
 pub(super) async fn relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
-    let q = format!(
-        "SELECT o.name, o.type FROM sys.all_objects o WHERE o.schema_id = SCHEMA_ID({}) AND o.type IN ('U', 'V')",
-        lit(schema)
-    );
+    let q = format!("SELECT o.name, o.type FROM sys.all_objects o WHERE o.schema_id = SCHEMA_ID({}) AND o.type IN ('U', 'V')", lit(schema));
     Ok(first_ok(c, &[&q])
         .await?
         .into_iter()
@@ -246,11 +236,7 @@ pub(crate) fn parse_routines(rows: &[Vec<Option<String>>]) -> Vec<super::FuncSig
 
 pub(super) fn function_of(n: usize, sig: super::FuncSig) -> super::Function {
     let params = super::objects::split_args(&sig.args);
-    let arg_types = params
-        .iter()
-        .filter(|p| !p.ends_with(" OUTPUT"))
-        .map(|p| p.split_once(' ').map(|(_, t)| t.to_string()).unwrap_or_default())
-        .collect();
+    let arg_types = params.iter().filter(|p| !p.ends_with(" OUTPUT")).map(|p| p.split_once(' ').map(|(_, t)| t.to_string()).unwrap_or_default()).collect();
     super::Function {
         oid: n as u32 + 1,
         name: sig.name,
@@ -299,9 +285,7 @@ pub(super) fn stats_sql(schema: &str) -> [String; 2] {
 
 pub(super) fn parse_stats(rows: &[Vec<Option<String>>]) -> HashMap<String, super::RelStats> {
     rows.iter()
-        .filter_map(|r| {
-            Some((get(r, 0)?, super::RelStats { rows: get(r, 1).and_then(|s| s.parse().ok()), bytes: get(r, 2).and_then(|s| s.parse().ok()) }))
-        })
+        .filter_map(|r| Some((get(r, 0)?, super::RelStats { rows: get(r, 1).and_then(|s| s.parse().ok()), bytes: get(r, 2).and_then(|s| s.parse().ok()) })))
         .collect()
 }
 
@@ -440,7 +424,8 @@ pub(crate) fn table_ddl(schema: &str, name: &str, cols: &[Column], cons: &[super
         })
         .collect();
     lines.extend(cons.iter().filter_map(|c| Some(format!("CONSTRAINT {} {}", Q.quote_ident(&c.name), c.definition.as_ref()?))));
-    let mut out = format!("CREATE TABLE {} (\n{}\n);\n", Q.qualified(Some(schema), name), lines.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join(",\n"));
+    let mut out =
+        format!("CREATE TABLE {} (\n{}\n);\n", Q.qualified(Some(schema), name), lines.iter().map(|l| format!("    {l}")).collect::<Vec<_>>().join(",\n"));
     let other: Vec<&String> = idx.iter().filter_map(|i| i.definition.as_ref()).collect();
     if !other.is_empty() {
         out.push('\n');
@@ -537,7 +522,17 @@ mod tests {
     fn constraints() {
         let rows = vec![
             row(&[Some("CK_qty"), Some("C"), Some("([qty]>(0))"), None, None, None, None, None, Some("0")]),
-            row(&[Some("FK_orders_customer"), Some("F"), Some("customer_id"), Some("dbo"), Some("customer"), Some("id"), Some("NO_ACTION"), Some("CASCADE"), Some("1")]),
+            row(&[
+                Some("FK_orders_customer"),
+                Some("F"),
+                Some("customer_id"),
+                Some("dbo"),
+                Some("customer"),
+                Some("id"),
+                Some("NO_ACTION"),
+                Some("CASCADE"),
+                Some("1"),
+            ]),
             row(&[Some("PK_orders"), Some("PK"), Some("id"), None, None, None, None, None, Some("1")]),
             row(&[Some("UQ_x"), Some("UQ"), Some("a"), None, None, None, None, None, Some("1")]),
             row(&[Some("UQ_x"), Some("UQ"), Some("b c"), None, None, None, None, None, Some("2")]),
@@ -570,8 +565,15 @@ mod tests {
             col("sub total", "decimal(20,2)", true, Some("AS ([qty]*[price]) PERSISTED")),
             col("row_version", "rowversion", false, None),
         ];
-        let cons = vec![super::super::Constraint { name: "PK_t".into(), kind: super::super::ConstraintKind::Primary, definition: Some("PRIMARY KEY (id)".into()) }];
-        let idx = vec![Index { name: "IX".into(), columns: vec!["status".into()], unique: false, primary: false, definition: Some("CREATE NONCLUSTERED INDEX IX ON dbo.t (status)".into()) }];
+        let cons =
+            vec![super::super::Constraint { name: "PK_t".into(), kind: super::super::ConstraintKind::Primary, definition: Some("PRIMARY KEY (id)".into()) }];
+        let idx = vec![Index {
+            name: "IX".into(),
+            columns: vec!["status".into()],
+            unique: false,
+            primary: false,
+            definition: Some("CREATE NONCLUSTERED INDEX IX ON dbo.t (status)".into()),
+        }];
         assert_eq!(
             table_ddl("dbo", "t", &cols, &cons, &idx),
             "CREATE TABLE dbo.t (\n    id int IDENTITY(1,1) NOT NULL,\n    status varchar(12) NOT NULL DEFAULT 'open',\n    [sub total] AS ([qty]*[price]) PERSISTED,\n    row_version rowversion,\n    CONSTRAINT PK_t PRIMARY KEY (id)\n);\n\nCREATE NONCLUSTERED INDEX IX ON dbo.t (status);\n"
@@ -580,9 +582,13 @@ mod tests {
 
     #[test]
     fn triggers_and_types() {
-        let t = parse_trigger(&row(&[Some("trg"), Some("orders"), Some("0"), Some("0"), Some("1"), Some("1"), Some("0"), Some("CREATE TRIGGER trg …")])).unwrap();
+        let t =
+            parse_trigger(&row(&[Some("trg"), Some("orders"), Some("0"), Some("0"), Some("1"), Some("1"), Some("0"), Some("CREATE TRIGGER trg …")])).unwrap();
         assert_eq!((t.enabled, t.events.as_str()), (true, "after insert/update"));
-        let rows = vec![row(&[Some("1"), Some("0"), None, Some("id"), Some("int"), Some("0")]), row(&[Some("1"), Some("0"), None, Some("name"), Some("nvarchar(50)"), Some("1")])];
+        let rows = vec![
+            row(&[Some("1"), Some("0"), None, Some("id"), Some("int"), Some("0")]),
+            row(&[Some("1"), Some("0"), None, Some("name"), Some("nvarchar(50)"), Some("1")]),
+        ];
         assert_eq!(parse_type_definition("dbo", "Items", &rows).unwrap(), "CREATE TYPE dbo.Items AS TABLE (\n    id int NOT NULL,\n    name nvarchar(50)\n);");
         let rows = vec![row(&[Some("0"), Some("0"), Some("varchar(11)"), None, None, None])];
         assert_eq!(parse_type_definition("dbo", "ssn", &rows).unwrap(), "CREATE TYPE dbo.ssn FROM varchar(11) NOT NULL;");

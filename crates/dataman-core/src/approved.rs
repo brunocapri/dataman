@@ -149,7 +149,14 @@ pub fn protections_of(p: &ConnectionProfile) -> ConnectionProfile {
 
 /// `p` with the protections approved for it.
 pub(crate) fn with_approved(p: &ConnectionProfile, approved: &ConnectionProfile) -> ConnectionProfile {
-    ConnectionProfile { id: p.id.clone(), name: p.name.clone(), color: p.color.clone(), color_picked: p.color_picked, save_password: p.save_password, ..approved.clone() }
+    ConnectionProfile {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        color: p.color.clone(),
+        color_picked: p.color_picked,
+        save_password: p.save_password,
+        ..approved.clone()
+    }
 }
 
 /// What `next` has over what was approved for it (none approved: a connection this person did
@@ -211,7 +218,8 @@ pub(crate) fn review(approved: Option<&ConnectionProfile>, next: &ConnectionProf
         ..now.clone()
     };
     if moved {
-        (named.engine, named.host, named.port, named.user, named.ssh, named.path) = (old.engine, old.host.clone(), old.port, old.user.clone(), old.ssh.clone(), old.path.clone());
+        (named.engine, named.host, named.port, named.user, named.ssh, named.path) =
+            (old.engine, old.host.clone(), old.port, old.user.clone(), old.ssh.clone(), old.path.clone());
         // The sign-in method is part of where the connection goes (its line above).
         named.auth = old.auth.clone();
         named.options.retain(|k, _| project::secret_option(k));
@@ -291,7 +299,12 @@ pub(crate) fn review_settings(approved: Option<&SettingsRules>, next: &SettingsR
     changes.extend(agents_config::type_changes(&old.sensitive_data, &next.sensitive_data));
     if old.crash_report_url != next.crash_report_url {
         let shown = |u: &Option<String>| u.clone().unwrap_or_else(|| "none".into());
-        changes.push(Change { what: "Crash reports go to".into(), from: shown(&old.crash_report_url), to: shown(&next.crash_report_url), loosens: next.crash_report_url.is_some() });
+        changes.push(Change {
+            what: "Crash reports go to".into(),
+            from: shown(&old.crash_report_url),
+            to: shown(&next.crash_report_url),
+            loosens: next.crash_report_url.is_some(),
+        });
     }
     if changes.iter().any(|c| c.loosens) { changes } else { Vec::new() }
 }
@@ -336,7 +349,14 @@ mod tests {
     }
 
     fn conn(id: &str) -> ConnectionProfile {
-        ConnectionProfile { id: id.into(), host: "db.example.com".into(), port: 5432, user: "app".into(), database: "shop".into(), ..ConnectionProfile::new(id) }
+        ConnectionProfile {
+            id: id.into(),
+            host: "db.example.com".into(),
+            port: 5432,
+            user: "app".into(),
+            database: "shop".into(),
+            ..ConnectionProfile::new(id)
+        }
     }
 
     fn held_ids(s: &ConfigStore) -> Vec<String> {
@@ -357,8 +377,20 @@ mod tests {
         assert!(h.moved && h.changes.iter().any(|c| c.what == "Sign-in" && c.to.contains("not a known address")), "{h:?}");
         // Accepted in Dataman, then only its AWS profile changed outside: held again.
         d.accept(&d.held()).unwrap();
-        m.dataman().upsert(ConnectionProfile { host: "db.abc.us-east-1.rds.amazonaws.com".into(), auth: Auth::AwsIam { profile: Some("dev".into()), region: None }, ..conn("a") }).unwrap();
-        m.outside().upsert(ConnectionProfile { host: "db.abc.us-east-1.rds.amazonaws.com".into(), auth: Auth::AwsIam { profile: Some("admin".into()), region: None }, ..conn("a") }).unwrap();
+        m.dataman()
+            .upsert(ConnectionProfile {
+                host: "db.abc.us-east-1.rds.amazonaws.com".into(),
+                auth: Auth::AwsIam { profile: Some("dev".into()), region: None },
+                ..conn("a")
+            })
+            .unwrap();
+        m.outside()
+            .upsert(ConnectionProfile {
+                host: "db.abc.us-east-1.rds.amazonaws.com".into(),
+                auth: Auth::AwsIam { profile: Some("admin".into()), region: None },
+                ..conn("a")
+            })
+            .unwrap();
         let d = m.dataman();
         assert_eq!(held_ids(&d), ["a"]);
         assert_eq!(d.get("a").unwrap().auth, Auth::AwsIam { profile: Some("dev".into()), region: None });
@@ -377,7 +409,10 @@ mod tests {
         let a = d.get("a").unwrap();
         assert_eq!((a.mcp_access(), a.mcp_yolo), (McpAccess::Read, false), "the approved rules apply meanwhile");
         let h = &d.held()[0];
-        assert!(!h.new && !h.moved && h.changes.iter().any(|c| c.what == "MCP tier" && c.loosens) && h.changes.iter().any(|c| c.what == "YOLO" && c.loosens), "{h:?}");
+        assert!(
+            !h.new && !h.moved && h.changes.iter().any(|c| c.what == "MCP tier" && c.loosens) && h.changes.iter().any(|c| c.what == "YOLO" && c.loosens),
+            "{h:?}"
+        );
 
         d.accept(&d.held()).unwrap();
         assert!(d.held().is_empty());
@@ -431,7 +466,14 @@ mod tests {
         let m = Mac::new();
         m.dataman().upsert(ConnectionProfile { env: Environment::Production, ..conn("prod") }).unwrap();
         m.outside().upsert(ConnectionProfile { host: "dev.example.com".into(), ..conn("plain") }).unwrap();
-        m.outside().upsert(ConnectionProfile { host: "dev.example.com".into(), mcp: Some(McpAccess::Write), mcp_allowed: vec!["DELETE FROM t".into()], ..conn("loose") }).unwrap();
+        m.outside()
+            .upsert(ConnectionProfile {
+                host: "dev.example.com".into(),
+                mcp: Some(McpAccess::Write),
+                mcp_allowed: vec!["DELETE FROM t".into()],
+                ..conn("loose")
+            })
+            .unwrap();
         // The same server as the production one, without its protection.
         m.outside().upsert(ConnectionProfile { id: "twin".into(), name: "twin".into(), ..conn("prod") }).unwrap();
         let d = m.dataman();
@@ -610,7 +652,11 @@ mod tests {
             let twin = ConnectionProfile { id: "twin".into(), name: "twin".into(), host: host.into(), ..conn("twin") };
             m.outside().upsert(twin).unwrap();
             let d = m.dataman();
-            assert!(d.held().iter().any(|h| h.id == "twin" && h.changes.iter().any(|c| c.what == "Agent login" && c.loosens)), "{host} {refused}: {:?}", d.held());
+            assert!(
+                d.held().iter().any(|h| h.id == "twin" && h.changes.iter().any(|c| c.what == "Agent login" && c.loosens)),
+                "{host} {refused}: {:?}",
+                d.held()
+            );
             assert!(d.get("twin").is_none(), "not used meanwhile");
         }
         let m = Mac::new();

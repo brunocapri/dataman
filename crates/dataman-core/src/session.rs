@@ -438,7 +438,15 @@ mod tests {
         }
         chunks.push(b.finish());
         let status = Status { phase: Some(Phase::Done), elapsed: Some(Duration::from_millis(12)), ..Default::default() };
-        ResultSet::restored("SELECT * FROM t".into(), cols(), Some(vec![ColumnOrigin { table_oid: Some(42), column_id: Some(1) }; 4]), None, Vec::new(), chunks, status)
+        ResultSet::restored(
+            "SELECT * FROM t".into(),
+            cols(),
+            Some(vec![ColumnOrigin { table_oid: Some(42), column_id: Some(1) }; 4]),
+            None,
+            Vec::new(),
+            chunks,
+            status,
+        )
     }
 
     fn failed() -> Arc<ResultSet> {
@@ -447,7 +455,15 @@ mod tests {
     }
 
     fn item(at: usize, state: ItemState, rs: Option<Arc<ResultSet>>) -> SaveItem {
-        SaveItem { at, sql: rs.as_ref().map_or("SET x = 1".into(), |r| r.sql.clone()), state, elapsed: Some(Duration::from_millis(3)), label: None, params: Vec::new(), rs }
+        SaveItem {
+            at,
+            sql: rs.as_ref().map_or("SET x = 1".into(), |r| r.sql.clone()),
+            state,
+            elapsed: Some(Duration::from_millis(3)),
+            label: None,
+            params: Vec::new(),
+            rs,
+        }
     }
 
     #[test]
@@ -504,7 +520,8 @@ mod tests {
             b.push_bool(3, true);
             b.end_row();
         }
-        let rs = ResultSet::restored("SELECT".into(), cols(), None, None, Vec::new(), vec![b.finish()], Status { phase: Some(Phase::Done), ..Default::default() });
+        let rs =
+            ResultSet::restored("SELECT".into(), cols(), None, None, Vec::new(), vec![b.finish()], Status { phase: Some(Phase::Done), ..Default::default() });
         let bytes = encode_results(&[item(0, ItemState::Ok, Some(rs))]);
         assert!(bytes.len() <= BYTE_CAP + 64 * 1024, "{}", bytes.len());
         let back = decode_results(&bytes).unwrap();
@@ -532,8 +549,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path().join("session"));
         assert!(store.load().is_none(), "no session yet");
-        let tab = |sql: &str, results: Option<&str>| TabState { sql: sql.into(), conn: Some("c1".into()), results: results.map(Into::into), shown: Some(Key::Stmt(0)), ..Default::default() };
-        let s = Session { version: VERSION, tabs: vec![tab("SELECT 1;", Some("r1-a1.bin")), tab("SELECT 2;", None)], active: 1, explorer_open: true, explorer_w: 260., ..Default::default() };
+        let tab = |sql: &str, results: Option<&str>| TabState {
+            sql: sql.into(),
+            conn: Some("c1".into()),
+            results: results.map(Into::into),
+            shown: Some(Key::Stmt(0)),
+            ..Default::default()
+        };
+        let s = Session {
+            version: VERSION,
+            tabs: vec![tab("SELECT 1;", Some("r1-a1.bin")), tab("SELECT 2;", None)],
+            active: 1,
+            explorer_open: true,
+            explorer_w: 260.,
+            ..Default::default()
+        };
         let bytes = encode_results(&[item(0, ItemState::Ok, Some(result(3, "q")))]);
         store.save(store.ticket(), &s, &[("r1-a1.bin".into(), bytes)]).unwrap();
         let back = store.load().unwrap();

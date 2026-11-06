@@ -340,14 +340,22 @@ pub fn exposed(spec: &Spec, inv: &Inventory, revoke: &dyn Fn(&Open, &[String]) -
         let is_hidden = hidden.iter().any(|h| *h == label || h.starts_with(&format!("{label} (")));
         if is_hidden || !spec.rows {
             let cols = if o.whole { Vec::new() } else { o.columns.clone() };
-            out.push(NotGranted { object: label.clone(), reason: format!("{} to every login (PUBLIC)", if o.whole { "granted" } else { "some columns granted" }), sql: vec![revoke(o, &cols)] });
+            out.push(NotGranted {
+                object: label.clone(),
+                reason: format!("{} to every login (PUBLIC)", if o.whole { "granted" } else { "some columns granted" }),
+                sql: vec![revoke(o, &cols)],
+            });
             continue;
         }
         let Some(a) = acc.iter().find(|a| a.schema == o.schema && a.name == o.name) else { continue };
         let kept: Vec<String> = a.hidden.iter().cloned().chain(a.masked.iter().map(|(c, _)| c.clone())).filter(|c| o.whole || o.columns.contains(c)).collect();
         if !kept.is_empty() {
             let names: Vec<String> = kept.iter().map(|c| format!("{label}.{c}")).collect();
-            out.push(NotGranted { object: short_list(&names), reason: "hidden or masked, and granted to every login (PUBLIC)".into(), sql: vec![revoke(o, if o.whole { &[] } else { &kept })] });
+            out.push(NotGranted {
+                object: short_list(&names),
+                reason: "hidden or masked, and granted to every login (PUBLIC)".into(),
+                sql: vec![revoke(o, if o.whole { &[] } else { &kept })],
+            });
         }
     }
     if !inv.open_roles.is_empty() {
@@ -372,11 +380,18 @@ pub(crate) fn with_exposed(mut plan: Plan, exposed: Vec<NotGranted>) -> Plan {
     if exposed.is_empty() {
         return plan;
     }
-    for r in plan.rules.iter_mut().filter(|r| r.who == Who::Database && (r.rule.ends_with(" hidden") || r.rule.ends_with(" masked") || r.rule.starts_with("Structure only") || r.rule.starts_with("Rows:"))) {
+    for r in plan.rules.iter_mut().filter(|r| {
+        r.who == Who::Database
+            && (r.rule.ends_with(" hidden") || r.rule.ends_with(" masked") || r.rule.starts_with("Structure only") || r.rule.starts_with("Rows:"))
+    }) {
         r.who = Who::Partly;
     }
     let names: Vec<String> = exposed.iter().map(|e| e.object.clone()).collect();
-    plan.rules.push(line(format!("{} readable by every login", short_list(&names)), "granted to PUBLIC: the agent login reads it too, only Dataman keeps it from agents", Who::Dataman));
+    plan.rules.push(line(
+        format!("{} readable by every login", short_list(&names)),
+        "granted to PUBLIC: the agent login reads it too, only Dataman keeps it from agents",
+        Who::Dataman,
+    ));
     plan.exposed = exposed;
     plan
 }
@@ -485,7 +500,8 @@ pub(crate) fn with_rule_fields(spec: &Spec, inv: &mut Inventory) {
         let mut cands: Vec<String> = r.visible.hidden_column_patterns(schema, &o.name, names);
         cands.extend(r.sensitive.iter().filter(|s| s.on).map(|s| s.col.rsplit_once('.').map_or(s.col.clone(), |(_, c)| c.to_string())));
         for c in cands.into_iter().filter(|c| !c.contains('*') && !c.is_empty()) {
-            let kept = r.visible.column_hidden(schema, &o.name, &c, names) || (r.view == AgentView::Masked && r.sensitive_mask(schema, &o.name, &c, names).is_some());
+            let kept =
+                r.visible.column_hidden(schema, &o.name, &c, names) || (r.view == AgentView::Masked && r.sensitive_mask(schema, &o.name, &c, names).is_some());
             if kept && !o.columns.iter().any(|x| x.name == c) {
                 o.columns.push(Col::new(&c));
             }
@@ -525,9 +541,16 @@ pub(crate) fn line(rule: impl Into<String>, how: impl Into<String>, who: Who) ->
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Sql(String),
-    Mongo { db: String, cmd: serde_json::Value },
+    Mongo {
+        db: String,
+        cmd: serde_json::Value,
+    },
     Redis(Vec<String>),
-    Http { method: String, path: String, body: Option<serde_json::Value> },
+    Http {
+        method: String,
+        path: String,
+        body: Option<serde_json::Value>,
+    },
     /// A comment in the script, nothing run.
     Note,
 }
@@ -620,20 +643,41 @@ pub enum Grant {
     /// On the database itself (PostgreSQL's CONNECT).
     Database(String),
     /// On a schema (PostgreSQL's USAGE).
-    Schema { schema: String, privilege: String },
-    Table { schema: String, name: String, privilege: String },
-    Column { schema: String, name: String, column: String, privilege: String },
+    Schema {
+        schema: String,
+        privilege: String,
+    },
+    Table {
+        schema: String,
+        name: String,
+        privilege: String,
+    },
+    Column {
+        schema: String,
+        name: String,
+        column: String,
+        privilege: String,
+    },
     /// PostgreSQL's USAGE on a sequence.
-    Sequence { schema: String, name: String },
+    Sequence {
+        schema: String,
+        name: String,
+    },
     /// A role it is a member of (PostgreSQL's predefined roles, SQL Server's database roles).
     Member(String),
     /// Server-wide (MySQL's `*.*`, SQL Server's server permissions).
     Global(String),
     /// A default for its sessions (PostgreSQL's `ALTER ROLE … SET`).
-    Setting { name: String, value: String },
+    Setting {
+        name: String,
+        value: String,
+    },
     Limit(u32),
     /// Dataman's view in its own schema, by the hash of its definition.
-    View { name: String, hash: String },
+    View {
+        name: String,
+        hash: String,
+    },
 }
 
 /// A view Dataman creates for a table agents read masked (or narrowed, on SQL Server).
@@ -744,7 +788,9 @@ impl Plan {
             }
         }
         if !self.exposed.is_empty() {
-            out.push_str(&format!("\n{comment} hidden or masked, yet every login may read them (the agent's too); to close that, their owner runs (not run):\n"));
+            out.push_str(&format!(
+                "\n{comment} hidden or masked, yet every login may read them (the agent's too); to close that, their owner runs (not run):\n"
+            ));
             for l in self.exposed.iter().flat_map(|n| &n.sql) {
                 out.push_str(&format!("{comment} {l}\n"));
             }

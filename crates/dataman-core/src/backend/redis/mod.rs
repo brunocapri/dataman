@@ -141,7 +141,9 @@ fn read_reply<'a>(io: &'a mut BufStream<Box<dyn Stream>>) -> std::pin::Pin<Box<d
 }
 
 async fn open(d: &Dial) -> Result<Conn> {
-    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(d.addr)).await.map_err(|_| anyhow!("timed out connecting to {}", d.addr))??;
+    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(d.addr))
+        .await
+        .map_err(|_| anyhow!("timed out connecting to {}", d.addr))??;
     super::refuse_self_connect(&tcp)?;
     let _ = tcp.set_nodelay(true);
     let stream: Box<dyn Stream> = match &d.tls {
@@ -164,7 +166,11 @@ async fn open(d: &Dial) -> Result<Conn> {
 pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunnel: Option<&Tunnel>) -> Result<Client> {
     let addr = match tunnel {
         Some(t) => t.local_addr(),
-        None => tokio::net::lookup_host((p.host.as_str(), p.port)).await.with_context(|| format!("resolving {}", p.host))?.next().ok_or_else(|| anyhow!("{} has no address", p.host))?,
+        None => tokio::net::lookup_host((p.host.as_str(), p.port))
+            .await
+            .with_context(|| format!("resolving {}", p.host))?
+            .next()
+            .ok_or_else(|| anyhow!("{} has no address", p.host))?,
     };
     let tls = match crate::backend::pg::rustls_config(p.sslmode)? {
         Some(cfg) if p.sslmode != SslMode::Prefer => {
@@ -299,11 +305,7 @@ pub(crate) async fn keys(c: &Client, db: &str) -> Result<Vec<Item>> {
     keys.dedup();
     keys.truncate(KEYS_LISTED);
     let types = c.pipeline(db, keys.iter().map(|k| vec![b"TYPE".to_vec(), k.as_bytes().to_vec()]).collect()).await?;
-    Ok(keys
-        .into_iter()
-        .zip(types)
-        .map(|(name, t)| Item { name, kind: ItemKind::Collection, count: None, size: None, note: t.text() })
-        .collect())
+    Ok(keys.into_iter().zip(types).map(|(name, t)| Item { name, kind: ItemKind::Collection, count: None, size: None, note: t.text() }).collect())
 }
 
 fn view_of(args: &[String]) -> Option<(&'static str, String)> {
@@ -378,7 +380,8 @@ async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Pa
                 source = None;
             }
             let items = r.items();
-            let docs = items.into_iter().enumerate().map(|(i, v)| entry(json!(skip + i as i64), json!({ "index": skip + i as i64, "value": v.json() }))).collect();
+            let docs =
+                items.into_iter().enumerate().map(|(i, v)| entry(json!(skip + i as i64), json!({ "index": skip + i as i64, "value": v.json() }))).collect();
             (docs, total)
         }
         "zset" => {
@@ -418,7 +421,11 @@ async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Pa
                 source = None;
             }
             let docs: Vec<Doc> = if kind == "hash" {
-                got.chunks(2).skip(skip as usize).take(limit as usize).map(|p| entry(p[0].json(), json!({ "field": p[0].json(), "value": p.get(1).map(Reply::json) }))).collect()
+                got.chunks(2)
+                    .skip(skip as usize)
+                    .take(limit as usize)
+                    .map(|p| entry(p[0].json(), json!({ "field": p[0].json(), "value": p.get(1).map(Reply::json) })))
+                    .collect()
             } else {
                 got.into_iter().skip(skip as usize).take(limit as usize).map(|m| entry(m.json(), json!({ "member": m.json() }))).collect()
             };

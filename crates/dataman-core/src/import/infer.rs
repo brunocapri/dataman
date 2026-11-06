@@ -172,9 +172,7 @@ fn kinds_of(s: &str) -> u16 {
     if is_uuid(s) {
         m |= UUID;
     }
-    if (s.starts_with('{') && s.ends_with('}') || s.starts_with('[') && s.ends_with(']'))
-        && serde_json::from_str::<serde::de::IgnoredAny>(s).is_ok()
-    {
+    if (s.starts_with('{') && s.ends_with('}') || s.starts_with('[') && s.ends_with(']')) && serde_json::from_str::<serde::de::IgnoredAny>(s).is_ok() {
         m |= JSON;
     }
     m
@@ -263,8 +261,7 @@ fn datetime(s: &str) -> Option<bool> {
 
 fn is_uuid(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() == 36
-        && b.iter().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { *c == b'-' } else { c.is_ascii_hexdigit() })
+    b.len() == 36 && b.iter().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { *c == b'-' } else { c.is_ascii_hexdigit() })
 }
 
 #[cfg(test)]

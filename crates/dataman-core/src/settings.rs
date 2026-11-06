@@ -50,7 +50,6 @@ impl Translucency {
     pub fn is_on(self) -> bool {
         self == Translucency::On
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -319,7 +318,10 @@ impl SettingsStore {
         let now = SettingsRules::of(&next);
         let touched = now != before;
         if touched && matches!(g.kept, Kept::Unreadable) {
-            anyhow::bail!("the approved rules could not be read from the {}: agent access and the sensitive data types cannot change now", crate::secret::STORE_NAME);
+            anyhow::bail!(
+                "the approved rules could not be read from the {}: agent access and the sensitive data types cannot change now",
+                crate::secret::STORE_NAME
+            );
         }
         let held = g.held.as_ref().filter(|_| !touched).map(|(rules, _)| rules.clone());
         if g.kept.writable() && held.is_none() && g.kept.found() != Some(&now) {
@@ -443,7 +445,10 @@ mod tests {
         assert_eq!((got(&own.id).mcp_row_limit, got(&own.id).mcp_rules.read_rows), (Some(7), Some(5000)), "a connection's own limit stays");
         assert_eq!((got(&plain.id).mcp_row_limit, got(&plain.id).mcp_rules.read_rows), (Some(10), Some(5000)));
         let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
-        assert!(!text.contains("mcp_write_row_limit") && !text.contains("mcp_max_rows") && !text.contains("mcp_show_in_tabs") && text.contains("light"), "{text}");
+        assert!(
+            !text.contains("mcp_write_row_limit") && !text.contains("mcp_max_rows") && !text.contains("mcp_show_in_tabs") && text.contains("light"),
+            "{text}"
+        );
         // Defaults move nothing, and a second run finds nothing to do.
         std::fs::write(dirs.settings_file(), "mcp_write_row_limit = 100\nmcp_max_rows = 1000\n").unwrap();
         let fresh = crate::ConnectionProfile::new("fresh");

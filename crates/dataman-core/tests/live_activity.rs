@@ -59,11 +59,15 @@ fn blocking_tree_cancel_and_terminate() {
     let e = env();
     let Some(c) = pg(&e) else { return };
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")]);
-    exec(&e, &c, &[
-        &format!("CREATE SCHEMA {SCHEMA}"),
-        &format!("CREATE TABLE {SCHEMA}.acct (id int PRIMARY KEY, balance int)"),
-        &format!("INSERT INTO {SCHEMA}.acct VALUES (1, 100), (2, 200)"),
-    ]);
+    exec(
+        &e,
+        &c,
+        &[
+            &format!("CREATE SCHEMA {SCHEMA}"),
+            &format!("CREATE TABLE {SCHEMA}.acct (id int PRIMARY KEY, balance int)"),
+            &format!("INSERT INTO {SCHEMA}.acct VALUES (1, 100), (2, 200)"),
+        ],
+    );
     let db = c.database().to_string();
 
     let holder = c.session(None);
@@ -141,10 +145,14 @@ fn statements_presence() {
     let e = env();
     let Some(c) = pg(&e) else { return };
     let here = e.core.block_on(c.activity_statements(c.database())).unwrap();
-    eprintln!("pg_stat_statements in {}: {}", c.database(), match &here {
-        Statements::Rows(r) => format!("{} rows", r.len()),
-        other => format!("{other:?}"),
-    });
+    eprintln!(
+        "pg_stat_statements in {}: {}",
+        c.database(),
+        match &here {
+            Statements::Rows(r) => format!("{} rows", r.len()),
+            other => format!("{other:?}"),
+        }
+    );
     assert!(matches!(here, Statements::NotInstalled | Statements::NotLoaded | Statements::Rows(_)), "{here:?}");
 
     let db = "dataman_pgss_t";

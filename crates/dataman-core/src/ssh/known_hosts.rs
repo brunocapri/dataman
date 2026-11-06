@@ -14,8 +14,14 @@ pub enum Status {
     Known,
     Unknown,
     /// The host is recorded with another key of the same type: refuse.
-    Changed { path: PathBuf, line: usize },
-    Revoked { path: PathBuf, line: usize },
+    Changed {
+        path: PathBuf,
+        line: usize,
+    },
+    Revoked {
+        path: PathBuf,
+        line: usize,
+    },
 }
 
 pub fn host_name(host: &str, port: u16) -> String {

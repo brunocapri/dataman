@@ -191,8 +191,8 @@ pub fn decode_field(raw: &[u8], quoted: bool, d: &CsvDialect, out: &mut String) 
 }
 
 const CP1252: [char; 32] = [
-    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—',
-    '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š',
+    '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
 ];
 
 #[allow(clippy::result_unit_err)] // As decode_field.
@@ -255,9 +255,7 @@ pub fn sniff_delimiter(sample: &[u8], quote: Option<u8>) -> u8 {
 }
 
 pub fn sniff_quote(sample: &[u8], delim: u8) -> Option<u8> {
-    let starts = |q: u8| {
-        sample.windows(2).filter(|w| (w[0] == delim || w[0] == b'\n') && w[1] == q).count() + usize::from(sample.first() == Some(&q))
-    };
+    let starts = |q: u8| sample.windows(2).filter(|w| (w[0] == delim || w[0] == b'\n') && w[1] == q).count() + usize::from(sample.first() == Some(&q));
     if starts(b'"') == 0 && starts(b'\'') > 0 { Some(b'\'') } else { Some(b'"') }
 }
 
@@ -321,7 +319,10 @@ mod tests {
     fn quotes_line_breaks_and_lines() {
         let input = b"id,name,note\r\n1,\"a,b\",\"say \"\"hi\"\"\"\n2,\"two\nlines\",\r3,,\"\"\n4,x";
         let recs = parse(input, b',', Some(b'"'));
-        assert_eq!(texts(&recs), vec![vec!["id", "name", "note"], vec!["1", "a,b", "say \"hi\""], vec!["2", "two\nlines", ""], vec!["3", "", ""], vec!["4", "x"]]);
+        assert_eq!(
+            texts(&recs),
+            vec![vec!["id", "name", "note"], vec!["1", "a,b", "say \"hi\""], vec!["2", "two\nlines", ""], vec!["3", "", ""], vec!["4", "x"]]
+        );
         assert_eq!(recs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 2, 3, 5, 6]);
         assert_eq!(recs[3].1[1], ("".into(), false));
         assert_eq!(recs[3].1[2], ("".into(), true));

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::{ConnectionProfile, Engine, SslMode};
 use dataman_core::nosql::{Output, Page};
+use gpui::{AsyncWindowContext, Entity};
 
 use crate::app::Workspace;
 use crate::conns::ConnState;
@@ -345,7 +345,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         cx.background_executor()
             .spawn(async move {
                 let c = core.block_on(core.connect(mongo, Some(mpw)))?;
-                let docs: Vec<String> = (1..=60).map(|i| format!("{{_id: {i}, name: 'person {i}', age: NumberLong({}), tags: ['t{}']}}", 20 + i % 30, i % 3)).collect();
+                let docs: Vec<String> =
+                    (1..=60).map(|i| format!("{{_id: {i}, name: 'person {i}', age: NumberLong({}), tags: ['t{}']}}", 20 + i % 30, i % 3)).collect();
                 for stmt in ["db.dropDatabase()".to_string(), format!("db.people.insertMany([{}])", docs.join(",")), "db.createCollection('empty')".into()] {
                     core.block_on(c.run_nosql(DB, &stmt, Page::default()))?;
                 }
@@ -371,11 +372,12 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.expand_id(&format!("c:{mid}"), cx)));
     let db_id = format!("c:{mid}/d:{DB}");
     let listed = until(cx, 10, |cx| cx.update(|_, cx| tree.read(cx).demo_children(&db_id)).unwrap_or_default().len() >= 2).await;
-    let (logos, children) = cx.update(|_, cx| {
-        let t = tree.read(cx);
-        ((t.demo_logo(&mid), t.demo_logo(&pid)), t.demo_children(&db_id))
-    })
-    .unwrap();
+    let (logos, children) = cx
+        .update(|_, cx| {
+            let t = tree.read(cx);
+            ((t.demo_logo(&mid), t.demo_logo(&pid)), t.demo_children(&db_id))
+        })
+        .unwrap();
     check("each connection's row has its engine's logo", logos == (Some(Engine::MongoDb), Some(Engine::Postgres)), format!("{logos:?}"));
     check("MongoDB's own database opens on its collections", listed && children == ["empty", "people"], format!("{children:?}"));
 
@@ -385,7 +387,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let lang = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).editor.read(cx).doc_lang())).ok().flatten().flatten();
     check(
         "a collection opens in a tab as documents, the editor in MongoDB's language",
-        got && lang == Some(Engine::MongoDb) && s.as_ref().is_some_and(|(sql, n, total, more)| sql == "db.people.find({})" && *n == 50 && *total == Some(60) && *more),
+        got && lang == Some(Engine::MongoDb)
+            && s.as_ref().is_some_and(|(sql, n, total, more)| sql == "db.people.find({})" && *n == 50 && *total == Some(60) && *more),
         format!("{s:?} {lang:?}"),
     );
     let Some(doc) = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).doc.clone())).ok().flatten() else {
@@ -476,7 +479,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "escape");
     draw(cx);
     let back = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).zoomed)).ok().flatten();
-    check("⌘⇧↩ on the documents zooms the result like the grid's; esc puts it back", zoomed == Some((Some(true), true)) && back == Some(false), format!("{zoomed:?} {back:?}"));
+    check(
+        "⌘⇧↩ on the documents zooms the result like the grid's; esc puts it back",
+        zoomed == Some((Some(true), true)) && back == Some(false),
+        format!("{zoomed:?} {back:?}"),
+    );
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::ToggleResultZoom), cx));
     let by_button = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).zoomed)).ok().flatten();
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::ToggleResultZoom), cx));
@@ -495,7 +502,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let asked = cx.update(|_, cx| doc.read(cx).has_confirm()).unwrap_or(false);
     let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.resolve_confirm(false, cx)));
     let s = shown(ws, cx);
-    check("deleteMany({}) waits for a yes; Cancel runs nothing", asked && s.as_ref().is_some_and(|s| s.0 == "db.people.find({})"), format!("asked {asked}, {s:?}"));
+    check(
+        "deleteMany({}) waits for a yes; Cancel runs nothing",
+        asked && s.as_ref().is_some_and(|s| s.0 == "db.people.find({})"),
+        format!("asked {asked}, {s:?}"),
+    );
 
     let _ = cx.update(|_, cx| {
         let editor = tab.read(cx).editor.clone();
@@ -520,7 +531,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         }
         pause(cx, 100).await;
     }
-    check("completions: collections after db., fields inside a filter", first == ["people"] && fields.contains(&"age".to_string()), format!("{first:?} {fields:?}"));
+    check(
+        "completions: collections after db., fields inside a filter",
+        first == ["people"] && fields.contains(&"age".to_string()),
+        format!("{first:?} {fields:?}"),
+    );
 
     // Folding, as in VS Code: the document's own text folds at its brackets.
     let label = "x".repeat(80);
@@ -556,7 +571,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             let other = (rows(cx).len(), cx.update(|_, cx| d.read(cx).line_count()).unwrap_or(0));
             let _ = cx.update(|_, cx| doc.update(cx, |p, cx| p.demo_select(0, cx)));
             draw(cx);
-            check("the folds stay with their document: another opens whole, the first comes back folded", other.0 == other.1 && rows(cx) == folded, format!("{other:?} {:?}", rows(cx)));
+            check(
+                "the folds stay with their document: another opens whole, the first comes back folded",
+                other.0 == other.1 && rows(cx) == folded,
+                format!("{other:?} {:?}", rows(cx)),
+            );
 
             let _ = cx.update(|_, cx| d.update(cx, |e, cx| e.demo_toggle_fold(0, true, cx)));
             let root = rows(cx);
@@ -565,7 +584,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
 
             let _ = cx.update(|_, cx| d.update(cx, |e, cx| e.fold_level(2, cx)));
             let level = rows(cx);
-            check("Fold level 2 folds the document's members", level.len() == lines - hides(2) && hides(2) > 0, format!("{} of {lines}, {} hidden", level.len(), hides(2)));
+            check(
+                "Fold level 2 folds the document's members",
+                level.len() == lines - hides(2) && hides(2) > 0,
+                format!("{} of {lines}, {} hidden", level.len(), hides(2)),
+            );
 
             let at = text.find("\"city\": \"London\"").unwrap_or(0);
             let _ = cx.update(|window, cx| {
@@ -602,27 +625,39 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         let deep: Vec<_> = dataman_core::jsontree::folds(&big).into_iter().filter(|r| r.depth == 3).collect();
         let long = big.lines().count();
         let want = long - deep.iter().map(|r| at(r.close) - at(r.open) - 1).sum::<usize>();
-        check("a long document opens two levels deep: each item folded to its first line", long > 80 && deep.len() == 40 && shown == want, format!("{shown} of {long}, want {want}"));
+        check(
+            "a long document opens two levels deep: each item folded to its first line",
+            long > 80 && deep.len() == 40 && shown == want,
+            format!("{shown} of {long}, want {want}"),
+        );
     }
 
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
-        w.new_tab(window, cx);
-    }));
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| {
+            w.new_tab(window, cx);
+        })
+    });
     let t2 = active(ws, cx).unwrap();
     let on_mongo = cx.update(|_, cx| (t2.read(cx).connection().map(|c| c.profile.id.clone()), t2.read(cx).doc.is_some())).unwrap();
     check("⌘T on the MongoDB tab: a documents tab on MongoDB", on_mongo == (Some(mid.clone()), true), format!("{on_mongo:?}"));
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.pick_target(&pid, &pg.database, window, cx)));
     let sql_now = cx.update(|_, cx| (t2.read(cx).connection().map(|c| c.engine()), t2.read(cx).doc.is_some(), t2.read(cx).editor.read(cx).doc_lang())).unwrap();
     check("the picker moves a tab to PostgreSQL: SQL again, the grid's view", sql_now == (Some(Engine::Postgres), false, None), format!("{sql_now:?}"));
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
-        w.new_tab(window, cx);
-    }));
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| {
+            w.new_tab(window, cx);
+        })
+    });
     let t3 = active(ws, cx).unwrap();
     let on_pg = cx.update(|_, cx| (t3.read(cx).connection().map(|c| c.engine()), t3.read(cx).doc.is_some())).unwrap();
     check("⌘T now: a SQL tab on PostgreSQL", on_pg == (Some(Engine::Postgres), false), format!("{on_pg:?}"));
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.pick_target(&mid, DB, window, cx)));
     let doc_now = cx.update(|_, cx| (t3.read(cx).connection().map(|c| c.engine()), t3.read(cx).doc.is_some(), t3.read(cx).editor.read(cx).doc_lang())).unwrap();
-    check("and back to MongoDB from the picker: documents and the shell's language", doc_now == (Some(Engine::MongoDb), true, Some(Engine::MongoDb)), format!("{doc_now:?}"));
+    check(
+        "and back to MongoDB from the picker: documents and the shell's language",
+        doc_now == (Some(Engine::MongoDb), true, Some(Engine::MongoDb)),
+        format!("{doc_now:?}"),
+    );
     let _ = cx.update(|_, cx| {
         let editor = t3.read(cx).editor.clone();
         editor.update(cx, |e, cx| {
@@ -669,7 +704,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let lang = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).editor.read(cx).doc_lang())).ok().flatten().flatten();
     check(
         "an index opens as documents in the console's language: the first 50 of 75",
-        lang == Some(Engine::Elasticsearch) && s.as_ref().is_some_and(|(sql, n, total, more)| sql.starts_with(&format!("GET /{INDEX}/_search")) && *n == 50 && *total == Some(75) && *more),
+        lang == Some(Engine::Elasticsearch)
+            && s.as_ref().is_some_and(|(sql, n, total, more)| sql.starts_with(&format!("GET /{INDEX}/_search")) && *n == 50 && *total == Some(75) && *more),
         format!("{s:?} {lang:?}"),
     );
     if let Some(doc) = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).doc.clone())).ok().flatten() {
@@ -677,7 +713,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         if let Some(d) = cx.update(|_, cx| doc.read(cx).demo_detail()).ok().flatten() {
             let text = cx.update(|_, cx| d.read(cx).text().to_string()).unwrap_or_default();
             let _ = cx.update(|_, cx| {
-                d.update(cx, |e, cx| e.set_text(&text.replace("\"shipped\"", "\"returned\"").replace("\"paid\"", "\"returned\"").replace("\"new\"", "\"returned\""), cx));
+                d.update(cx, |e, cx| {
+                    e.set_text(&text.replace("\"shipped\"", "\"returned\"").replace("\"paid\"", "\"returned\"").replace("\"new\"", "\"returned\""), cx)
+                });
                 doc.update(cx, |p, cx| p.demo_save(cx));
             });
             let saved = until(cx, 10, |cx| cx.update(|_, cx| doc.read(cx).demo_note()).ok().flatten().is_some_and(|n| n.0 == "Saved")).await;
@@ -701,7 +739,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             let kept = after.as_ref().is_some_and(|(d, sel, detail)| {
                 d.docs.len() == 50 && *sel == Some(0) && d.docs[0].body.text().contains("returned") && detail.contains("returned")
             });
-            check("an edited hit stays on the page, selected, as saved (Elasticsearch reorders what it reindexes)", saved && kept, format!("{:?}", after.as_ref().map(|(d, s, _)| (d.docs.len(), *s, d.docs.first().map(|x| x.body.text())))));
+            check(
+                "an edited hit stays on the page, selected, as saved (Elasticsearch reorders what it reindexes)",
+                saved && kept,
+                format!("{:?}", after.as_ref().map(|(d, s, _)| (d.docs.len(), *s, d.docs.first().map(|x| x.body.text())))),
+            );
             let _ = cx.update(|window, cx| doc.update(cx, |p, cx| p.demo_new(window, cx)));
             draw(cx);
             let _ = cx.update(|_, cx| {
@@ -712,7 +754,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             draw(cx);
             let after = page(cx);
             let first = after.as_ref().is_some_and(|(d, sel, _)| *sel == Some(0) && d.docs[0].body.text().contains("inserted") && d.total == Some(76));
-            check("a new hit shows first on the page, selected, counted", inserted && first, format!("{:?}", after.as_ref().map(|(d, s, _)| (d.total, *s, d.docs.first().map(|x| x.body.text())))));
+            check(
+                "a new hit shows first on the page, selected, counted",
+                inserted && first,
+                format!("{:?}", after.as_ref().map(|(d, s, _)| (d.total, *s, d.docs.first().map(|x| x.body.text())))),
+            );
             let tab = active(ws, cx).unwrap();
             let _ = cx.update(|_, cx| {
                 let editor = tab.read(cx).editor.clone();
@@ -749,11 +795,19 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let db7 = format!("c:{rid}/d:7");
     let keys_listed = until(cx, 10, |cx| cx.update(|_, cx| tree.read(cx).demo_children(&db7)).unwrap_or_default().len() >= 5).await;
     let keys = cx.update(|_, cx| tree.read(cx).demo_children(&db7)).unwrap_or_default();
-    check("Redis' database opens on its keys", keys_listed && keys == ["feature:dark-mode", "jobs:queue", "leaderboard", "user:1", "user:2"], format!("{keys:?}"));
+    check(
+        "Redis' database opens on its keys",
+        keys_listed && keys == ["feature:dark-mode", "jobs:queue", "leaderboard", "user:1", "user:2"],
+        format!("{keys:?}"),
+    );
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&rid, "7", "user:1", window, cx)));
     until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some()).await;
     let s = shown(ws, cx);
-    check("a hash opens as its fields, one entry each", s.as_ref().is_some_and(|(sql, n, total, _)| sql == "HGETALL user:1" && *n == 4 && *total == Some(4)), format!("{s:?}"));
+    check(
+        "a hash opens as its fields, one entry each",
+        s.as_ref().is_some_and(|(sql, n, total, _)| sql == "HGETALL user:1" && *n == 4 && *total == Some(4)),
+        format!("{s:?}"),
+    );
     if let Some(doc) = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).doc.clone())).ok().flatten() {
         draw(cx);
         if let Some(d) = cx.update(|_, cx| doc.read(cx).demo_detail()).ok().flatten() {
@@ -782,7 +836,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
                     }
                 })
                 .await;
-            check("an entry edited and saved is the hash's field now", saved && back.as_deref() == Some("changed"), format!("saved {saved}, {back:?} from {text}"));
+            check(
+                "an entry edited and saved is the hash's field now",
+                saved && back.as_deref() == Some("changed"),
+                format!("saved {saved}, {back:?} from {text}"),
+            );
         }
     }
     // A favorite on Redis opens as it was saved: no `;` (it would be part of the key).
@@ -810,7 +868,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     check("a search's aggregations come first", detail.trim_start().starts_with("{\n  \"aggregations\""), detail.chars().take(80).collect());
     let (out, detail) = run_text(ws, &format!("GET /{INDEX}/_search\n{{\"query\": {{\"match\": {{\"customer.name\": \"customer\"}}}}, \"highlight\": {{\"fields\": {{\"customer.name\": {{}}}}}}}}"), cx).await;
     let read_only = matches!(&out, Some(Ok(Output::Docs(d))) if d.source.is_none());
-    check("highlights show beside the source, read-only", read_only && detail.contains("_highlight") && detail.contains("<em>"), detail.chars().take(80).collect());
+    check(
+        "highlights show beside the source, read-only",
+        read_only && detail.contains("_highlight") && detail.contains("<em>"),
+        detail.chars().take(80).collect(),
+    );
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&rid, "7", "user:2", window, cx)));
     until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some()).await;
     let (_, detail) = run_text(ws, "INFO keyspace", cx).await;
@@ -824,7 +886,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let ran = cx.update(|_, cx| ws.read(cx).active_tab()?.read(cx).doc.as_ref()?.read(cx).shown()?.1.ok().cloned()).ok().flatten();
     let printed = ran.as_ref().map(|r| r.printed.clone()).unwrap_or_default();
     let page_one = matches!(&out, Some(Ok(Output::Docs(d))) if d.docs.len() == 50 && d.more && d.source.is_some());
-    check("a script runs as one: its print over its final cursor's page (editable)", one && page_one && printed.len() == 1 && printed[0].starts_with("ages "), format!("{one} {printed:?} {out:?}"));
+    check(
+        "a script runs as one: its print over its final cursor's page (editable)",
+        one && page_one && printed.len() == 1 && printed[0].starts_with("ages "),
+        format!("{one} {printed:?} {out:?}"),
+    );
     if let Some(doc) = cx.update(|_, cx| ws.read(cx).active_tab()?.read(cx).doc.clone()).ok().flatten() {
         let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.demo_page(50, cx)));
         pause(cx, 50).await;
@@ -832,7 +898,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
     let next = shown(ws, cx);
     let marks = count(&core, &mongo, &mpw, "db.marks.countDocuments({})", cx).await;
-    check("its next page reads the cursor again: the script's write ran once", next.as_ref().is_some_and(|s| s.1 > 0 && !s.3) && marks.as_deref() == Some("1"), format!("{next:?} marks {marks:?}"));
+    check(
+        "its next page reads the cursor again: the script's write ran once",
+        next.as_ref().is_some_and(|s| s.1 > 0 && !s.3) && marks.as_deref() == Some("1"),
+        format!("{next:?} marks {marks:?}"),
+    );
     let (out, _) = run_text(ws, "let check = 'ping'\nuse admin\ndb.runCommand({ping: 1}).ok", cx).await;
     let db_now = active(ws, cx).map(|t| cx.update(|_, cx| t.read(cx).database().to_string()).unwrap_or_default()).unwrap_or_default();
     check("use in a script moves the tab", db_now == "admin" && matches!(&out, Some(Ok(Output::Value(_)))), format!("{db_now} {out:?}"));
@@ -864,12 +934,26 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         draw(cx);
         let (text, on_tab) = tab_shows(cx);
         let tab_docs = matches!(&on_tab, Some(Ok(Output::Docs(d))) if d.docs.len() == 5 && d.more);
-        check("open_query on MongoDB: the agent's documents, and its tab's document view shows them", !err && v["count"] == 5 && v["in_tab"] == true && text == read && tab_docs, format!("{err} {out} | {text:?} {on_tab:?}"));
-        let (err, out) = crate::mcp_check::call(&ipc, "open_query", serde_json::json!({"connection": name, "database": DB, "sql": "db.marks.insertOne({by: 'agent'})"})).await;
+        check(
+            "open_query on MongoDB: the agent's documents, and its tab's document view shows them",
+            !err && v["count"] == 5 && v["in_tab"] == true && text == read && tab_docs,
+            format!("{err} {out} | {text:?} {on_tab:?}"),
+        );
+        let (err, out) =
+            crate::mcp_check::call(&ipc, "open_query", serde_json::json!({"connection": name, "database": DB, "sql": "db.marks.insertOne({by: 'agent'})"}))
+                .await;
         draw(cx);
         let (_, on_tab) = tab_shows(cx);
-        check("a write (tier full): runs unasked, the tab shows what it wrote", !err && out.contains("\"affected\":1") && matches!(&on_tab, Some(Ok(Output::Written { affected: 1, .. }))), format!("{err} {out} {on_tab:?}"));
-        let rx = crate::mcp_check::start(&ipc, "open_query", serde_json::json!({"connection": name, "database": DB, "sql": "for (const i of [1, 2]) db.marks.insertOne({i})\ndb.marks.countDocuments({})"}));
+        check(
+            "a write (tier full): runs unasked, the tab shows what it wrote",
+            !err && out.contains("\"affected\":1") && matches!(&on_tab, Some(Ok(Output::Written { affected: 1, .. }))),
+            format!("{err} {out} {on_tab:?}"),
+        );
+        let rx = crate::mcp_check::start(
+            &ipc,
+            "open_query",
+            serde_json::json!({"connection": name, "database": DB, "sql": "for (const i of [1, 2]) db.marks.insertOne({i})\ndb.marks.countDocuments({})"}),
+        );
         let asked = crate::mcp_check::sheet(cx).await;
         let why = asked.as_ref().map(|a| a.reasons.join(", ")).unwrap_or_default();
         check("a script's writes wait for the user (they cannot be counted first)", why.contains("a script"), why);
@@ -877,12 +961,22 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         let (err, out) = rx.await.unwrap_or((true, "gone".into()));
         draw(cx);
         let (_, on_tab) = tab_shows(cx);
-        check("Allow: the script runs, its writes listed, its value in the tab", !err && out.contains("\"value\":4") && out.contains("\"writes\"") && matches!(&on_tab, Some(Ok(Output::Value(_)))), format!("{err} {out} {on_tab:?}"));
-        let (err, out) = crate::mcp_check::call(&ipc, "open_query", serde_json::json!({"connection": name, "database": DB, "sql": "db.marks.deleteMany({})", "run": false})).await;
+        check(
+            "Allow: the script runs, its writes listed, its value in the tab",
+            !err && out.contains("\"value\":4") && out.contains("\"writes\"") && matches!(&on_tab, Some(Ok(Output::Value(_)))),
+            format!("{err} {out} {on_tab:?}"),
+        );
+        let (err, out) =
+            crate::mcp_check::call(&ipc, "open_query", serde_json::json!({"connection": name, "database": DB, "sql": "db.marks.deleteMany({})", "run": false}))
+                .await;
         draw(cx);
         let (text, on_tab) = tab_shows(cx);
         let marks = count(&core, &mongo, &mpw, "db.marks.countDocuments({})", cx).await;
-        check("a draft (run: false): the text in the tab, nothing run, nothing shown", !err && out.contains("drafted") && text == "db.marks.deleteMany({})" && on_tab.is_none() && marks.as_deref() == Some("4"), format!("{err} {out} {text:?} {on_tab:?} {marks:?}"));
+        check(
+            "a draft (run: false): the text in the tab, nothing run, nothing shown",
+            !err && out.contains("drafted") && text == "db.marks.deleteMany({})" && on_tab.is_none() && marks.as_deref() == Some("4"),
+            format!("{err} {out} {text:?} {on_tab:?} {marks:?}"),
+        );
     }
 
     crate::assets::set_logos(false);

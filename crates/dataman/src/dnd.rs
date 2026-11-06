@@ -1,4 +1,7 @@
-use gpui::{App, AppContext, Bounds, Context, Div, Entity, Hsla, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled, WeakEntity, Window, div, prelude::FluentBuilder};
+use gpui::{
+    App, AppContext, Bounds, Context, Div, Entity, Hsla, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled, WeakEntity, Window, div,
+    prelude::FluentBuilder,
+};
 
 use crate::app::Workspace;
 use crate::theme::{ActiveTheme, Theme, px};

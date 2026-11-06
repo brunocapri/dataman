@@ -29,7 +29,15 @@ fn near(est: Option<u64>, real: u64) -> bool {
 fn postgres_estimates_a_full_table_select() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    exec(&e, &c, &["DROP TABLE IF EXISTS public.dataman_est", "CREATE TABLE public.dataman_est AS SELECT g AS id FROM generate_series(1, 30000) g", "ANALYZE public.dataman_est"]);
+    exec(
+        &e,
+        &c,
+        &[
+            "DROP TABLE IF EXISTS public.dataman_est",
+            "CREATE TABLE public.dataman_est AS SELECT g AS id FROM generate_series(1, 30000) g",
+            "ANALYZE public.dataman_est",
+        ],
+    );
     let db = c.database().to_string();
     let est = estimate(&e, &c, &db, "SELECT * FROM public.dataman_est");
     assert!(near(est, 30_000), "{est:?}");

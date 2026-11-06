@@ -69,7 +69,13 @@ fn keychain_many_processes_at_once() {
     }
     let me = std::env::current_exe().unwrap();
     let kids: Vec<_> = (0..6)
-        .map(|n| std::process::Command::new(&me).args(["--ignored", "--exact", "keychain_many_processes_at_once"]).env("DATAMAN_KEYCHAIN_CHILD", n.to_string()).spawn().unwrap())
+        .map(|n| {
+            std::process::Command::new(&me)
+                .args(["--ignored", "--exact", "keychain_many_processes_at_once"])
+                .env("DATAMAN_KEYCHAIN_CHILD", n.to_string())
+                .spawn()
+                .unwrap()
+        })
         .collect();
     for mut kid in kids {
         assert!(kid.wait().unwrap().success());

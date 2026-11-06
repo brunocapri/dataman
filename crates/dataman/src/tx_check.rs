@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::{ConnectionProfile, Environment, TxStatus};
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::tab::{QueryTab, TabConfirm};
@@ -192,7 +192,11 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     type_run(tab, "BEGIN", false, cx).await;
     type_run(tab, "INSERT INTO tx_demo VALUES (7)", false, cx).await;
     type_run(tab, "SELECT count(*) FROM tx_demo", false, cx).await;
-    report("statements add up (TX 2)", tx(tab, cx) == (TxStatus::Open, 2) && first_cell(tab, cx).as_deref() == Some("6"), format!("{:?} {:?}", tx(tab, cx), first_cell(tab, cx)));
+    report(
+        "statements add up (TX 2)",
+        tx(tab, cx) == (TxStatus::Open, 2) && first_cell(tab, cx).as_deref() == Some("6"),
+        format!("{:?} {:?}", tx(tab, cx), first_cell(tab, cx)),
+    );
     key(cx, "ctrl-cmd-enter");
     idle(tab, cx).await;
     report("⌃⌘↩ commits", tx(tab, cx).0 == TxStatus::Idle, format!("{:?}", tx(tab, cx)));
@@ -205,7 +209,11 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     pause(cx, 400).await;
     key(cx, "cmd-backspace");
     idle(tab, cx).await;
-    report("⌘⌫ rolls back without running", tx(tab, cx).0 == TxStatus::Idle && first_cell(tab, cx).is_none(), format!("{:?} {:?}", tx(tab, cx), first_cell(tab, cx)));
+    report(
+        "⌘⌫ rolls back without running",
+        tx(tab, cx).0 == TxStatus::Idle && first_cell(tab, cx).is_none(),
+        format!("{:?} {:?}", tx(tab, cx), first_cell(tab, cx)),
+    );
     type_run(tab, "BEGIN", false, cx).await;
     type_run(tab, "SELECT 1/0", false, cx).await;
     type_run(tab, "SELECT 2", false, cx).await;
@@ -213,7 +221,11 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     key(cx, "cmd-enter");
     idle(tab, cx).await;
     idle(tab, cx).await;
-    report("⌘↩ rolls back and runs (autocommit)", first_cell(tab, cx).as_deref() == Some("2") && tx(tab, cx).0 == TxStatus::Idle, format!("{:?} {:?}", first_cell(tab, cx), tx(tab, cx)));
+    report(
+        "⌘↩ rolls back and runs (autocommit)",
+        first_cell(tab, cx).as_deref() == Some("2") && tx(tab, cx).0 == TxStatus::Idle,
+        format!("{:?} {:?}", first_cell(tab, cx), tx(tab, cx)),
+    );
     type_run(tab, "BEGIN", false, cx).await;
     type_run(tab, "SELECT 1/0", false, cx).await;
     type_run(tab, "ROLLBACK", false, cx).await;
@@ -244,7 +256,8 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     report("⌘↩ commits and closes", closed, String::new());
 
     if let Some(ro) = extra_connection(ws, "read-only", |p| p.read_only = true, cx).await {
-        let t = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&ro, None, "INSERT INTO orders (id) VALUES (-1)", true, window, cx))).ok().flatten();
+        let t =
+            cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&ro, None, "INSERT INTO orders (id) VALUES (-1)", true, window, cx))).ok().flatten();
         if let Some(t) = t {
             idle(&t, cx).await;
             let err = cx.update(|_, cx| t.read(cx).result().and_then(|r| r.status().error)).ok().flatten();
@@ -274,10 +287,9 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     }
 
     if let Some(id) = extra_connection(ws, "switch-save-delete", |_| {}, cx).await {
-        let new_tab = |cx: &mut AsyncWindowContext| cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&id, None, "", false, window, cx))).ok().flatten();
-        let prompt = |cx: &mut AsyncWindowContext| {
-            cx.update(|_, cx| ws.read(cx).tx_prompt.as_ref().map(|p| (p.then.verb(), p.tabs.len()))).ok().flatten()
-        };
+        let new_tab =
+            |cx: &mut AsyncWindowContext| cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&id, None, "", false, window, cx))).ok().flatten();
+        let prompt = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).tx_prompt.as_ref().map(|p| (p.then.verb(), p.tabs.len()))).ok().flatten();
         if let Some(t) = new_tab(cx) {
             type_run(&t, "BEGIN", false, cx).await;
             type_run(&t, "SELECT 1", false, cx).await;
@@ -311,7 +323,11 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
             report("saving the connection with a transaction open asks", prompt(cx) == Some(("save", 1)), format!("{:?}", prompt(cx)));
             key(cx, "escape");
             let dialog = cx.update(|_, cx| ws.read(cx).dialog.is_some()).unwrap_or(false);
-            report("esc goes back to the connection sheet, the transaction open", dialog && tx(&t, cx).0 == TxStatus::Open, format!("{dialog} {:?}", tx(&t, cx)));
+            report(
+                "esc goes back to the connection sheet, the transaction open",
+                dialog && tx(&t, cx).0 == TxStatus::Open,
+                format!("{dialog} {:?}", tx(&t, cx)),
+            );
             key(cx, "cmd-enter");
             pause(cx, 400).await;
             key(cx, "cmd-enter");
@@ -329,7 +345,11 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
                 }
             }
             let dialog = cx.update(|_, cx| ws.read(cx).dialog.is_some()).unwrap_or(true);
-            report("⌘↩ commits, saves and the tab takes the new connection", adopted && !dialog && tx(&t, cx).0 == TxStatus::Idle, format!("{adopted} {dialog}"));
+            report(
+                "⌘↩ commits, saves and the tab takes the new connection",
+                adopted && !dialog && tx(&t, cx).0 == TxStatus::Idle,
+                format!("{adopted} {dialog}"),
+            );
 
             type_run(&t, "BEGIN", false, cx).await;
             type_run(&t, "SELECT 1", false, cx).await;

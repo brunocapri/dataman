@@ -372,7 +372,16 @@ impl Builtin {
     }
 
     pub fn as_custom(&self) -> CustomType {
-        CustomType { id: self.id.into(), name: self.name.into(), pattern: self.pattern.into(), mask: self.mask, keep: self.keep(), validator: self.validator, ignore_case: false, on: self.on }
+        CustomType {
+            id: self.id.into(),
+            name: self.name.into(),
+            pattern: self.pattern.into(),
+            mask: self.mask,
+            keep: self.keep(),
+            validator: self.validator,
+            ignore_case: false,
+            on: self.on,
+        }
     }
 }
 
@@ -573,7 +582,17 @@ impl TypeSettings {
                 rule.push_str(&format!(" · {}", c.validator.label()));
             }
             let broken = check_pattern(&c.pattern).err();
-            rows.push(TypeRow { id: c.id.clone(), name: c.name.clone(), rule, example: String::new(), on: c.on, mask: c.mask, custom: true, edited: false, broken });
+            rows.push(TypeRow {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                rule,
+                example: String::new(),
+                on: c.on,
+                mask: c.mask,
+                custom: true,
+                edited: false,
+                broken,
+            });
         }
         rows
     }
@@ -1324,7 +1343,9 @@ pub fn values_call_for_rule(values: &[String], limit: usize, types: &Types) -> b
         return true;
     }
     let mut counts = Counts::new();
-    values.iter().map(|v| v.trim()).any(|v| !v.is_empty() && !["0", "1", "true", "false"].iter().any(|f| v.eq_ignore_ascii_case(f)) && matches!(types.scrub(v, &mut counts), Cow::Borrowed(_)))
+    values.iter().map(|v| v.trim()).any(|v| {
+        !v.is_empty() && !["0", "1", "true", "false"].iter().any(|f| v.eq_ignore_ascii_case(f)) && matches!(types.scrub(v, &mut counts), Cow::Borrowed(_))
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1419,10 +1440,10 @@ impl RedisCat {
         match first {
             "EVAL" | "EVALSHA" | "EVAL_RO" | "EVALSHA_RO" | "FCALL" | "FCALL_RO" | "SCRIPT" | "FUNCTION" => RedisCat::Scripting,
             "PUBLISH" | "SPUBLISH" | "SUBSCRIBE" | "PSUBSCRIBE" | "SSUBSCRIBE" | "UNSUBSCRIBE" | "PUNSUBSCRIBE" | "PUBSUB" => RedisCat::Pubsub,
-            "DEL" | "UNLINK" | "RENAME" | "RENAMENX" | "COPY" | "MOVE" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" | "PERSIST" | "TOUCH" | "OBJECT" | "DUMP" | "RESTORE" | "MIGRATE" => {
-                RedisCat::Keyspace
-            }
-            "KEYS" | "FLUSHALL" | "FLUSHDB" | "CONFIG" | "DEBUG" | "SHUTDOWN" | "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "REPLICAOF" | "SLAVEOF" | "MONITOR" | "SYNC" | "PSYNC" | "ACL" | "MODULE" | "FAILOVER" | "CLUSTER" | "SWAPDB" | "LASTSAVE" | "LATENCY" | "MEMORY" | "SORT" | "SORT_RO" => {
+            "DEL" | "UNLINK" | "RENAME" | "RENAMENX" | "COPY" | "MOVE" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" | "PERSIST" | "TOUCH" | "OBJECT"
+            | "DUMP" | "RESTORE" | "MIGRATE" => RedisCat::Keyspace,
+            "KEYS" | "FLUSHALL" | "FLUSHDB" | "CONFIG" | "DEBUG" | "SHUTDOWN" | "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "REPLICAOF" | "SLAVEOF" | "MONITOR"
+            | "SYNC" | "PSYNC" | "ACL" | "MODULE" | "FAILOVER" | "CLUSTER" | "SWAPDB" | "LASTSAVE" | "LATENCY" | "MEMORY" | "SORT" | "SORT_RO" => {
                 match c.as_str() {
                     // Not CONFIG GET: the server's configuration holds its passwords (requirepass, masterauth).
                     "CLUSTER INFO" | "CLUSTER NODES" | "ACL WHOAMI" | "LATENCY LATEST" | "MEMORY USAGE" | "MEMORY STATS" => RedisCat::Read,
@@ -1687,17 +1708,17 @@ pub fn entropy(s: &str) -> f64 {
     for c in s.chars() {
         *freq.entry(c).or_default() += 1;
     }
-    freq.values().map(|&k| {
-        let p = k as f64 / n as f64;
-        -p * p.log2()
-    })
-    .sum()
+    freq.values()
+        .map(|&k| {
+            let p = k as f64 / n as f64;
+            -p * p.log2()
+        })
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     fn scrub(t: &Types, s: &str) -> (String, Counts) {
         let mut c = Counts::new();
@@ -1739,7 +1760,10 @@ mod tests {
         assert_eq!((t.broken.clone(), ts.rows()[0].broken.is_some()), (vec!["Cards".to_string()], true), "a broken pattern is reported, as a custom type's");
         ts.set_builtin("card", Some(false), None);
         ts.reset_builtin("card");
-        assert!(!ts.builtin_edited("card") && !ts.builtin_on(card) && ts.builtin_def(card) == CustomType { on: false, ..card.as_custom() }, "reset keeps the switch");
+        assert!(
+            !ts.builtin_edited("card") && !ts.builtin_on(card) && ts.builtin_def(card) == CustomType { on: false, ..card.as_custom() },
+            "reset keeps the switch"
+        );
         ts.set_builtin_def(&card.as_custom());
         ts.set_builtin("card", Some(true), None);
         assert!(ts.is_unchanged(), "the defaults store nothing");
@@ -1851,20 +1875,95 @@ mod tests {
         let sure = Some(NameHit { how: Mask::Hidden, sure: true });
         let hidden = Some(NameHit { how: Mask::Hidden, sure: false });
         let partial = Some(NameHit { how: Mask::PARTIAL, sure: false });
-        for name in ["password", "Password", "PASSWORD", "UserPassword", "user_password", "userPassword", "User Password", "senha", "secret", "ClientSecret", "SECRET_KEY", "api_key", "ApiKey", "APIKey", "apiKey", "API_KEY", "apikey", "StripeApiKey", "private_key", "PrivateKey", "ssn", "SSN", "cpf", "CustomerCPF", "tax_id", "TaxId", "iban"] {
+        for name in [
+            "password",
+            "Password",
+            "PASSWORD",
+            "UserPassword",
+            "user_password",
+            "userPassword",
+            "User Password",
+            "senha",
+            "secret",
+            "ClientSecret",
+            "SECRET_KEY",
+            "api_key",
+            "ApiKey",
+            "APIKey",
+            "apiKey",
+            "API_KEY",
+            "apikey",
+            "StripeApiKey",
+            "private_key",
+            "PrivateKey",
+            "ssn",
+            "SSN",
+            "cpf",
+            "CustomerCPF",
+            "tax_id",
+            "TaxId",
+            "iban",
+        ] {
             assert_eq!(sensitive_name(name), sure, "{name}");
         }
         // Their subject is in the name, but so is `token_expires_at`'s: what they hold decides.
-        for name in ["token", "Token", "TOKEN", "AccessToken", "access_token", "email_token", "otp", "Mfa", "PasswordSalt", "password_changed_at", "api_key_id", "secret_hash", "secrethash", "cpf_number"] {
+        for name in [
+            "token",
+            "Token",
+            "TOKEN",
+            "AccessToken",
+            "access_token",
+            "email_token",
+            "otp",
+            "Mfa",
+            "PasswordSalt",
+            "password_changed_at",
+            "api_key_id",
+            "secret_hash",
+            "secrethash",
+            "cpf_number",
+        ] {
             assert_eq!(sensitive_name(name), hidden, "{name}");
         }
         for name in ["phone", "Phone", "PHONE", "phone_number", "telefone", "billing_address", "Address", "zip"] {
             assert_eq!(sensitive_name(name), partial, "{name}");
         }
-        for name in ["token_hash", "TokenHash", "TOKENHASH", "tokenhash", "Token_Hash", "UserTokenHash", "HashedToken", "TokenDigest", "password_hash", "PasswordHash", "passwordhash", "senha_hash", "hashed_password", "password_digest", "UserPasswordHash"] {
+        for name in [
+            "token_hash",
+            "TokenHash",
+            "TOKENHASH",
+            "tokenhash",
+            "Token_Hash",
+            "UserTokenHash",
+            "HashedToken",
+            "TokenDigest",
+            "password_hash",
+            "PasswordHash",
+            "passwordhash",
+            "senha_hash",
+            "hashed_password",
+            "password_digest",
+            "UserPasswordHash",
+        ] {
             assert_eq!(sensitive_name(name), None, "a digest: {name}");
         }
-        for name in ["email", "e_mail", "user_email", "card_number", "cartao", "pan", "created_at", "Notes", "TokenExpiry", "PasswordChangedAt", "MfaEnabled", "PhoneNumberConfirmed", "tokenizer", "Secretary", "apikeys"] {
+        for name in [
+            "email",
+            "e_mail",
+            "user_email",
+            "card_number",
+            "cartao",
+            "pan",
+            "created_at",
+            "Notes",
+            "TokenExpiry",
+            "PasswordChangedAt",
+            "MfaEnabled",
+            "PhoneNumberConfirmed",
+            "tokenizer",
+            "Secretary",
+            "apikeys",
+        ] {
             assert_eq!(sensitive_name(name), None, "{name}");
         }
     }
@@ -1928,12 +2027,21 @@ mod tests {
     #[test]
     fn errors_lose_their_values() {
         let cases = [
-            ("duplicate key value violates unique constraint \"users_email_key\"\nKey (email)=(ana@acme.com) already exists.", "Key (email)=(‹value›) already exists."),
+            (
+                "duplicate key value violates unique constraint \"users_email_key\"\nKey (email)=(ana@acme.com) already exists.",
+                "Key (email)=(‹value›) already exists.",
+            ),
             ("new row for relation \"t\" violates check constraint \"c\"\nFailing row contains (1, ana, 123).", "Failing row contains (‹value›)."),
             ("invalid input syntax for type integer: \"12a\"", "invalid input syntax for type integer: \"‹value›\""),
             ("Duplicate entry 'ana@acme.com' for key 'users.email'", "Duplicate entry '‹value›' for key 'users.email'"),
-            ("Cannot insert duplicate key row in object 'dbo.users' with unique index 'ix'. The duplicate key value is (ana@acme.com).", "The duplicate key value is (‹value›)."),
-            ("Conversion failed when converting the varchar value 'abc' to data type int.", "Conversion failed when converting the varchar value '‹value›' to data type int."),
+            (
+                "Cannot insert duplicate key row in object 'dbo.users' with unique index 'ix'. The duplicate key value is (ana@acme.com).",
+                "The duplicate key value is (‹value›).",
+            ),
+            (
+                "Conversion failed when converting the varchar value 'abc' to data type int.",
+                "Conversion failed when converting the varchar value '‹value›' to data type int.",
+            ),
             ("E11000 duplicate key error collection: shop.users index: email_1 dup key: { email: \"ana@acme.com\" }", "dup key: { ‹value› }"),
             ("failed to parse field [age] of type [long] in document with id '1'. Preview of field's value: 'abc'", "Preview of field's value: '‹value›'"),
         ];
@@ -1982,12 +2090,24 @@ mod tests {
         assert!(!v.table_visible(Some("audit"), "log", q) && !v.schema_visible("audit", q) && v.schema_visible("public", q));
         assert!(v.column_hidden(Some("public"), "users", "password_hash", q) && !v.column_hidden(Some("public"), "users", "email", q));
         assert_eq!(v.hidden_column_patterns(Some("public"), "users", q), vec!["password_hash".to_string()]);
-        let only = Visible { mode: VisibleMode::Only, items: vec![VisibleItem { name: "public.orders".into(), kind: ItemKind::Table }, VisibleItem { name: "orders.notes".into(), kind: ItemKind::Column }] };
+        let only = Visible {
+            mode: VisibleMode::Only,
+            items: vec![
+                VisibleItem { name: "public.orders".into(), kind: ItemKind::Table },
+                VisibleItem { name: "orders.notes".into(), kind: ItemKind::Column },
+            ],
+        };
         assert!(only.table_visible(Some("public"), "orders", q) && !only.table_visible(Some("public"), "users", q));
         assert!(only.schema_visible("public", q) && !only.schema_visible("audit", q));
         assert!(only.column_hidden(Some("public"), "orders", "notes", q));
         let f = Names::Flat;
-        let r = Visible { mode: VisibleMode::Except, items: vec![VisibleItem { name: "session:*".into(), kind: ItemKind::Table }, VisibleItem { name: "user:*.password".into(), kind: ItemKind::Column }] };
+        let r = Visible {
+            mode: VisibleMode::Except,
+            items: vec![
+                VisibleItem { name: "session:*".into(), kind: ItemKind::Table },
+                VisibleItem { name: "user:*.password".into(), kind: ItemKind::Column },
+            ],
+        };
         assert!(!r.table_visible(None, "session:9", f) && r.table_visible(None, "user:1", f));
         assert!(r.column_hidden(None, "user:1", "password", f));
         let schemas = vec!["public".to_string(), "audit".to_string()];
@@ -2003,7 +2123,13 @@ mod tests {
     fn rules_roundtrip_and_defaults() {
         let r = AgentRules::default();
         assert_eq!(toml::to_string(&r).unwrap().trim(), "", "defaults write nothing");
-        let mut r = AgentRules { view: AgentView::Masked, structure: false, time_limit_s: Some(30), read_from: Some(ReadFrom::SecondaryPreferred), ..Default::default() };
+        let mut r = AgentRules {
+            view: AgentView::Masked,
+            structure: false,
+            time_limit_s: Some(30),
+            read_from: Some(ReadFrom::SecondaryPreferred),
+            ..Default::default()
+        };
         r.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true });
         r.visible.items.push(VisibleItem { name: "public.payments".into(), kind: ItemKind::Table });
         r.redis.scripting = false;
@@ -2012,7 +2138,11 @@ mod tests {
         assert_eq!(back, r, "{text}");
         assert!(back.restricted() && !back.activity_on() && back.activity);
         assert_eq!(back.sensitive_mask(Some("public"), "users", "EMAIL", Names::Qualified), Some(Mask::PARTIAL));
-        assert_eq!(AgentRules { view: AgentView::Data, ..back.clone() }.sensitive_mask(None, "users", "email", Names::Qualified), None, "columns mask in Masked data only");
+        assert_eq!(
+            AgentRules { view: AgentView::Data, ..back.clone() }.sensitive_mask(None, "users", "email", Names::Qualified),
+            None,
+            "columns mask in Masked data only"
+        );
         assert_eq!(RedisCat::of("KEYS"), RedisCat::Dangerous);
         // The configuration holds requirepass: not for agents.
         assert_eq!(RedisCat::of("CONFIG GET"), RedisCat::Dangerous);

@@ -85,7 +85,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.refresh_schema(cx)));
     match stage {
         "complete-sig" => {
-            let text = "SELECT p.id,\n       date_trunc('month', to_timestamp(p.c)) AS month,\n       c.name\nFROM orders p\nJOIN customer c ON c.id = p.customer;";
+            let text =
+                "SELECT p.id,\n       date_trunc('month', to_timestamp(p.c)) AS month,\n       c.name\nFROM orders p\nJOIN customer c ON c.id = p.customer;";
             set(&tab, text, Some(text.find("p.c)").unwrap() + 3), cx);
             typ(cx, "r");
             true
@@ -134,10 +135,12 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     let editor = cx.update(|_, cx| tab.read(cx).editor.clone()).unwrap();
     let text = |cx: &mut AsyncWindowContext| cx.update(|_, cx| editor.read(cx).text().to_string()).unwrap();
 
-    let has_catalog = cx.update(|_, cx| {
-        let t = tab.read(cx);
-        t.connection().is_some_and(|c| c.schema.snapshot(t.database()).catalog.as_ref().is_some_and(|k| k.has_function("date_trunc")))
-    }).unwrap_or(false);
+    let has_catalog = cx
+        .update(|_, cx| {
+            let t = tab.read(cx);
+            t.connection().is_some_and(|c| c.schema.snapshot(t.database()).catalog.as_ref().is_some_and(|k| k.has_function("date_trunc")))
+        })
+        .unwrap_or(false);
     report("the tab loads the function catalog", has_catalog, String::new());
 
     set(tab, "SELECT ", None, cx);
@@ -160,7 +163,12 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     let u = text(cx);
     report("one ⌘Z undoes the whole format", u.starts_with("select p.id,c.name"), format!("{u:?}"));
 
-    set(tab, "SELECT p.totl, c.name FROM orders p JOIN customer c ON c.id = p.customer;\nSELECT p.total, c.name FROM orders p JOIN customer c USING (id) WHERE status = 'x';", None, cx);
+    set(
+        tab,
+        "SELECT p.totl, c.name FROM orders p JOIN customer c ON c.id = p.customer;\nSELECT p.total, c.name FROM orders p JOIN customer c USING (id) WHERE status = 'x';",
+        None,
+        cx,
+    );
     // The lint waits for typing to settle, then runs off the main thread: waited for, so a slow
     // machine sees it too.
     let mut lints: Vec<String> = Vec::new();
@@ -178,10 +186,12 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     set(tab, "SELECT $1::int + 1 AS n, :'name' AS name;", Some(0), cx);
     crate::editor::dispatch(cx, Box::new(crate::editor::RunStatement));
     pause(cx, 400).await;
-    let up = cx.update(|window, cx| {
-        let t = tab.read(cx);
-        t.params.as_ref().map(|p| (p.prompt.read(cx).rows.len(), p.prompt.read(cx).rows[0].input.focus_handle(cx).is_focused(window)))
-    }).unwrap_or(None);
+    let up = cx
+        .update(|window, cx| {
+            let t = tab.read(cx);
+            t.params.as_ref().map(|p| (p.prompt.read(cx).rows.len(), p.prompt.read(cx).rows[0].input.focus_handle(cx).is_focused(window)))
+        })
+        .unwrap_or(None);
     report("Run Statement on $1 and :'name' opens the prompt, first field focused", up == Some((2, true)), format!("{up:?}"));
     typ(cx, "41");
     key(cx, "enter");
@@ -193,13 +203,15 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
         t.params.is_none() && !t.is_running() && t.result().is_some_and(|r| r.phase().is_finished())
     })
     .await;
-    let cells = cx.update(|_, cx| {
-        let r = tab.read(cx).result().cloned();
-        r.map(|r| {
-            let s = r.snapshot();
-            (s.text(0, 0).map(|x| x.into_owned()), s.text(0, 1).map(|x| x.into_owned()), r.sql.clone())
+    let cells = cx
+        .update(|_, cx| {
+            let r = tab.read(cx).result().cloned();
+            r.map(|r| {
+                let s = r.snapshot();
+                (s.text(0, 0).map(|x| x.into_owned()), s.text(0, 1).map(|x| x.into_owned()), r.sql.clone())
+            })
         })
-    }).unwrap_or(None);
+        .unwrap_or(None);
     report(
         "the values are bound ($1 → 42, the quote stays a value)",
         cells.as_ref().is_some_and(|c| c.0.as_deref() == Some("42") && c.1.as_deref() == Some("o'brien") && c.2.contains("$2")),
@@ -221,10 +233,12 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     let src = "SELECT c.name FROM customer c";
     set(tab, src, Some(src.find("customer").unwrap() + 2), cx);
     key(cx, "f12");
-    let (conn, db) = cx.update(|_, cx| {
-        let t = tab.read(cx);
-        (t.connection().map(|c| c.profile.id.clone()).unwrap_or_default(), t.database().to_string())
-    }).unwrap();
+    let (conn, db) = cx
+        .update(|_, cx| {
+            let t = tab.read(cx);
+            (t.connection().map(|c| c.profile.id.clone()).unwrap_or_default(), t.database().to_string())
+        })
+        .unwrap();
     let want = format!("c:{conn}/d:{db}/s:public/r:customer");
     let ws2 = ws.clone();
     let w2 = want.clone();

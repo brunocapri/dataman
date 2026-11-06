@@ -123,7 +123,10 @@ pub async fn review(c: &Arc<Connection>, p: &ConnectionProfile, o: &Options) -> 
         plan.before = ms::drop_orphan_steps(&spec.user);
         plan.notes.push(format!("A login named {} is on the server without its user in {} (the database was restored or made again since it was created): the script drops it first.", spec.user, p.database));
     } else if probe.exists == Some(false) {
-        plan.lacks.push(format!("a login named {} already exists and isn't Dataman's: Dataman never changes it. Drop or rename it to create the agent login", spec.user));
+        plan.lacks.push(format!(
+            "a login named {} already exists and isn't Dataman's: Dataman never changes it. Drop or rename it to create the agent login",
+            spec.user
+        ));
     } else if probe.exists == Some(true) {
         plan.lacks.push(format!("{} already exists (Dataman made it): Verify picks it up, or Remove it first", spec.user));
     }
@@ -220,13 +223,21 @@ pub async fn verify_as(core: &crate::Core, p: &ConnectionProfile, user: &str, pw
 /// Create, once the user said yes to the review: runs its plan on the user's login (`admin`),
 /// keeps the password in the Keychain, and logs in as the new login to check it. A login that
 /// fails the check is removed again; where removing fails too it is kept, with why (the third).
-pub async fn create(core: &crate::Core, admin: &Arc<Connection>, p: &ConnectionProfile, rv: &Review, o: &Options) -> std::result::Result<(AgentLogin, Vec<Check>, Option<String>), String> {
+pub async fn create(
+    core: &crate::Core,
+    admin: &Arc<Connection>,
+    p: &ConnectionProfile,
+    rv: &Review,
+    o: &Options,
+) -> std::result::Result<(AgentLogin, Vec<Check>, Option<String>), String> {
     if let Some(l) = rv.plan.lacks.first() {
         return Err(format!("can't create it: {l}"));
     }
     apply(admin, &rv.plan, &p.database).await.map_err(|e| format!("{e:#}"))?;
     let account = secret_account(&p.id);
-    core.secrets.set(&account, &rv.password).map_err(|e| format!("the login was created but its password could not be kept in the {}: {e:#}", crate::secret::STORE_NAME))?;
+    core.secrets
+        .set(&account, &rv.password)
+        .map_err(|e| format!("the login was created but its password could not be kept in the {}: {e:#}", crate::secret::STORE_NAME))?;
     let mut rec = record(p, &rv.plan, o);
     let checks = verify_as(core, p, &rec.user, &rv.password, rv).await;
     if let Ok(c) = &checks
@@ -346,7 +357,11 @@ fn refused(engine: Engine, code: Option<&str>, msg: &str) -> bool {
     match engine {
         Engine::Postgres => code == Some("42501") || m.contains("permission denied"),
         Engine::MySql => matches!(code, Some("1142" | "1143" | "1044" | "1045" | "1227" | "1370" | "1356" | "1146")) || m.contains("denied"),
-        Engine::SqlServer => matches!(code, Some("229" | "230" | "262" | "297" | "300" | "916" | "208" | "4701" | "15247")) || m.contains("permission was denied") || m.contains("invalid object name"),
+        Engine::SqlServer => {
+            matches!(code, Some("229" | "230" | "262" | "297" | "300" | "916" | "208" | "4701" | "15247"))
+                || m.contains("permission was denied")
+                || m.contains("invalid object name")
+        }
         _ => m.contains("unauthorized") || m.contains("not authorized") || m.contains("noperm") || m.contains("security_exception") || m.contains("403"),
     }
 }
@@ -418,29 +433,64 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
                 // A DELETE names no column: only the privilege can refuse it (an UPDATE of an
                 // identity column is refused by SQL Server for that before any permission).
                 let r = try_sql(format!("DELETE FROM {} WHERE 1 = 0", qual(&a.schema, &a.name))).await;
-                out.push(check(G::Writing, "Can't write rows", a.label(), TIP_WRITE, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "the write went through".into())));
+                out.push(check(
+                    G::Writing,
+                    "Can't write rows",
+                    a.label(),
+                    TIP_WRITE,
+                    r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)),
+                    r.err().map(|x| x.message).unwrap_or_else(|| "the write went through".into()),
+                ));
             }
         }
         if let Some(v) = views.first() {
             let a = acc.iter().find(|a| a.schema == v.schema && a.name == v.table);
             let col = a.and_then(|a| a.masked.first().map(|m| m.0.clone()).or_else(|| a.plain.first().cloned())).unwrap_or_default();
             let r = try_sql(top0(e, &sql_q(e, &col), &v.view)).await;
-            out.push(check(G::Reading, "Reads masked tables through its view", v.table.clone(), TIP_VIEW, r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
+            out.push(check(
+                G::Reading,
+                "Reads masked tables through its view",
+                v.table.clone(),
+                TIP_VIEW,
+                r.is_ok(),
+                r.err().map(|x| x.to_string()).unwrap_or_default(),
+            ));
             // What every login reads anyway (the review says so) is not tried.
             if let Some((m, _)) = a.and_then(|a| a.masked.iter().find(|(m, _)| !inv.open_to_all(&a.schema, &a.name, Some(m)))) {
                 let r = try_sql(top0(e, &sql_q(e, m), &qual(&v.schema, &v.table))).await;
-                out.push(check(G::Privacy, "Can't read masked values unmasked", format!("{}.{m}", v.table), TIP_MASKED, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the real values".into())));
+                out.push(check(
+                    G::Privacy,
+                    "Can't read masked values unmasked",
+                    format!("{}.{m}", v.table),
+                    TIP_MASKED,
+                    r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)),
+                    r.err().map(|x| x.message).unwrap_or_else(|| "it read the real values".into()),
+                ));
             }
         }
         if let Some((a, h)) = acc.iter().find_map(|a| a.hidden.iter().find(|h| !inv.open_to_all(&a.schema, &a.name, Some(h))).map(|h| (a, h))) {
             let r = try_sql(top0(e, &sql_q(e, h), &qual(&a.schema, &a.name))).await;
-            out.push(check(G::Privacy, "Can't read hidden columns", format!("{}.{h}", a.name), TIP_HIDDEN_COLUMN, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden column".into())));
+            out.push(check(
+                G::Privacy,
+                "Can't read hidden columns",
+                format!("{}.{h}", a.name),
+                TIP_HIDDEN_COLUMN,
+                r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)),
+                r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden column".into()),
+            ));
         }
     }
     // Not granted (another owner's): out of reach until its owner grants it.
     if let Some(a) = acc.iter().find(|a| !a.grantable && !probe.flavor.superuser) {
         let r = try_sql(top0(e, "1", &qual(&a.schema, &a.name))).await;
-        out.push(check(G::Reading, "Can't read tables it wasn't granted", a.label(), TIP_NOT_GRANTED, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read a table it was not granted".into())));
+        out.push(check(
+            G::Reading,
+            "Can't read tables it wasn't granted",
+            a.label(),
+            TIP_NOT_GRANTED,
+            r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)),
+            r.err().map(|x| x.message).unwrap_or_else(|| "it read a table it was not granted".into()),
+        ));
     }
     let open_table = |h: &String| {
         let name = h.split(" (").next().unwrap_or(h);
@@ -451,7 +501,14 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let name = h.split(" (").next().unwrap_or(h);
         let (s, n) = name.split_once('.').unwrap_or(("", name));
         let r = try_sql(top0(e, "1", &qual(s, n))).await;
-        out.push(check(G::Privacy, "Can't read hidden tables", name, TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden table".into())));
+        out.push(check(
+            G::Privacy,
+            "Can't read hidden tables",
+            name,
+            TIP_HIDDEN_TABLE,
+            r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)),
+            r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden table".into()),
+        ));
     }
     let probe_table = format!("dataman_probe_{}", hash::hex(&hash::random_bytes(4)));
     let schema = match e {
@@ -471,7 +528,16 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let _ = db.execute(&format!("DROP TABLE {}", qual(&schema, &probe_table))).await;
     }
     let pg_public = e == Engine::Postgres && probe.flavor.major > 0 && probe.flavor.major < 15;
-    out.push(check(G::Structure, "Can't change structure", "", TIP_STRUCTURE, ok || pg_public, r.err().map(|x| x.message).unwrap_or_else(|| if pg_public { "PUBLIC may create in schema public before PostgreSQL 15".into() } else { "it created a table (rolled back)".into() })));
+    out.push(check(
+        G::Structure,
+        "Can't change structure",
+        "",
+        TIP_STRUCTURE,
+        ok || pg_public,
+        r.err().map(|x| x.message).unwrap_or_else(|| {
+            if pg_public { "PUBLIC may create in schema public before PostgreSQL 15".into() } else { "it created a table (rolled back)".into() }
+        }),
+    ));
     Ok(())
 }
 
@@ -491,23 +557,58 @@ async fn verify_mongo(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, out
         out.push(check(G::Reading, "Reads what the rules allow", a.label(), TIP_READS, r.is_ok(), r.err().map(|x| format!("{x:#}")).unwrap_or_default()));
         if !a.write {
             let r = mongo::run(m, &a.schema, &json!({ "insert": a.name, "documents": [{ "dataman_probe": 1 }] })).await;
-            out.push(check(G::Writing, "Can't write documents", a.label(), TIP_WRITE, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "the insert went through".into())));
+            out.push(check(
+                G::Writing,
+                "Can't write documents",
+                a.label(),
+                TIP_WRITE,
+                r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))),
+                r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "the insert went through".into()),
+            ));
         }
     }
     if let Some((db, view, _, _, map)) = d.views.first() {
         let r = find(db.clone(), view.clone()).await;
-        out.push(check(G::Reading, "Reads masked collections through its view", map.table.clone(), TIP_VIEW, r.is_ok(), r.err().map(|x| format!("{x:#}")).unwrap_or_default()));
+        out.push(check(
+            G::Reading,
+            "Reads masked collections through its view",
+            map.table.clone(),
+            TIP_VIEW,
+            r.is_ok(),
+            r.err().map(|x| format!("{x:#}")).unwrap_or_default(),
+        ));
         let r = find(db.clone(), map.table.clone()).await;
-        out.push(check(G::Privacy, "Can't read masked values unmasked", map.table.clone(), TIP_MASKED, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the collection".into())));
+        out.push(check(
+            G::Privacy,
+            "Can't read masked values unmasked",
+            map.table.clone(),
+            TIP_MASKED,
+            r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))),
+            r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the collection".into()),
+        ));
     }
     if let Some(h) = d.hidden.first() {
         let (db, coll) = h.split_once('.').unwrap_or(("", h));
         let r = find(db.to_string(), coll.split(" (").next().unwrap_or(coll).to_string()).await;
-        out.push(check(G::Privacy, "Can't read hidden collections", h.clone(), TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the hidden collection".into())));
+        out.push(check(
+            G::Privacy,
+            "Can't read hidden collections",
+            h.clone(),
+            TIP_HIDDEN_TABLE,
+            r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))),
+            r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the hidden collection".into()),
+        ));
     }
     let db = d.access.first().map(|a| a.schema.clone()).unwrap_or_else(|| agent.database().to_string());
     let r = mongo::run(m, &db, &json!({ "create": format!("dataman_probe_{}", hash::hex(&hash::random_bytes(4))) })).await;
-    out.push(check(G::Structure, "Can't change structure", "", TIP_STRUCTURE, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created a collection".into())));
+    out.push(check(
+        G::Structure,
+        "Can't change structure",
+        "",
+        TIP_STRUCTURE,
+        r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))),
+        r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created a collection".into()),
+    ));
     Ok(())
 }
 
@@ -520,11 +621,25 @@ async fn verify_redis(agent: &Arc<Connection>, spec: &Spec, out: &mut Vec<Check>
     // Only refusals are tried here: what would change the server never runs.
     for (on, a) in [("CONFIG", vec!["CONFIG", "GET", "maxmemory"]), ("KEYS", vec!["KEYS", "dataman-probe-*"])] {
         let x = redis::call(r, &a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).await;
-        out.push(check(G::Structure, "Can't run dangerous commands", on, TIP_DANGEROUS, x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")), x.err().map(|e| e.to_string()).unwrap_or_else(|| "it ran".into())));
+        out.push(check(
+            G::Structure,
+            "Can't run dangerous commands",
+            on,
+            TIP_DANGEROUS,
+            x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")),
+            x.err().map(|e| e.to_string()).unwrap_or_else(|| "it ran".into()),
+        ));
     }
     if !spec.write {
         let x = redis::call(r, &["SET".into(), format!("dataman-probe-{}", hash::hex(&hash::random_bytes(4))), "x".into()]).await;
-        out.push(check(G::Writing, "Can't write keys", "SET", TIP_WRITE, x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")), x.err().map(|e| e.to_string()).unwrap_or_else(|| "it wrote".into())));
+        out.push(check(
+            G::Writing,
+            "Can't write keys",
+            "SET",
+            TIP_WRITE,
+            x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")),
+            x.err().map(|e| e.to_string()).unwrap_or_else(|| "it wrote".into()),
+        ));
     }
     Ok(())
 }
@@ -532,13 +647,21 @@ async fn verify_redis(agent: &Arc<Connection>, spec: &Spec, out: &mut Vec<Check>
 async fn verify_search(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe: &Probe, out: &mut Vec<Check>) -> Result<()> {
     let Client::Search(s) = nosql(agent)? else { bail!("not a search server") };
     let os = probe.flavor.opensearch;
-    let who = if os { search::call(s, "GET", "/_plugins/_security/authinfo", None).await? } else { search::call(s, "GET", "/_security/_authenticate", None).await? };
+    let who =
+        if os { search::call(s, "GET", "/_plugins/_security/authinfo", None).await? } else { search::call(s, "GET", "/_security/_authenticate", None).await? };
     let me = (if os { who["user_name"].as_str() } else { who["username"].as_str() }).unwrap_or("").to_string();
     out.push(check(G::Login, "Logs in as itself", me.clone(), TIP_LOGIN, me == spec.user, me));
     let d = search::desired(spec, inv, os, probe.flavor.superuser);
     if let Some(a) = d.access.first() {
         let r = search::call(s, "POST", &format!("/{}/_search", a.name), Some(&json!({ "size": 1 }))).await;
-        out.push(check(G::Reading, "Searches what the rules allow", a.name.clone(), TIP_SEARCHES, r.is_ok(), r.as_ref().err().map(|x| format!("{x:#}")).unwrap_or_default()));
+        out.push(check(
+            G::Reading,
+            "Searches what the rules allow",
+            a.name.clone(),
+            TIP_SEARCHES,
+            r.is_ok(),
+            r.as_ref().err().map(|x| format!("{x:#}")).unwrap_or_default(),
+        ));
         if let (Ok(v), Some(h)) = (&r, a.hidden.first()) {
             let src = &v["hits"]["hits"][0]["_source"];
             out.push(check(G::Privacy, "Hidden fields are left out", format!("{}.{h}", a.name), TIP_HIDDEN_FIELD, src.get(h).is_none(), String::new()));
@@ -546,11 +669,25 @@ async fn verify_search(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, pr
     }
     if let Some(h) = d.hidden.first() {
         let r = search::call(s, "POST", &format!("/{}/_search", h.split(" (").next().unwrap_or(h)), Some(&json!({ "size": 1 }))).await;
-        out.push(check(G::Privacy, "Can't search hidden indices", h.clone(), TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(spec.engine, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it searched the hidden index".into())));
+        out.push(check(
+            G::Privacy,
+            "Can't search hidden indices",
+            h.clone(),
+            TIP_HIDDEN_TABLE,
+            r.as_ref().is_err_and(|x| refused(spec.engine, None, &format!("{x:#}"))),
+            r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it searched the hidden index".into()),
+        ));
     }
     let r = search::call(s, "PUT", &format!("/dataman-probe-{}", hash::hex(&hash::random_bytes(4))), None).await;
     let ok = r.as_ref().is_err_and(|x| refused(spec.engine, None, &format!("{x:#}")));
-    out.push(check(G::Structure, "Can't create indices", "", TIP_INDICES, ok, r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created an index".into())));
+    out.push(check(
+        G::Structure,
+        "Can't create indices",
+        "",
+        TIP_INDICES,
+        ok,
+        r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created an index".into()),
+    ));
     Ok(())
 }
 
@@ -560,7 +697,8 @@ pub async fn exists(c: &Arc<Connection>, p: &ConnectionProfile, user: &str) -> R
         Engine::Postgres => pg::exists(&admin_db(c, Some(&p.database)).await?, user, &p.id).await?,
         Engine::MySql => {
             let db = admin_db(c, None).await?;
-            let maria = text_rows(&db, "SELECT VERSION()").await?.first().and_then(|r| r[0].clone()).unwrap_or_default().to_ascii_lowercase().contains("mariadb");
+            let maria =
+                text_rows(&db, "SELECT VERSION()").await?.first().and_then(|r| r[0].clone()).unwrap_or_default().to_ascii_lowercase().contains("mariadb");
             my::exists(&db, user, &p.id, maria).await?
         }
         Engine::SqlServer => ms::exists(&admin_db(c, Some(&p.database)).await?, user, &p.id).await?,
@@ -632,7 +770,8 @@ pub async fn reattach(core: &crate::Core, admin: &Arc<Connection>, p: &Connectio
 }
 
 pub fn note_synced(l: &mut AgentLogin, hash: String, plan: &Plan) {
-    (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
+    (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) =
+        (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
     for m in &plan.made {
         if !l.made.contains(m) {
             l.made.push(m.clone());
@@ -762,7 +901,14 @@ pub async fn removal(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLo
             ms::remove_plan(user, space, &views, salt, only_ours, azure)
         }
         Engine::MongoDb => {
-            let views: Vec<(String, String)> = login.made.iter().filter_map(|m| m.strip_prefix("view:")).filter_map(|v| v.split_once('.')).filter(|(_, c)| c.starts_with(&format!("{space}."))).map(|(d, c)| (d.to_string(), c.to_string())).collect();
+            let views: Vec<(String, String)> = login
+                .made
+                .iter()
+                .filter_map(|m| m.strip_prefix("view:"))
+                .filter_map(|v| v.split_once('.'))
+                .filter(|(_, c)| c.starts_with(&format!("{space}.")))
+                .map(|(d, c)| (d.to_string(), c.to_string()))
+                .collect();
             let mut plan = mongo::remove_plan(user, &views);
             if there.is_none() {
                 plan.steps.retain(|s| s.group.starts_with("Dataman"));
@@ -791,11 +937,22 @@ pub async fn rotation(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentL
     let step = match p.engine {
         Engine::Postgres => pg::rotate_step(user, new, expires),
         Engine::MySql => {
-            let maria = text_rows(&admin_db(c, None).await?, "SELECT VERSION()").await?.first().and_then(|r| r[0].clone()).unwrap_or_default().to_ascii_lowercase().contains("mariadb");
+            let maria = text_rows(&admin_db(c, None).await?, "SELECT VERSION()")
+                .await?
+                .first()
+                .and_then(|r| r[0].clone())
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .contains("mariadb");
             my::rotate_step(user, new, maria)
         }
         Engine::SqlServer => {
-            let azure = text_rows(&admin_db(c, Some(&p.database)).await?, "SELECT CAST(SERVERPROPERTY('EngineEdition') AS INT)").await?.first().and_then(|r| r[0].clone()).as_deref() == Some("5");
+            let azure = text_rows(&admin_db(c, Some(&p.database)).await?, "SELECT CAST(SERVERPROPERTY('EngineEdition') AS INT)")
+                .await?
+                .first()
+                .and_then(|r| r[0].clone())
+                .as_deref()
+                == Some("5");
             ms::rotate_step(user, new, azure)
         }
         Engine::MongoDb => mongo::rotate_step(user, new),
@@ -818,7 +975,10 @@ pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str
     Ok(match p.engine {
         Engine::Postgres => {
             let db = admin_db(c, Some(&p.database)).await?;
-            let kill = format!("SELECT count(*) FILTER (WHERE pg_terminate_backend(pid)) FROM pg_stat_activity WHERE usename = {} AND pid <> pg_backend_pid()", pg::lit(user));
+            let kill = format!(
+                "SELECT count(*) FILTER (WHERE pg_terminate_backend(pid)) FROM pg_stat_activity WHERE usename = {} AND pid <> pg_backend_pid()",
+                pg::lit(user)
+            );
             let count = |r: Vec<Vec<Option<String>>>| r.first().and_then(|x| x[0].as_deref()).and_then(|n| n.parse().ok()).unwrap_or(0);
             match text_rows(&db, &kill).await {
                 Ok(r) => count(r),
@@ -852,7 +1012,8 @@ pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str
         }
         Engine::MySql => {
             let db = admin_db(c, None).await?;
-            let ids = text_rows(&db, &format!("SELECT ID FROM information_schema.PROCESSLIST WHERE USER = {} AND ID <> CONNECTION_ID()", my::lit(user))).await?;
+            let ids =
+                text_rows(&db, &format!("SELECT ID FROM information_schema.PROCESSLIST WHERE USER = {} AND ID <> CONNECTION_ID()", my::lit(user))).await?;
             let mut n = 0;
             for id in ids.iter().filter_map(|r| r[0].as_deref()).filter_map(|x| x.parse::<u64>().ok()) {
                 match db.execute(&format!("KILL {id}")).await {
@@ -870,10 +1031,14 @@ pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str
             r.first().and_then(|x| x[0].as_deref()).and_then(|n| n.parse().ok()).unwrap_or(0)
         }
         Engine::Redis => match nosql(c)? {
-            Client::Redis(r) => redis::call(r, &["CLIENT".into(), "KILL".into(), "USER".into(), user.to_string()]).await.ok().and_then(|x| match x {
-                crate::backend::redis::Reply::Int(n) => Some(n as usize),
-                _ => None,
-            }).unwrap_or(0),
+            Client::Redis(r) => redis::call(r, &["CLIENT".into(), "KILL".into(), "USER".into(), user.to_string()])
+                .await
+                .ok()
+                .and_then(|x| match x {
+                    crate::backend::redis::Reply::Int(n) => Some(n as usize),
+                    _ => None,
+                })
+                .unwrap_or(0),
             _ => 0,
         },
         _ => 0,
@@ -888,7 +1053,10 @@ pub fn database_for(p: &ConnectionProfile, login: Option<&AgentLogin>) -> String
 pub fn password_of(secrets: &dyn crate::SecretStore, conn_id: &str, user: &str) -> Result<String> {
     match secrets.get(&secret_account(conn_id)) {
         Ok(Some(pw)) if !pw.is_empty() => Ok(pw),
-        Ok(_) => bail!("the agent login {user}'s password is not in the {}: agents are refused on this connection until it is set again (Agents › Permissions › Rotate password)", crate::secret::STORE_NAME),
+        Ok(_) => bail!(
+            "the agent login {user}'s password is not in the {}: agents are refused on this connection until it is set again (Agents › Permissions › Rotate password)",
+            crate::secret::STORE_NAME
+        ),
         Err(e) => bail!("the agent login {user}'s password could not be read from the {}: {e:#}", crate::secret::STORE_NAME),
     }
 }

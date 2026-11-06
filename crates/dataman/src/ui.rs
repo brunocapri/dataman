@@ -2,11 +2,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AnyView, App, Bounds, Context, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, Pixels, Render, SharedString,
-    Stateful, Styled, Window, div, prelude::*,
-};
 use crate::theme::{Pt, px};
+use gpui::{
+    AnyView, App, Bounds, Context, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, Pixels, Render, SharedString, Stateful, Styled, Window, div,
+    prelude::*,
+};
 
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, BANNER, Theme};
@@ -71,12 +71,7 @@ pub fn name_field(t: &Theme, input: gpui::Entity<crate::input::TextInput>) -> Di
 }
 
 pub fn chip(color: Hsla, size: f32) -> Div {
-    div()
-        .flex_none()
-        .size(px(size))
-        .bg(color)
-        .border_1()
-        .border_color(gpui::hsla(0., 0., 0., 0.25))
+    div().flex_none().size(px(size)).bg(color).border_1().border_color(gpui::hsla(0., 0., 0., 0.25))
 }
 
 pub fn find_ci(text: &str, q: &str) -> Option<std::ops::Range<usize>> {
@@ -208,7 +203,16 @@ pub fn copy_button(t: &Theme, id: impl Into<ElementId>, kind: Btn, label: impl I
     let fg = if kind == Btn::Primary { t.on_acc } else { t.tx2 };
     button(t, id, kind)
         .relative()
-        .child(div().flex().flex_row().items_center().gap(px(5.)).when(copied.is_some(), |d| d.invisible()).child(icon(Icon::Copy).size(px(13.)).text_color(fg)).child(label.into()))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .when(copied.is_some(), |d| d.invisible())
+                .child(icon(Icon::Copy).size(px(13.)).text_color(fg))
+                .child(label.into()),
+        )
         .children(copied.map(|a| {
             div()
                 .children(here(&done))
@@ -381,7 +385,10 @@ pub fn disclosure(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) 
 }
 
 pub fn disclosure_still(open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
-    crate::assets::icon(if open { crate::assets::Icon::ChevronDown } else { crate::assets::Icon::ChevronRight }).size(px(size)).text_color(color).into_any_element()
+    crate::assets::icon(if open { crate::assets::Icon::ChevronDown } else { crate::assets::Icon::ChevronRight })
+        .size(px(size))
+        .text_color(color)
+        .into_any_element()
 }
 
 pub fn dropdown_arrow(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
@@ -400,9 +407,7 @@ pub fn menu_in(id: impl Into<ElementId>, menu: impl IntoElement + 'static) -> gp
     div()
         .relative()
         .child(menu)
-        .with_animation(id, Animation::new(crate::motion::MENU_IN).with_easing(gpui::ease_out_quint()), |d, k| {
-            d.opacity(k).top(px(-4. * (1. - k)))
-        })
+        .with_animation(id, Animation::new(crate::motion::MENU_IN).with_easing(gpui::ease_out_quint()), |d, k| d.opacity(k).top(px(-4. * (1. - k))))
         .into_any_element()
 }
 
@@ -430,13 +435,7 @@ pub fn popover(t: &Theme) -> Div {
     div().bg(t.pop).shadow(t.ring()).p(px(4.)).occlude()
 }
 
-pub fn menu_item(
-    t: &Theme,
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    key: Option<&str>,
-    enabled: bool,
-) -> Stateful<Div> {
+pub fn menu_item(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, key: Option<&str>, enabled: bool) -> Stateful<Div> {
     let (acc, on_acc) = (t.acc, t.on_acc);
     let id = id.into();
     div()
@@ -591,24 +590,13 @@ impl Render for Tooltip {
             .flex_col()
             .gap(px(2.))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_color(t.tx)
-                    .child(self.title.clone())
-                    .children(self.key.clone().map(|k| keycap(&t, k))),
+                div().flex().flex_row().items_center().gap(px(8.)).text_color(t.tx).child(self.title.clone()).children(self.key.clone().map(|k| keycap(&t, k))),
             )
             .children(self.desc.clone())
     }
 }
 
-pub fn tooltip(
-    title: impl Into<SharedString>,
-    desc: Option<&str>,
-    key: Option<&str>,
-) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+pub fn tooltip(title: impl Into<SharedString>, desc: Option<&str>, key: Option<&str>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let title = title.into();
     let desc: Option<SharedString> = desc.map(|d| SharedString::from(d.to_string()));
     let key: Option<SharedString> = key.map(|k| keys_text(k.to_string()));
@@ -725,9 +713,8 @@ thread_local! {
 /// Copies an error whole, whatever part of it is on screen.
 pub fn copy_error(t: &Theme, id: impl Into<SharedString>, text: impl Into<SharedString>) -> Stateful<Div> {
     let (id, text): (SharedString, SharedString) = (id.into(), text.into());
-    let copied = ERROR_COPIED.with_borrow(|c| {
-        c.as_ref().filter(|c| c.id == id && c.text == text).and_then(|c| crate::motion::copied(c.at, Instant::now(), c.reduced))
-    });
+    let copied =
+        ERROR_COPIED.with_borrow(|c| c.as_ref().filter(|c| c.id == id && c.text == text).and_then(|c| crate::motion::copied(c.at, Instant::now(), c.reduced)));
     copy_button(t, ElementId::Name(id.clone()), Btn::Ghost, "Copy error", copied).on_click(move |_, window, cx| {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
         let (at, reduced) = (Instant::now(), cx.reduce_motion());
@@ -753,7 +740,18 @@ pub fn error_block(t: &Theme, id: impl Into<SharedString>, text: impl Into<Share
         .flex_row()
         .items_start()
         .gap(px(12.))
-        .child(div().children(here(&body)).id(body).flex_1().min_w_0().max_h(px(ERROR_BLOCK_H)).overflow_y_scroll().whitespace_normal().text_color(t.err).child(error_shown(&text)))
+        .child(
+            div()
+                .children(here(&body))
+                .id(body)
+                .flex_1()
+                .min_w_0()
+                .max_h(px(ERROR_BLOCK_H))
+                .overflow_y_scroll()
+                .whitespace_normal()
+                .text_color(t.err)
+                .child(error_shown(&text)),
+        )
         .child(copy_error(t, id, text))
 }
 
@@ -848,7 +846,17 @@ pub fn modal_header_with(
     modal_header_bar(t)
         .gap(px(12.))
         .children(leading)
-        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(title.into()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(13.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.into()),
+        )
         .children(extra)
         .child(close)
 }
@@ -865,7 +873,17 @@ pub enum CrumbState {
 pub fn crumb(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, state: CrumbState) -> Stateful<Div> {
     let id = id.into();
     let hov = t.hov;
-    let base = div().children(here(&id)).id(id).flex_none().h(px(26.)).px(px(6.)).flex().items_center().text_size(px(crate::theme::text::BODY)).text_color(t.tx).whitespace_nowrap();
+    let base = div()
+        .children(here(&id))
+        .id(id)
+        .flex_none()
+        .h(px(26.))
+        .px(px(6.))
+        .flex()
+        .items_center()
+        .text_size(px(crate::theme::text::BODY))
+        .text_color(t.tx)
+        .whitespace_nowrap();
     let base = match state {
         CrumbState::Current => base.bg(t.prs).font_weight(FontWeight::MEDIUM),
         CrumbState::Visited => base.opacity(0.6).cursor_pointer().hover(move |s| s.bg(hov).opacity(1.)),
@@ -925,10 +943,13 @@ pub fn esc_frame(window: &Window) {
 }
 
 fn esc_layer(keys: Option<&'static str>, close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>) -> gpui::AnyElement {
-    gpui::canvas(move |_, window, _| ESC_LAYERS.with(|l| l.borrow_mut().push(EscLayer { window: window.window_handle().window_id(), keys, close })), |_, _, _, _| {})
-        .absolute()
-        .size_0()
-        .into_any_element()
+    gpui::canvas(
+        move |_, window, _| ESC_LAYERS.with(|l| l.borrow_mut().push(EscLayer { window: window.window_handle().window_id(), keys, close })),
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
+    .into_any_element()
 }
 
 /// A modal layer's child: Esc does what `close` does (the layer's Cancel), wherever the keys
@@ -972,17 +993,7 @@ pub fn close_modals_on_escape(cx: &mut App) {
 }
 
 pub fn modal_footer(t: &Theme) -> Div {
-    div()
-        .h(px(56.))
-        .flex_none()
-        .pl(px(20.))
-        .pr(px(16.))
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(8.))
-        .border_t_1()
-        .border_color(t.line)
+    div().h(px(56.)).flex_none().pl(px(20.)).pr(px(16.)).flex().flex_row().items_center().gap(px(8.)).border_t_1().border_color(t.line)
 }
 
 pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -> Div {
@@ -1170,18 +1181,41 @@ mod probes {
             None
         }
 
-        fn request_layout(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, window: &mut Window, cx: &mut App) -> (gpui::LayoutId, ()) {
+        fn request_layout(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            window: &mut Window,
+            cx: &mut App,
+        ) -> (gpui::LayoutId, ()) {
             (self.child.request_layout(window, cx), ())
         }
 
-        fn prepaint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: gpui::Bounds<gpui::Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+        fn prepaint(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            bounds: gpui::Bounds<gpui::Pixels>,
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
             PROBES.with(|p| p.borrow_mut().insert(self.id.clone(), bounds));
             let shown = bounds.intersect(&window.content_mask().bounds);
             SHOWN.with(|p| p.borrow_mut().insert(self.id.clone(), shown));
             self.child.prepaint(window, cx);
         }
 
-        fn paint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, _: gpui::Bounds<gpui::Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+        fn paint(
+            &mut self,
+            _: Option<&gpui::GlobalElementId>,
+            _: Option<&gpui::InspectorElementId>,
+            _: gpui::Bounds<gpui::Pixels>,
+            _: &mut (),
+            _: &mut (),
+            window: &mut Window,
+            cx: &mut App,
+        ) {
             self.child.paint(window, cx);
         }
     }

@@ -156,7 +156,11 @@ fn rules(spec: &Spec, d: &Desired, prod: bool) -> Vec<RuleLine> {
         spec.rows,
     ));
     v.push(line(if spec.code { "Scripts" } else { "Run code off" }, "$where and $function can't be turned off per user", Who::Dataman));
-    v.push(line(if spec.activity { "Server activity" } else { "No server activity" }, if spec.activity { "inprog, serverStatus" } else { "no inprog" }, Who::Database));
+    v.push(line(
+        if spec.activity { "Server activity" } else { "No server activity" },
+        if spec.activity { "inprog, serverStatus" } else { "no inprog" },
+        Who::Database,
+    ));
     v.push(line(time_label(spec.time_limit_s), "no time limit per user", Who::Dataman));
     if spec.conn_limit.is_some() {
         v.push(line("Sessions at once", "no cap per user", Who::Dataman));
@@ -179,7 +183,12 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
     let d = desired(spec, inv);
     let mut steps = vec![cmd("admin", "the role: what the agent may do", json!({ "createRole": spec.user, "privileges": d.privileges, "roles": [] }), None)];
     for (db, view, pipeline, _, map) in &d.views {
-        steps.push(cmd(db, "hidden or masked fields: views the agent reads instead", json!({ "create": view, "viewOn": map.table, "pipeline": pipeline }), None));
+        steps.push(cmd(
+            db,
+            "hidden or masked fields: views the agent reads instead",
+            json!({ "create": view, "viewOn": map.table, "pipeline": pipeline }),
+            None,
+        ));
     }
     let user = json!({ "createUser": spec.user, "pwd": password, "roles": [{ "role": spec.user, "db": "admin" }], "mechanisms": ["SCRAM-SHA-256"], "customData": { "dataman": MARK, "conn": spec.conn } });
     let mut shown = user.clone();
@@ -265,7 +274,11 @@ pub fn atlas_text(spec: &Spec, inv: &Inventory) -> String {
             p["actions"].as_array().cloned().unwrap_or_default().into_iter().map(move |a| {
                 let action = a.as_str().unwrap_or("").to_string();
                 let upper = camel_to_upper(&action);
-                if res["cluster"] == json!(true) { json!({ "action": upper, "resources": [{ "cluster": true }] }) } else { json!({ "action": upper, "resources": [{ "db": res["db"], "collection": res["collection"] }] }) }
+                if res["cluster"] == json!(true) {
+                    json!({ "action": upper, "resources": [{ "cluster": true }] })
+                } else {
+                    json!({ "action": upper, "resources": [{ "db": res["db"], "collection": res["collection"] }] })
+                }
             })
         })
         .collect();
@@ -325,7 +338,14 @@ pub(crate) async fn probe(c: &Client, p: &ConnectionProfile, user: &str) -> Resu
     }
     probe.flavor.superuser = can("createRole");
     probe.flavor.activity = true;
-    probe.checks.push((probe.can_create, if probe.can_create { format!("{login} can create users and roles") } else { format!("{} can't create users", if login.is_empty() { "this login" } else { &login }) }));
+    probe.checks.push((
+        probe.can_create,
+        if probe.can_create {
+            format!("{login} can create users and roles")
+        } else {
+            format!("{} can't create users", if login.is_empty() { "this login" } else { &login })
+        },
+    ));
     probe.checks.push((probe.tls, if probe.tls { "TLS on".into() } else { "TLS off".into() }));
     probe.exists = exists(c, user, &p.id).await?;
     Ok(probe)
@@ -375,7 +395,11 @@ pub(crate) async fn have(c: &Client, user: &str, space: &str) -> Result<(Vec<Str
     let mut lines = Vec::new();
     for p in v["roles"][0]["privileges"].as_array().cloned().unwrap_or_default() {
         let res = &p["resource"];
-        let on = if res["cluster"] == json!(true) { "cluster".to_string() } else { format!("{}.{}", res["db"].as_str().unwrap_or(""), res["collection"].as_str().unwrap_or("")) };
+        let on = if res["cluster"] == json!(true) {
+            "cluster".to_string()
+        } else {
+            format!("{}.{}", res["db"].as_str().unwrap_or(""), res["collection"].as_str().unwrap_or(""))
+        };
         for a in p["actions"].as_array().cloned().unwrap_or_default() {
             lines.push(format!("{} ON {on}", a.as_str().unwrap_or("")));
         }
@@ -385,7 +409,8 @@ pub(crate) async fn have(c: &Client, user: &str, space: &str) -> Result<(Vec<Str
         if SYSTEM_DBS.contains(&d.name.as_str()) {
             continue;
         }
-        let r = run(c, &d.name, &json!({ "listCollections": 1, "filter": { "type": "view", "name": { "$regex": format!("^{}\\.", regex::escape(space)) } } })).await?;
+        let r = run(c, &d.name, &json!({ "listCollections": 1, "filter": { "type": "view", "name": { "$regex": format!("^{}\\.", regex::escape(space)) } } }))
+            .await?;
         let v: Value = Bson::Document(r).into_relaxed_extjson();
         for coll in v["cursor"]["firstBatch"].as_array().cloned().unwrap_or_default() {
             let name = coll["name"].as_str().unwrap_or("").to_string();

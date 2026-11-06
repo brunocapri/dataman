@@ -1,11 +1,9 @@
 // pgpass passwords stay in the file (looked up on connect); a service's own password goes
 // to the Keychain.
 
-use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Window, actions, div, prelude::*,
-};
 use crate::theme::px;
 use dataman_core::{ImportSource, Importable};
+use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Window, actions, div, prelude::*};
 
 use crate::conns::ConnStore;
 use crate::theme::ActiveTheme;
@@ -163,16 +161,7 @@ impl Render for ImportView {
                         .on_click(cx.listener(move |v, _, _, cx| v.pick(i, cx)))
                         .child(ui::checkbox(&t, on))
                         .child(div().flex_none().max_w(px(200.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .text_color(t.tx3)
-                                .child(p.summary()),
-                        )
+                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(p.summary()))
                         .child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx4).child(match (it.exists, it.source) {
                             (true, _) => "saved",
                             (_, ImportSource::Service) => "service",
@@ -209,7 +198,9 @@ impl Render for ImportView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(n == 0, |d| d.bg(t.prs).text_color(t.tx3))
                             .child(if n > 0 { format!("Import {n}") } else { "Import".into() })
-                            .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                            .child(
+                                div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")),
+                            )
                             .on_click(cx.listener(|v, _, _, cx| v.confirm(cx))),
                     ),
             );

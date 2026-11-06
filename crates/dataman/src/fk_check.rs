@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
+use gpui::{
+    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta,
+    ScrollWheelEvent, TouchPhase, point, px,
+};
 
 use crate::app::Workspace;
 use crate::grid::ResultGrid;
@@ -298,9 +301,25 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     right_click(cx, p);
     let p_now = at(cx, 2, fk);
     let p_now = point(p_now.x - px(30.), p_now.y);
-    input(cx, PlatformInput::ScrollWheel(ScrollWheelEvent { position: p_now, delta: ScrollDelta::Pixels(point(px(0.), px(-22.))), modifiers: none, touch_phase: TouchPhase::Moved }));
+    input(
+        cx,
+        PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: p_now,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-22.))),
+            modifiers: none,
+            touch_phase: TouchPhase::Moved,
+        }),
+    );
     report("scrolling closes the right-click menu", menu(cx).is_none(), format!("{:?}", menu(cx)));
-    input(cx, PlatformInput::ScrollWheel(ScrollWheelEvent { position: p_now, delta: ScrollDelta::Pixels(point(px(0.), px(22.))), modifiers: none, touch_phase: TouchPhase::Moved }));
+    input(
+        cx,
+        PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: p_now,
+            delta: ScrollDelta::Pixels(point(px(0.), px(22.))),
+            modifiers: none,
+            touch_phase: TouchPhase::Moved,
+        }),
+    );
     let p = at(cx, 2, fk);
     right_click(cx, p);
     key(cx, "a");
@@ -330,11 +349,8 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let m = menu(cx);
     report(
         "right click on a reference: Go to, —, Copy value, Copy with headers, —, Delete row",
-        m.as_ref().is_some_and(|(_, l, _, _)| {
-            l.len() == 6
-                && l[0].starts_with("Go to")
-                && l[1..] == ["—", "Copy value", "Copy with headers", "—", "Delete row"]
-        }),
+        m.as_ref()
+            .is_some_and(|(_, l, _, _)| l.len() == 6 && l[0].starts_with("Go to") && l[1..] == ["—", "Copy value", "Copy with headers", "—", "Delete row"]),
         format!("{m:?}"),
     );
     key(cx, "escape");
@@ -382,7 +398,11 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
         click(cx, p, ctrl);
     }
     let m = menu(cx);
-    report(if crate::keymap::NOT_MAC { "a right click opens the menu" } else { "⌃-click opens the right-click menu" }, m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
+    report(
+        if crate::keymap::NOT_MAC { "a right click opens the menu" } else { "⌃-click opens the right-click menu" },
+        m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6),
+        format!("{m:?}"),
+    );
     key(cx, "escape");
 
     let n0 = tabs(cx);

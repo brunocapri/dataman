@@ -19,7 +19,21 @@ pub struct ConnSpec {
 
 impl std::fmt::Debug for ConnSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnSpec").field("engine", &self.engine).field("host", &self.host).field("port", &self.port).field("user", &self.user).field("database", &self.database).field("password", &crate::secret_shown(&self.password)).field("sslmode", &self.sslmode).field("service", &self.service).field("encrypt", &self.encrypt).field("trust_cert", &self.trust_cert).field("options", &self.options).field("path", &self.path).field("read_only", &self.read_only).finish()
+        f.debug_struct("ConnSpec")
+            .field("engine", &self.engine)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("database", &self.database)
+            .field("password", &crate::secret_shown(&self.password))
+            .field("sslmode", &self.sslmode)
+            .field("service", &self.service)
+            .field("encrypt", &self.encrypt)
+            .field("trust_cert", &self.trust_cert)
+            .field("options", &self.options)
+            .field("path", &self.path)
+            .field("read_only", &self.read_only)
+            .finish()
     }
 }
 
@@ -180,7 +194,10 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
     };
-    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
+    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"]
+        .iter()
+        .any(|p| s.starts_with(p))
+    {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
         parse_sqlserver(rest)
@@ -385,7 +402,9 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
     };
     let (userinfo, rest) = match rest.find(['/', '?']).filter(|&i| !rest[..i].contains('@')).and(rest.rfind('@')) {
         Some(at) => match rest[..at].split_once(':') {
-            Some((_, pw)) if !pw.split(['/', '?']).next().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) => (Some(&rest[..at]), &rest[at + 1..]),
+            Some((_, pw)) if !pw.split(['/', '?']).next().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) => {
+                (Some(&rest[..at]), &rest[at + 1..])
+            }
             _ => (None, rest),
         },
         None => (None, rest),
@@ -662,7 +681,10 @@ mod tests {
         let (a, _) = p("server=h;encrypt=yes");
         assert_eq!(a.sslmode, SslMode::VerifyFull, "encrypted and the certificate checked");
         let (a, pw) = p("jdbc:sqlserver://h:1500;databaseName=d;user=u;password=x;encrypt=true;trustServerCertificate=true");
-        assert_eq!((a.host.as_str(), a.port, a.database.as_str(), a.user.as_str(), a.sslmode, pw.as_deref()), ("h", 1500, "d", "u", SslMode::Require, Some("x")));
+        assert_eq!(
+            (a.host.as_str(), a.port, a.database.as_str(), a.user.as_str(), a.sslmode, pw.as_deref()),
+            ("h", 1500, "d", "u", SslMode::Require, Some("x"))
+        );
         let (a, pw) = p("sqlserver://u%40x:s3cret@h:1433/d?encrypt=false");
         assert_eq!((a.host.as_str(), a.user.as_str(), a.database.as_str(), a.sslmode, pw.as_deref()), ("h", "u@x", "d", SslMode::Disable, Some("s3cret")));
         assert_eq!(p("sqlserver://h").0.port, 1433);
@@ -682,14 +704,59 @@ mod tests {
     fn one_string_per_engine() {
         let cases: [(&str, Engine, &str, u16, &str, &str, SslMode, Option<&str>); 10] = [
             ("postgresql://app:pw@db.internal:6543/shop?sslmode=require", Engine::Postgres, "db.internal", 6543, "app", "shop", SslMode::Require, Some("pw")),
-            ("host=db.internal port=6543 dbname=shop user=app password=pw sslmode=disable", Engine::Postgres, "db.internal", 6543, "app", "shop", SslMode::Disable, Some("pw")),
-            ("jdbc:postgresql://db.internal/shop?user=app&password=pw&ssl=true", Engine::Postgres, "db.internal", 5432, "app", "shop", SslMode::Require, Some("pw")),
+            (
+                "host=db.internal port=6543 dbname=shop user=app password=pw sslmode=disable",
+                Engine::Postgres,
+                "db.internal",
+                6543,
+                "app",
+                "shop",
+                SslMode::Disable,
+                Some("pw"),
+            ),
+            (
+                "jdbc:postgresql://db.internal/shop?user=app&password=pw&ssl=true",
+                Engine::Postgres,
+                "db.internal",
+                5432,
+                "app",
+                "shop",
+                SslMode::Require,
+                Some("pw"),
+            ),
             ("mysql://app:pw@db.internal:3307/shop?ssl-mode=DISABLED", Engine::MySql, "db.internal", 3307, "app", "shop", SslMode::Disable, Some("pw")),
             ("mariadb://app@db.internal/shop", Engine::MySql, "db.internal", 3306, "app", "shop", SslMode::Prefer, None),
-            ("jdbc:mysql://db.internal:3307/shop?user=app&password=pw&useSSL=false", Engine::MySql, "db.internal", 3307, "app", "shop", SslMode::Disable, Some("pw")),
+            (
+                "jdbc:mysql://db.internal:3307/shop?user=app&password=pw&useSSL=false",
+                Engine::MySql,
+                "db.internal",
+                3307,
+                "app",
+                "shop",
+                SslMode::Disable,
+                Some("pw"),
+            ),
             ("sqlserver://app:pw@db.internal:14330/shop?encrypt=false", Engine::SqlServer, "db.internal", 14330, "app", "shop", SslMode::Disable, Some("pw")),
-            ("jdbc:sqlserver://db.internal:14330;databaseName=shop;user=app;password=pw;encrypt=true", Engine::SqlServer, "db.internal", 14330, "app", "shop", SslMode::VerifyFull, Some("pw")),
-            ("Server=tcp:db.internal,14330;Database=shop;User Id=app;Password=pw;TrustServerCertificate=True", Engine::SqlServer, "db.internal", 14330, "app", "shop", SslMode::Require, Some("pw")),
+            (
+                "jdbc:sqlserver://db.internal:14330;databaseName=shop;user=app;password=pw;encrypt=true",
+                Engine::SqlServer,
+                "db.internal",
+                14330,
+                "app",
+                "shop",
+                SslMode::VerifyFull,
+                Some("pw"),
+            ),
+            (
+                "Server=tcp:db.internal,14330;Database=shop;User Id=app;Password=pw;TrustServerCertificate=True",
+                Engine::SqlServer,
+                "db.internal",
+                14330,
+                "app",
+                "shop",
+                SslMode::Require,
+                Some("pw"),
+            ),
             ("  Server=db.internal;Initial Catalog=shop;UID=app  ", Engine::SqlServer, "db.internal", 1433, "app", "shop", SslMode::Prefer, None),
         ];
         for (s, engine, host, port, user, db, ssl, pw) in cases {

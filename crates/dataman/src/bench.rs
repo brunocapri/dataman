@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{App, Entity, Focusable, Window};
 use dataman_core::result::Phase;
 use dataman_core::{ConnectionProfile, SslMode};
+use gpui::{App, Entity, Focusable, Window};
 
 use crate::app::Workspace;
 use crate::conns::ConnState;
@@ -363,7 +363,8 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             });
             let c = format!("c:{id}");
             let s = format!("{c}/d:{db}/s:public");
-            let nodes = if crate::explorer_demo::is_stage(&stage) || mysql || mssql { vec![] } else { vec![s.clone(), format!("{s}/tables"), format!("{s}/r:orders")] };
+            let nodes =
+                if crate::explorer_demo::is_stage(&stage) || mysql || mssql { vec![] } else { vec![s.clone(), format!("{s}/tables"), format!("{s}/r:orders")] };
             for node in nodes {
                 sleep(cx, 400).await;
                 let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
@@ -452,9 +453,16 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     "dialog-entra" | "dialog-aws" | "dialog-gcp" => ws.update(cx, |w, cx| {
                         let mut p = ConnectionProfile::new("shop-cloud");
                         (p.host, p.user, p.database, p.auth) = match stage.as_str() {
-                            "dialog-entra" => ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None }),
+                            "dialog-entra" => (
+                                "shop.postgres.database.azure.com".into(),
+                                "ana@contoso.com".into(),
+                                "shop".into(),
+                                dataman_core::Auth::EntraId { tenant: None },
+                            ),
                             "dialog-aws" => ("db.internal".into(), "".into(), "shop".into(), dataman_core::Auth::AwsIam { profile: None, region: None }),
-                            _ => ("shop.europe-west1.sql.goog".into(), "ana@example.com".into(), "shop".into(), dataman_core::Auth::GoogleIam { account: None }),
+                            _ => {
+                                ("shop.europe-west1.sql.goog".into(), "ana@example.com".into(), "shop".into(), dataman_core::Auth::GoogleIam { account: None })
+                            }
                         };
                         p.sslmode = SslMode::Require;
                         w.open_dialog_with(Some(p), true, None, window, cx);
@@ -471,12 +479,21 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     "dialog-sign-in" | "dialog-install" => ws.update(cx, |w, cx| {
                         use dataman_core::cloudauth::{Cli, Fix, SignInError};
                         let mut p = ConnectionProfile::new("shop-cloud");
-                        (p.host, p.user, p.database, p.auth) = ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None });
+                        (p.host, p.user, p.database, p.auth) =
+                            ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None });
                         p.sslmode = SslMode::Require;
                         let e = if stage == "dialog-sign-in" {
-                            SignInError { title: "Not signed in to Azure".into(), body: "Sign in again, or run `az login` in a terminal.".into(), action: Some(Fix::SignIn(Cli::Az)) }
+                            SignInError {
+                                title: "Not signed in to Azure".into(),
+                                body: "Sign in again, or run `az login` in a terminal.".into(),
+                                action: Some(Fix::SignIn(Cli::Az)),
+                            }
                         } else {
-                            SignInError { title: "The Azure CLI is not installed".into(), body: "Dataman signs in to Azure through the Azure CLI (az).".into(), action: Some(Fix::Install(Cli::Az)) }
+                            SignInError {
+                                title: "The Azure CLI is not installed".into(),
+                                body: "Dataman signs in to Azure through the Azure CLI (az).".into(),
+                                action: Some(Fix::Install(Cli::Az)),
+                            }
                         };
                         w.open_dialog_with(Some(p), true, None, window, cx);
                         if let Some(d) = w.dialog.clone() {
@@ -598,7 +615,10 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         let core = w.store.read(cx).core.clone();
                         let words = ["Orders by day", "Top customers", "Revenue by month", "Churned accounts", "Slow queries", "Open carts"];
                         for i in 0..36 {
-                            let mut f = dataman_core::Favorite::new(format!("{} {}", words[i % words.len()], i / words.len() + 1), format!("SELECT {i} AS n, count(*) FROM orders WHERE customer % 36 = {i};"));
+                            let mut f = dataman_core::Favorite::new(
+                                format!("{} {}", words[i % words.len()], i / words.len() + 1),
+                                format!("SELECT {i} AS n, count(*) FROM orders WHERE customer % 36 = {i};"),
+                            );
                             f.connection_id = Some(id.clone());
                             let _ = core.favorites.add(f);
                         }
@@ -733,9 +753,24 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         editor.update(cx, |e, cx| e.set_cursor(0, cx));
                         window.focus(&editor.focus_handle(cx), cx);
                     }
-                    "tree-delete" => ws.update(cx, |w, cx| w.on_row_action(crate::tree_menu::Act::DeleteConnection, crate::tree_menu::Target::Conn { id: id.clone(), name: String::new(), state: crate::tree_menu::ConnPhase::Connected }, false, window, cx)),
+                    "tree-delete" => ws.update(cx, |w, cx| {
+                        w.on_row_action(
+                            crate::tree_menu::Act::DeleteConnection,
+                            crate::tree_menu::Target::Conn { id: id.clone(), name: String::new(), state: crate::tree_menu::ConnPhase::Connected },
+                            false,
+                            window,
+                            cx,
+                        )
+                    }),
                     "tree-ddl" => ws.update(cx, |w, cx| {
-                        let target = crate::tree_menu::Target::Rel { conn: id.clone(), db: db.clone(), schema: "public".into(), name: "orders".into(), kind: dataman_core::schema::RelKind::Table, ro: false };
+                        let target = crate::tree_menu::Target::Rel {
+                            conn: id.clone(),
+                            db: db.clone(),
+                            schema: "public".into(),
+                            name: "orders".into(),
+                            kind: dataman_core::schema::RelKind::Table,
+                            ro: false,
+                        };
                         w.on_row_action(crate::tree_menu::Act::Generate(crate::tree_menu::Gen::CreateTable), target, false, window, cx);
                     }),
                     _ => {}
@@ -1025,7 +1060,10 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 });
             }
             sleep(cx, if stage.starts_with("dialog-") { 1500 } else { 500 }).await;
-            if let Some((x, y)) = std::env::var("DATAMAN_SHOT_HOVER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))) {
+            if let Some((x, y)) = std::env::var("DATAMAN_SHOT_HOVER")
+                .ok()
+                .and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))))
+            {
                 for wait in [900, 300] {
                     let _ = cx.update(|window, cx| {
                         let ev = gpui::MouseMoveEvent { position: gpui::point(gpui::px(x), gpui::px(y)), pressed_button: None, modifiers: Default::default() };
@@ -1113,87 +1151,92 @@ fn scroll(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     connect(&ws, prof, pw, cx);
     let sql = std::env::var("DATAMAN_BENCH_SQL").unwrap_or_else(|_| "SELECT * FROM orders".into());
     let ws2 = ws.clone();
-    when(window, Duration::from_secs(30), move |cx| connected(&ws2, &id, cx), move |window, cx| {
-        let tab = ws.read(cx).active_tab().unwrap().clone();
-        let grid = tab.read(cx).grid.clone();
-        let t0 = Instant::now();
-        tab.update(cx, |t, cx| t.run(vec![sql.clone()], cx));
-        let mut y = 0f32;
-        let mut last = None::<Instant>;
-        let mut a = Vec::new();
-        let mut b = Vec::new();
-        let mut c = Vec::new();
-        let mut phase = 0;
-        let mut frames_in_phase = 0;
-        let mut rng = 0x2545_f491_4f6c_dd1du64;
-        let mut first_rows = None;
-        every_frame(window, move |_window, cx| {
-            let now = Instant::now();
-            let rs = tab.read(cx).result().cloned();
-            let Some(rs) = rs else { return true };
-            if first_rows.is_none() && rs.rows() > 0 {
-                first_rows = Some(t0.elapsed());
-            }
-            if let Some(l) = last {
+    when(
+        window,
+        Duration::from_secs(30),
+        move |cx| connected(&ws2, &id, cx),
+        move |window, cx| {
+            let tab = ws.read(cx).active_tab().unwrap().clone();
+            let grid = tab.read(cx).grid.clone();
+            let t0 = Instant::now();
+            tab.update(cx, |t, cx| t.run(vec![sql.clone()], cx));
+            let mut y = 0f32;
+            let mut last = None::<Instant>;
+            let mut a = Vec::new();
+            let mut b = Vec::new();
+            let mut c = Vec::new();
+            let mut phase = 0;
+            let mut frames_in_phase = 0;
+            let mut rng = 0x2545_f491_4f6c_dd1du64;
+            let mut first_rows = None;
+            every_frame(window, move |_window, cx| {
+                let now = Instant::now();
+                let rs = tab.read(cx).result().cloned();
+                let Some(rs) = rs else { return true };
+                if first_rows.is_none() && rs.rows() > 0 {
+                    first_rows = Some(t0.elapsed());
+                }
+                if let Some(l) = last {
+                    match phase {
+                        0 => a.push(now - l),
+                        1 => b.push(now - l),
+                        _ => c.push(now - l),
+                    }
+                }
+                last = Some(now);
+                frames_in_phase += 1;
+                let max = grid.read(cx).max_scroll_y();
                 match phase {
-                    0 => a.push(now - l),
-                    1 => b.push(now - l),
-                    _ => c.push(now - l),
-                }
-            }
-            last = Some(now);
-            frames_in_phase += 1;
-            let max = grid.read(cx).max_scroll_y();
-            match phase {
-                0 => {
-                    y += 600.;
-                    if rs.phase().is_finished() || frames_in_phase > 600 {
-                        let rows = rs.rows();
-                        println!("scroll: streaming phase ended after {:?} with {rows} rows loaded ({:?})", t0.elapsed(), rs.phase());
-                        rs.fetch_all();
-                        phase = 1;
-                        frames_in_phase = 0;
-                        last = None;
+                    0 => {
+                        y += 600.;
+                        if rs.phase().is_finished() || frames_in_phase > 600 {
+                            let rows = rs.rows();
+                            println!("scroll: streaming phase ended after {:?} with {rows} rows loaded ({:?})", t0.elapsed(), rs.phase());
+                            rs.fetch_all();
+                            phase = 1;
+                            frames_in_phase = 0;
+                            last = None;
+                        }
+                    }
+                    1 => {
+                        if rs.phase() != Phase::Done {
+                            last = None;
+                            frames_in_phase = 0;
+                            return true;
+                        }
+                        if frames_in_phase == 1 {
+                            println!("scroll: all {} rows loaded after {:?}", rs.rows(), t0.elapsed());
+                        }
+                        y += 600.;
+                        if frames_in_phase > 600 {
+                            phase = 2;
+                            frames_in_phase = 0;
+                            last = None;
+                        }
+                    }
+                    _ => {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 7;
+                        rng ^= rng << 17;
+                        y = (rng % 1_000_000) as f32 / 1_000_000. * max;
+                        if frames_in_phase > 600 {
+                            println!("scroll: first rows on screen after {:?}", first_rows.unwrap_or_default());
+                            println!("{}", Stats(std::mem::take(&mut a)).line("scroll while streaming (600 px/frame)"));
+                            println!("{}", Stats(std::mem::take(&mut b)).line("scroll 1M loaded (600 px/frame)"));
+                            println!("{}", Stats(std::mem::take(&mut c)).line("random jumps 1M loaded"));
+                            cx.quit();
+                            return false;
+                        }
                     }
                 }
-                1 => {
-                    if rs.phase() != Phase::Done {
-                        last = None;
-                        frames_in_phase = 0;
-                        return true;
-                    }
-                    if frames_in_phase == 1 {
-                        println!("scroll: all {} rows loaded after {:?}", rs.rows(), t0.elapsed());
-                    }
-                    y += 600.;
-                    if frames_in_phase > 600 {
-                        phase = 2;
-                        frames_in_phase = 0;
-                        last = None;
-                    }
+                if y > max {
+                    y = 0.;
                 }
-                _ => {
-                    rng ^= rng << 13;
-                    rng ^= rng >> 7;
-                    rng ^= rng << 17;
-                    y = (rng % 1_000_000) as f32 / 1_000_000. * max;
-                    if frames_in_phase > 600 {
-                        println!("scroll: first rows on screen after {:?}", first_rows.unwrap_or_default());
-                        println!("{}", Stats(std::mem::take(&mut a)).line("scroll while streaming (600 px/frame)"));
-                        println!("{}", Stats(std::mem::take(&mut b)).line("scroll 1M loaded (600 px/frame)"));
-                        println!("{}", Stats(std::mem::take(&mut c)).line("random jumps 1M loaded"));
-                        cx.quit();
-                        return false;
-                    }
-                }
-            }
-            if y > max {
-                y = 0.;
-            }
-            grid.update(cx, |g, cx| g.set_scroll_y(y, cx));
-            true
-        });
-    });
+                grid.update(cx, |g, cx| g.set_scroll_y(y, cx));
+                true
+            });
+        },
+    );
 }
 
 fn tree(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
@@ -1221,40 +1264,45 @@ fn tree(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             });
             let tree3 = tree.clone();
             let g2 = g.clone();
-            when(window, Duration::from_secs(30), move |cx| tree3.read(cx).has_row(&g2), move |window, cx| {
-                let loaded = t.elapsed();
-                let t = Instant::now();
-                tree.update(cx, |tr, cx| {
-                    tr.expand_id(&g, cx);
-                });
-                let rebuild = tree.read(cx).last_rebuild;
-                let rows = tree.read(cx).row_count();
-                let mut first = true;
-                let mut last = None::<Instant>;
-                let mut frames = Vec::new();
-                let mut n = 0;
-                every_frame(window, move |_window, cx| {
-                    let now = Instant::now();
-                    if first {
-                        first = false;
-                        println!("tree: schema expand (catalog query + frame) {loaded:?}");
-                        println!("tree: expand 'tables' (1,000 rows) to next frame {:?}; rebuild {:?}; {rows} rows", t.elapsed(), rebuild);
-                    } else if let Some(l) = last {
-                        frames.push(now - l);
-                    }
-                    last = Some(now);
-                    n += 1;
-                    let handle = tree.read(cx).scroll_handle().clone();
-                    handle.scroll_to_item((n * 3) % rows.max(1), gpui::ScrollStrategy::Top);
-                    tree.update(cx, |_, cx| cx.notify());
-                    if n > 400 {
-                        println!("{}", Stats(std::mem::take(&mut frames)).line("tree scroll (1,000+ rows)"));
-                        cx.quit();
-                        return false;
-                    }
-                    true
-                });
-            });
+            when(
+                window,
+                Duration::from_secs(30),
+                move |cx| tree3.read(cx).has_row(&g2),
+                move |window, cx| {
+                    let loaded = t.elapsed();
+                    let t = Instant::now();
+                    tree.update(cx, |tr, cx| {
+                        tr.expand_id(&g, cx);
+                    });
+                    let rebuild = tree.read(cx).last_rebuild;
+                    let rows = tree.read(cx).row_count();
+                    let mut first = true;
+                    let mut last = None::<Instant>;
+                    let mut frames = Vec::new();
+                    let mut n = 0;
+                    every_frame(window, move |_window, cx| {
+                        let now = Instant::now();
+                        if first {
+                            first = false;
+                            println!("tree: schema expand (catalog query + frame) {loaded:?}");
+                            println!("tree: expand 'tables' (1,000 rows) to next frame {:?}; rebuild {:?}; {rows} rows", t.elapsed(), rebuild);
+                        } else if let Some(l) = last {
+                            frames.push(now - l);
+                        }
+                        last = Some(now);
+                        n += 1;
+                        let handle = tree.read(cx).scroll_handle().clone();
+                        handle.scroll_to_item((n * 3) % rows.max(1), gpui::ScrollStrategy::Top);
+                        tree.update(cx, |_, cx| cx.notify());
+                        if n > 400 {
+                            println!("{}", Stats(std::mem::take(&mut frames)).line("tree scroll (1,000+ rows)"));
+                            cx.quit();
+                            return false;
+                        }
+                        true
+                    });
+                },
+            );
         },
     );
 }
@@ -1269,14 +1317,10 @@ fn typing(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         Duration::from_secs(30),
         move |cx| {
             connected(&ws2, &id, cx)
-                && ws2
-                    .read(cx)
-                    .active_tab()
-                    .and_then(|t| t.read(cx).connection().cloned())
-                    .is_some_and(|c| {
-                        let s = c.schema.snapshot(c.database());
-                        s.resolve(None, "orders").is_some_and(|i| !s.columns_of(i).is_empty())
-                    })
+                && ws2.read(cx).active_tab().and_then(|t| t.read(cx).connection().cloned()).is_some_and(|c| {
+                    let s = c.schema.snapshot(c.database());
+                    s.resolve(None, "orders").is_some_and(|i| !s.columns_of(i).is_empty())
+                })
         },
         move |window, cx| {
             let tab = ws.read(cx).active_tab().unwrap().clone();

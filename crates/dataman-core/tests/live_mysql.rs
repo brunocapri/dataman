@@ -37,7 +37,11 @@ fn connects_and_decodes_every_type() {
     assert!(!c.caps().schemas);
 
     let s = c.session(None);
-    let rs = ok(&e, &s, "SELECT id, name, tier, balance, created, profile, photo, code, tags, birth_date, at_time, yr, flags, score, weight FROM customer ORDER BY id");
+    let rs = ok(
+        &e,
+        &s,
+        "SELECT id, name, tier, balance, created, profile, photo, code, tags, birth_date, at_time, yr, flags, score, weight FROM customer ORDER BY id",
+    );
     let cols = rs.columns().unwrap();
     let kinds: Vec<Kind> = cols.iter().map(|c| c.kind).collect();
     assert_eq!(
@@ -132,9 +136,7 @@ fn streams_pauses_and_fetches_all() {
     let s = c.session(None);
     ok(&e, &s, "SET SESSION cte_max_recursion_depth = 2000000");
     let t0 = Instant::now();
-    let rs = s.execute(
-        "WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g",
-    );
+    let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g");
     e.core.block_on(async {
         let mut rx = rs.subscribe();
         while rs.phase() != Phase::Paused {
@@ -175,7 +177,8 @@ fn bench_fetch_all() {
     let mut times = Vec::new();
     for _ in 0..n {
         let t0 = Instant::now();
-        let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g");
+        let rs =
+            s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g");
         rs.fetch_all();
         e.core.block_on(rs.wait_finished());
         assert_eq!(rs.rows(), 1_000_000);

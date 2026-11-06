@@ -1,21 +1,17 @@
 use std::time::Instant;
 
 use dataman_core::layout::NavView;
-use gpui::{AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, StatefulInteractiveElement, Styled, Window, actions, div, prelude::FluentBuilder};
+use gpui::{
+    AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, StatefulInteractiveElement, Styled, Window, actions, div,
+    prelude::FluentBuilder,
+};
 
 use crate::app::{Region, Workspace};
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, metrics, px};
 use crate::ui;
 
-actions!(
-    sidebar,
-    [
-        ShowExplorer,
-        ShowFavorites,
-        ShowHistory,
-    ]
-);
+actions!(sidebar, [ShowExplorer, ShowFavorites, ShowHistory,]);
 
 pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> gpui::Stateful<gpui::Div> {
     d.on_action(cx.listener(|w, _: &ShowExplorer, window, cx| w.show_nav(NavView::Explorer, window, cx)))
@@ -92,7 +88,17 @@ impl Workspace {
         window.request_animation_frame();
         let t = cx.theme();
         let y = star.origin.y + star.size.height / 2. - gpui::px(9.);
-        let hint = div().absolute().top(y).left(star.right() + gpui::px(8.)).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(crate::theme::text::BODY)).text_color(t.tx).opacity(a);
+        let hint = div()
+            .absolute()
+            .top(y)
+            .left(star.right() + gpui::px(8.))
+            .h(gpui::px(18.))
+            .flex()
+            .items_center()
+            .whitespace_nowrap()
+            .text_size(px(crate::theme::text::BODY))
+            .text_color(t.tx)
+            .opacity(a);
         Some(hint.child(format!("← {}", f.label)).into_any_element())
     }
 

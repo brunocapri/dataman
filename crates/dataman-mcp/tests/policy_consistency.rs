@@ -58,7 +58,10 @@ fn show_in_dataman_takes_nothing_that_changes_state() {
     props.sort();
     assert_eq!(props, ["connection", "database", "destination", "engine", "host", "name", "port", "user"]);
     let destinations = &tool.schema().properties()["destination"]["enum"];
-    assert_eq!(*destinations, serde_json::json!(["new_connection", "connection", "agents_protection", "agent_login", "agents_general", "settings_mcp", "outside_review"]));
+    assert_eq!(
+        *destinations,
+        serde_json::json!(["new_connection", "connection", "agents_protection", "agent_login", "agents_general", "settings_mcp", "outside_review"])
+    );
     let engines: Vec<&str> = tool.schema().properties()["engine"]["enum"].as_array().unwrap().iter().filter_map(|e| e.as_str()).collect();
     assert!(engines.contains(&"postgres") && !engines.contains(&"sqlite") && !engines.contains(&"duckdb"), "a file has no password: {engines:?}");
     assert_eq!(tool.effect().hints(), (true, false, true));

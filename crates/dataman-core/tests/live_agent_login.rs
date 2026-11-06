@@ -10,11 +10,11 @@
 mod common;
 
 use common::*;
+use dataman_core::Session;
 use dataman_core::agent_login::{self, AgentLogin, Options, live};
 use dataman_core::config::{ConnectionProfile, Engine, McpAccess, SslMode};
 use dataman_core::nosql::{Output, Page};
 use dataman_core::privacy::{AgentView, ItemKind, Mask, SensitiveCol, VisibleItem};
-use dataman_core::Session;
 
 fn on() -> bool {
     std::env::var("DATAMAN_AGENT_LOGIN_LIVE").is_ok_and(|v| v == "1")
@@ -55,7 +55,8 @@ pub fn admin(engine: Engine, id: &str) -> (ConnectionProfile, String) {
 }
 
 fn up(p: &ConnectionProfile) -> bool {
-    std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
+    std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
 
 fn connect(e: &Env, p: &ConnectionProfile, password: &str) -> Result<Arc<Connection>, String> {
@@ -83,7 +84,17 @@ fn denied(e: &Env, s: &Arc<Session>, sql: &str) -> String {
         Ok(r) => panic!("{sql} should be refused by the database, it returned {r:?}"),
         Err(x) => {
             let l = x.to_ascii_lowercase();
-            let why = ["denied", "permission", "must be owner", "42501", "invalid object name", "invalid column name", "unknown column", "doesn't exist", "does not exist"];
+            let why = [
+                "denied",
+                "permission",
+                "must be owner",
+                "42501",
+                "invalid object name",
+                "invalid column name",
+                "unknown column",
+                "doesn't exist",
+                "does not exist",
+            ];
             assert!(why.iter().any(|w| l.contains(w)), "{sql}: refused for another reason: {x}");
             x
         }
@@ -102,7 +113,8 @@ fn guard(p: &mut ConnectionProfile) {
     p.mcp = Some(McpAccess::Write);
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
-    r.visible.items = vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
+    r.visible.items =
+        vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
     r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }];
     r.structure = false;
     r.code = false;
@@ -113,7 +125,10 @@ fn create(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile) -> (AgentLogi
     let rv = e.core.block_on(live::review(admin, p, &opts())).unwrap();
     assert!(rv.plan.lacks.is_empty(), "{:?}", rv.plan.lacks);
     assert!(rv.probe.can_create, "{:?}", rv.probe);
-    assert!(!rv.plan.shown().contains(&rv.password) && !rv.plan.copy().contains(&rv.password) || p.engine == Engine::MongoDb, "the password stays out of the script");
+    assert!(
+        !rv.plan.shown().contains(&rv.password) && !rv.plan.copy().contains(&rv.password) || p.engine == Engine::MongoDb,
+        "the password stays out of the script"
+    );
     e.core.block_on(live::apply(admin, &rv.plan, &p.database)).unwrap_or_else(|x| panic!("{x:#}\n{}", rv.plan.shown()));
     e.core.secrets.set(&agent_login::secret_account(&p.id), &rv.password).unwrap();
     (live::record(p, &rv.plan, &opts()), rv.password.clone(), rv)
@@ -263,7 +278,11 @@ fn postgres() {
     let password = rotate(&e, &a, &q, &login, &password);
     drop(agent);
     remove(&e, &a, &q, &login, &password);
-    assert_eq!(first(&ok(&e, &s, "SELECT count(*) FROM pg_roles WHERE rolname IN ('dataman_agent_decoy', 'dataman_agent_auclash1')")), "2", "what Dataman didn't make stays");
+    assert_eq!(
+        first(&ok(&e, &s, "SELECT count(*) FROM pg_roles WHERE rolname IN ('dataman_agent_decoy', 'dataman_agent_auclash1')")),
+        "2",
+        "what Dataman didn't make stays"
+    );
     assert_eq!(first(&ok(&e, &s, &format!("SELECT count(*) FROM pg_namespace WHERE nspname = '{space}'"))), "0");
     assert_eq!(first(&ok(&e, &s, "SELECT count(*) FROM pg_views WHERE schemaname = 'other'")), "1");
 }
@@ -461,8 +480,12 @@ fn sql_server() {
     assert_eq!(first(&ok(&e, &g, "SELECT USER_NAME()")), user);
     // Dataman's guard reads computed columns as the agent: without VIEW DEFINITION the
     // dependencies are refused, so their expressions are read instead (erring on more).
-    let computed = e.core.block_on(agent.generated_columns("au_shop", std::future::pending::<()>())).unwrap_or_else(|x| panic!("generated columns as the agent: {x:#}"));
-    assert!(computed.iter().any(|c| c.table == "users" && c.column == "hash_head" && c.from.iter().any(|f| f.eq_ignore_ascii_case("password_hash"))), "{computed:?}");
+    let computed =
+        e.core.block_on(agent.generated_columns("au_shop", std::future::pending::<()>())).unwrap_or_else(|x| panic!("generated columns as the agent: {x:#}"));
+    assert!(
+        computed.iter().any(|c| c.table == "users" && c.column == "hash_head" && c.from.iter().any(|f| f.eq_ignore_ascii_case("password_hash"))),
+        "{computed:?}"
+    );
     ok(&e, &g, "SELECT id, total FROM dbo.orders");
     // Write tier: the visible columns of the table itself, for its writes' WHERE.
     ok(&e, &g, "SELECT id, name FROM dbo.users");
@@ -616,7 +639,14 @@ fn redis() {
     }
     let user = agent_login::login_name(&p.id);
     let a = connect(&e, &p, &apw).unwrap();
-    for t in [format!("ACL DELUSER {user}"), "ACL DELUSER dataman_agent_decoy".into(), "ACL SETUSER dataman_agent_decoy on >decoy ~* +@read".into(), "SET cache:1 one".into(), "SET secret:1 two".into(), "HSET user:1 name Alice".into()] {
+    for t in [
+        format!("ACL DELUSER {user}"),
+        "ACL DELUSER dataman_agent_decoy".into(),
+        "ACL SETUSER dataman_agent_decoy on >decoy ~* +@read".into(),
+        "SET cache:1 one".into(),
+        "SET secret:1 two".into(),
+        "HSET user:1 name Alice".into(),
+    ] {
         nosql(&e, &a, "0", &t).unwrap_or_else(|x| panic!("{t}: {x}"));
     }
     p.mcp = Some(McpAccess::Read);
@@ -628,7 +658,19 @@ fn redis() {
     assert_eq!(who[0], user.as_str());
     nosql(&e, &agent, "0", "GET cache:1").unwrap();
     nosql(&e, &agent, "0", "INFO server").unwrap();
-    for t in ["SET cache:1 x", "DEL cache:1", "FLUSHALL", "FLUSHDB", "CONFIG GET requirepass", "KEYS *", "EVAL \"return 1\" 0", "LASTSAVE", "SWAPDB 0 1", "ACL LIST", "CLIENT LIST"] {
+    for t in [
+        "SET cache:1 x",
+        "DEL cache:1",
+        "FLUSHALL",
+        "FLUSHDB",
+        "CONFIG GET requirepass",
+        "KEYS *",
+        "EVAL \"return 1\" 0",
+        "LASTSAVE",
+        "SWAPDB 0 1",
+        "ACL LIST",
+        "CLIENT LIST",
+    ] {
         let r = nosql(&e, &agent, "0", t);
         assert!(r.as_ref().is_err_and(|x| x.contains("NOPERM")), "{t} should be refused by Redis: {r:?}");
     }
@@ -643,7 +685,10 @@ fn redis() {
 
     // Only these keys: the ACL holds them.
     let mut q = p.clone();
-    q.mcp_rules.visible = dataman_core::privacy::Visible { mode: dataman_core::privacy::VisibleMode::Only, items: vec![VisibleItem { name: "cache:*".into(), kind: ItemKind::Table }] };
+    q.mcp_rules.visible = dataman_core::privacy::Visible {
+        mode: dataman_core::privacy::VisibleMode::Only,
+        items: vec![VisibleItem { name: "cache:*".into(), kind: ItemKind::Table }],
+    };
     drift_apply(&e, &a, &q, &login, &password);
     let agent = as_agent(&e, &q, &user, &password).unwrap();
     nosql(&e, &agent, "0", "GET cache:1").unwrap();
@@ -678,10 +723,21 @@ fn search_engine(engine: Engine, id: &str) {
     let user = agent_login::login_name(&p.id);
     let a = connect(&e, &p, &apw).unwrap();
     let (ub, rb) = if os { ("/_plugins/_security/api/internalusers", "/_plugins/_security/api/roles") } else { ("/_security/user", "/_security/role") };
-    for t in [format!("DELETE {ub}/{user}"), format!("DELETE {rb}/{user}"), format!("DELETE {ub}/dataman_agent_decoy"), "DELETE /au_orders".into(), "DELETE /au_users".into(), "DELETE /au_audit".into()] {
+    for t in [
+        format!("DELETE {ub}/{user}"),
+        format!("DELETE {rb}/{user}"),
+        format!("DELETE {ub}/dataman_agent_decoy"),
+        "DELETE /au_orders".into(),
+        "DELETE /au_users".into(),
+        "DELETE /au_audit".into(),
+    ] {
         let _ = nosql(&e, &a, "", &t);
     }
-    let decoy = if os { format!("PUT {ub}/dataman_agent_decoy\n{{\"password\": \"Decoy-pw-123!x\"}}") } else { format!("PUT {ub}/dataman_agent_decoy\n{{\"password\": \"decoy-pw\", \"roles\": []}}") };
+    let decoy = if os {
+        format!("PUT {ub}/dataman_agent_decoy\n{{\"password\": \"Decoy-pw-123!x\"}}")
+    } else {
+        format!("PUT {ub}/dataman_agent_decoy\n{{\"password\": \"decoy-pw\", \"roles\": []}}")
+    };
     for t in [
         "PUT /au_orders/_doc/1?refresh=true\n{\"total\": 10}".to_string(),
         "PUT /au_users/_doc/1?refresh=true\n{\"name\": \"Alice\", \"email\": \"alice@acme.com\", \"password_hash\": \"h1\"}".into(),
@@ -810,7 +866,11 @@ fn postgres_redteam() {
     p.mcp = Some(McpAccess::Write);
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
-    r.visible.items = ["secrets", "pub_leak"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Table }).chain(["users.password_hash", "cols_leak.pw"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Column })).collect();
+    r.visible.items = ["secrets", "pub_leak"]
+        .iter()
+        .map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Table })
+        .chain(["users.password_hash", "cols_leak.pw"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Column }))
+        .collect();
     r.sensitive = vec![
         SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true },
         SensitiveCol { col: "we\"ird.e\"mail".into(), how: Mask::PARTIAL, on: true },
@@ -850,7 +910,10 @@ fn postgres_redteam() {
     denied(&e, &g, "UPDATE users SET name = name WHERE email LIKE 'a%'");
     denied(&e, &g, "DELETE FROM users WHERE password_hash = 'h1'");
     denied(&e, &g, "INSERT INTO users (name) VALUES ('x') RETURNING email");
-    assert!(ok(&e, &g, "SELECT most_common_vals FROM pg_stats WHERE tablename = 'users' AND attname IN ('password_hash', 'email')").is_empty(), "statistics of columns it can't read");
+    assert!(
+        ok(&e, &g, "SELECT most_common_vals FROM pg_stats WHERE tablename = 'users' AND attname IN ('password_hash', 'email')").is_empty(),
+        "statistics of columns it can't read"
+    );
     denied(&e, &g, &format!("SELECT * FROM {space}.salt"));
     // A user table named salt: read through its own view, Dataman's salt untouched.
     let v = ok(&e, &g, &format!("SELECT v FROM {} ORDER BY id", login.view_for("public", "salt").unwrap().view));
@@ -897,7 +960,11 @@ fn postgres_redteam() {
     e.core.block_on(live::apply(&a, &d.plan, &login.database)).unwrap();
     assert_eq!(first(&ok(&e, &g, "SELECT id FROM later")), "7");
     denied(&e, &g, "SELECT * FROM secrets");
-    assert_eq!(first(&ok(&e, &s, &format!("SELECT count(*) FROM pg_views WHERE schemaname = '{space}' AND viewname = 'lookalike'"))), "1", "unmarked: untouched");
+    assert_eq!(
+        first(&ok(&e, &s, &format!("SELECT count(*) FROM pg_views WHERE schemaname = '{space}' AND viewname = 'lookalike'"))),
+        "1",
+        "unmarked: untouched"
+    );
 
     // Two connections whose ids start alike share the login's name: the other one's login is
     // not this one's (before: a prefix of the mark matched).
@@ -980,8 +1047,12 @@ fn mysql_redteam() {
     p.mcp = Some(McpAccess::Write);
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
-    r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
-    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "we`ird.e`mail".into(), how: Mask::PARTIAL, on: true }];
+    r.visible.items =
+        vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
+    r.sensitive = vec![
+        SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true },
+        SensitiveCol { col: "we`ird.e`mail".into(), how: Mask::PARTIAL, on: true },
+    ];
     // A role every account gets: the review says the database can't keep the agent from it.
     ok(&e, &rs, "SET GLOBAL mandatory_roles = 'au_reader'");
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
@@ -1075,7 +1146,13 @@ fn mysql_session_outlives_drop_user() {
     }
     let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
     let rs = root.session(None);
-    for sql in ["DROP USER IF EXISTS 'au_gone'@'%'", "CREATE DATABASE IF NOT EXISTS au_rt2", "CREATE TABLE IF NOT EXISTS au_rt2.t (id INT)", "CREATE USER 'au_gone'@'%' IDENTIFIED BY 'Gone-pw-123'", "GRANT SELECT ON au_rt2.t TO 'au_gone'@'%'"] {
+    for sql in [
+        "DROP USER IF EXISTS 'au_gone'@'%'",
+        "CREATE DATABASE IF NOT EXISTS au_rt2",
+        "CREATE TABLE IF NOT EXISTS au_rt2.t (id INT)",
+        "CREATE USER 'au_gone'@'%' IDENTIFIED BY 'Gone-pw-123'",
+        "GRANT SELECT ON au_rt2.t TO 'au_gone'@'%'",
+    ] {
         ok(&e, &rs, sql);
     }
     let gone = connect(&e, &ConnectionProfile { user: "au_gone".into(), database: "au_rt2".into(), ..p.clone() }, "Gone-pw-123").unwrap();
@@ -1131,8 +1208,16 @@ fn sql_server_redteam() {
     p.mcp = Some(McpAccess::Read);
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
-    r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "pub_leak".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
-    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "we]ird.e]mail".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "salt.v".into(), how: Mask::Hidden, on: true }];
+    r.visible.items = vec![
+        VisibleItem { name: "secrets".into(), kind: ItemKind::Table },
+        VisibleItem { name: "pub_leak".into(), kind: ItemKind::Table },
+        VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column },
+    ];
+    r.sensitive = vec![
+        SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true },
+        SensitiveCol { col: "we]ird.e]mail".into(), how: Mask::PARTIAL, on: true },
+        SensitiveCol { col: "salt.v".into(), how: Mask::Hidden, on: true },
+    ];
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     assert!(rv.plan.exposed.iter().any(|x| x.object == "dbo.pub_leak"), "{:?}", rv.plan.exposed);
     assert!(rv.plan.copy().contains("REVOKE SELECT ON OBJECT::[dbo].[pub_leak] FROM [public];"));
@@ -1200,7 +1285,11 @@ fn mongodb_redteam() {
     let user = agent_login::login_name(&p.id);
     let space = agent_login::space_of(&user);
     let a = connect(&e, &p, &apw).unwrap();
-    for t in ["db.dropDatabase()".to_string(), format!("db.getSiblingDB('admin').runCommand({{dropUser: '{user}'}})"), format!("db.getSiblingDB('admin').runCommand({{dropRole: '{user}'}})")] {
+    for t in [
+        "db.dropDatabase()".to_string(),
+        format!("db.getSiblingDB('admin').runCommand({{dropUser: '{user}'}})"),
+        format!("db.getSiblingDB('admin').runCommand({{dropRole: '{user}'}})"),
+    ] {
         let _ = nosql(&e, &a, "au_rt", &t);
     }
     for t in [
@@ -1213,7 +1302,8 @@ fn mongodb_redteam() {
     p.mcp = Some(McpAccess::Write);
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
-    r.visible.items = vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
+    r.visible.items =
+        vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
     r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }];
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
@@ -1223,7 +1313,10 @@ fn mongodb_redteam() {
     let view = format!("{space}.users");
     for (what, t) in [
         ("$lookup into a hidden collection", "db.orders.aggregate([{$lookup: {from: 'audit_log', pipeline: [], as: 'x'}}])".to_string()),
-        ("$lookup into the masked collection itself", "db.orders.aggregate([{$lookup: {from: 'users', localField: 'customer_id', foreignField: '_id', as: 'u'}}])".into()),
+        (
+            "$lookup into the masked collection itself",
+            "db.orders.aggregate([{$lookup: {from: 'users', localField: 'customer_id', foreignField: '_id', as: 'u'}}])".into(),
+        ),
         ("$unionWith a hidden collection", "db.orders.aggregate([{$unionWith: 'audit_log'}])".into()),
         ("$unionWith from its view", format!("db.getCollection('{view}').aggregate([{{$unionWith: 'users'}}])")),
         ("$out into a new collection", "db.orders.aggregate([{$out: 'au_copy'}])".into()),
@@ -1280,12 +1373,22 @@ fn redis_redteam() {
     }
     let user = agent_login::login_name(&p.id);
     let a = connect(&e, &p, &apw).unwrap();
-    for t in [format!("ACL DELUSER {user}"), "SET cache:1 one".into(), "SET secret:1 topsecret".into(), "RPUSH cache:list a".into(), "CONFIG SET slowlog-log-slower-than 0".into(), "SLOWLOG RESET".into()] {
+    for t in [
+        format!("ACL DELUSER {user}"),
+        "SET cache:1 one".into(),
+        "SET secret:1 topsecret".into(),
+        "RPUSH cache:list a".into(),
+        "CONFIG SET slowlog-log-slower-than 0".into(),
+        "SLOWLOG RESET".into(),
+    ] {
         nosql(&e, &a, "0", &t).unwrap_or_else(|x| panic!("{t}: {x}"));
     }
     p.mcp = Some(McpAccess::Read);
     p.mcp_rules.activity = false;
-    p.mcp_rules.visible = dataman_core::privacy::Visible { mode: dataman_core::privacy::VisibleMode::Only, items: vec![VisibleItem { name: "cache:*".into(), kind: ItemKind::Table }] };
+    p.mcp_rules.visible = dataman_core::privacy::Visible {
+        mode: dataman_core::privacy::VisibleMode::Only,
+        items: vec![VisibleItem { name: "cache:*".into(), kind: ItemKind::Table }],
+    };
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
@@ -1367,7 +1470,9 @@ fn search_redteam(engine: Engine, id: &str) {
     let user = agent_login::login_name(&p.id);
     let a = connect(&e, &p, &apw).unwrap();
     let (ub, rb) = if os { ("/_plugins/_security/api/internalusers", "/_plugins/_security/api/roles") } else { ("/_security/user", "/_security/role") };
-    for t in [format!("DELETE {ub}/{user}"), format!("DELETE {rb}/{user}"), "DELETE /aurt_users".into(), "DELETE /aurt_audit".into(), "DELETE /aurt_copy".into()] {
+    for t in
+        [format!("DELETE {ub}/{user}"), format!("DELETE {rb}/{user}"), "DELETE /aurt_users".into(), "DELETE /aurt_audit".into(), "DELETE /aurt_copy".into()]
+    {
         let _ = nosql(&e, &a, "", &t);
     }
     for t in [
@@ -1381,7 +1486,10 @@ fn search_redteam(engine: Engine, id: &str) {
     p.mcp_rules.view = AgentView::Masked;
     p.mcp_rules.visible = dataman_core::privacy::Visible {
         mode: dataman_core::privacy::VisibleMode::Only,
-        items: vec![VisibleItem { name: "aurt_users".into(), kind: ItemKind::Table }, VisibleItem { name: "aurt_users.password_hash".into(), kind: ItemKind::Column }],
+        items: vec![
+            VisibleItem { name: "aurt_users".into(), kind: ItemKind::Table },
+            VisibleItem { name: "aurt_users.password_hash".into(), kind: ItemKind::Column },
+        ],
     };
     p.mcp_rules.sensitive = vec![SensitiveCol { col: "aurt_users.email".into(), how: Mask::PARTIAL, on: true }];
     let (login, password, rv) = create(&e, &a, &p);
@@ -1389,7 +1497,10 @@ fn search_redteam(engine: Engine, id: &str) {
     verify_all(&e, &agent, &rv);
     let secret = |text: &str| text.contains("hash-secret") || text.contains("audit-secret") || text.contains("alice@acme.com");
     for (what, t) in [
-        ("an aggregation on the hidden field", "POST /aurt_users/_search\n{\"size\": 0, \"aggs\": {\"x\": {\"terms\": {\"field\": \"password_hash.keyword\"}}}}"),
+        (
+            "an aggregation on the hidden field",
+            "POST /aurt_users/_search\n{\"size\": 0, \"aggs\": {\"x\": {\"terms\": {\"field\": \"password_hash.keyword\"}}}}",
+        ),
         ("an aggregation on the masked field", "POST /aurt_users/_search\n{\"size\": 0, \"aggs\": {\"x\": {\"terms\": {\"field\": \"email.keyword\"}}}}"),
         ("docvalue_fields", "POST /aurt_users/_search\n{\"docvalue_fields\": [\"password_hash.keyword\", \"email.keyword\"]}"),
         ("stored_fields", "POST /aurt_users/_search\n{\"stored_fields\": [\"*\"], \"_source\": true}"),
@@ -1422,7 +1533,14 @@ fn search_redteam(engine: Engine, id: &str) {
         let r = nosql(&e, &agent, "", t);
         let text = format!("{r:?}");
         assert!(!secret(&text), "{what}: {t} → {text}");
-        let refused = r.as_ref().err().is_some_and(|x| x.contains("403") || x.contains("security_exception") || x.contains("unauthorized") || x.contains("no permissions") || x.contains("404") || x.contains("index_not_found"));
+        let refused = r.as_ref().err().is_some_and(|x| {
+            x.contains("403")
+                || x.contains("security_exception")
+                || x.contains("unauthorized")
+                || x.contains("no permissions")
+                || x.contains("404")
+                || x.contains("index_not_found")
+        });
         let empty = r.as_ref().is_ok_and(|o| !text.contains("\"_source\"") && !matches!(o, Output::Docs(d) if !d.docs.is_empty()));
         assert!(refused || empty, "{what}: {t} → {text}");
     }
@@ -1518,7 +1636,10 @@ fn sql_server_orphan() {
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     assert!(rv.plan.lacks.is_empty(), "{:?}", rv.plan.lacks);
     let shown = rv.plan.shown();
-    assert!(shown.find("DROP LOGIN").unwrap() < shown.find("BEGIN TRANSACTION").unwrap() && shown.contains("KILL"), "dropped before the transaction, its sessions ended: {shown}");
+    assert!(
+        shown.find("DROP LOGIN").unwrap() < shown.find("BEGIN TRANSACTION").unwrap() && shown.contains("KILL"),
+        "dropped before the transaction, its sessions ended: {shown}"
+    );
     assert!(rv.plan.shown().contains(&format!("DROP LOGIN [{user}]")) && rv.plan.notes.iter().any(|n| n.contains("drops it first")), "{}", rv.plan.shown());
     e.core.block_on(live::apply(&a, &rv.plan, &p.database)).unwrap_or_else(|x| panic!("{x:#}\n{}", rv.plan.shown()));
     let agent = as_agent(&e, &p, &user, &rv.password).unwrap();
@@ -1526,7 +1647,9 @@ fn sql_server_orphan() {
     assert!(as_agent(&e, &p, &user, &password).is_err(), "the old password went with the old login");
     agent.close();
     // A login of someone else's by that name (its user there) is neither: left alone.
-    let kill_then_drop = format!("DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{user}'; EXEC (@k); DROP LOGIN [{user}]");
+    let kill_then_drop = format!(
+        "DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{user}'; EXEC (@k); DROP LOGIN [{user}]"
+    );
     ok(&e, &rs, &kill_then_drop);
     ok(&e, &rs, &format!("CREATE LOGIN [{user}] WITH PASSWORD = 'Other-pw-123', CHECK_POLICY = OFF"));
     ok(&e, &a.session(None), &format!("IF USER_ID('{user}') IS NOT NULL DROP USER [{user}]; CREATE USER [{user}] FOR LOGIN [{user}]"));

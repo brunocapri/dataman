@@ -3,8 +3,8 @@
 //! undo brings back, so a sheet shows what changes first, what loosens flagged. It writes as any
 //! edit of the page does; agents have no way to do this.
 
-use dataman_core::agents_config::{self, Change, ConnRules};
 use dataman_core::ConnectionProfile;
+use dataman_core::agents_config::{self, Change, ConnRules};
 use gpui::{AnyElement, Context, FontWeight, KeyDownEvent, SharedString, Window, div, prelude::*};
 
 use crate::agents::{Act, AgentsPage};
@@ -32,7 +32,12 @@ impl AgentsPage {
                 .relative()
                 .flex_none()
                 .child(self.anchor(BUTTON))
-                .child(ui::button(t, BUTTON, ui::Btn::Secondary).h(px(28.)).child("Copy from…").on_click(cx.listener(move |v, _, _, cx| v.open_menu(BUTTON, 240., items.clone(), cx))))
+                .child(
+                    ui::button(t, BUTTON, ui::Btn::Secondary)
+                        .h(px(28.))
+                        .child("Copy from…")
+                        .on_click(cx.listener(move |v, _, _, cx| v.open_menu(BUTTON, 240., items.clone(), cx))),
+                )
                 .into_any_element(),
         )
     }
@@ -97,7 +102,9 @@ impl AgentsPage {
                         .flex_row()
                         .gap(px(10.))
                         .child(div().text_color(t.tx).child(format!("{n} {}", if n == 1 { "change" } else { "changes" })))
-                        .when(loose > 0, |d| d.child(div().children(ui::here(&"agents-copy-loosens".into())).text_color(t.warn).child(format!("{loose} loosen what agents get")))),
+                        .when(loose > 0, |d| {
+                            d.child(div().children(ui::here(&"agents-copy-loosens".into())).text_color(t.warn).child(format!("{loose} loosen what agents get")))
+                        }),
                 )
                 .child(div().flex().flex_col().gap(px(2.)).children(s.changes.iter().enumerate().map(|(k, c)| Self::change_row(t, "agents-copy-change", k, c))))
         };
@@ -147,7 +154,12 @@ impl AgentsPage {
                 .child(
                     ui::modal(t, "agents-copy-card")
                         .w(px(680.))
-                        .child(ui::modal_header(t, None, format!("Copy protection from {}", s.from_name), ui::modal_close(t, "agents-copy-close").on_click(cx.listener(|v, _, window, cx| v.close_copy(window, cx)))))
+                        .child(ui::modal_header(
+                            t,
+                            None,
+                            format!("Copy protection from {}", s.from_name),
+                            ui::modal_close(t, "agents-copy-close").on_click(cx.listener(|v, _, window, cx| v.close_copy(window, cx))),
+                        ))
                         .child(div().id("agents-copy-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(ui::modal_footer(t).child(div().flex_1()).child(cancel).children(apply)),
                 )

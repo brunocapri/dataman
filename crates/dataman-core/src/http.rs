@@ -15,7 +15,11 @@ fn run<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
 }
 
 fn client(timeout: Duration) -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(timeout).user_agent(concat!("Dataman/", env!("CARGO_PKG_VERSION"))).build()?)
+    Ok(reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(timeout)
+        .user_agent(concat!("Dataman/", env!("CARGO_PKG_VERSION")))
+        .build()?)
 }
 
 fn local(url: &str) -> Option<&str> {
@@ -32,7 +36,8 @@ pub fn get(url: &str, max: u64, what: &str) -> Result<Vec<u8>> {
         return Ok(bytes);
     }
     run(async {
-        let mut r = client(Duration::from_secs(30))?.get(url).send().await.with_context(|| what.to_string())?.error_for_status().with_context(|| what.to_string())?;
+        let mut r =
+            client(Duration::from_secs(30))?.get(url).send().await.with_context(|| what.to_string())?.error_for_status().with_context(|| what.to_string())?;
         let mut out = Vec::new();
         while let Some(c) = r.chunk().await? {
             out.extend_from_slice(&c);

@@ -96,7 +96,9 @@ impl Env {
 }
 
 fn server_conn(id: &str, name: &str, extra: &str) -> String {
-    format!("[[connection]]\nid = \"{id}\"\nname = \"{name}\"\nhost = \"10.255.255.1\"\nport = 5432\nuser = \"app\"\ndatabase = \"app\"\nsslmode = \"disable\"\n{extra}\n")
+    format!(
+        "[[connection]]\nid = \"{id}\"\nname = \"{name}\"\nhost = \"10.255.255.1\"\nport = 5432\nuser = \"app\"\ndatabase = \"app\"\nsslmode = \"disable\"\n{extra}\n"
+    )
 }
 
 fn file_conn(id: &str, engine: &str, path: &Path, extra: &str) -> String {
@@ -269,7 +271,9 @@ fn agents_favorites_stay_personal_and_the_projects_stay_as_they_are() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("Team report.sql"), "SELECT 1").unwrap();
     std::fs::write(dir.join("weekly.sql"), "SELECT 12").unwrap();
-    let v = e.allowed("import_favorites", json!({"paths": [dir.join("Team report.sql").display().to_string(), dir.join("weekly.sql").display().to_string()]})).unwrap();
+    let v = e
+        .allowed("import_favorites", json!({"paths": [dir.join("Team report.sql").display().to_string(), dir.join("weekly.sql").display().to_string()]}))
+        .unwrap();
     let ids: Vec<&str> = v["added"].as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
     assert_eq!(ids[0], "teamfav", "{v}");
     assert!(e.favorite(ids[1]).agent_made);
@@ -375,7 +379,14 @@ fn look_alike_favorites_run_nothing() {
 
 /// What an agent's SQL must never write: the open project's file, Dataman's own files, any file.
 fn targets(e: &Env, files: &Path) -> Vec<PathBuf> {
-    vec![e.project_file(), e.cfg().join("connections.toml"), e.cfg().join("settings.toml"), e.cfg().join("favorites.toml"), files.join("new.toml"), files.join("new.duckdb")]
+    vec![
+        e.project_file(),
+        e.cfg().join("connections.toml"),
+        e.cfg().join("settings.toml"),
+        e.cfg().join("favorites.toml"),
+        files.join("new.toml"),
+        files.join("new.duckdb"),
+    ]
 }
 
 fn snapshot(paths: &[PathBuf]) -> Vec<Option<Vec<u8>>> {
@@ -440,7 +451,13 @@ fn no_sql_writes_a_file_at_any_level() {
             format!("INSERT INTO t SELECT content FROM read_text('{p}')"),
         ]);
     }
-    duck_sql.extend(["INSTALL sqlite".into(), "LOAD sqlite".into(), "FORCE INSTALL httpfs".into(), "SET enable_external_access = true".into(), "EXECUTE w".into()]);
+    duck_sql.extend([
+        "INSTALL sqlite".into(),
+        "LOAD sqlite".into(),
+        "FORCE INSTALL httpfs".into(),
+        "SET enable_external_access = true".into(),
+        "EXECUTE w".into(),
+    ]);
     for (conns, list) in [(["lr", "lw", "lf"], &lite_sql), (["dr", "dw", "df"], &duck_sql)] {
         for c in conns {
             for sql in list.iter() {

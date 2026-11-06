@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
 use dataman_core::{Core, Dirs, MemorySecrets};
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -40,9 +40,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("⌘, opens Settings on Appearance", open == Some("Appearance"), format!("{open:?} modal {modal:?}"));
 
     let search_focused = |cx: &mut AsyncWindowContext| {
-        cx.update(|window, cx| ws.read(cx).settings_view.as_ref().map(|v| (v.read(cx).demo_search_focused(window, cx), v.focus_handle(cx).contains_focused(window, cx))))
-            .ok()
-            .flatten()
+        cx.update(|window, cx| {
+            ws.read(cx).settings_view.as_ref().map(|v| (v.read(cx).demo_search_focused(window, cx), v.focus_handle(cx).contains_focused(window, cx)))
+        })
+        .ok()
+        .flatten()
     };
     let at_open = search_focused(cx);
     let view = cx.update(|_, cx| ws.read(cx).settings_view.clone()).ok().flatten();
@@ -51,7 +53,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         let offered = probed("settings-reset", cx).is_some();
         click_probe("settings-reset", cx);
         let (query, theme) = (cx.update(|_, cx| v.read(cx).demo_query(cx)).unwrap_or_default(), probed("th-light", cx).is_some());
-        r.check("a search nothing matches offers Reset filters, which clears it and brings the section back", offered && query.is_empty() && theme && probed("settings-reset", cx).is_none(), format!("{offered} {query:?} {theme}"));
+        r.check(
+            "a search nothing matches offers Reset filters, which clears it and brings the section back",
+            offered && query.is_empty() && theme && probed("settings-reset", cx).is_none(),
+            format!("{offered} {query:?} {theme}"),
+        );
         let _ = cx.update(|window, cx| window.focus(&v.read(cx).demo_search_handle(cx), cx));
     }
     click_probe("th-light", cx);
@@ -68,10 +74,18 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let bg = |cx: &mut AsyncWindowContext| cx.update(|_, cx| crate::theme::ActiveTheme::theme(cx).bg);
     click_probe("th-solarized", cx);
     let (solarized, saved) = (bg(cx), settings(ws, cx).theme);
-    r.check("Theme: Solarized applied and saved", solarized.ok() == Some(crate::theme::Theme::solarized().bg) && saved == dataman_core::ThemePref::Solarized, format!("{saved:?}"));
+    r.check(
+        "Theme: Solarized applied and saved",
+        solarized.ok() == Some(crate::theme::Theme::solarized().bg) && saved == dataman_core::ThemePref::Solarized,
+        format!("{saved:?}"),
+    );
     click_probe("th-black", cx);
     let (black, saved) = (bg(cx), settings(ws, cx).theme);
-    r.check("Theme: Black applied and saved", black.ok() == Some(crate::theme::Theme::black().bg) && saved == dataman_core::ThemePref::Black, format!("{saved:?}"));
+    r.check(
+        "Theme: Black applied and saved",
+        black.ok() == Some(crate::theme::Theme::black().bg) && saved == dataman_core::ThemePref::Black,
+        format!("{saved:?}"),
+    );
     if crate::theme::translucency_works() {
         click_probe("tr-on", cx);
         let glass = bg(cx);
@@ -96,7 +110,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         let on = settings(ws, cx).translucency;
         click_probe("tr-off", cx);
         let off = settings(ws, cx).translucency;
-        r.check("Window translucency: On, then Off saved", on == dataman_core::Translucency::On && off == dataman_core::Translucency::Off, format!("{on:?} {off:?}"));
+        r.check(
+            "Window translucency: On, then Off saved",
+            on == dataman_core::Translucency::On && off == dataman_core::Translucency::Off,
+            format!("{on:?} {off:?}"),
+        );
     }
 
     click_probe("rm-on", cx);
@@ -108,7 +126,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("rm-off", cx);
     let _ = toggle(cx);
     let grows = growing_after_new_tab(ws, cx);
-    r.check("Reduce motion: a new tab is there at once; Animate: it grows in", reduced && !grows_reduced && grows, format!("saved {reduced}, reduced grows {grows_reduced}, animated grows {grows}"));
+    r.check(
+        "Reduce motion: a new tab is there at once; Animate: it grows in",
+        reduced && !grows_reduced && grows,
+        format!("saved {reduced}, reduced grows {grows_reduced}, animated grows {grows}"),
+    );
     let _ = toggle(cx);
 
     click_probe("logos-off", cx);
@@ -128,7 +150,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         Some(tab) => {
             let editor = cx.update(|_, cx| tab.read(cx).editor.clone()).unwrap();
             let _ = cx.update(|window, cx| {
-                editor.update(cx, |e, cx| e.set_text("SELECT c.id, c.name FROM customer c WHERE c.id IN (SELECT customer FROM orders WHERE total > 10) ORDER BY c.name", cx));
+                editor.update(cx, |e, cx| {
+                    e.set_text("SELECT c.id, c.name FROM customer c WHERE c.id IN (SELECT customer FROM orders WHERE total > 10) ORDER BY c.name", cx)
+                });
                 window.focus(&editor.focus_handle(cx), cx);
             });
             key(cx, "alt-shift-f");
@@ -159,7 +183,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("pf-10000", cx);
     click_probe("cc-off", cx);
     let s = settings(ws, cx);
-    r.check("Results grid: rows per page, rows fetched ahead and commit at once saved", s.page_size == 200 && s.prefetch_rows == 10_000 && !s.confirm_commit, format!("{} {} {}", s.page_size, s.prefetch_rows, s.confirm_commit));
+    r.check(
+        "Results grid: rows per page, rows fetched ahead and commit at once saved",
+        s.page_size == 200 && s.prefetch_rows == 10_000 && !s.confirm_commit,
+        format!("{} {} {}", s.page_size, s.prefetch_rows, s.confirm_commit),
+    );
     click_probe("cc-on", cx);
     let _ = toggle(cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_relation(&pg.id, &pg.database, "public", "orders", window, cx)));
@@ -182,8 +210,13 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let hidden = probed("copy-stdio", cx).is_none();
     click_probe("mcp-on", cx);
     pause(cx, 50).await;
-    let rows = (probed("copy-stdio", cx).is_some(), probed("open-agents", cx).is_some(), probed("mwl-1000", cx).is_none(), probed("open-mcp-log", cx).is_none());
-    r.check("MCP: On, the Claude Code command and a way to Agents; the rest lives in Agents", settings(ws, cx).mcp_enabled && hidden && rows == (true, true, true, true), format!("{hidden} {rows:?}"));
+    let rows =
+        (probed("copy-stdio", cx).is_some(), probed("open-agents", cx).is_some(), probed("mwl-1000", cx).is_none(), probed("open-mcp-log", cx).is_none());
+    r.check(
+        "MCP: On, the Claude Code command and a way to Agents; the rest lives in Agents",
+        settings(ws, cx).mcp_enabled && hidden && rows == (true, true, true, true),
+        format!("{hidden} {rows:?}"),
+    );
     click_probe("open-agents", cx);
     pause(cx, 100).await;
     let agents = cx.update(|_, cx| ws.read(cx).view == dataman_core::layout::NavView::Agents && ws.read(cx).settings_view.is_none()).unwrap_or(false);
@@ -206,7 +239,15 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let mine = settings(ws, cx);
     r.check(
         "a relaunch reads every choice back from settings.toml",
-        again.as_ref().is_ok_and(|s| s.theme == mine.theme && s.translucency == mine.translucency && s.page_size == 200 && s.indent == 4 && s.keyword_case == mine.keyword_case && !s.update_check && !s.mcp_enabled),
+        again.as_ref().is_ok_and(|s| {
+            s.theme == mine.theme
+                && s.translucency == mine.translucency
+                && s.page_size == 200
+                && s.indent == 4
+                && s.keyword_case == mine.keyword_case
+                && !s.update_check
+                && !s.mcp_enabled
+        }),
         format!("{:?}", again.as_ref().map(|s| (s.page_size, s.indent, s.update_check)).map_err(|e| format!("{e:#}"))),
     );
 }

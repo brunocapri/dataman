@@ -85,7 +85,16 @@ fn sql_server_capitalized_names() {
     assert_eq!(rules.sensitive.iter().find(|r| r.col == "Filled.Token").map(|r| r.how), Some(Mask::Hidden), "the catalog's spelling");
     assert_eq!(scan(&e, &c, &db, &rules).add_to(&mut rules.clone(), q), 0);
     let spelled = AgentRules {
-        sensitive: vec![entry("FILLED.PHONE", true), entry("dbo.Filled.Token", true), entry("dbo.filled.zip", true), entry("*secret*", true), entry("Blank.APIKEY", false), entry("blank.password", true), entry("BLANK.USERPASSWORD", true), entry("DBO.BLANK.CUSTOMERCPF", true)],
+        sensitive: vec![
+            entry("FILLED.PHONE", true),
+            entry("dbo.Filled.Token", true),
+            entry("dbo.filled.zip", true),
+            entry("*secret*", true),
+            entry("Blank.APIKEY", false),
+            entry("blank.password", true),
+            entry("BLANK.USERPASSWORD", true),
+            entry("DBO.BLANK.CUSTOMERCPF", true),
+        ],
         ..Default::default()
     };
     let mut again = spelled.clone();
@@ -156,15 +165,23 @@ fn postgres_quoted_names() {
     let db = c.database().to_string();
     let drop = format!(r#"DROP TABLE IF EXISTS public."{blank}", public."{both}""#);
     exec_quiet(&e, &c, &[&drop]);
-    exec(&e, &c, &[
-        &format!(r#"CREATE TABLE public."{blank}" (id int, "Phone" text, "Token" text, "TokenHash" text, "ApiKey" text, "Password" text)"#),
-        &format!(r#"CREATE TABLE public."{both}" (id int, "Token" text, token text)"#),
-        &format!(r#"INSERT INTO public."{both}" VALUES (1, 'abc123deadbeefcafe', 'zzz123deadbeefcafe')"#),
-    ]);
+    exec(
+        &e,
+        &c,
+        &[
+            &format!(r#"CREATE TABLE public."{blank}" (id int, "Phone" text, "Token" text, "TokenHash" text, "ApiKey" text, "Password" text)"#),
+            &format!(r#"CREATE TABLE public."{both}" (id int, "Token" text, token text)"#),
+            &format!(r#"INSERT INTO public."{both}" VALUES (1, 'abc123deadbeefcafe', 'zzz123deadbeefcafe')"#),
+        ],
+    );
     c.schema.invalidate(None);
     let found = scan(&e, &c, &db, &AgentRules::default());
     let mine: Vec<String> = listed(&found).into_iter().filter(|f| f.starts_with(blank) || f.starts_with(both)).collect();
-    assert_eq!(mine, [format!("{blank}.ApiKey"), format!("{blank}.Password"), format!("{both}.Token"), format!("{both}.token")], "only the sure names in the empty table");
+    assert_eq!(
+        mine,
+        [format!("{blank}.ApiKey"), format!("{blank}.Password"), format!("{both}.Token"), format!("{both}.token")],
+        "only the sure names in the empty table"
+    );
     let q = Names::of(Engine::Postgres);
     let rule = AgentRules { view: AgentView::Masked, sensitive: vec![entry(&format!("{both}.Token"), true)], ..Default::default() };
     for name in ["Token", "token"] {
@@ -183,11 +200,15 @@ fn mysql_capitalized_names() {
     exec_quiet(&e, &m, &[&format!("DROP DATABASE IF EXISTS `{db}`")]);
     exec(&e, &m, &[&format!("CREATE DATABASE `{db}`")]);
     let c = mysql_on(&e, mysql_profile(&db)).unwrap();
-    exec(&e, &c, &[
-        "CREATE TABLE Blank (Id int PRIMARY KEY, Phone varchar(40), Token varchar(200), TokenHash varbinary(64), ApiKey varchar(200))",
-        "CREATE TABLE Filled (Id int PRIMARY KEY, Phone varchar(40), Token varchar(200))",
-        "INSERT INTO Filled VALUES (1, '415-555-0132', 'abc123deadbeefcafe')",
-    ]);
+    exec(
+        &e,
+        &c,
+        &[
+            "CREATE TABLE Blank (Id int PRIMARY KEY, Phone varchar(40), Token varchar(200), TokenHash varbinary(64), ApiKey varchar(200))",
+            "CREATE TABLE Filled (Id int PRIMARY KEY, Phone varchar(40), Token varchar(200))",
+            "INSERT INTO Filled VALUES (1, '415-555-0132', 'abc123deadbeefcafe')",
+        ],
+    );
     assert_eq!(listed(&scan(&e, &c, &db, &AgentRules::default())), ["Blank.ApiKey", "Filled.Token"]);
     c.close();
     exec_quiet(&e, &m, &[&format!("DROP DATABASE IF EXISTS `{db}`")]);
@@ -197,7 +218,15 @@ fn mysql_capitalized_names() {
 fn nosql_profile(engine: Engine, var: &str, at: &str, user: &str, database: &str) -> ConnectionProfile {
     let v = std::env::var(var).unwrap_or_else(|_| at.into());
     let (host, port) = v.rsplit_once(':').unwrap();
-    ConnectionProfile { host: host.into(), port: port.parse().unwrap(), user: user.into(), database: database.into(), sslmode: SslMode::Disable, engine, ..ConnectionProfile::new("scan") }
+    ConnectionProfile {
+        host: host.into(),
+        port: port.parse().unwrap(),
+        user: user.into(),
+        database: database.into(),
+        sslmode: SslMode::Disable,
+        engine,
+        ..ConnectionProfile::new("scan")
+    }
 }
 
 /// A field that only ever holds null has nothing to mask; nested ones count by their last part.
@@ -238,8 +267,11 @@ fn elasticsearch_keeps_names_it_cannot_check() {
     let db = c.database().to_string();
     let run = |text: String| e.core.block_on(c.run_nosql(&db, &text, Page::default()));
     let _ = run(format!("DELETE /{idx}"));
-    run(format!(r#"PUT /{idx}
-{{"mappings": {{"properties": {{"phone": {{"type": "keyword"}}, "token_hash": {{"type": "keyword"}}, "api_key": {{"type": "keyword"}}}}}}}}"#)).unwrap();
+    run(format!(
+        r#"PUT /{idx}
+{{"mappings": {{"properties": {{"phone": {{"type": "keyword"}}, "token_hash": {{"type": "keyword"}}, "api_key": {{"type": "keyword"}}}}}}}}"#
+    ))
+    .unwrap();
     let s = scan(&e, &c, &db, &AgentRules::default());
     let found: Vec<String> = listed(&s).into_iter().filter(|f| f.starts_with(idx)).collect();
     run(format!("DELETE /{idx}")).unwrap();

@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use chrono::{NaiveDate, NaiveTime};
-use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
-    MouseButton, Subscription, Window, actions, div, prelude::*,
-};
 use crate::theme::px;
+use chrono::{NaiveDate, NaiveTime};
 use dataman_core::edit::CellValue;
 use dataman_core::jsontree::{self, Doc, Node, Path, RowKey};
 use dataman_core::value::Kind;
+use gpui::{
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent, MouseButton, Subscription, Window, actions, div,
+    prelude::*,
+};
 
 use crate::assets::Icon;
 use crate::editor::{CodeEditor, EditorEvent};
@@ -129,7 +129,10 @@ struct JsonState {
 enum State {
     Bool(Option<bool>),
     /// `hi == labels.len()` is NULL.
-    Enum { labels: Arc<Vec<String>>, hi: usize },
+    Enum {
+        labels: Arc<Vec<String>>,
+        hi: usize,
+    },
     Json(Box<JsonState>),
     Text(Entity<CodeEditor>),
 }
@@ -476,14 +479,16 @@ impl ValueEditor {
     fn render_bool(&self, b: Option<bool>, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         ui::segmented(t)
             .w(px(240.))
-            .children([(Some(true), "true"), (Some(false), "false"), (None, "NULL")].into_iter().filter(|(v, _)| v.is_some() || self.nullable).enumerate().map(|(i, (v, label))| {
-                ui::segment(t, ("bool-seg", i), label, b == v).on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
-                    if let State::Bool(x) = &mut e.state {
-                        *x = v;
-                    }
-                    e.apply(cx);
-                }))
-            }))
+            .children([(Some(true), "true"), (Some(false), "false"), (None, "NULL")].into_iter().filter(|(v, _)| v.is_some() || self.nullable).enumerate().map(
+                |(i, (v, label))| {
+                    ui::segment(t, ("bool-seg", i), label, b == v).on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
+                        if let State::Bool(x) = &mut e.state {
+                            *x = v;
+                        }
+                        e.apply(cx);
+                    }))
+                },
+            ))
             .into_any_element()
     }
 
@@ -602,28 +607,25 @@ impl ValueEditor {
                         .map(|d| ui::selectable(d, t, on, true))
                         .when(!on, |d| d.hover(move |s| s.bg(hov)))
                         .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {
-                            if let State::Json(j) = &mut e.state {
-                                j.sel = i;
-                            }
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .id(("json-toggle", i))
-                                .w(px(12.))
-                                .flex_none()
-                                .when(r.container, |d| {
-                                    d.child(ui::disclosure(("json-chev", i), r.expanded, 10., t.tx3))
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
-                                            if let State::Json(j) = &mut e.state {
-                                                j.doc.toggle(&p_toggle);
-                                            }
-                                            cx.notify();
-                                        }))
-                                }),
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |e, _, _, cx| {
+                                if let State::Json(j) = &mut e.state {
+                                    j.sel = i;
+                                }
+                                cx.notify();
+                            }),
                         )
+                        .child(div().id(("json-toggle", i)).w(px(12.)).flex_none().when(r.container, |d| {
+                            d.child(ui::disclosure(("json-chev", i), r.expanded, 10., t.tx3)).cursor_pointer().on_click(cx.listener(
+                                move |e, _: &ClickEvent, _, cx| {
+                                    if let State::Json(j) = &mut e.state {
+                                        j.doc.toggle(&p_toggle);
+                                    }
+                                    cx.notify();
+                                },
+                            ))
+                        }))
                         .children(key_el)
                         .when(r.key.is_some(), |d| d.child(div().flex_none().text_color(t.tx4).child(":")))
                         .child(value_el)
@@ -636,9 +638,15 @@ impl ValueEditor {
                                 .invisible()
                                 .group_hover(group, |s| s.visible())
                                 .when(on, |d| d.visible())
-                                .child(ui::icon_button(t, ("json-add", i), Icon::Plus, 18., 10.).on_click(cx.listener(move |e, _: &ClickEvent, window, cx| e.add_node(p_add.clone(), window, cx))))
+                                .child(
+                                    ui::icon_button(t, ("json-add", i), Icon::Plus, 18., 10.)
+                                        .on_click(cx.listener(move |e, _: &ClickEvent, window, cx| e.add_node(p_add.clone(), window, cx))),
+                                )
                                 .when(!is_root, |d| {
-                                    d.child(ui::icon_button(t, ("json-rm", i), Icon::Close, 18., 10.).on_click(cx.listener(move |e, _: &ClickEvent, _, cx| e.remove_node(p_rm.clone(), cx))))
+                                    d.child(
+                                        ui::icon_button(t, ("json-rm", i), Icon::Close, 18., 10.)
+                                            .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| e.remove_node(p_rm.clone(), cx))),
+                                    )
                                 }),
                         )
                 }))
@@ -659,11 +667,7 @@ impl Render for ValueEditor {
                 (self.render_enum(&l, h, &t, cx), 240., false)
             }
             State::Json(j) => (self.render_json(j, &t, cx), 440., true),
-            State::Text(ed) => (
-                div().h(px(160.)).border_1().border_color(t.line2).overflow_hidden().child(ed.clone()).into_any_element(),
-                420.,
-                true,
-            ),
+            State::Text(ed) => (div().h(px(160.)).border_1().border_color(t.line2).overflow_hidden().child(ed.clone()).into_any_element(), 420., true),
         };
         let can_apply = self.value(cx).is_ok();
         let nullable = self.nullable;
@@ -673,21 +677,23 @@ impl Render for ValueEditor {
                 .flex_row()
                 .items_center()
                 .gap(px(6.))
-                .when(nullable, |d| d.child(
-                    div()
-                        .id("value-null")
-                        .flex_none()
-                        .h(px(18.))
-                        .px(px(5.))
-                        .flex()
-                        .items_center()
-                        .text_size(px(crate::theme::text::TINY))
-                        .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
-                        .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
-                        .child("NULL")
-                        .cursor_pointer()
-                        .on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.toggle_null(cx))),
-                ))
+                .when(nullable, |d| {
+                    d.child(
+                        div()
+                            .id("value-null")
+                            .flex_none()
+                            .h(px(18.))
+                            .px(px(5.))
+                            .flex()
+                            .items_center()
+                            .text_size(px(crate::theme::text::TINY))
+                            .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
+                            .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
+                            .child("NULL")
+                            .cursor_pointer()
+                            .on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.toggle_null(cx))),
+                    )
+                })
                 .child(div().flex_1())
                 .child(
                     ui::button(&t, "value-apply", Btn::Primary)

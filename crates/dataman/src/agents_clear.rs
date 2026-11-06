@@ -18,11 +18,7 @@ const SHEET: &str = "AgentsClear";
 /// As the other destructive sheets: Esc and ↩ keep, ⌘⌫ deletes.
 pub fn bind_keys(cx: &mut App) {
     let c = Some(SHEET);
-    cx.bind_keys([
-        crate::keymap::kb("escape", KeepCalls, c),
-        crate::keymap::kb("enter", KeepCalls, c),
-        crate::keymap::kb("cmd-backspace", DeleteCalls, c),
-    ]);
+    cx.bind_keys([crate::keymap::kb("escape", KeepCalls, c), crate::keymap::kb("enter", KeepCalls, c), crate::keymap::kb("cmd-backspace", DeleteCalls, c)]);
 }
 
 pub(crate) struct ClearSheet {
@@ -64,7 +60,8 @@ pub(crate) fn menu_items() -> Vec<(SharedString, bool, Act)> {
         Recent::Months3 => "Keep Only the Last 3 Months…",
         Recent::Months6 => "Keep Only the Last 6 Months…",
     };
-    let mut v: Vec<(SharedString, bool, Act)> = vec![("Clear All…".into(), false, Act::Clear(None)), ("Clear Before a Date…".into(), false, Act::Clear(Some(Clear::Before(NaiveDate::MIN))))];
+    let mut v: Vec<(SharedString, bool, Act)> =
+        vec![("Clear All…".into(), false, Act::Clear(None)), ("Clear Before a Date…".into(), false, Act::Clear(Some(Clear::Before(NaiveDate::MIN))))];
     v.extend(Recent::ALL.map(|r| (keep(r).into(), false, Act::Clear(Some(Clear::Keep(r))))));
     v
 }
@@ -181,7 +178,10 @@ impl AgentsPage {
             .child(turn("agents-clear-prev", Icon::ChevronLeft, -1, true, cx))
             .child(div().flex_1().text_center().font_weight(FontWeight::SEMIBOLD).child(first.format("%B %Y").to_string()))
             .child(turn("agents-clear-next", Icon::ChevronRight, 1, can_next, cx));
-        let names = div().flex().flex_row().children(["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(|d| div().w(px(32.)).h(px(22.)).flex().items_center().justify_center().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(d)));
+        let names =
+            div().flex().flex_row().children(["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(|d| {
+                div().w(px(32.)).h(px(22.)).flex().items_center().justify_center().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(d)
+            }));
         let lead = first.weekday().num_days_from_sunday() as usize;
         let days = first.checked_add_months(chrono::Months::new(1)).map_or(31, |n| (n - first).num_days() as usize);
         let weeks = (lead + days).div_ceil(7);
@@ -198,7 +198,13 @@ impl AgentsPage {
                 let hov = t.hov;
                 cell.children(ui::here(&id.clone().into()))
                     .id(id)
-                    .text_color(if future { t.tx4 } else if d < on { t.err } else { t.tx })
+                    .text_color(if future {
+                        t.tx4
+                    } else if d < on {
+                        t.err
+                    } else {
+                        t.tx
+                    })
                     .when(d == today, |c| c.font_weight(FontWeight::BOLD))
                     .when(sel, |c| c.bg(t.prs).border_1().border_color(t.line2))
                     .when(!sel && !future, move |c| c.hover(move |s| s.bg(hov)))
@@ -246,7 +252,9 @@ impl AgentsPage {
             .flex_col()
             .gap(px(12.))
             .line_height(px(18.))
-            .when(matches!(s.what, Clear::Before(_)), |d| d.child(div().text_color(t.tx2).child("Calls logged before the day you pick go; that day stays.")).child(self.calendar(t, s, cx)))
+            .when(matches!(s.what, Clear::Before(_)), |d| {
+                d.child(div().text_color(t.tx2).child("Calls logged before the day you pick go; that day stays.")).child(self.calendar(t, s, cx))
+            })
             .child(div().children(ui::here(&"agents-clear-what".into())).text_color(t.tx).child(what))
             .when(ready, |d| d.child(div().text_color(t.tx3).child("This cannot be undone.")))
             .children(s.error.clone().map(|e| ui::error_block(t, "agents-clear-error", e)));
@@ -254,8 +262,13 @@ impl AgentsPage {
             Some(n) if n > 0 => format!("Delete {}", calls(n)),
             _ => "Delete".to_string(),
         };
-        let delete = ui::button(t, "agents-clear-delete", ui::Btn::Danger).h(px(28.)).font_weight(FontWeight::SEMIBOLD).child(if s.busy { "Deleting…".to_string() } else { label }).child(ui::key_hint("⌘⌫"));
-        let delete = if ready { delete.on_click(cx.listener(|v, _, _, cx| v.confirm_clear(cx))).into_any_element() } else { delete.opacity(0.5).into_any_element() };
+        let delete = ui::button(t, "agents-clear-delete", ui::Btn::Danger)
+            .h(px(28.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(if s.busy { "Deleting…".to_string() } else { label })
+            .child(ui::key_hint("⌘⌫"));
+        let delete =
+            if ready { delete.on_click(cx.listener(|v, _, _, cx| v.confirm_clear(cx))).into_any_element() } else { delete.opacity(0.5).into_any_element() };
         Some(
             div()
                 .id("agents-clear-sheet")
@@ -275,7 +288,12 @@ impl AgentsPage {
                 .child(
                     ui::modal(t, "agents-clear-card")
                         .w(px(460.))
-                        .child(ui::modal_header(t, None, title, ui::modal_close(t, "agents-clear-close").on_click(cx.listener(|v, _, window, cx| v.close_clear(window, cx)))))
+                        .child(ui::modal_header(
+                            t,
+                            None,
+                            title,
+                            ui::modal_close(t, "agents-clear-close").on_click(cx.listener(|v, _, window, cx| v.close_clear(window, cx))),
+                        ))
                         .child(body)
                         .child(
                             ui::modal_footer(t)

@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point};
 use dataman_core::edit::CellValue;
 use dataman_core::result::Phase;
 use dataman_core::sql::Dialect;
 use dataman_core::tx::TxStatus;
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Point};
 
 use crate::app::Workspace;
 use crate::tab::QueryTab;
@@ -70,10 +70,7 @@ fn sql(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> String {
 }
 
 fn col(tab: &Entity<QueryTab>, name: &str, cx: &mut AsyncWindowContext) -> usize {
-    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.columns()).and_then(|c| c.iter().position(|c| c.name == name)))
-        .ok()
-        .flatten()
-        .unwrap_or(0)
+    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.columns()).and_then(|c| c.iter().position(|c| c.name == name))).ok().flatten().unwrap_or(0)
 }
 
 fn cell(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindowContext) -> Option<String> {
@@ -183,7 +180,12 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         ok &= pass;
     };
     // The edit and transaction checks below commit changes to customers 2 and 3: start from the seed's values.
-    direct(ws, "UPDATE customer SET name = CASE id WHEN 2 THEN 'Ben Lewis' ELSE name END, balance = CASE id WHEN 3 THEN 0.00 ELSE balance END WHERE id IN (2, 3)", cx).await;
+    direct(
+        ws,
+        "UPDATE customer SET name = CASE id WHEN 2 THEN 'Ben Lewis' ELSE name END, balance = CASE id WHEN 3 THEN 0.00 ELSE balance END WHERE id IN (2, 3)",
+        cx,
+    )
+    .await;
     let tab = active(ws, cx);
     let info = cx.update(|_, cx| tab.read(cx).connection().map(|c| (c.engine(), c.info.version.clone(), c.dialect()))).ok().flatten();
     report(
@@ -223,7 +225,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     );
     draw(cx);
     let menu_caps = cx.update(|_, cx| cx.try_global::<crate::MenuCaps>().map(|m| m.0)).ok().flatten();
-    report("the menu bar leaves out Explain and the activity monitor", menu_caps.is_some_and(|c| !c.explain && !c.activity && !c.import), format!("{menu_caps:?}"));
+    report(
+        "the menu bar leaves out Explain and the activity monitor",
+        menu_caps.is_some_and(|c| !c.explain && !c.activity && !c.import),
+        format!("{menu_caps:?}"),
+    );
 
     let t = open(ws, conn, db, "customer", cx).await;
     let s = sql(&t, cx);
@@ -293,9 +299,17 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         pause(cx, 50).await;
     }
     let labels = cx.update(|_, cx| edit.read(cx).enum_labels(tier).map(|l| l.as_ref().clone())).ok().flatten();
-    report("the enum editor gets the ENUM's labels", labels.as_deref() == Some(&["bronze".to_string(), "silver".into(), "gold".into()][..]), format!("{labels:?}"));
+    report(
+        "the enum editor gets the ENUM's labels",
+        labels.as_deref() == Some(&["bronze".to_string(), "silver".into(), "gold".into()][..]),
+        format!("{labels:?}"),
+    );
     let plan = cx.update(|_, cx| edit.read(cx).plan()).ok().and_then(|p| p.ok()).map(|p| dataman_core::edit::preview(&p)).unwrap_or_default();
-    report("the edit's UPDATE is MySQL's", plan.contains(&format!("UPDATE {db}.customer SET name = 'Ben \\\\ O''Hara' WHERE id = 2 AND name <=> 'Ben Lewis'")), plan.clone());
+    report(
+        "the edit's UPDATE is MySQL's",
+        plan.contains(&format!("UPDATE {db}.customer SET name = 'Ben \\\\ O''Hara' WHERE id = 2 AND name <=> 'Ben Lewis'")),
+        plan.clone(),
+    );
     let _ = cx.update(|_, cx| edit.update(cx, |e, cx| e.apply(cx)));
     for _ in 0..100 {
         if cx.update(|_, cx| edit.read(cx).pending_count()).unwrap_or(1) == 0 {
@@ -329,12 +343,18 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let landed = active(ws, cx);
     finished(&landed, cx).await;
     let s = sql(&landed, cx);
-    report("⌘-click jumps to the referenced row", s == format!("SELECT * FROM {db}.customer WHERE id = 2;") && cell(&landed, 0, 0, cx).as_deref() == Some("2"), s.clone());
+    report(
+        "⌘-click jumps to the referenced row",
+        s == format!("SELECT * FROM {db}.customer WHERE id = 2;") && cell(&landed, 0, 0, cx).as_deref() == Some("2"),
+        s.clone(),
+    );
 
     direct(ws, "DROP PROCEDURE IF EXISTS chk_two", cx).await;
     let script = "# a procedure, then its call\nSET @n := 1;\nDELIMITER //\nCREATE PROCEDURE chk_two()\nBEGIN\n  SELECT 'one' AS a; -- first\n  SELECT 'two' AS b;\nEND //\nDELIMITER ;\nCALL chk_two();";
     run_in(&landed, script, true, cx).await;
-    let items = cx.update(|_, cx| landed.read(cx).batch_items().iter().map(|b| (b.sql.clone(), b.rs.as_ref().map(|r| (r.phase(), r.rows())))).collect::<Vec<_>>()).unwrap();
+    let items = cx
+        .update(|_, cx| landed.read(cx).batch_items().iter().map(|b| (b.sql.clone(), b.rs.as_ref().map(|r| (r.phase(), r.rows())))).collect::<Vec<_>>())
+        .unwrap();
     let fine = items.len() == 4
         && items.iter().all(|(_, r)| r.is_some_and(|(p, _)| p == Phase::Done))
         && items[2..].iter().all(|(s, r)| s.starts_with("CALL") && r.is_some_and(|(_, n)| n == 1))
@@ -366,13 +386,21 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     key(cx, "cmd-.");
     finished(&landed, cx).await;
     let phase = cx.update(|_, cx| landed.read(cx).run_phase()).ok().flatten();
-    report("⌘. stops SELECT SLEEP(30) at once", phase == Some(Phase::Cancelled) && t0.elapsed() < Duration::from_secs(3), format!("{phase:?} {:?}", t0.elapsed()));
+    report(
+        "⌘. stops SELECT SLEEP(30) at once",
+        phase == Some(Phase::Cancelled) && t0.elapsed() < Duration::from_secs(3),
+        format!("{phase:?} {:?}", t0.elapsed()),
+    );
 
     run_in(&landed, "START TRANSACTION", false, cx).await;
     run_in(&landed, "UPDATE customer SET balance = balance + 1 WHERE id = 3", false, cx).await;
     let open_tx = cx.update(|_, cx| landed.read(cx).tx().status).ok();
     let other = direct(ws, "SELECT balance FROM customer WHERE id = 3", cx).await;
-    report("START TRANSACTION keeps the transaction open", open_tx == Some(TxStatus::Open) && other.as_deref() == Some("0.00"), format!("{open_tx:?} {other:?}"));
+    report(
+        "START TRANSACTION keeps the transaction open",
+        open_tx == Some(TxStatus::Open) && other.as_deref() == Some("0.00"),
+        format!("{open_tx:?} {other:?}"),
+    );
     let end = cx.update(|_, cx| landed.update(cx, |t, cx| t.end_tx(true, cx))).ok();
     if let Some(end) = end {
         let _ = end.await;

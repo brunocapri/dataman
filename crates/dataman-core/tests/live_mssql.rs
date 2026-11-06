@@ -119,8 +119,8 @@ fn connects_and_decodes_every_type() {
     assert_eq!(
         kinds,
         vec![
-            Int, Text, Text, Bool, Int, Numeric, Numeric, Numeric, Text, Text, Date, Text, Timestamp, Timestamp, Other, Bytes, Text, Float4,
-            Float, Int, Text, Bytes
+            Int, Text, Text, Bool, Int, Numeric, Numeric, Numeric, Text, Text, Date, Text, Timestamp, Timestamp, Other, Bytes, Text, Float4, Float, Int, Text,
+            Bytes
         ]
     );
     assert_eq!((cols[6].type_name.as_str(), cols[16].type_name.as_str(), cols[14].type_name.as_str()), ("money", "xml", "uniqueidentifier"));
@@ -152,12 +152,19 @@ fn connects_and_decodes_every_type() {
         ]
     );
     let snap = rs.snapshot();
-    assert_eq!((snap.text(0, 9).as_deref(), snap.text(3, 9).as_deref()), (Some("2026-01-05 09:15:00 -03:00"), Some("2026-04-01 12:00:00 +09:00")), "datetimeoffset: as stored, with its offset");
+    assert_eq!(
+        (snap.text(0, 9).as_deref(), snap.text(3, 9).as_deref()),
+        (Some("2026-01-05 09:15:00 -03:00"), Some("2026-04-01 12:00:00 +09:00")),
+        "datetimeoffset: as stored, with its offset"
+    );
     assert!(r0[21].as_deref().is_some_and(|v| v.starts_with("\\x") && v.len() == 18), "rowversion: 8 bytes {:?}", r0[21]);
     let r2 = texts(&rs, 2);
     assert_eq!((r2[3].as_deref(), r2[6].as_deref(), r2[9].as_deref(), r2[17].as_deref()), (Some("false"), Some("0.0001"), None, None));
     let r3 = texts(&rs, 3);
-    assert_eq!((r3[1].as_deref(), r3[6].as_deref(), r3[12].as_deref(), r3[19].as_deref()), (Some("Diego O'Neil"), Some("-12.3456"), Some("1753-01-01 00:00:00"), Some("-9223372036854775808")));
+    assert_eq!(
+        (r3[1].as_deref(), r3[6].as_deref(), r3[12].as_deref(), r3[19].as_deref()),
+        (Some("Diego O'Neil"), Some("-12.3456"), Some("1753-01-01 00:00:00"), Some("-9223372036854775808"))
+    );
     let r4 = texts(&rs, 4);
     assert_eq!((r4[1].as_deref(), r4[2].as_deref(), r4[17].as_deref(), r4[18].as_deref()), (Some("Élodie Zürich 東京"), None, Some("1e-07"), Some("1e+300")));
     rs.sort(Some((5, dataman_core::result::SortDir::Desc)));
@@ -413,7 +420,13 @@ fn parse_check_reports_the_servers_syntax_errors() {
     assert!(l.is_empty(), "{l:?}");
     let n = query(&e, &c, "SELECT COUNT(*) FROM dbo.customer WHERE name = N'parse only'").snapshot().text(0, 0).map(|s| s.into_owned());
     assert_eq!(n.as_deref(), Some("0"));
-    exec(&e, &c, &["CREATE TABLE dbo.HierarchyLevels (Id uniqueidentifier PRIMARY KEY, ParentLevelId uniqueidentifier NULL, IsDeleted bit NOT NULL DEFAULT 0, PathToRoot nvarchar(4000) NULL, IsRoot bit NOT NULL DEFAULT 0, OrganizationId uniqueidentifier NULL)"]);
+    exec(
+        &e,
+        &c,
+        &[
+            "CREATE TABLE dbo.HierarchyLevels (Id uniqueidentifier PRIMARY KEY, ParentLevelId uniqueidentifier NULL, IsDeleted bit NOT NULL DEFAULT 0, PathToRoot nvarchar(4000) NULL, IsRoot bit NOT NULL DEFAULT 0, OrganizationId uniqueidentifier NULL)",
+        ],
+    );
     let cte = "WITH Roots AS (\n    SELECT CAST(RootId AS uniqueidentifier) AS RootId FROM (VALUES\n        ('902ebf67-556c-1b71-4858-3a1e21c5bd74'),\n        ('06d0eb4d-6c89-d5f7-1c2e-3a2009634fba')\n    ) v(RootId)\n),\nByParent AS (\n    SELECT h.Id FROM HierarchyLevels h JOIN Roots r ON r.RootId = h.Id WHERE h.IsDeleted = 0\n    UNION ALL\n    SELECT c.Id FROM HierarchyLevels c JOIN ByParent p ON c.ParentLevelId = p.Id WHERE c.IsDeleted = 0\n),\nByPath AS (\n    SELECT h.Id FROM HierarchyLevels h\n    WHERE h.IsDeleted = 0\n      AND EXISTS (SELECT 1 FROM Roots r WHERE h.PathToRoot LIKE '%' + CONVERT(nvarchar(36), r.RootId) + '%')\n)\nSELECT\n    (SELECT COUNT(DISTINCT Id) FROM ByParent) AS ProgramsByParent,\n    (SELECT COUNT(*) FROM ByPath) AS ProgramsByPath,\n    (SELECT COUNT(*) FROM ByPath WHERE Id NOT IN (SELECT Id FROM ByParent)) AS OnlyInPath,\n    (SELECT COUNT(*) FROM ByParent WHERE Id NOT IN (SELECT Id FROM ByPath)) AS OnlyInParent,\n    (SELECT COUNT(*) FROM HierarchyLevels h\n        WHERE h.IsDeleted = 0 AND h.IsRoot = 0\n          AND h.OrganizationId = '74A17135-94CF-62A5-BDE1-3A16C41F541A'\n          AND h.Id NOT IN (SELECT Id FROM ByPath)) AS OrgProgramsOutOfScope\nOPTION (MAXRECURSION 100);";
     let (l, _) = check(cte);
     assert!(l.is_empty(), "{l:?}");

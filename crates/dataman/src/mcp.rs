@@ -4,22 +4,22 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::theme::px;
+#[cfg(feature = "checks")]
+use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
+use dataman_core::{Core, Dirs, SecretStore};
+use dataman_mcp::{Approval, Front, Hub, Registry};
 #[cfg(feature = "checks")]
 use gpui::AppContext;
 use gpui::{AnyWindowHandle, App, Context, FontWeight, Global, SharedString, StyledText, WeakEntity, Window, actions, div, prelude::*};
-use crate::theme::px;
-use dataman_core::{Core, Dirs, SecretStore};
-#[cfg(feature = "checks")]
-use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
-use dataman_mcp::{Approval, Front, Hub, Registry};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::app::Workspace;
 #[cfg(feature = "checks")]
 use crate::app::{Bound, Side};
 use crate::theme::{ActiveTheme, Theme};
-use crate::ui::{self, Btn};
 use crate::ui::Tipped;
+use crate::ui::{self, Btn};
 
 actions!(mcp, [Allow, AlwaysAllow, Deny]);
 
@@ -117,7 +117,10 @@ impl Front for AppFront {
         crate::agent::tabs_ready()
     }
 
-    fn run_read(&self, r: dataman_mcp::TabRead) -> futures_util::future::BoxFuture<'static, Result<dataman_core::bounded::Outcome, dataman_core::bounded::Stop>> {
+    fn run_read(
+        &self,
+        r: dataman_mcp::TabRead,
+    ) -> futures_util::future::BoxFuture<'static, Result<dataman_core::bounded::Outcome, dataman_core::bounded::Stop>> {
         crate::agent::run_read(self, r)
     }
 
@@ -154,7 +157,9 @@ impl Front for AppFront {
     fn show(&self, place: dataman_mcp::Place) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
         let (reply, rx) = oneshot::channel();
         let sent = self.tx.send(FrontMsg::Show { place, reply }).is_ok();
-        Box::pin(async move { if sent { rx.await.unwrap_or_else(|_| Err(dataman_mcp::SHOW_NEEDS_APP.to_string())) } else { Err(dataman_mcp::SHOW_NEEDS_APP.to_string()) } })
+        Box::pin(async move {
+            if sent { rx.await.unwrap_or_else(|_| Err(dataman_mcp::SHOW_NEEDS_APP.to_string())) } else { Err(dataman_mcp::SHOW_NEEDS_APP.to_string()) }
+        })
     }
 }
 
@@ -195,7 +200,6 @@ pub struct McpHost {
 }
 
 impl Global for McpHost {}
-
 
 pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
     cx.default_global::<McpHost>().workspace = Some((ws, window));
@@ -343,7 +347,8 @@ fn arrived(m: FrontMsg, cx: &mut App) {
             }
         }
         FrontMsg::Show { place, reply } => {
-            let shown = workspace(cx).and_then(|(ws, window)| window.update(cx, |_, window, cx| ws.update(cx, |w, cx| w.show_place(place, window, cx)).ok()).ok().flatten());
+            let shown = workspace(cx)
+                .and_then(|(ws, window)| window.update(cx, |_, window, cx| ws.update(cx, |w, cx| w.show_place(place, window, cx)).ok()).ok().flatten());
             let _ = reply.send(shown.unwrap_or_else(|| Err(dataman_mcp::SHOW_NEEDS_APP.to_string())));
         }
     }
@@ -449,7 +454,10 @@ impl Workspace {
         if !allow_ready(cx) {
             return;
         }
-        let Some((id, stmts)) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()).map(|p| (p.req.connection_id.clone(), p.req.allowable.clone())) else { return };
+        let Some((id, stmts)) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()).map(|p| (p.req.connection_id.clone(), p.req.allowable.clone()))
+        else {
+            return;
+        };
         if !stmts.is_empty() {
             let core = self.store.read(cx).core.clone();
             core.config.refresh();
@@ -485,7 +493,8 @@ impl Workspace {
         // About this Mac (files to read), not a connection.
         let local = req.connection_id.is_empty();
         let color = self.store.read(cx).profile(&req.connection_id).map(|p| t.profile_color(p)).unwrap_or(t.tx4);
-        let btn = |id: &'static str, kind: Btn, label: &'static str, key: &'static str| ui::button(&t, id, kind).h(px(28.)).child(label).child(ui::key_hint(key));
+        let btn =
+            |id: &'static str, kind: Btn, label: &'static str, key: &'static str| ui::button(&t, id, kind).h(px(28.)).child(label).child(ui::key_hint(key));
         let shown = dataman_mcp::shown_text(&req.sql);
         // A statement is highlighted; a list of files or changes is plain text.
         let lines = if req.connection_id.is_empty() {
@@ -509,15 +518,19 @@ impl Workspace {
             .text_size(px(crate::theme::text::BODY))
             .line_height(px(18.))
             .children(lines.into_iter().map(|(text, runs)| {
-                if text.is_empty() {
-                    div().h(px(18.)).into_any_element()
-                } else {
-                    div().child(StyledText::new(text).with_runs(runs)).into_any_element()
-                }
+                if text.is_empty() { div().h(px(18.)).into_any_element() } else { div().child(StyledText::new(text).with_runs(runs)).into_any_element() }
             }));
         let tags = div().flex().flex_row().flex_wrap().items_center().gap(px(6.)).children(req.reasons.iter().map(|r| {
             let c = reason_color(&t, &req, r);
-            div().h(px(20.)).px(px(7.)).flex().items_center().bg(gpui::Hsla { a: 0.14, ..c }).text_size(px(crate::theme::text::SMALL)).text_color(c).child(r.clone())
+            div()
+                .h(px(20.))
+                .px(px(7.))
+                .flex()
+                .items_center()
+                .bg(gpui::Hsla { a: 0.14, ..c })
+                .text_size(px(crate::theme::text::SMALL))
+                .text_color(c)
+                .child(r.clone())
         }));
         let counted = req.reasons.iter().any(|r| r.contains(" rows (limit "));
         let rows = req.affected.filter(|_| !counted).map(|n| if n == 1 { "1 row".to_string() } else { format!("{} rows", crate::grid::ui_count(n as usize)) });
@@ -716,10 +729,9 @@ impl Render for DemoSide {
 
 #[cfg(feature = "checks")]
 pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
-    for (name, env, mcp) in [
-        ("shop", dataman_core::Environment::Staging, Some(dataman_core::McpAccess::Full)),
-        ("shop-live", dataman_core::Environment::Production, None),
-    ] {
+    for (name, env, mcp) in
+        [("shop", dataman_core::Environment::Staging, Some(dataman_core::McpAccess::Full)), ("shop-live", dataman_core::Environment::Production, None)]
+    {
         if !core.config.connections().iter().any(|p| p.name == name) {
             let mut p = dataman_core::ConnectionProfile::new(name);
             (p.host, p.database, p.env, p.mcp) = (format!("{}.db.internal", env.label()), "shop".into(), env, mcp);
@@ -731,17 +743,37 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
     }
     let audit = dataman_core::audit::Audit::new(core.dirs.mcp_audit_file());
     let now = chrono::Utc::now();
-    let note = |decision, reasons: &[&str], rows| Some(dataman_core::audit::ApprovalNote { decision, by: Some("bruno".into()), reasons: reasons.iter().map(|r| r.to_string()).collect(), rows });
+    let note = |decision, reasons: &[&str], rows| {
+        Some(dataman_core::audit::ApprovalNote { decision, by: Some("bruno".into()), reasons: reasons.iter().map(|r| r.to_string()).collect(), rows })
+    };
     let rows: [(&str, Option<&str>, Option<&str>, Option<u64>, f64, Outcome, Option<&str>, Option<dataman_core::audit::ApprovalNote>); 10] = [
         ("list_connections", None, None, None, 0.4, Outcome::Ok, None, None),
         ("list_tables", Some("local pg"), None, Some(12), 8.1, Outcome::Ok, None, None),
         ("describe_table", Some("local pg"), None, None, 14.6, Outcome::Ok, None, None),
-        ("open_query", Some("local pg"), Some("SELECT status, count(*) FROM orders WHERE created_at > ? GROUP BY status"), Some(4), 23.9, Outcome::Ok, None, None),
+        (
+            "open_query",
+            Some("local pg"),
+            Some("SELECT status, count(*) FROM orders WHERE created_at > ? GROUP BY status"),
+            Some(4),
+            23.9,
+            Outcome::Ok,
+            None,
+            None,
+        ),
         ("run_query", Some("local pg"), Some("DELETE FROM orders WHERE id = ?"), None, 0.2, Outcome::Refused, Some("refused: DELETE is not a read"), None),
         ("explain_analyze", Some("local pg"), Some("SELECT * FROM orders WHERE customer = $1"), None, 41.3, Outcome::Ok, None, None),
         ("run_query", Some("local pg"), Some("SELECT pg_sleep(?)"), None, 30001.0, Outcome::Timeout, Some("timed out after 30.0 s"), None),
         ("execute", Some("shop"), Some("UPDATE orders SET status = ? WHERE id = ?"), Some(1), 12.2, Outcome::Ok, None, None),
-        ("execute", Some("shop"), Some("DELETE FROM orders"), None, 48211.0, Outcome::Refused, Some("refused: denied in Dataman (DELETE without WHERE); rolled back"), note(Decision::Denied, &["DELETE without WHERE"], Some(1204))),
+        (
+            "execute",
+            Some("shop"),
+            Some("DELETE FROM orders"),
+            None,
+            48211.0,
+            Outcome::Refused,
+            Some("refused: denied in Dataman (DELETE without WHERE); rolled back"),
+            note(Decision::Denied, &["DELETE without WHERE"], Some(1204)),
+        ),
         ("execute", Some("shop-live"), Some("TRUNCATE orders"), None, 0.1, Outcome::Refused, Some("refused: MCP access to this connection is off"), None),
     ];
     let sent: [Option<&str>; 10] = [

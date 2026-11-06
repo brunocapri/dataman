@@ -3,8 +3,8 @@
 //! of its own values in a results grid (a made-up one when none can be read). Nothing is saved
 //! before Save.
 
-use dataman_core::privacy::{self, AgentView, Keep, Mask, Names, Side};
 use dataman_core::ConnectionProfile;
+use dataman_core::privacy::{self, AgentView, Keep, Mask, Names, Side};
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, div, prelude::*};
 
 use crate::agents::{AgentsPage, Tip, qmark};
@@ -118,11 +118,15 @@ impl AgentsPage {
     pub(crate) fn save_sens_edit(&mut self, cx: &mut Context<Self>) {
         let Some(e) = self.sens_edit.take() else { return };
         if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == AgentView::Masked)) {
-            self.edit_conn(&id, |p| {
-                if let Some(s) = p.mcp_rules.sensitive.iter_mut().find(|s| s.col == e.col) {
-                    (s.how, s.on) = (e.how, true);
-                }
-            }, cx);
+            self.edit_conn(
+                &id,
+                |p| {
+                    if let Some(s) = p.mcp_rules.sensitive.iter_mut().find(|s| s.col == e.col) {
+                        (s.how, s.on) = (e.how, true);
+                    }
+                },
+                cx,
+            );
         }
         cx.notify();
     }
@@ -136,7 +140,9 @@ impl AgentsPage {
         let keep = e.how.kept();
         let from = e.sample.as_ref().map(|(_, table)| format!("from {table}"));
         let shown_rows = e.sample.as_ref().map_or(1, |(v, _)| v.len()) as f32;
-        let line = |label: &str, control: AnyElement| div().flex().flex_row().items_center().gap(px(16.)).child(div().w(px(84.)).flex_none().text_color(t.tx2).child(label.to_string())).child(control);
+        let line = |label: &str, control: AnyElement| {
+            div().flex().flex_row().items_center().gap(px(16.)).child(div().w(px(84.)).flex_none().text_color(t.tx2).child(label.to_string())).child(control)
+        };
         let body = div()
             .p(px(20.))
             .flex()
@@ -144,13 +150,20 @@ impl AgentsPage {
             .gap(px(16.))
             .child(line(
                 "Mask",
-                choices(t, "agents-sens-edit-mask", &masks, Mask::ALL.into_iter().find(|m| m.is_partial() == e.how.is_partial()).unwrap_or(Mask::Hidden), cx, |v, m, cx| {
-                    if let Some(e) = v.sens_edit.as_mut() {
-                        // Back to Partial keeps the characters picked before.
-                        e.how = m.keeping(e.how.kept());
-                    }
-                    v.sync_sens_grid(cx);
-                })
+                choices(
+                    t,
+                    "agents-sens-edit-mask",
+                    &masks,
+                    Mask::ALL.into_iter().find(|m| m.is_partial() == e.how.is_partial()).unwrap_or(Mask::Hidden),
+                    cx,
+                    |v, m, cx| {
+                        if let Some(e) = v.sens_edit.as_mut() {
+                            // Back to Partial keeps the characters picked before.
+                            e.how = m.keeping(e.how.kept());
+                        }
+                        v.sync_sens_grid(cx);
+                    },
+                )
                 .into_any_element(),
             ))
             .when(e.how.is_partial(), |d| {
@@ -180,14 +193,40 @@ impl AgentsPage {
                             .items_center()
                             .gap(px(8.))
                             .child(div().text_size(px(crate::theme::text::SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx3).child("AGENTS GET"))
-                            .children(from.map(|f| div().children(ui::here(&"agents-sens-edit-from".into())).id("agents-sens-edit-from").text_size(px(crate::theme::text::SMALL)).text_color(t.tx4).child(f))),
+                            .children(from.map(|f| {
+                                div()
+                                    .children(ui::here(&"agents-sens-edit-from".into()))
+                                    .id("agents-sens-edit-from")
+                                    .text_size(px(crate::theme::text::SMALL))
+                                    .text_color(t.tx4)
+                                    .child(f)
+                            })),
                     )
-                    .child(div().children(ui::here(&"agents-sens-edit-example".into())).h(px(GRID_HEAD_H + GRID_ROW_H * shown_rows + GRID_BAR + 2.)).border_1().border_color(t.line).child(self.sens_grid.clone())),
+                    .child(
+                        div()
+                            .children(ui::here(&"agents-sens-edit-example".into()))
+                            .h(px(GRID_HEAD_H + GRID_ROW_H * shown_rows + GRID_BAR + 2.))
+                            .border_1()
+                            .border_color(t.line)
+                            .child(self.sens_grid.clone()),
+                    ),
             );
         let footer = ui::modal_footer(t)
             .child(div().flex_1())
-            .child(ui::button(t, "agents-sens-edit-cancel", ui::Btn::Secondary).h(px(28.)).child("Cancel").child(ui::key_hint("esc")).on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.close_sens_edit(cx))))
-            .child(ui::button(t, "agents-sens-edit-save", ui::Btn::Primary).h(px(28.)).font_weight(FontWeight::SEMIBOLD).child("Save").on_click(cx.listener(|v, _, _, cx| v.save_sens_edit(cx))));
+            .child(
+                ui::button(t, "agents-sens-edit-cancel", ui::Btn::Secondary)
+                    .h(px(28.))
+                    .child("Cancel")
+                    .child(ui::key_hint("esc"))
+                    .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.close_sens_edit(cx))),
+            )
+            .child(
+                ui::button(t, "agents-sens-edit-save", ui::Btn::Primary)
+                    .h(px(28.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Save")
+                    .on_click(cx.listener(|v, _, _, cx| v.save_sens_edit(cx))),
+            );
         Some(
             div()
                 .id("agents-sens-edit-sheet")
@@ -202,7 +241,14 @@ impl AgentsPage {
                 .child(
                     ui::modal(t, "agents-sens-edit-card")
                         .w(px(500.))
-                        .child(ui::modal_header(t, None, SharedString::from(e.col.clone()), ui::modal_close(t, "agents-sens-edit-close").cursor_pointer().on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.close_sens_edit(cx)))))
+                        .child(ui::modal_header(
+                            t,
+                            None,
+                            SharedString::from(e.col.clone()),
+                            ui::modal_close(t, "agents-sens-edit-close")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.close_sens_edit(cx))),
+                        ))
                         .child(body)
                         .child(footer),
                 )

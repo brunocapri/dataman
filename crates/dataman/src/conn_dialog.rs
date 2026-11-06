@@ -5,15 +5,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task,
-    Window, actions, div, prelude::*,
-};
 use crate::theme::{Pt, px};
-use dataman_core::config::Engine;
 use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
+use dataman_core::config::Engine;
 use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode, connstr};
 use dataman_mcp::agents::{self, AGENTS, Added, Listing};
+use gpui::{App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task, Window, actions, div, prelude::*};
 
 const ENGINES: [Engine; 9] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") {
@@ -73,7 +70,8 @@ pub fn engines_matching(q: &str) -> Vec<Engine> {
             }
             let words = e.spec().search;
             let kind = if e.is_sql() { "sql relational" } else { "nosql" };
-            format!("{words} {kind} {}", e.family_label().to_lowercase()).split_whitespace().any(|w| w.starts_with(&q)) || (q.len() >= 3 && e.label().to_lowercase().contains(&q))
+            format!("{words} {kind} {}", e.family_label().to_lowercase()).split_whitespace().any(|w| w.starts_with(&q))
+                || (q.len() >= 3 && e.label().to_lowercase().contains(&q))
         })
         .collect()
 }
@@ -120,9 +118,15 @@ fn crumb_state(step: Step, at: Step, seen: [bool; 4], picked: bool, file: bool) 
 }
 
 /// The TLS modes an engine offers: each one's key for the check stages, and its name.
-const ENVIRONMENTS: [(Environment, &str); 4] = [(Environment::None, "None"), (Environment::Dev, "Dev"), (Environment::Staging, "Staging"), (Environment::Production, "Production")];
+const ENVIRONMENTS: [(Environment, &str); 4] =
+    [(Environment::None, "None"), (Environment::Dev, "Dev"), (Environment::Staging, "Staging"), (Environment::Production, "Production")];
 
-const SQL_TLS: [(SslMode, &str, &str); 4] = [(SslMode::Disable, "disable", "Disable"), (SslMode::Prefer, "prefer", "Prefer"), (SslMode::Require, "require", "Require"), (SslMode::VerifyFull, "verify-full", "Verify full")];
+const SQL_TLS: [(SslMode, &str, &str); 4] = [
+    (SslMode::Disable, "disable", "Disable"),
+    (SslMode::Prefer, "prefer", "Prefer"),
+    (SslMode::Require, "require", "Require"),
+    (SslMode::VerifyFull, "verify-full", "Verify full"),
+];
 const DOC_TLS: [(SslMode, &str, &str); 3] = [(SslMode::Disable, "off", "Off"), (SslMode::Require, "on", "On"), (SslMode::VerifyFull, "verify", "Verify")];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -149,12 +153,12 @@ fn tier_cell(column: usize, can: Can, production: bool, read_only: bool) -> Can 
     }
 }
 
-use crate::conns::ConnStore;
 use crate::assets::Icon;
+use crate::conns::ConnStore;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, SWATCHES, Theme};
-use crate::ui::{self, Btn};
 use crate::ui::Tipped;
+use crate::ui::{self, Btn};
 
 actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel, NextField, PrevField, PickNext, PickPrev]);
 
@@ -381,13 +385,7 @@ fn secret_field(placeholder: &str, feeds: Feeds, window: &mut Window, cx: &mut C
 }
 
 impl ConnDialog {
-    pub fn new(
-        store: Entity<ConnStore>,
-        profile: Option<ConnectionProfile>,
-        is_new: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(store: Entity<ConnStore>, profile: Option<ConnectionProfile>, is_new: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let is_new = is_new || profile.is_none();
         let profile = profile.unwrap_or_else(|| ConnectionProfile::new(""));
         // A blank sheet asks for everything, its defaults only as placeholders.
@@ -518,7 +516,11 @@ impl ConnDialog {
         let mut d = ConnDialog {
             store,
             focus: cx.focus_handle(),
-            sslmode: if is_new && profile.sslmode == SslMode::Prefer { dataman_core::default_sslmode(profile.engine, if blank { "" } else { &profile.host }, profile.ssh.is_some()) } else { profile.sslmode },
+            sslmode: if is_new && profile.sslmode == SslMode::Prefer {
+                dataman_core::default_sslmode(profile.engine, if blank { "" } else { &profile.host }, profile.ssh.is_some())
+            } else {
+                profile.sslmode
+            },
             ssl_chosen: !is_new || profile.sslmode != SslMode::Prefer,
             color,
             color_picked: profile.color_picked,
@@ -1149,7 +1151,11 @@ impl ConnDialog {
         if p.name.is_empty() {
             p.name = host_stem(&p.host).to_string();
         }
-        if target_only { p.validate_target()? } else { p.validate()? }
+        if target_only {
+            p.validate_target()?
+        } else {
+            p.validate()?
+        }
         if let Some(s) = &mut p.ssh {
             if s.host.is_empty() {
                 return Err("SSH host is required".into());
@@ -1820,7 +1826,8 @@ impl ConnDialog {
             SignIn::SigningIn => {
                 // Dropped, its CLI is stopped.
                 self.sign_in_tasks[k] = None;
-                self.sign_in[k] = SignIn::Failed { title: Cli::of(kind).map_or(String::new(), Cli::signed_out), body: String::new(), fix: Cli::of(kind).map(Fix::SignIn) };
+                self.sign_in[k] =
+                    SignIn::Failed { title: Cli::of(kind).map_or(String::new(), Cli::signed_out), body: String::new(), fix: Cli::of(kind).map(Fix::SignIn) };
                 cx.notify();
             }
             SignIn::Checking => {}
@@ -2005,7 +2012,14 @@ impl ConnDialog {
         };
         let tile = |e: Engine| ui::probe(format!("engine-{}", e.label()), tile(e));
         let section = |label: &'static str, engines: Vec<Engine>| {
-            (!engines.is_empty()).then(|| div().flex().flex_col().gap(px(8.)).child(caption(t, label)).child(div().flex().flex_row().flex_wrap().gap(px(10.)).children(engines.into_iter().map(tile))))
+            (!engines.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(caption(t, label))
+                    .child(div().flex().flex_row().flex_wrap().gap(px(10.)).children(engines.into_iter().map(tile)))
+            })
         };
         let (sql, other): (Vec<Engine>, Vec<Engine>) = found.iter().partition(|e| e.is_sql());
         panel()
@@ -2013,10 +2027,29 @@ impl ConnDialog {
             .on_action(cx.listener(|d, _: &PickNext, _, cx| d.move_pick(1, cx)))
             .on_action(cx.listener(|d, _: &PickPrev, _, cx| d.move_pick(-1, cx)))
             .gap(px(16.))
-            .child(div().flex().flex_row().items_center().gap(px(8.)).child(crate::assets::icon(Icon::Search).size(px(13.)).text_color(t.tx3)).child(div().flex_1().child(self.search.clone())))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(crate::assets::icon(Icon::Search).size(px(13.)).text_color(t.tx3))
+                    .child(div().flex_1().child(self.search.clone())),
+            )
             .children(section("RELATIONAL", sql))
             .children(section("NOSQL", other))
-            .when(nothing, |d| d.child(div().h(px(96.)).flex().items_center().justify_center().text_size(px(crate::theme::text::BODY)).text_color(t.tx3).child("No database by that name")))
+            .when(nothing, |d| {
+                d.child(
+                    div()
+                        .h(px(96.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(crate::theme::text::BODY))
+                        .text_color(t.tx3)
+                        .child("No database by that name"),
+                )
+            })
     }
 
     fn swatches(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
@@ -2045,16 +2078,19 @@ impl ConnDialog {
 
     fn connection_panel(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let file_mode = self.is_file();
-        let top = row().items_end().child(self.field(t, "NAME", &self.name, None)).child(div().flex_none().flex().flex_col().gap(px(6.)).child(caption(t, "COLOR")).child(self.swatches(t, cx)));
+        let top = row()
+            .items_end()
+            .child(self.field(t, "NAME", &self.name, None))
+            .child(div().flex_none().flex().flex_col().gap(px(6.)).child(caption(t, "COLOR")).child(self.swatches(t, cx)));
         let env = ui::segmented(t).children(ENVIRONMENTS.map(|(e, label)| {
             ui::probe(
                 format!("env-{}", e.label()),
-                ui::segment(t, ("env", e as usize), label, e == self.env)
-                    .when(e.is_production() && e == self.env, |d| d.text_color(t.err))
-                    .on_click(cx.listener(move |d, _, _, cx| {
+                ui::segment(t, ("env", e as usize), label, e == self.env).when(e.is_production() && e == self.env, |d| d.text_color(t.err)).on_click(
+                    cx.listener(move |d, _, _, cx| {
                         d.env = e;
                         cx.notify();
-                    })),
+                    }),
+                ),
             )
         }));
         let read_only = self.toggle(t, "read-only", self.read_only, "Read-only").on_click(cx.listener(|d, _, _, cx| {
@@ -2082,8 +2118,11 @@ impl ConnDialog {
         let panel = panel().child(top);
         if file_mode {
             let file_button = |id: &'static str, label: &'static str| ui::button(t, id, Btn::Secondary).h(px(30.)).px(px(10.)).child(label);
-            let access = self.toggle(t, "file-access", self.file_access, "Allow SQL to read and write files")
-                .tip(ui::text_tooltip("read_csv, read_parquet, COPY … TO, ATTACH, EXPORT. Off, the database is all SQL can reach (agents never get files either way)."))
+            let access = self
+                .toggle(t, "file-access", self.file_access, "Allow SQL to read and write files")
+                .tip(ui::text_tooltip(
+                    "read_csv, read_parquet, COPY … TO, ATTACH, EXPORT. Off, the database is all SQL can reach (agents never get files either way).",
+                ))
                 .on_click(cx.listener(|d, _, _, cx| {
                     d.file_access = !d.file_access;
                     d.untest();
@@ -2101,22 +2140,28 @@ impl ConnDialog {
                 .child(context);
         }
         let form = self.engine.spec().form;
-        let db_label: SharedString = if self.engine.spec().numbered_dbs.is_some() { form.database_label.to_uppercase().into() } else { format!("{} (OPTIONAL)", form.database_label.to_uppercase()).into() };
+        let db_label: SharedString = if self.engine.spec().numbered_dbs.is_some() {
+            form.database_label.to_uppercase().into()
+        } else {
+            format!("{} (OPTIONAL)", form.database_label.to_uppercase()).into()
+        };
         let modes: &[(SslMode, &str, &str)] = if self.engine.is_sql() { &SQL_TLS } else { &DOC_TLS };
         // A cloud token never goes without TLS.
         let token = self.token_auth();
-        let ssl = ui::segmented(t).h(px(30.)).flex_none().children(modes.iter().filter(|(m, ..)| !token || matches!(m, SslMode::Require | SslMode::VerifyFull)).map(|(m, key, label)| {
-            let m = *m;
-            ui::probe(
-                format!("tls-{key}"),
-                ui::segment(t, m.label(), *label, m == self.sslmode).whitespace_nowrap().on_click(cx.listener(move |d, _, _, cx| {
-                    d.sslmode = m;
-                    d.ssl_chosen = true;
-                    d.untest();
-                    cx.notify();
-                })),
-            )
-        }));
+        let ssl = ui::segmented(t).h(px(30.)).flex_none().children(
+            modes.iter().filter(|(m, ..)| !token || matches!(m, SslMode::Require | SslMode::VerifyFull)).map(|(m, key, label)| {
+                let m = *m;
+                ui::probe(
+                    format!("tls-{key}"),
+                    ui::segment(t, m.label(), *label, m == self.sslmode).whitespace_nowrap().on_click(cx.listener(move |d, _, _, cx| {
+                        d.sslmode = m;
+                        d.ssl_chosen = true;
+                        d.untest();
+                        cx.notify();
+                    })),
+                )
+            }),
+        );
         let tls_note = self.tls_note(cx);
         panel
             .child(
@@ -2158,7 +2203,12 @@ impl ConnDialog {
             .flex_col()
             .gap(px(14.))
             .child(row().child(self.field(t, "SSH HOST", &s.host, None)).child(div().w(px(96.)).flex_none().child(self.field(t, "SSH PORT", &s.port, None))))
-            .child(row().items_end().child(self.field(t, "SSH USER", &s.user, None)).child(div().flex().flex_col().gap(px(6.)).child(caption(t, "AUTH")).child(auth)))
+            .child(
+                row()
+                    .items_end()
+                    .child(self.field(t, "SSH USER", &s.user, None))
+                    .child(div().flex().flex_col().gap(px(6.)).child(caption(t, "AUTH")).child(auth)),
+            )
             .when(s.auth == SshAuth::Key, |d| d.child(row().child(self.field(t, "KEY FILE", &s.key, None)).child(self.field(t, "PASSPHRASE", &s.secret, None))))
             .when(s.auth == SshAuth::Password, |d| d.child(self.field(t, "SSH PASSWORD", &s.secret, None)))
     }
@@ -2171,7 +2221,11 @@ impl ConnDialog {
         let label = method_label(kind, self.user.read(cx).text(), self.password_there(cx));
         let status = self.sign_in[k].line(cli).map(|(glyph, text)| {
             let signed_in = matches!(self.sign_in[k], SignIn::Ok { .. });
-            let failed = if let SignIn::Failed { title, body, .. } = &self.sign_in[k] { Some(if body.is_empty() { title.clone() } else { format!("{title}\n{body}") }) } else { None };
+            let failed = if let SignIn::Failed { title, body, .. } = &self.sign_in[k] {
+                Some(if body.is_empty() { title.clone() } else { format!("{title}\n{body}") })
+            } else {
+                None
+            };
             div()
                 .id(("auth-status", k))
                 .flex_1()
@@ -2183,7 +2237,9 @@ impl ConnDialog {
                 .gap(px(6.))
                 .text_size(px(crate::theme::text::UI))
                 .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(if signed_in { t.ok } else { t.tx3 }).child(glyph))
-                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if signed_in { t.tx } else { t.tx3 }).child(text.clone()))
+                .child(
+                    div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if signed_in { t.tx } else { t.tx3 }).child(text.clone()),
+                )
                 .map(|d| match failed {
                     Some(full) => d.tip(ui::error_tip(full)),
                     None => d.tip(ui::text_tooltip(text)),
@@ -2251,7 +2307,8 @@ impl ConnDialog {
             }
             let natural = self.unrolls[k].natural.clone();
             let head = list.then(|| self.method_row(kind, t, cx));
-            let body = (rolled != crate::motion::Rolled::Shut).then(|| self.method_body(kind, t, cx)).and_then(|b| ui::unrolled(("auth-body", k), rolled, natural, b));
+            let body =
+                (rolled != crate::motion::Rolled::Shut).then(|| self.method_body(kind, t, cx)).and_then(|b| ui::unrolled(("auth-body", k), rolled, natural, b));
             col = col.child(div().flex().flex_col().children(head).children(body));
         }
         panel().gap(px(0.)).child(col)
@@ -2262,7 +2319,14 @@ impl ConnDialog {
         let production = self.env.is_production();
         let tier = self.tier();
         let hov = t.hov;
-        let head = div().h(px(20.)).px(px(8.)).flex().flex_row().items_center().child(div().flex_1().child(caption(t, "TIER"))).children(COLUMNS.map(|(label, w)| div().flex_none().w(px(w)).child(caption(t, label))));
+        let head = div()
+            .h(px(20.))
+            .px(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(div().flex_1().child(caption(t, "TIER")))
+            .children(COLUMNS.map(|(label, w)| div().flex_none().w(px(w)).child(caption(t, label))));
         let rows = TIERS.map(|(a, label, cans)| {
             let on = a == tier;
             let cells = std::array::from_fn::<_, 3, _>(|i| {
@@ -2275,7 +2339,9 @@ impl ConnDialog {
             });
             let row = ui::selectable(div().id(("mcp", a as usize)).h(px(38.)).px(px(8.)).flex().flex_row().items_center().cursor_pointer(), t, on, true)
                 .when(!on, |d| d.hover(move |s| s.bg(hov)))
-                .child(div().flex_1().text_size(px(crate::theme::text::BODY)).when(on && production && cans[1] != Can::No, |d| d.text_color(t.err)).child(label))
+                .child(
+                    div().flex_1().text_size(px(crate::theme::text::BODY)).when(on && production && cans[1] != Can::No, |d| d.text_color(t.err)).child(label),
+                )
                 .children(cells)
                 .on_click(cx.listener(move |d, _, _, cx| {
                     d.mcp = Some(a);
@@ -2291,7 +2357,11 @@ impl ConnDialog {
         let rows = listing.rows.iter().map(|r| {
             let (i, a) = (r.index, r.agent);
             let state = &self.agent_adds[i];
-            let logo = if a.mono { crate::assets::agent_logo_mono(a.logo).text_color(t.tx).into_any_element() } else { gpui::img(a.logo).flex_none().size(px(16.)).into_any_element() };
+            let logo = if a.mono {
+                crate::assets::agent_logo_mono(a.logo).text_color(t.tx).into_any_element()
+            } else {
+                gpui::img(a.logo).flex_none().size(px(16.)).into_any_element()
+            };
             let status = match state {
                 AgentAdd::Done => Some((if a.waits { "◌" } else { "●" }, if a.waits { t.tx3 } else { t.ok }, t.tx, a.done, a.done.to_string())),
                 AgentAdd::Failed(why) => Some(("✕", t.tx3, t.tx3, "Could not add", why.clone())),
@@ -2315,7 +2385,10 @@ impl ConnDialog {
                 let b = if *state == AgentAdd::Adding {
                     ui::button_off(t, SharedString::from(id.clone()), Btn::Secondary).child("Adding…")
                 } else {
-                    ui::button(t, SharedString::from(id.clone()), Btn::Secondary).child("Add").tip(ui::text_tooltip(a.add_hint)).on_click(cx.listener(move |d, _, _, cx| d.add_agent(i, cx)))
+                    ui::button(t, SharedString::from(id.clone()), Btn::Secondary)
+                        .child("Add")
+                        .tip(ui::text_tooltip(a.add_hint))
+                        .on_click(cx.listener(move |d, _, _, cx| d.add_agent(i, cx)))
                 };
                 ui::probe(id, b.h(px(24.)))
             });
@@ -2370,22 +2443,20 @@ impl ConnDialog {
         let tip = if body.is_empty() { title.clone() } else { format!("{title}\n{body}") };
         let first = body.lines().next().unwrap_or("").to_string();
         let failed = matches!(self.test, Test::Failed { .. } | Test::Invalid(_));
-        Some(
-            ui::probe(
-                "dlg-status",
-                div()
-                    .id("dlg-status")
-                    .min_w_0()
-                    .flex()
-                    .flex_row()
-                    .gap(px(6.))
-                    .text_size(px(crate::theme::text::UI))
-                    .line_height(px(17.))
-                    .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(color).child(glyph))
-                    .child(div().flex_1().min_w_0().flex().flex_col().child(shown(title, t.tx, 2)).when(!first.is_empty(), |d| d.child(shown(first, t.tx3, 3))))
-                    .map(|d| if failed { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) }),
-            ),
-        )
+        Some(ui::probe(
+            "dlg-status",
+            div()
+                .id("dlg-status")
+                .min_w_0()
+                .flex()
+                .flex_row()
+                .gap(px(6.))
+                .text_size(px(crate::theme::text::UI))
+                .line_height(px(17.))
+                .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(color).child(glyph))
+                .child(div().flex_1().min_w_0().flex().flex_col().child(shown(title, t.tx, 2)).when(!first.is_empty(), |d| d.child(shown(first, t.tx3, 3))))
+                .map(|d| if failed { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) }),
+        ))
     }
 
     fn footer(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
@@ -2401,7 +2472,11 @@ impl ConnDialog {
         } else {
             "Continue"
         };
-        let primary = if self.blocked(cx) { ui::button_off(t, "dlg-save", Btn::Primary) } else { ui::button(t, "dlg-save", Btn::Primary).on_click(cx.listener(|d, _, window, cx| d.primary(window, cx))) };
+        let primary = if self.blocked(cx) {
+            ui::button_off(t, "dlg-save", Btn::Primary)
+        } else {
+            ui::button(t, "dlg-save", Btn::Primary).on_click(cx.listener(|d, _, window, cx| d.primary(window, cx)))
+        };
         let test = if testing || self.target(cx).is_empty() {
             ui::button_off(t, "dlg-test", Btn::Secondary)
         } else {
@@ -2411,7 +2486,10 @@ impl ConnDialog {
             .when(edit && !self.password_needed, |d| {
                 d.child(ui::probe(
                     "dlg-delete",
-                    ui::button(t, "dlg-delete", Btn::Ghost).text_color(t.err).child(if self.confirm_delete { "Delete — sure?" } else { "Delete" }).on_click(cx.listener(|d, _, _, cx| d.delete(cx))),
+                    ui::button(t, "dlg-delete", Btn::Ghost)
+                        .text_color(t.err)
+                        .child(if self.confirm_delete { "Delete — sure?" } else { "Delete" })
+                        .on_click(cx.listener(|d, _, _, cx| d.delete(cx))),
                 ))
             })
             .when(self.shows_test(), |d| d.child(ui::probe("dlg-test", test.child(if testing { "Testing…" } else { "Test" }).child(ui::key_hint("⌘T")))))
@@ -2422,7 +2500,11 @@ impl ConnDialog {
             .when(!edit && self.step == Step::Mcp, |d| {
                 d.child(ui::probe(
                     "dlg-skip",
-                    if self.saving { ui::button_off(t, "dlg-skip", Btn::Ghost).child("Skip") } else { ui::button(t, "dlg-skip", Btn::Ghost).child("Skip").on_click(cx.listener(|d, _, window, cx| d.skip(window, cx))) },
+                    if self.saving {
+                        ui::button_off(t, "dlg-skip", Btn::Ghost).child("Skip")
+                    } else {
+                        ui::button(t, "dlg-skip", Btn::Ghost).child("Skip").on_click(cx.listener(|d, _, window, cx| d.skip(window, cx)))
+                    },
                 ))
             })
             .child(ui::probe("dlg-save", primary.font_weight(FontWeight::SEMIBOLD).child(label).child(ui::key_hint(if last { "⌘↩" } else { "↩" }))))
@@ -2436,7 +2518,8 @@ impl ConnDialog {
             for (i, (step, label)) in STEPS.into_iter().enumerate() {
                 let state = crumb_state(step, self.step, self.seen, self.engine_picked, file);
                 let crumb = ui::crumb(t, ("crumb", i), label, state);
-                let crumb = if state == ui::CrumbState::Visited { crumb.on_click(cx.listener(move |d, _, window, cx| d.enter(step, window, cx))) } else { crumb };
+                let crumb =
+                    if state == ui::CrumbState::Visited { crumb.on_click(cx.listener(move |d, _, window, cx| d.enter(step, window, cx))) } else { crumb };
                 crumbs = crumbs.child(ui::probe(format!("crumb-{label}"), crumb));
                 if i + 1 < STEPS.len() {
                     crumbs = crumbs.child(ui::crumb_sep(t));
@@ -2445,13 +2528,24 @@ impl ConnDialog {
             crumbs
         } else {
             let title: SharedString = if self.password_needed { format!("Password needed · {}", self.profile.name).into() } else { "Edit connection".into() };
-            div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).font_weight(FontWeight::MEDIUM).child(title)
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(crate::theme::text::BODY))
+                .font_weight(FontWeight::MEDIUM)
+                .child(title)
         };
         ui::modal_header_bar(t)
             .child(logo)
             .child(middle)
             .when(self.profile.agent_made, |d| {
-                d.child(ui::probe("dlg-agent-made", div().flex_none().mx(px(12.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Filled in by an agent")))
+                d.child(ui::probe(
+                    "dlg-agent-made",
+                    div().flex_none().mx(px(12.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Filled in by an agent"),
+                ))
             })
             .child(ui::modal_close(t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))))
     }
@@ -2504,12 +2598,14 @@ impl ConnDialog {
                 .border_1()
                 .border_color(t.line)
                 .child(div().flex_1().min_w_0().py(px(4.)).text_size(px(crate::theme::text::UI)).text_color(t.tx2).child(s.clone()))
-                .child(ui::icon_button(t, ("allowed-rm", i), Icon::Close, 22., 11.).tip(ui::text_tooltip("Remove")).on_click(cx.listener(move |d, _, _, cx| {
-                    if i < d.advanced.allowed.len() {
-                        d.advanced.allowed.remove(i);
-                    }
-                    cx.notify();
-                })))
+                .child(ui::icon_button(t, ("allowed-rm", i), Icon::Close, 22., 11.).tip(ui::text_tooltip("Remove")).on_click(cx.listener(
+                    move |d, _, _, cx| {
+                        if i < d.advanced.allowed.len() {
+                            d.advanced.allowed.remove(i);
+                        }
+                        cx.notify();
+                    },
+                )))
         });
         let add = div()
             .flex()
@@ -2527,13 +2623,13 @@ impl ConnDialog {
             .children(rows)
             .child(add)
             .children(a.error.clone().map(|e| div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(e)));
-        let switch = div()
-            .flex_none()
-            .w(px(26.))
-            .h(px(14.))
-            .relative()
-            .bg(if a.yolo { t.err } else { t.line2 })
-            .child(div().absolute().top(px(2.)).when(a.yolo, |d| d.right(px(2.))).when(!a.yolo, |d| d.left(px(2.))).size(px(10.)).rounded(px(5.)).bg(if a.yolo { gpui::white() } else { t.tx3 }));
+        let switch = div().flex_none().w(px(26.)).h(px(14.)).relative().bg(if a.yolo { t.err } else { t.line2 }).child(
+            div().absolute().top(px(2.)).when(a.yolo, |d| d.right(px(2.))).when(!a.yolo, |d| d.left(px(2.))).size(px(10.)).rounded(px(5.)).bg(if a.yolo {
+                gpui::white()
+            } else {
+                t.tx3
+            }),
+        );
         let yolo = div()
             .id("yolo")
             .px(px(12.))
@@ -2582,7 +2678,13 @@ impl ConnDialog {
                         .child("This connection is production: with YOLO, an agent can change or destroy its data and nobody is asked first."),
                 )
                 .child(ui::button(t, "yolo-cancel", Btn::Ghost).h(px(26.)).child("Cancel").on_click(cx.listener(|d, _, _, cx| d.confirm_yolo(false, cx))))
-                .child(ui::button(t, "yolo-confirm", Btn::Danger).h(px(26.)).font_weight(FontWeight::SEMIBOLD).child("Turn On YOLO").on_click(cx.listener(|d, _, _, cx| d.confirm_yolo(true, cx))))
+                .child(
+                    ui::button(t, "yolo-confirm", Btn::Danger)
+                        .h(px(26.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Turn On YOLO")
+                        .on_click(cx.listener(|d, _, _, cx| d.confirm_yolo(true, cx))),
+                )
         });
         col = col.child(div().pl(px(17.)).flex().flex_col().gap(px(12.)).child(allowed).child(yolo).children(confirm));
         col

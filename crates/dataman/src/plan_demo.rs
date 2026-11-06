@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::TxStatus;
 use dataman_core::explain::{Format, Rule};
 use dataman_core::result::Phase;
+use gpui::{AsyncWindowContext, Entity, Focusable};
 
 use crate::app::Workspace;
 use crate::plan::Mode;
@@ -239,7 +239,9 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     }
     report(
         "Copy as text puts PostgreSQL's text plan on the clipboard",
-        copied.starts_with("Index Scan using orders_pkey on public.orders") && copied.contains("(cost=") && copied.contains("Index Cond: (orders.id = '42'::bigint)"),
+        copied.starts_with("Index Scan using orders_pkey on public.orders")
+            && copied.contains("(cost=")
+            && copied.contains("Index Cond: (orders.id = '42'::bigint)"),
         copied,
     );
 

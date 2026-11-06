@@ -123,11 +123,7 @@ pub enum Target {
 
 impl Target {
     pub fn of(p: &ConnectionProfile) -> Target {
-        if p.is_socket() {
-            Target::Unix(format!("{}/.s.PGSQL.{}", p.host.trim_end_matches('/'), p.port))
-        } else {
-            Target::Tcp(p.host.clone(), p.port)
-        }
+        if p.is_socket() { Target::Unix(format!("{}/.s.PGSQL.{}", p.host.trim_end_matches('/'), p.port)) } else { Target::Tcp(p.host.clone(), p.port) }
     }
 
     fn shown(&self) -> String {
@@ -160,7 +156,15 @@ impl TunnelSpec {
     pub fn resolve(p: &ConnectionProfile, secret: Option<String>, app_known_hosts: &Path) -> Option<TunnelSpec> {
         let s = p.ssh.as_ref()?;
         let home = config::home().unwrap_or_else(|| PathBuf::from("/"));
-        Some(Self::resolve_with(s, secret, Target::of(p), known_hosts::default_files(app_known_hosts), &home, &crate::connstr::local_user(), config::resolve_default))
+        Some(Self::resolve_with(
+            s,
+            secret,
+            Target::of(p),
+            known_hosts::default_files(app_known_hosts),
+            &home,
+            &crate::connstr::local_user(),
+            config::resolve_default,
+        ))
     }
 
     pub fn resolve_with(
@@ -341,11 +345,8 @@ async fn agent() -> Option<Agent> {
 async fn authenticate(s: &mut Session, hop: &Hop) -> Result<(), SshError> {
     let host = shown(&hop.host, hop.port);
     let user = hop.user.clone();
-    let failed = |remaining: Option<&russh::MethodSet>| SshError::Auth {
-        host: host.clone(),
-        user: user.clone(),
-        detail: remaining.map(methods).unwrap_or_default(),
-    };
+    let failed =
+        |remaining: Option<&russh::MethodSet>| SshError::Auth { host: host.clone(), user: user.clone(), detail: remaining.map(methods).unwrap_or_default() };
     let lib = |e: russh::Error| SshError::Connect { host: host.clone(), message: russh_message(&e) };
     let mut remaining: Option<russh::MethodSet> = None;
     match &hop.auth {
@@ -422,9 +423,7 @@ async fn authenticate(s: &mut Session, hop: &Hop) -> Result<(), SshError> {
 fn public_half(path: &Path) -> Option<PublicKey> {
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
-    russh::keys::load_public_key(PathBuf::from(pub_path))
-        .ok()
-        .or_else(|| russh::keys::load_secret_key(path, None).ok().map(|k| k.public_key().clone()))
+    russh::keys::load_public_key(PathBuf::from(pub_path)).ok().or_else(|| russh::keys::load_secret_key(path, None).ok().map(|k| k.public_key().clone()))
 }
 
 struct Chain(Vec<Session>);

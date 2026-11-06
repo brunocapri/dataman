@@ -330,7 +330,9 @@ fn bind_values(params: &[Val]) -> Vec<Value> {
 /// A DML statement's result is one `Count` column: what it changed, not rows to show. With
 /// RETURNING the rows are the statement's own (`RETURNING n AS "Count"` included).
 fn is_count(sql: &str, cols: &[ColumnInfo]) -> bool {
-    let returning = || crate::sql::tokenize_in(sql, Dialect::DuckDb).iter().any(|t| t.kind == crate::sql::TokenKind::Keyword && t.text(sql).eq_ignore_ascii_case("RETURNING"));
+    let returning = || {
+        crate::sql::tokenize_in(sql, Dialect::DuckDb).iter().any(|t| t.kind == crate::sql::TokenKind::Keyword && t.text(sql).eq_ignore_ascii_case("RETURNING"))
+    };
     cols.len() == 1 && cols[0].name == "Count" && crate::guard::classify_in(sql, Dialect::DuckDb).is_write() && !returning()
 }
 
@@ -406,10 +408,13 @@ fn run_one_streaming(db: &duckdb::Connection, sql: &str, params: &[Val], sink: &
     let cols = rows.as_ref().map(columns_of).unwrap_or_default();
     let width = cols.0.len();
     if is_count(sql, &cols.0) {
-        return Ok((false, match rows.next()? {
-            Some(r) => r.get::<_, i64>(0).ok().and_then(|c| u64::try_from(c).ok()).unwrap_or(0),
-            None => 0,
-        }));
+        return Ok((
+            false,
+            match rows.next()? {
+                Some(r) => r.get::<_, i64>(0).ok().and_then(|c| u64::try_from(c).ok()).unwrap_or(0),
+                None => 0,
+            },
+        ));
     }
     if width == 0 {
         while rows.next()?.is_some() {}
@@ -429,7 +434,6 @@ fn run_one_streaming(db: &duckdb::Connection, sql: &str, params: &[Val], sink: &
 
 const EPOCH_DAYS: i32 = 10_957;
 const EPOCH_MICROS: i64 = 946_684_800_000_000;
-
 
 /// A column's kind and DuckDB's name for its type, from the result's (arrow) schema.
 pub(crate) fn kind_of(t: &DataType) -> (Kind, String) {
@@ -454,12 +458,15 @@ pub(crate) fn kind_of(t: &DataType) -> (Kind, String) {
         DataType::FixedSizeBinary(16) => (Kind::Text, name("UUID")),
         DataType::Date32 | DataType::Date64 => (Kind::Date, name("DATE")),
         DataType::Time32(_) | DataType::Time64(_) => (Kind::Time, name("TIME")),
-        DataType::Timestamp(u, None) => (Kind::Timestamp, match u {
-            ArrowUnit::Second => name("TIMESTAMP_S"),
-            ArrowUnit::Millisecond => name("TIMESTAMP_MS"),
-            ArrowUnit::Microsecond => name("TIMESTAMP"),
-            ArrowUnit::Nanosecond => name("TIMESTAMP_NS"),
-        }),
+        DataType::Timestamp(u, None) => (
+            Kind::Timestamp,
+            match u {
+                ArrowUnit::Second => name("TIMESTAMP_S"),
+                ArrowUnit::Millisecond => name("TIMESTAMP_MS"),
+                ArrowUnit::Microsecond => name("TIMESTAMP"),
+                ArrowUnit::Nanosecond => name("TIMESTAMP_NS"),
+            },
+        ),
         DataType::Timestamp(_, Some(_)) => (Kind::TimestampTz, name("TIMESTAMP WITH TIME ZONE")),
         DataType::Interval(_) | DataType::Duration(_) => (Kind::Other, name("INTERVAL")),
         DataType::Dictionary(_, _) => (Kind::Text, name("ENUM")),

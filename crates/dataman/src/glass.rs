@@ -3,8 +3,8 @@
 // itself as 16.x to binaries built with an older SDK) Dataman asks GPUI for a transparent
 // window and puts its own stock NSVisualEffectView, layers left alone, under GPUI's view.
 
-use gpui::{Window, WindowBackgroundAppearance};
 use dataman_core::Translucency;
+use gpui::{Window, WindowBackgroundAppearance};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blur {

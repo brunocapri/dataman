@@ -76,7 +76,9 @@ pub fn export(settings: &Settings, profiles: &[ConnectionProfile]) -> AgentsFile
 
 pub fn to_text(f: &AgentsFile) -> String {
     let body = toml::to_string_pretty(f).unwrap_or_default();
-    format!("# Dataman agents settings: General, Sensitive data and each connection's rules for agents.\n# No passwords, keys or connection addresses.\n\n{body}")
+    format!(
+        "# Dataman agents settings: General, Sensitive data and each connection's rules for agents.\n# No passwords, keys or connection addresses.\n\n{body}"
+    )
 }
 
 /// The largest file read: thousands of connections' rules fit well under it.
@@ -113,8 +115,25 @@ enum Shape {
     Builtins(&'static Shape),
 }
 
-const BUILTIN: Shape = Shape::Fields(&[("on", Shape::Any), ("mask", Shape::Any), ("name", Shape::Any), ("pattern", Shape::Any), ("validator", Shape::Any), ("ignore_case", Shape::Any), ("keep", Shape::Any)]);
-const CUSTOM: Shape = Shape::Fields(&[("id", Shape::Any), ("name", Shape::Any), ("pattern", Shape::Any), ("mask", Shape::Any), ("keep", Shape::Any), ("validator", Shape::Any), ("ignore_case", Shape::Any), ("on", Shape::Any)]);
+const BUILTIN: Shape = Shape::Fields(&[
+    ("on", Shape::Any),
+    ("mask", Shape::Any),
+    ("name", Shape::Any),
+    ("pattern", Shape::Any),
+    ("validator", Shape::Any),
+    ("ignore_case", Shape::Any),
+    ("keep", Shape::Any),
+]);
+const CUSTOM: Shape = Shape::Fields(&[
+    ("id", Shape::Any),
+    ("name", Shape::Any),
+    ("pattern", Shape::Any),
+    ("mask", Shape::Any),
+    ("keep", Shape::Any),
+    ("validator", Shape::Any),
+    ("ignore_case", Shape::Any),
+    ("on", Shape::Any),
+]);
 const TYPES: Shape = Shape::Fields(&[("builtin", Shape::Builtins(&BUILTIN)), ("custom", Shape::Each(&CUSTOM))]);
 const ITEM: Shape = Shape::Fields(&[("name", Shape::Any), ("kind", Shape::Any)]);
 const SENSITIVE: Shape = Shape::Fields(&[("col", Shape::Any), ("how", Shape::Any), ("on", Shape::Any)]);
@@ -144,7 +163,12 @@ const CONN: Shape = Shape::Fields(&[
     ("yolo", Shape::Any),
     ("rules", RULES),
 ]);
-const FILE: Shape = Shape::Fields(&[("version", Shape::Any), ("general", Shape::Fields(&[("agent_access", Shape::Any)])), ("sensitive_data", TYPES), ("connection", Shape::Each(&CONN))]);
+const FILE: Shape = Shape::Fields(&[
+    ("version", Shape::Any),
+    ("general", Shape::Fields(&[("agent_access", Shape::Any)])),
+    ("sensitive_data", TYPES),
+    ("connection", Shape::Each(&CONN)),
+]);
 
 /// Unknown keys and NUL characters, with where they are. Wrong types are left to serde.
 fn check_shape(v: &toml::Value, shape: &Shape, at: &str, errs: &mut Vec<String>) {
@@ -308,7 +332,8 @@ fn find<'a>(c: &ConnRules, profiles: &'a [ConnectionProfile]) -> Result<(&'a Con
     if let Some(p) = profiles.iter().find(|p| p.id == c.id) {
         return Ok((p, false));
     }
-    let same: Vec<&ConnectionProfile> = profiles.iter().filter(|p| p.name == c.name && p.engine == c.engine && (c.database.is_empty() || p.database == c.database)).collect();
+    let same: Vec<&ConnectionProfile> =
+        profiles.iter().filter(|p| p.name == c.name && p.engine == c.engine && (c.database.is_empty() || p.database == c.database)).collect();
     match same.as_slice() {
         [p] => Ok((p, true)),
         _ => Err(same.len()),
@@ -364,7 +389,12 @@ pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
         push(&format!("Visible to agents › {n}"), format!("listed ({})", kind.label()), "not listed".into(), loosens);
     }
     for (kind, _, n) in v1.iter().filter(|(k, l, _)| !has(&v0, *k, l)) {
-        push(&format!("Visible to agents › {n}"), "not listed".into(), format!("listed ({})", kind.label()), *kind != ItemKind::Column && m1 == VisibleMode::Only);
+        push(
+            &format!("Visible to agents › {n}"),
+            "not listed".into(),
+            format!("listed ({})", kind.label()),
+            *kind != ItemKind::Column && m1 == VisibleMode::Only,
+        );
     }
     // Sensitive columns: the first entry that matches a column is its mask (names ignoring case).
     let mask_of = |r: &AgentRules, col: &str| r.sensitive.iter().find(|s| s.col.to_lowercase() == col && s.on).map(|s| s.how);
@@ -404,7 +434,11 @@ pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
             push(&format!("Sensitive column › {b}"), bh.describe(), format!("{} where {a}, before it, matches", ah.describe()), true);
         }
     }
-    for (what, a, b) in [("Agents may change structure", r0.structure, r1.structure), ("Agents may run code", r0.code, r1.code), ("Agents may see server activity", r0.activity, r1.activity)] {
+    for (what, a, b) in [
+        ("Agents may change structure", r0.structure, r1.structure),
+        ("Agents may run code", r0.code, r1.code),
+        ("Agents may see server activity", r0.activity, r1.activity),
+    ] {
         push(what, yes_no(a), yes_no(b), b && !a);
     }
     let rc = |r: &AgentRules| [r.redis.read, r.redis.write, r.redis.keyspace, r.redis.scripting, r.redis.pubsub];
@@ -478,7 +512,12 @@ pub fn plan(settings: &Settings, profiles: &[ConnectionProfile], f: &AgentsFile)
     let mut plan = Plan::default();
     if settings.mcp_enabled != f.general.agent_access {
         let on = |b: bool| (if b { "on" } else { "off" }).to_string();
-        plan.general.push(Change { what: "Agent access".into(), from: on(settings.mcp_enabled), to: on(f.general.agent_access), loosens: f.general.agent_access });
+        plan.general.push(Change {
+            what: "Agent access".into(),
+            from: on(settings.mcp_enabled),
+            to: on(f.general.agent_access),
+            loosens: f.general.agent_access,
+        });
     }
     plan.types = type_changes(&settings.agent_types, &f.sensitive_data);
     // Each connection here is written once: two entries for it would show two summaries and
@@ -541,7 +580,12 @@ pub fn copied(p: &ConnectionProfile, from: &ConnectionProfile) -> ConnRules {
 
 /// Writes the file's rules; returns each touched connection's id, its part before and after.
 fn apply_conns(profiles: &mut [ConnectionProfile], f: &AgentsFile) -> Vec<(String, Agent, Agent)> {
-    let ids: Vec<(usize, usize)> = f.connections.iter().enumerate().filter_map(|(i, c)| find(c, profiles).ok().and_then(|(p, _)| profiles.iter().position(|x| x.id == p.id)).map(|at| (i, at))).collect();
+    let ids: Vec<(usize, usize)> = f
+        .connections
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| find(c, profiles).ok().and_then(|(p, _)| profiles.iter().position(|x| x.id == p.id)).map(|at| (i, at)))
+        .collect();
     let mut touched = Vec::new();
     for (i, at) in ids {
         let (c, p) = (&f.connections[i], &mut profiles[at]);
@@ -683,7 +727,8 @@ mod tests {
 
         // The whole profile: nothing but the rules moves, and those are the source's to the letter.
         let allowed = if crate::config::MCP_ADVANCED { from.mcp_allowed.clone() } else { before.mcp_allowed.clone() };
-        let want = ConnectionProfile { mcp: from.mcp, mcp_row_limit: from.mcp_row_limit, mcp_allowed: allowed, mcp_rules: from.mcp_rules.clone(), ..before.clone() };
+        let want =
+            ConnectionProfile { mcp: from.mcp, mcp_row_limit: from.mcp_row_limit, mcp_allowed: allowed, mcp_rules: from.mcp_rules.clone(), ..before.clone() };
         assert_eq!(p, want);
         assert_eq!(p.agent_login.as_ref().map(|l| l.user.as_str()), Some("to_agent"));
         assert!(!p.mcp_yolo && p.agents_refused && p.env.is_production());
@@ -743,7 +788,9 @@ mod tests {
         let (rules0, types0, access0) = (agent_parts(&config), settings.get().agent_types, settings.get().mcp_enabled);
         let text = to_text(&export(&settings.get(), &config.connections()));
         for p in config.connections() {
-            config.upsert(ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, mcp_rules: Default::default(), ..p }).unwrap();
+            config
+                .upsert(ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, mcp_rules: Default::default(), ..p })
+                .unwrap();
         }
         settings.update(|s| (s.mcp_enabled, s.agent_types) = (true, Default::default())).unwrap();
         assert_ne!(agent_parts(&config), rules0);
@@ -779,7 +826,10 @@ mod tests {
         assert!(errs.iter().any(|e| e.contains("rows per read")), "{errs:?}");
         assert!(parse("version = 9\n").unwrap_err()[0].contains("Version 9"));
         assert!(parse("not toml [").unwrap_err()[0].starts_with("Not a Dataman agents file"));
-        assert!(parse("version = 1\n[[connection]]\nid = \"a\"\nname = \"a\"\nengine = \"postgres\"\n[connection.rules]\nview = \"everything\"\n").is_err(), "an unknown mode");
+        assert!(
+            parse("version = 1\n[[connection]]\nid = \"a\"\nname = \"a\"\nengine = \"postgres\"\n[connection.rules]\nview = \"everything\"\n").is_err(),
+            "an unknown mode"
+        );
     }
 
     #[test]
@@ -791,7 +841,17 @@ mod tests {
             c.id = format!("{}-elsewhere", c.id);
         }
         f.connections[0].rules.read_rows = Some(500);
-        f.connections.push(ConnRules { id: "zzz".into(), name: "gone".into(), engine: Engine::MySql, database: "shop".into(), mcp: None, row_limit: None, allowed: Vec::new(), yolo: false, rules: Default::default() });
+        f.connections.push(ConnRules {
+            id: "zzz".into(),
+            name: "gone".into(),
+            engine: Engine::MySql,
+            database: "shop".into(),
+            mcp: None,
+            row_limit: None,
+            allowed: Vec::new(),
+            yolo: false,
+            rules: Default::default(),
+        });
         let mut wrong_engine = f.connections[1].clone();
         wrong_engine.engine = Engine::Redis;
         f.connections.push(wrong_engine);
@@ -821,7 +881,15 @@ mod tests {
         f.general.agent_access = true;
         let p = plan(&settings.get(), &config.connections(), &f);
         let loose: Vec<&str> = p.conns[0].changes.iter().filter(|c| c.loosens).map(|c| c.what.as_str()).collect();
-        for want in ["MCP tier", "The agent sees", "Visible to agents › users.password_hash", "Sensitive column › users.email", "Rows per read", "YOLO", "Allowed without asking"] {
+        for want in [
+            "MCP tier",
+            "The agent sees",
+            "Visible to agents › users.password_hash",
+            "Sensitive column › users.email",
+            "Rows per read",
+            "YOLO",
+            "Allowed without asking",
+        ] {
             assert!(loose.contains(&want), "{want} not flagged: {loose:?}");
         }
         assert!(p.types.iter().any(|c| c.what == "Sensitive data › E-mail" && c.loosens));
@@ -863,12 +931,17 @@ mod tests {
         let mut cases: Vec<(&str, ConnectionProfile, Box<dyn Fn(&mut ConnRules)>)> = Vec::new();
         let mut p = ConnectionProfile::new("a");
         // Columns listed are hidden in either mode: one taken off an Only these list shows.
-        p.mcp_rules.visible = privacy::Visible { mode: VisibleMode::Only, items: vec![item("public.orders", ItemKind::Table), item("public.orders.card", ItemKind::Column)] };
+        p.mcp_rules.visible =
+            privacy::Visible { mode: VisibleMode::Only, items: vec![item("public.orders", ItemKind::Table), item("public.orders.card", ItemKind::Column)] };
         cases.push(("Only these: a hidden column taken off", p.clone(), Box::new(|c| c.rules.visible.items.retain(|i| i.kind != ItemKind::Column))));
         p.mcp_rules.visible = privacy::Visible { mode: VisibleMode::Except, items: vec![item("users", ItemKind::Table)] };
         cases.push(("the same name, a table now a column", p.clone(), Box::new(|c| c.rules.visible.items[0].kind = ItemKind::Column)));
         p.mcp_rules.visible = privacy::Visible { mode: VisibleMode::Except, items: vec![item("secret", ItemKind::Table), item("x", ItemKind::Table)] };
-        cases.push(("Everything except [secret, x] to Only these [x]: x shows", p.clone(), Box::new(|c| c.rules.visible = privacy::Visible { mode: VisibleMode::Only, items: vec![item("x", ItemKind::Table)] })));
+        cases.push((
+            "Everything except [secret, x] to Only these [x]: x shows",
+            p.clone(),
+            Box::new(|c| c.rules.visible = privacy::Visible { mode: VisibleMode::Only, items: vec![item("x", ItemKind::Table)] }),
+        ));
         let mut m = ConnectionProfile::new("m");
         m.mcp_rules.view = AgentView::Masked;
         m.mcp_rules.sensitive = vec![col("users.email", Mask::Hidden), col("*mail*", Mask::PARTIAL)];
@@ -879,13 +952,21 @@ mod tests {
         cases.push(("a sensitive column renamed", m.clone(), Box::new(|c| c.rules.sensitive[0].col = "users.e_mail".into())));
         m.mcp_rules.sensitive = vec![col("cards.number", Mask::Partial(privacy::Keep::new(privacy::Side::Last, 2)))];
         cases.push(("a Partial mask showing more characters", m.clone(), Box::new(|c| c.rules.sensitive[0].how = Mask::PARTIAL)));
-        cases.push(("a Partial mask showing the other end", m.clone(), Box::new(|c| c.rules.sensitive[0].how = Mask::Partial(privacy::Keep::new(privacy::Side::First, 1)))));
+        cases.push((
+            "a Partial mask showing the other end",
+            m.clone(),
+            Box::new(|c| c.rules.sensitive[0].how = Mask::Partial(privacy::Keep::new(privacy::Side::First, 1))),
+        ));
         let mut r = ConnectionProfile::new("r");
         r.engine = Engine::MongoDb;
         r.mcp_rules.read_from = Some(privacy::ReadFrom::Secondary);
         cases.push(("reads moved to the primary", r.clone(), Box::new(|c| c.rules.read_from = None)));
         let dev = ConnectionProfile::new("dev");
-        cases.push(("the tier pinned: it no longer turns off when the connection is marked production", dev.clone(), Box::new(|c| c.mcp = Some(McpAccess::Read))));
+        cases.push((
+            "the tier pinned: it no longer turns off when the connection is marked production",
+            dev.clone(),
+            Box::new(|c| c.mcp = Some(McpAccess::Read)),
+        ));
         let mut prod = ConnectionProfile::new("prod");
         prod.env = crate::config::Environment::Production;
         cases.push(("production, default (off) to read", prod.clone(), Box::new(|c| c.mcp = Some(McpAccess::Read))));
@@ -923,9 +1004,15 @@ mod tests {
         // Neither way round is a loosening when it only hides more.
         let mut t = ConnectionProfile::new("t");
         t.mcp_rules.visible = privacy::Visible { mode: VisibleMode::Only, items: vec![item("public.orders", ItemKind::Table)] };
-        assert!(!changes_after(&t, |c| c.rules.visible.items.push(item("public.orders.card", ItemKind::Column))).iter().any(|c| c.loosens), "a column hidden in Only these");
+        assert!(
+            !changes_after(&t, |c| c.rules.visible.items.push(item("public.orders.card", ItemKind::Column))).iter().any(|c| c.loosens),
+            "a column hidden in Only these"
+        );
         t.mcp_rules.visible = privacy::Visible { mode: VisibleMode::Except, items: Vec::new() };
-        assert!(!changes_after(&t, |c| c.rules.visible = privacy::Visible { mode: VisibleMode::Only, items: Vec::new() }).iter().any(|c| c.loosens), "Only these, nothing listed");
+        assert!(
+            !changes_after(&t, |c| c.rules.visible = privacy::Visible { mode: VisibleMode::Only, items: Vec::new() }).iter().any(|c| c.loosens),
+            "Only these, nothing listed"
+        );
         assert!(changes_after(&t, |c| c.rules.visible.items.push(item("Users", ItemKind::Table))).iter().all(|c| !c.loosens));
         t.mcp_rules.visible.items.push(item("Users", ItemKind::Table));
         assert!(changes_after(&t, |c| c.rules.visible.items[0].name = "users".into()).is_empty(), "names match ignoring case");
@@ -948,8 +1035,14 @@ mod tests {
         assert!(flagged(&|t| t.custom[0].on = false));
         assert!(flagged(&|t| t.custom.clear()));
         assert!(flagged(&|t| t.set_builtin("card", Some(false), None)));
-        assert!(flagged(&|t| t.set_builtin_def(&privacy::CustomType { pattern: r"\b4242\b".into(), ..privacy::builtin("card").unwrap().as_custom() })), "a built-in type's pattern changed");
-        assert!(!flagged(&|t| t.set_builtin_def(&privacy::CustomType { name: "Cards".into(), ..privacy::builtin("card").unwrap().as_custom() })), "renaming loosens nothing");
+        assert!(
+            flagged(&|t| t.set_builtin_def(&privacy::CustomType { pattern: r"\b4242\b".into(), ..privacy::builtin("card").unwrap().as_custom() })),
+            "a built-in type's pattern changed"
+        );
+        assert!(
+            !flagged(&|t| t.set_builtin_def(&privacy::CustomType { name: "Cards".into(), ..privacy::builtin("card").unwrap().as_custom() })),
+            "renaming loosens nothing"
+        );
         assert!(flagged(&|t| t.set_builtin("email", None, Some(Mask::PARTIAL))) || privacy::builtin("email").is_some_and(|b| b.mask == Mask::PARTIAL));
         assert!(!flagged(&|t| t.custom.push(CustomType { on: false, ..CustomType::new("Off", "x+", Mask::Hidden) })), "a type added off gives nothing");
     }
@@ -1080,12 +1173,46 @@ mod tests {
             read_rows: Some(20),
             read_from: Some(privacy::ReadFrom::Secondary),
         };
-        let custom = CustomType { id: "t_x".into(), name: "X".into(), pattern: "x+".into(), mask: Mask::PARTIAL, keep: 2, validator: privacy::Validator::Luhn, ignore_case: true, on: false };
+        let custom = CustomType {
+            id: "t_x".into(),
+            name: "X".into(),
+            pattern: "x+".into(),
+            mask: Mask::PARTIAL,
+            keep: 2,
+            validator: privacy::Validator::Luhn,
+            ignore_case: true,
+            on: false,
+        };
         let f = AgentsFile {
             version: VERSION,
             general: General { agent_access: false },
-            sensitive_data: TypeSettings { builtin: [("card".to_string(), privacy::BuiltinOverride { on: Some(false), mask: Some(Mask::Hidden), name: Some("Card".into()), pattern: Some(r"\d{16}".into()), validator: Some(privacy::Validator::Iban), ignore_case: Some(true), keep: Some(2) })].into(), custom: vec![custom] },
-            connections: vec![ConnRules { id: "a".into(), name: "a".into(), engine: Engine::Postgres, database: "d".into(), mcp: Some(McpAccess::Full), row_limit: Some(5), allowed: vec!["DELETE FROM t WHERE id = ?".into()], yolo: true, rules }],
+            sensitive_data: TypeSettings {
+                builtin: [(
+                    "card".to_string(),
+                    privacy::BuiltinOverride {
+                        on: Some(false),
+                        mask: Some(Mask::Hidden),
+                        name: Some("Card".into()),
+                        pattern: Some(r"\d{16}".into()),
+                        validator: Some(privacy::Validator::Iban),
+                        ignore_case: Some(true),
+                        keep: Some(2),
+                    },
+                )]
+                .into(),
+                custom: vec![custom],
+            },
+            connections: vec![ConnRules {
+                id: "a".into(),
+                name: "a".into(),
+                engine: Engine::Postgres,
+                database: "d".into(),
+                mcp: Some(McpAccess::Full),
+                row_limit: Some(5),
+                allowed: vec!["DELETE FROM t WHERE id = ?".into()],
+                yolo: true,
+                rules,
+            }],
         };
         let text = to_text(&f);
         assert_eq!(parse(&text), Ok(f), "{text}");
@@ -1117,12 +1244,36 @@ mod tests {
         let mut p = ConnectionProfile::new("addr");
         (p.host, p.port, p.user, p.database) = ("db.secret-host.example".into(), 6543, "owner_login".into(), "shop".into());
         p.path = Some("/Volumes/private/where.db".into());
-        p.ssh = Some(crate::config::SshSettings { host: "bastion.secret.example".into(), port: Some(2222), user: "jumper".into(), auth: Default::default(), key_file: "/Users/x/.ssh/id_secret".into() });
+        p.ssh = Some(crate::config::SshSettings {
+            host: "bastion.secret.example".into(),
+            port: Some(2222),
+            user: "jumper".into(),
+            auth: Default::default(),
+            key_file: "/Users/x/.ssh/id_secret".into(),
+        });
         p.options.insert("sslrootcert".into(), "/certs/secret-root.pem".into());
         p.options.insert("application_name".into(), "secret_app".into());
         p.save_password = true;
         let text = to_text(&export(&Settings::default(), &[p]));
-        for s in ["secret-host", "6543", "owner_login", "where.db", "bastion", "2222", "jumper", "id_secret", "secret-root", "secret_app", "save_password", "host", "port", "user", "ssh", "path", "options"] {
+        for s in [
+            "secret-host",
+            "6543",
+            "owner_login",
+            "where.db",
+            "bastion",
+            "2222",
+            "jumper",
+            "id_secret",
+            "secret-root",
+            "secret_app",
+            "save_password",
+            "host",
+            "port",
+            "user",
+            "ssh",
+            "path",
+            "options",
+        ] {
             assert!(!text.contains(s), "{s} in {text}");
         }
         assert!(text.contains("database = \"shop\""), "the database's name is how a connection is told apart");

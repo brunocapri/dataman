@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
-use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, SharedString, Window, WindowAppearance, WindowBackgroundAppearance, point};
 use dataman_core::{ThemePref, Translucency, UiFont};
+use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, SharedString, Window, WindowAppearance, WindowBackgroundAppearance, point};
 
 static ZOOM: AtomicU32 = AtomicU32::new(0x3f80_0000);
 
@@ -450,16 +450,7 @@ impl Theme {
             typ_s: ca(0x56d4f5, 0.14),
             view_s: ca(0x5be49b, 0.14),
             scrim: ca(0x04050a, 0.58),
-            swatches: [
-                c(0xf06ccf),
-                c(0xff8a5b),
-                c(0xc6f05a),
-                c(0x5be49b),
-                c(0x56d4f5),
-                c(0x4c7dff),
-                c(0xe2c99a),
-                c(0xa7acc2),
-            ],
+            swatches: [c(0xf06ccf), c(0xff8a5b), c(0xc6f05a), c(0x5be49b), c(0x56d4f5), c(0x4c7dff), c(0xe2c99a), c(0xa7acc2)],
         }
     }
 
@@ -531,16 +522,7 @@ impl Theme {
             typ_s: ca(0x087fa3, 0.10),
             view_s: ca(0x0e8f50, 0.10),
             scrim: ca(0xdce0ec, 0.55),
-            swatches: [
-                c(0xd64aab),
-                c(0xe2662f),
-                c(0x7fa315),
-                c(0x14a866),
-                c(0x1497c2),
-                c(0x2f5bff),
-                c(0xb08f55),
-                c(0x8e94a8),
-            ],
+            swatches: [c(0xd64aab), c(0xe2662f), c(0x7fa315), c(0x14a866), c(0x1497c2), c(0x2f5bff), c(0xb08f55), c(0x8e94a8)],
         }
     }
 

@@ -110,7 +110,14 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
                 // Pinned to a connection whose data agents do not see: the favorite runs by name only.
                 let sql = if profile.is_some_and(super::rules::hides_metadata) { Value::Null } else { json!(f.sql) };
                 let folder = f.folder.as_ref().and_then(|id| folders.iter().find(|d| d.id == *id)).map(|d| json!(d.name)).unwrap_or(Value::Null);
-                vec![json!(f.id), json!(f.name), conn_name.map(|n| json!(n)).unwrap_or(Value::Null), f.database.map(|d| json!(d)).unwrap_or(Value::Null), sql, folder]
+                vec![
+                    json!(f.id),
+                    json!(f.name),
+                    conn_name.map(|n| json!(n)).unwrap_or(Value::Null),
+                    f.database.map(|d| json!(d)).unwrap_or(Value::Null),
+                    sql,
+                    folder,
+                ]
             })
             .collect();
         Ok(table(&["id", "name", "connection", "database", "sql", "folder"], rows))
@@ -131,7 +138,8 @@ fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let query = a.str("name")?;
         let favorites = favorites(cx);
         let profiles = cx.hub.profiles();
-        let conn_name = |f: &Favorite| f.connection_id.as_ref().map(|id| profiles.iter().find(|p| p.id == *id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone()));
+        let conn_name =
+            |f: &Favorite| f.connection_id.as_ref().map(|id| profiles.iter().find(|p| p.id == *id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone()));
         let names: Vec<&str> = favorites.iter().map(|f| f.name.as_str()).collect();
         let by_name = dataman_core::favorites::match_name(&names, query);
         // An id runs its favorite only when no other favorite's name answers to it as well
@@ -157,10 +165,16 @@ fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let f = match found {
             NameMatch::One(i) => &favorites[i],
             NameMatch::Ambiguous(ix) => {
-                return Ok(json!({"matched": false, "reason": format!("{} favorites match {query:?} about as well; nothing ran", ix.len()), "candidates": listed(&ix)}));
+                return Ok(
+                    json!({"matched": false, "reason": format!("{} favorites match {query:?} about as well; nothing ran", ix.len()), "candidates": listed(&ix)}),
+                );
             }
             NameMatch::Nothing(ix) => {
-                let reason = if favorites.is_empty() { "there are no favorite queries".to_string() } else { format!("no favorite is named like {query:?}; nothing ran") };
+                let reason = if favorites.is_empty() {
+                    "there are no favorite queries".to_string()
+                } else {
+                    format!("no favorite is named like {query:?}; nothing ran")
+                };
                 return Ok(json!({"matched": false, "reason": reason, "candidates": listed(&ix)}));
             }
         };
@@ -294,8 +308,13 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             files.push((path, stamp));
         }
         // What the agent reads back with list_favorites: the user says which files leave their Mac.
-        let what: Vec<String> = files.iter().map(|(p, m)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(m.size() as i64))).collect();
-        let why = if files.len() == 1 { format!("reads a file on {}", dataman_core::os::THIS_MACHINE) } else { format!("reads files on {}", dataman_core::os::THIS_MACHINE) };
+        let what: Vec<String> =
+            files.iter().map(|(p, m)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(m.size() as i64))).collect();
+        let why = if files.len() == 1 {
+            format!("reads a file on {}", dataman_core::os::THIS_MACHINE)
+        } else {
+            format!("reads files on {}", dataman_core::os::THIS_MACHINE)
+        };
         cx.ask_local("Import favorites", &what.join("\n"), vec![why]).await?;
         let mut added = Vec::new();
         for (path, before) in &files {

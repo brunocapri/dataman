@@ -1,5 +1,5 @@
-use gpui::{Context, EntityId, Window};
 use dataman_core::batch::Key;
+use gpui::{Context, EntityId, Window};
 
 use crate::app::{Region, Workspace};
 use crate::grid::GridSpot;

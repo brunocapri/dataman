@@ -11,7 +11,15 @@ fn profile(engine: Engine) -> (ConnectionProfile, Option<String>) {
     };
     let v = std::env::var(var).unwrap_or_else(|_| default.into());
     let (host, port) = v.rsplit_once(':').unwrap();
-    let p = ConnectionProfile { host: host.into(), port: port.parse().unwrap(), user: user.into(), database: String::new(), sslmode: SslMode::Disable, engine, ..ConnectionProfile::new("search") };
+    let p = ConnectionProfile {
+        host: host.into(),
+        port: port.parse().unwrap(),
+        user: user.into(),
+        database: String::new(),
+        sslmode: SslMode::Disable,
+        engine,
+        ..ConnectionProfile::new("search")
+    };
     (p, pw)
 }
 
@@ -46,7 +54,13 @@ fn exercise(engine: Engine) {
     let name = if engine == Engine::OpenSearch { "OpenSearch " } else { "Elasticsearch " };
     assert!(c.info.version.starts_with(name), "{}", c.info.version);
 
-    ok(&e, &c, &format!("PUT /{idx}\n{{mappings: {{properties: {{n: {{type: 'integer'}}, name: {{type: 'keyword'}}, at: {{type: 'date'}}, addr: {{properties: {{city: {{type: 'keyword'}}}}}}}}}}}}"));
+    ok(
+        &e,
+        &c,
+        &format!(
+            "PUT /{idx}\n{{mappings: {{properties: {{n: {{type: 'integer'}}, name: {{type: 'keyword'}}, at: {{type: 'date'}}, addr: {{properties: {{city: {{type: 'keyword'}}}}}}}}}}}}"
+        ),
+    );
     let mut bulk = format!("POST /{idx}/_bulk?refresh=true\n");
     for i in 0..120 {
         bulk.push_str(&format!("{{\"index\": {{\"_id\": \"{i}\"}}}}\n{{\"n\": {i}, \"name\": \"user {i}\", \"even\": {}}}\n", i % 2 == 0));
@@ -74,7 +88,11 @@ fn exercise(engine: Engine) {
     let p3 = page(100);
     assert_eq!((p3.docs.len(), p3.more), (20, false));
     assert!(p3.docs[0].body.text().contains("\"n\": 100"), "{}", p3.docs[0].body.text());
-    let Output::Docs(d) = run(&e, &c, &format!("GET /{idx}/_search\n{{size: 60, query: {{term: {{even: true}}}}}}"), Page { skip: 50, limit: 50 }).unwrap().output else { panic!() };
+    let Output::Docs(d) =
+        run(&e, &c, &format!("GET /{idx}/_search\n{{size: 60, query: {{term: {{even: true}}}}}}"), Page { skip: 50, limit: 50 }).unwrap().output
+    else {
+        panic!()
+    };
     assert_eq!((d.docs.len(), d.more), (10, false));
     let Output::Docs(d) = ok(&e, &c, &format!("GET /{idx}/_search\n{{_source: ['n']}}")) else { panic!() };
     assert_eq!(d.source, None);

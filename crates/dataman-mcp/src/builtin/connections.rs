@@ -108,7 +108,9 @@ fn apply_auth(profile: &mut ConnectionProfile, a: &Args) -> Result<(), ToolError
             profile.auth = kind.fresh();
         }
     }
-    for (key, kind) in [("auth_tenant", AuthKind::EntraId), ("aws_profile", AuthKind::AwsIam), ("aws_region", AuthKind::AwsIam), ("gcp_account", AuthKind::GoogleIam)] {
+    for (key, kind) in
+        [("auth_tenant", AuthKind::EntraId), ("aws_profile", AuthKind::AwsIam), ("aws_region", AuthKind::AwsIam), ("gcp_account", AuthKind::GoogleIam)]
+    {
         let Some(v) = a.opt_str(key) else { continue };
         if profile.auth.kind() != kind {
             return Err(ToolError::Invalid(format!("{key:?} is for auth {:?}", kind.slug())));
@@ -258,7 +260,10 @@ pub(super) fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<
     }
     apply_auth(profile, a)?;
     if profile.auth.is_token() && password.is_some() {
-        return Err(ToolError::Invalid(format!("auth {:?} takes no password: the user's cloud CLI makes a token for each connection", profile.auth.kind().slug())));
+        return Err(ToolError::Invalid(format!(
+            "auth {:?} takes no password: the user's cloud CLI makes a token for each connection",
+            profile.auth.kind().slug()
+        )));
     }
     if profile.auth.is_token() && !profile.engine.supports(profile.auth.kind()) {
         return Err(ToolError::Invalid(format!("{} does not sign in with auth {:?}", profile.engine.label(), profile.auth.kind().slug())));
@@ -332,10 +337,18 @@ fn ssl_rank(m: SslMode, engine: Engine) -> u8 {
 
 fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
     if ssl_rank(new.sslmode, new.engine) < ssl_rank(old.sslmode, new.engine) {
-        return Err(ToolError::Refused(format!("sslmode would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.sslmode.label(), new.sslmode.label())));
+        return Err(ToolError::Refused(format!(
+            "sslmode would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten",
+            old.sslmode.label(),
+            new.sslmode.label()
+        )));
     }
     if env_rank(new.env) < env_rank(old.env) {
-        return Err(ToolError::Refused(format!("env would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.env.label(), new.env.label())));
+        return Err(ToolError::Refused(format!(
+            "env would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten",
+            old.env.label(),
+            new.env.label()
+        )));
     }
     if old.read_only && !new.read_only {
         return Err(ToolError::Refused("read_only would turn off; through MCP it may only stay the same or turn on".into()));
@@ -351,7 +364,13 @@ fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), 
 }
 
 fn target_changed(old: &ConnectionProfile, new: &ConnectionProfile) -> bool {
-    new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh || new.path != old.path || new.auth.kind() != old.auth.kind()
+    new.engine != old.engine
+        || new.host != old.host
+        || new.port != old.port
+        || new.user != old.user
+        || new.ssh != old.ssh
+        || new.path != old.path
+        || new.auth.kind() != old.auth.kind()
 }
 
 fn ssh_text(p: &ConnectionProfile) -> String {
@@ -489,7 +508,10 @@ fn save(cx: &Call, base: Option<&ConnectionProfile>, profile: &ConnectionProfile
         })
         .map_err(failed)?;
     if moved_on {
-        return Err(ToolError::Refused(format!("{:?} was changed in Dataman while this call waited: nothing was saved; read it again (list_connections) and retry", profile.name)));
+        return Err(ToolError::Refused(format!(
+            "{:?} was changed in Dataman while this call waited: nothing was saved; read it again (list_connections) and retry",
+            profile.name
+        )));
     }
     if let Some(f) = cx.hub.front() {
         f.connections_changed();
@@ -697,7 +719,10 @@ mod tests {
     fn file_connections() {
         let mut p = ConnectionProfile::new("lite");
         apply(&mut p, &args(json!({"engine": "sqlite", "path": "~/data/shop.sqlite"}))).unwrap();
-        assert_eq!((p.engine, p.path.as_deref(), p.host.as_str(), p.port, p.user.as_str(), p.sslmode), (Engine::Sqlite, Some("~/data/shop.sqlite"), "", 0, "", SslMode::Disable));
+        assert_eq!(
+            (p.engine, p.path.as_deref(), p.host.as_str(), p.port, p.user.as_str(), p.sslmode),
+            (Engine::Sqlite, Some("~/data/shop.sqlite"), "", 0, "", SslMode::Disable)
+        );
         let mut q = ConnectionProfile::new("duck");
         apply(&mut q, &args(json!({"connection_string": "duckdb:///w/x.duckdb?mode=ro"}))).unwrap();
         assert_eq!((q.engine, q.path.as_deref(), q.read_only), (Engine::DuckDb, Some("/w/x.duckdb"), true));
@@ -740,7 +765,9 @@ mod tests {
         assert!(matches!(try_(json!({"env": "dev"})), Err(ToolError::Refused(m)) if m.contains("env would loosen")));
         assert!(matches!(try_(json!({"read_only": false})), Err(ToolError::Refused(m)) if m.contains("read_only")));
         assert!(matches!(try_(json!({"mcp": "full"})), Err(ToolError::Refused(m)) if m.contains("widen")));
-        for ok in [json!({"env": "production"}), json!({"read_only": true}), json!({"mcp": "read"}), json!({"mcp": "off"}), json!({"env": "staging", "mcp": "write"})] {
+        for ok in
+            [json!({"env": "production"}), json!({"read_only": true}), json!({"mcp": "read"}), json!({"mcp": "off"}), json!({"env": "staging", "mcp": "write"})]
+        {
             assert!(try_(ok.clone()).is_ok(), "{ok}");
         }
         let mut p = old.clone();
@@ -751,7 +778,11 @@ mod tests {
     #[test]
     fn cloud_sign_in_goes_to_the_clouds_own_hosts_only() {
         let mut p = base();
-        apply(&mut p, &args(json!({"host": "srv.postgres.database.azure.com", "user": "ana@contoso.com", "auth": "entra-id", "auth_tenant": "contoso.onmicrosoft.com"}))).unwrap();
+        apply(
+            &mut p,
+            &args(json!({"host": "srv.postgres.database.azure.com", "user": "ana@contoso.com", "auth": "entra-id", "auth_tenant": "contoso.onmicrosoft.com"})),
+        )
+        .unwrap();
         assert_eq!(p.auth, Auth::EntraId { tenant: Some("contoso.onmicrosoft.com".into()) });
         assert!(cloud_target(&p).is_ok());
         assert!(target_changed(&base(), &p) && changed_fields(&base(), &p).contains(&"auth"));
@@ -785,7 +816,23 @@ mod tests {
         let t = tools();
         let u = t.iter().find(|t| t.name == "update_connection").unwrap();
         assert_eq!(u.schema.required(), ["connection"]);
-        for k in ["name", "host", "port", "user", "database", "sslmode", "password", "color", "env", "read_only", "mcp", "connection_string", "ssh_host", "auth", "aws_profile"] {
+        for k in [
+            "name",
+            "host",
+            "port",
+            "user",
+            "database",
+            "sslmode",
+            "password",
+            "color",
+            "env",
+            "read_only",
+            "mcp",
+            "connection_string",
+            "ssh_host",
+            "auth",
+            "aws_profile",
+        ] {
             assert!(u.schema.properties().contains_key(k), "{k}");
         }
         assert!(u.schema.validate(&json!({"connection": "x", "port": 0}).as_object().unwrap().clone()).is_err());

@@ -19,24 +19,30 @@ impl AgentsPage {
     pub(crate) fn flip_type(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(on) = self.core.settings.get().agent_types.is_on(id) else { return };
         let id = id.to_string();
-        self.edit_settings(|s| {
-            if privacy::builtin(&id).is_some() {
-                s.agent_types.set_builtin(&id, Some(!on), None);
-            } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
-                c.on = !c.on;
-            }
-        }, cx);
+        self.edit_settings(
+            |s| {
+                if privacy::builtin(&id).is_some() {
+                    s.agent_types.set_builtin(&id, Some(!on), None);
+                } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
+                    c.on = !c.on;
+                }
+            },
+            cx,
+        );
     }
 
     pub(crate) fn set_type_mask(&mut self, id: &str, m: Mask, cx: &mut Context<Self>) {
         let id = id.to_string();
-        self.edit_settings(|s| {
-            if privacy::builtin(&id).is_some() {
-                s.agent_types.set_builtin(&id, None, Some(m));
-            } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
-                c.mask = m;
-            }
-        }, cx);
+        self.edit_settings(
+            |s| {
+                if privacy::builtin(&id).is_some() {
+                    s.agent_types.set_builtin(&id, None, Some(m));
+                } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
+                    c.mask = m;
+                }
+            },
+            cx,
+        );
     }
 
     pub(crate) fn edit_type(&mut self, id: Option<&str>, cx: &mut Context<Self>) {
@@ -105,18 +111,21 @@ impl AgentsPage {
             return;
         }
         let id = c.id.clone();
-        self.edit_settings(|s| {
-            if privacy::builtin(&c.id).is_some() {
-                s.agent_types.set_builtin_def(&c);
-                return;
-            }
-            let n = s.agent_types.custom.len();
-            match s.agent_types.custom.iter_mut().find(|x| x.id == c.id) {
-                Some(x) => *x = CustomType { on: x.on, ..c },
-                None if n < privacy::MAX_CUSTOM => s.agent_types.custom.push(c),
-                None => {}
-            }
-        }, cx);
+        self.edit_settings(
+            |s| {
+                if privacy::builtin(&c.id).is_some() {
+                    s.agent_types.set_builtin_def(&c);
+                    return;
+                }
+                let n = s.agent_types.custom.len();
+                match s.agent_types.custom.iter_mut().find(|x| x.id == c.id) {
+                    Some(x) => *x = CustomType { on: x.on, ..c },
+                    None if n < privacy::MAX_CUSTOM => s.agent_types.custom.push(c),
+                    None => {}
+                }
+            },
+            cx,
+        );
         self.select_type(&id, cx);
     }
 
@@ -142,7 +151,13 @@ impl AgentsPage {
         let rows = self.type_rows();
         let head = self.header(t, "Masks").child(qmark(t, "agents-types-tip", types_tip()));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
-        let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
+        let notice = broken.first().map(|r| {
+            div()
+                .pb(px(6.))
+                .text_size(px(crate::theme::text::UI))
+                .text_color(t.err)
+                .child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name))
+        });
         self.types_offset = notice.is_some() as usize;
         if self.type_sel.is_some_and(|k| k >= rows.len()) {
             self.type_sel = None;
@@ -175,7 +190,20 @@ impl AgentsPage {
                 window.focus(&name.read(cx).focus_handle(cx), cx);
             }));
         // The list keeps room for a row's name; the editor gives way down to its narrowest.
-        let left = div().id("agents-types-list").flex_1().min_w(px(380.)).overflow_y_scroll().track_scroll(&self.types_scroll).flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list).child(add);
+        let left = div()
+            .id("agents-types-list")
+            .flex_1()
+            .min_w(px(380.))
+            .overflow_y_scroll()
+            .track_scroll(&self.types_scroll)
+            .flex()
+            .flex_col()
+            .px(px(32.))
+            .pt(px(8.))
+            .pb(px(24.))
+            .children(notice)
+            .children(list)
+            .child(add);
         div()
             .size_full()
             .flex()
@@ -243,12 +271,27 @@ impl AgentsPage {
                     .text_color(if r.broken.is_some() { t.err } else { t.tx })
                     .child(r.name.clone()),
             )
-            .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), type_tip(&r.name, &tip_rule, example, yours))))
-            .when(custom || r.edited, |d| d.child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if custom { "custom" } else { "edited" })))
+            .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(qmark(
+                t,
+                &format!("agents-type-tip-{}", r.id),
+                type_tip(&r.name, &tip_rule, example, yours),
+            )))
+            .when(custom || r.edited, |d| {
+                d.child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if custom { "custom" } else { "edited" }))
+            })
             .child(div().flex_1())
             .when(r.broken.is_some(), |d| {
                 let id = r.id.clone();
-                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).flex_none().text_size(px(crate::theme::text::UI)).text_color(t.err).cursor_pointer().child("Fix").on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))))
+                d.child(
+                    div()
+                        .id(SharedString::from(format!("agents-fix-{}", r.id)))
+                        .flex_none()
+                        .text_size(px(crate::theme::text::UI))
+                        .text_color(t.err)
+                        .cursor_pointer()
+                        .child("Fix")
+                        .on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))),
+                )
             })
             .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(mask))
             .into_any_element()
@@ -283,7 +326,13 @@ impl AgentsPage {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(caps(if built_in { "BUILT-IN MASK" } else if editing { "YOUR MASK" } else { "NEW MASK" }))
+                    .child(caps(if built_in {
+                        "BUILT-IN MASK"
+                    } else if editing {
+                        "YOUR MASK"
+                    } else {
+                        "NEW MASK"
+                    }))
                     .child(
                         div()
                             .children(ui::here(&"agents-editor-title".into()))
@@ -320,14 +369,21 @@ impl AgentsPage {
                     .child(field(t, "agents-field-regex", &self.editor.regex, window, cx))
                     .children(problem.clone().map(|p| div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(p))),
             )
-            .child(div().flex().flex_col().gap(px(8.)).child(crate::agents::label_tip(
-                t,
-                "agents-mask-tip",
-                "MASK",
-                Tip::new("Mask")
-                    .item("Redacted", "The match becomes the type's name, like ‹customer code›.")
-                    .item("Partial", "Keeps the last characters (4 by default; More options)."),
-            )).child(choices(t, "agents-new-mask", &masks, self.editor.mask, cx, |v, m, _| v.editor.mask = m)));
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(crate::agents::label_tip(
+                        t,
+                        "agents-mask-tip",
+                        "MASK",
+                        Tip::new("Mask")
+                            .item("Redacted", "The match becomes the type's name, like ‹customer code›.")
+                            .item("Partial", "Keeps the last characters (4 by default; More options)."),
+                    ))
+                    .child(choices(t, "agents-new-mask", &masks, self.editor.mask, cx, |v, m, _| v.editor.mask = m)),
+            );
         let more = self.editor.more;
         panel = panel.child(
             div()
@@ -348,7 +404,8 @@ impl AgentsPage {
                 })),
         );
         if more {
-            let vals: Vec<(SharedString, bool, Act)> = Validator::ALL.iter().map(|x| (x.label().into(), *x == self.editor.validator, Act::Validator(*x))).collect();
+            let vals: Vec<(SharedString, bool, Act)> =
+                Validator::ALL.iter().map(|x| (x.label().into(), *x == self.editor.validator, Act::Validator(*x))).collect();
             let keeps: Vec<(u8, String)> = (0..=6u8).map(|n| (n, n.to_string())).collect();
             let keeps: Vec<(u8, &str)> = keeps.iter().map(|(n, s)| (*n, s.as_str())).collect();
             panel = panel.child(
@@ -357,15 +414,13 @@ impl AgentsPage {
                     .flex_col()
                     .gap(px(10.))
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(12.))
-                            .child(div().flex_1().text_color(t.tx2).child("Validator"))
-                            .child(div().id("agents-validator-btn").cursor_pointer().child(dropdown(t, self, "agents-validator".into(), self.editor.validator.label(), true).w(px(130.))).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
-                                v.open_menu("agents-validator", 150., vals.clone(), cx)
-                            }))),
+                        div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Validator")).child(
+                            div()
+                                .id("agents-validator-btn")
+                                .cursor_pointer()
+                                .child(dropdown(t, self, "agents-validator".into(), self.editor.validator.label(), true).w(px(130.)))
+                                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu("agents-validator", 150., vals.clone(), cx))),
+                        ),
                     )
                     .child(
                         div()
@@ -383,7 +438,14 @@ impl AgentsPage {
                             })),
                     )
                     .when(self.editor.mask.is_partial(), |d| {
-                        d.child(div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Keep last")).child(choices(t, "agents-keep", &keeps, self.editor.keep, cx, |v, n, _| v.editor.keep = n)))
+                        d.child(div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Keep last")).child(choices(
+                            t,
+                            "agents-keep",
+                            &keeps,
+                            self.editor.keep,
+                            cx,
+                            |v, n, _| v.editor.keep = n,
+                        )))
                     }),
             );
         }
@@ -446,28 +508,23 @@ impl AgentsPage {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .child(div().flex_1().child(caps("TEST")))
-                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if count == 1 { "1 match".to_string() } else { format!("{count} matches") })),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .bg(t.field)
-                        .border_1()
-                        .border_color(if sample_focused { t.acc } else { t.field_b })
-                        .children(lines)
-                        .child(div().children(ui::here(&"agents-field-sample".into())).h(px(30.)).px(px(10.)).flex().items_center().child(self.editor.sample.clone())),
-                )
-                .when(broad, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child("Matches most of these lines; it may be too broad."))),
+                .child(div().flex().flex_row().items_center().child(div().flex_1().child(caps("TEST"))).child(
+                    div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if count == 1 {
+                        "1 match".to_string()
+                    } else {
+                        format!("{count} matches")
+                    }),
+                ))
+                .child(div().flex().flex_col().bg(t.field).border_1().border_color(if sample_focused { t.acc } else { t.field_b }).children(lines).child(
+                    div().children(ui::here(&"agents-field-sample".into())).h(px(30.)).px(px(10.)).flex().items_center().child(self.editor.sample.clone()),
+                ))
+                .when(broad, |d| {
+                    d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child("Matches most of these lines; it may be too broad."))
+                }),
         );
         if full {
-            panel = panel.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("{} masks of yours at most.", privacy::MAX_CUSTOM)));
+            panel =
+                panel.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("{} masks of yours at most.", privacy::MAX_CUSTOM)));
         }
         let confirm = self.editor.confirm_delete;
         // Yours can be deleted; a built-in one goes back to its default once changed.
@@ -494,18 +551,30 @@ impl AgentsPage {
                 )
             })
             .when(removable && confirm, |d| {
-                d.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::UI)).text_color(t.err).child(ask))
-                    .child(ui::button(t, "agents-type-delete-yes", ui::Btn::Danger).h(px(24.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.delete_type(cx))))
-                    .child(ui::button(t, "agents-type-delete-no", ui::Btn::Ghost).h(px(24.)).child("Keep").on_click(cx.listener(|v, _, _, cx| {
-                        v.editor.confirm_delete = false;
-                        cx.notify();
-                    })))
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(crate::theme::text::UI))
+                        .text_color(t.err)
+                        .child(ask),
+                )
+                .child(ui::button(t, "agents-type-delete-yes", ui::Btn::Danger).h(px(24.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.delete_type(cx))))
+                .child(ui::button(t, "agents-type-delete-no", ui::Btn::Ghost).h(px(24.)).child("Keep").on_click(cx.listener(|v, _, _, cx| {
+                    v.editor.confirm_delete = false;
+                    cx.notify();
+                })))
             })
             .when(!confirm, |d| d.child(div().flex_1()))
-            .child(ui::button(t, "agents-type-cancel", ui::Btn::Ghost).h(px(28.)).px(px(10.)).text_color(t.tx).child("Cancel").on_click(cx.listener(|v, _, _, cx| {
-                v.type_sel = None;
-                v.edit_type(None, cx);
-            })))
+            .child(ui::button(t, "agents-type-cancel", ui::Btn::Ghost).h(px(28.)).px(px(10.)).text_color(t.tx).child("Cancel").on_click(cx.listener(
+                |v, _, _, cx| {
+                    v.type_sel = None;
+                    v.edit_type(None, cx);
+                },
+            )))
             .child(
                 ui::button(t, "agents-type-save", if ok { ui::Btn::Primary } else { ui::Btn::Secondary })
                     .h(px(28.))

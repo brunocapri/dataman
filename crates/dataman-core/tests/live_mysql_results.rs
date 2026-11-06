@@ -22,7 +22,15 @@ fn shape(rs: &[Arc<ResultSet>]) -> Vec<String> {
         .map(|r| {
             let cols: Vec<String> = r.columns().map(|c| c.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
             let (m, _) = r.messages();
-            format!("{:?} {:?} rows={} aff={:?} msgs={:?} err={}", r.phase(), cols, r.rows(), r.status().affected, m.iter().take(2).collect::<Vec<_>>(), r.status().error.as_ref().map(|e| e.message.clone()).unwrap_or_default())
+            format!(
+                "{:?} {:?} rows={} aff={:?} msgs={:?} err={}",
+                r.phase(),
+                cols,
+                r.rows(),
+                r.status().affected,
+                m.iter().take(2).collect::<Vec<_>>(),
+                r.status().error.as_ref().map(|e| e.message.clone()).unwrap_or_default()
+            )
         })
         .collect()
 }

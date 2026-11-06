@@ -88,7 +88,13 @@ fn edit_every_type() {
         let r = e.core.block_on(c.apply_changes(Some(db), plan.clone())).unwrap();
         let ok = r.committed && r.outcomes.iter().all(|o| matches!(&o.outcome, Outcome::Applied { .. }));
         if !ok {
-            bad.push(format!("same-value {} ({:?}): {}\n   {:?}", col.name, now, plan[0].sql, r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()));
+            bad.push(format!(
+                "same-value {} ({:?}): {}\n   {:?}",
+                col.name,
+                now,
+                plan[0].sql,
+                r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()
+            ));
         }
     }
     mssql_drop(&e, db);

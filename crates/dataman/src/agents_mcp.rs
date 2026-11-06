@@ -20,7 +20,6 @@ pub(crate) struct Import {
     pub(crate) errors: Vec<String>,
 }
 
-
 fn home() -> PathBuf {
     dataman_core::os::home().unwrap_or_default()
 }
@@ -44,7 +43,8 @@ impl AgentsPage {
             t,
             "agents-mcp-connect-tip",
             "Connect an agent",
-            Tip::new("Connect an agent").lead("Run this once in a terminal to add Dataman to Claude Code. Other MCP clients start the same command over stdio."),
+            Tip::new("Connect an agent")
+                .lead("Run this once in a terminal to add Dataman to Claude Code. Other MCP clients start the same command over stdio."),
         ))
         .child(
             div()
@@ -52,8 +52,28 @@ impl AgentsPage {
                 .flex_row()
                 .items_center()
                 .gap(px(8.))
-                .child(div().flex_1().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
-                .child(ui::button(t, "agents-mcp-copy", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .px(px(10.))
+                        .py(px(6.))
+                        .bg(t.field)
+                        .border_1()
+                        .border_color(t.line)
+                        .text_size(px(crate::theme::text::UI))
+                        .text_color(t.tx)
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(cmd),
+                )
+                .child(
+                    ui::button(t, "agents-mcp-copy", ui::Btn::Secondary)
+                        .h(px(28.))
+                        .child("Copy")
+                        .on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone())))),
+                ),
         );
         let file = sub(sub_title(
             t,
@@ -173,7 +193,13 @@ impl AgentsPage {
         let user = dataman_core::audit::local_user();
         let (outcome, error, query, reasons) = match &r {
             Ok(p) => {
-                let loose: Vec<String> = p.conns.iter().flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what))).chain(p.general.iter().chain(&p.types).filter(|x| x.loosens).map(|x| x.what.clone())).take(20).collect();
+                let loose: Vec<String> = p
+                    .conns
+                    .iter()
+                    .flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what)))
+                    .chain(p.general.iter().chain(&p.types).filter(|x| x.loosens).map(|x| x.what.clone()))
+                    .take(20)
+                    .collect();
                 (Outcome::Ok, None, format!("Imported agents settings from {name}: {} changes, {} loosening protection", p.changes(), loose.len()), loose)
             }
             Err(e) => (Outcome::Error, Some(format!("{e:#}")), format!("Import of agents settings from {name}"), Vec::new()),
@@ -220,10 +246,28 @@ impl AgentsPage {
             .py(px(4.))
             .border_b_1()
             .border_color(t.line)
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(c.what.trim_start_matches("Sensitive data › ").to_string()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(t.tx)
+                    .child(c.what.trim_start_matches("Sensitive data › ").to_string()),
+            )
             .child(div().flex_none().max_w(px(150.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(c.from.clone()))
             .child(div().flex_none().text_color(t.tx3).child("→"))
-            .child(div().flex_none().max_w(px(150.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if c.loosens { t.warn } else { t.tx2 }).child(c.to.clone()))
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(px(150.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(if c.loosens { t.warn } else { t.tx2 })
+                    .child(c.to.clone()),
+            )
             .child(div().flex_none().w(px(64.)).text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(if c.loosens { "loosens" } else { "" }))
             .into_any_element()
     }
@@ -238,9 +282,17 @@ impl AgentsPage {
         let mut body = div().flex().flex_col().gap(px(14.));
         let mut k = 0;
         if !ok {
-            body = body.child(div().text_color(t.err).child("This file can't be imported, so nothing was changed:")).child(
-                div().children(ui::here(&"agents-import-errors".into())).flex().flex_col().gap(px(4.)).children(imp.errors.iter().map(|e| div().text_color(t.tx2).child(format!("· {e}")))),
-            ).child(div().flex().flex_row().child(ui::copy_error(t, "agents-import-errors-copy", imp.errors.join("\n"))));
+            body = body
+                .child(div().text_color(t.err).child("This file can't be imported, so nothing was changed:"))
+                .child(
+                    div()
+                        .children(ui::here(&"agents-import-errors".into()))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .children(imp.errors.iter().map(|e| div().text_color(t.tx2).child(format!("· {e}")))),
+                )
+                .child(div().flex().flex_row().child(ui::copy_error(t, "agents-import-errors-copy", imp.errors.join("\n"))));
         } else if imp.plan.changes() == 0 && imp.plan.conns.iter().all(|c| !c.by_name) {
             body = body.child(div().text_color(t.tx2).child("Nothing to change: these settings are already here."));
         } else {
@@ -252,7 +304,9 @@ impl AgentsPage {
                     .flex_row()
                     .gap(px(10.))
                     .child(div().text_color(t.tx).child(format!("{n} {}", if n == 1 { "change" } else { "changes" })))
-                    .when(loose > 0, |d| d.child(div().children(ui::here(&"agents-import-loosens".into())).text_color(t.warn).child(format!("{loose} loosen what agents get")))),
+                    .when(loose > 0, |d| {
+                        d.child(div().children(ui::here(&"agents-import-loosens".into())).text_color(t.warn).child(format!("{loose} loosen what agents get")))
+                    }),
             );
             let mut section = |title: String, tag: Option<&str>, changes: &[Change]| {
                 if changes.is_empty() && tag.is_none() {
@@ -270,7 +324,14 @@ impl AgentsPage {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(div().flex().flex_row().gap(px(8.)).child(caps(&title)).children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s.to_string()))))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(8.))
+                                .child(caps(&title))
+                                .children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s.to_string()))),
+                        )
                         .children(rows),
                 );
             };
@@ -281,11 +342,11 @@ impl AgentsPage {
             }
             if !imp.plan.not_found.is_empty() {
                 body = body.child(
-                    div()
-                        .children(ui::here(&"agents-import-missing".into()))
-                        .text_size(px(crate::theme::text::UI))
-                        .text_color(t.tx3)
-                        .child(format!("Not on {}, left out: {}.", dataman_core::os::THIS_MACHINE, imp.plan.not_found.join(", "))),
+                    div().children(ui::here(&"agents-import-missing".into())).text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(format!(
+                        "Not on {}, left out: {}.",
+                        dataman_core::os::THIS_MACHINE,
+                        imp.plan.not_found.join(", ")
+                    )),
                 );
             }
         }
@@ -334,13 +395,22 @@ impl AgentsPage {
                 .child(
                     ui::modal(t, "agents-import-card")
                         .w(px(680.))
-                        .child(ui::modal_header(t, None, format!("Import {}", imp.name), ui::modal_close(t, "agents-import-close").on_click(cx.listener(|v, _, window, cx| v.close_import(window, cx)))))
+                        .child(ui::modal_header(
+                            t,
+                            None,
+                            format!("Import {}", imp.name),
+                            ui::modal_close(t, "agents-import-close").on_click(cx.listener(|v, _, window, cx| v.close_import(window, cx))),
+                        ))
                         .child(div().id("agents-import-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(
                             ui::modal_footer(t)
                                 .text_size(px(crate::theme::text::SMALL))
                                 .gap(px(16.))
-                                .child(div().flex_1().min_w_0().text_color(t.tx3).child(if loosens { "Some changes give agents more. Check them before applying." } else { "Applied all at once, and logged in Audit." }))
+                                .child(div().flex_1().min_w_0().text_color(t.tx3).child(if loosens {
+                                    "Some changes give agents more. Check them before applying."
+                                } else {
+                                    "Applied all at once, and logged in Audit."
+                                }))
                                 .child(div().flex_none().flex().flex_row().gap(px(8.)).child(cancel).children(apply)),
                         ),
                 )

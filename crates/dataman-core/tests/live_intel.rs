@@ -75,7 +75,10 @@ fn catalog_signatures_and_definitions_on_postgres() {
 
     let l = lint("select p.nam from dataman_intel.person p", &LintContext { schema: Some(&snap), ..Default::default() });
     assert_eq!(l.iter().map(|x| x.message.as_str()).collect::<Vec<_>>(), vec!["column p.nam does not exist"]);
-    assert!(lint("select p.name, mood from dataman_intel.person p join orders x on x.id = p.id", &LintContext { schema: Some(&snap), ..Default::default() }).is_empty());
+    assert!(
+        lint("select p.name, mood from dataman_intel.person p join orders x on x.id = p.id", &LintContext { schema: Some(&snap), ..Default::default() })
+            .is_empty()
+    );
 
     exec(&e, &c, &["DROP SCHEMA dataman_intel CASCADE"]);
 }

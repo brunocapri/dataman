@@ -1,14 +1,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AnyView, App, Context, Entity, EntityId, FocusHandle, Focusable, KeyBinding, MouseButton, MouseMoveEvent, Window,
-    actions, div, prelude::*,
-};
 use crate::theme::{Pt, px};
 use dataman_core::groups::Pane;
 use dataman_core::layout::NavView;
 use dataman_core::{Connection, ConnectionProfile, Core, Favorite, Translucency};
+use gpui::{AnyView, App, Context, Entity, EntityId, FocusHandle, Focusable, KeyBinding, MouseButton, MouseMoveEvent, Window, actions, div, prelude::*};
 
 use crate::conn_dialog::{ConnDialog, DialogEvent};
 #[cfg(feature = "checks")]
@@ -132,7 +129,20 @@ pub fn bind_keys(cx: &mut App) {
         crate::keymap::kb("escape", SheetCancel, Some(SHEET_CONTEXT)),
     ]);
     let grid = Some(crate::grid::GRID_KEYS);
-    let run: Vec<KeyBinding> = crate::keymap::effective("run_all").iter().filter_map(|k| KeyBinding::load(k, Box::new(RunZoomed), grid.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper).ok()).collect();
+    let run: Vec<KeyBinding> = crate::keymap::effective("run_all")
+        .iter()
+        .filter_map(|k| {
+            KeyBinding::load(
+                k,
+                Box::new(RunZoomed),
+                grid.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()),
+                false,
+                None,
+                &gpui::DummyKeyboardMapper,
+            )
+            .ok()
+        })
+        .collect();
     cx.bind_keys(run);
 }
 
@@ -1066,7 +1076,14 @@ impl Workspace {
         )
     }
 
-    pub(crate) fn go_to_definition(&mut self, tab: Entity<QueryTab>, def: dataman_core::complete::Definition, peek: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn go_to_definition(
+        &mut self,
+        tab: Entity<QueryTab>,
+        def: dataman_core::complete::Definition,
+        peek: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::tree_menu::{Act, Gen, Obj, Target};
         use dataman_core::complete::Definition;
         let (conn, db) = {
@@ -1447,7 +1464,12 @@ impl Workspace {
     }
 
     fn tab_for_history(
-        &mut self, listed: Option<String>, database: Option<String>, run: bool, window: &mut Window, cx: &mut Context<Self>,
+        &mut self,
+        listed: Option<String>,
+        database: Option<String>,
+        run: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Option<Entity<QueryTab>> {
         let on = |t: &Entity<QueryTab>, cx: &App| t.read(cx).connection().map(|c| c.profile.id.clone()) == listed;
         if run {
@@ -1590,7 +1612,8 @@ impl Workspace {
         self.hold_focus(crate::app::Modal::Sheet, window, cx);
         // Editable unless the result is known not to be (the edit says why when it is not).
         let edit = self.active_tab().map(|t| t.read(cx).edit.clone());
-        let editable = edit.as_ref().is_some_and(|e| e.read(cx).editable(cell.col) != Some(false)) && !self.active_tab().is_some_and(|t| t.read(cx).doc.is_some());
+        let editable =
+            edit.as_ref().is_some_and(|e| e.read(cx).editable(cell.col) != Some(false)) && !self.active_tab().is_some_and(|t| t.read(cx).doc.is_some());
         self.open_value_as(cell, editable, window, cx);
     }
 
@@ -1728,9 +1751,7 @@ impl Workspace {
                     self.side = None;
                 }
             }
-            EditEvent::Committed { rows } => {
-                self.notice(format!("Committed {rows} statement{} · reloading the result", if *rows == 1 { "" } else { "s" }), cx)
-            }
+            EditEvent::Committed { rows } => self.notice(format!("Committed {rows} statement{} · reloading the result", if *rows == 1 { "" } else { "s" }), cx),
             EditEvent::Changed => {}
         }
         cx.notify();
@@ -1946,7 +1967,13 @@ impl Workspace {
     pub(crate) fn open_database_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(engine) = dataman_core::import::detect_database(path) else { return false };
         let canonical = dataman_core::os::canonical(path).unwrap_or_else(|_| path.to_path_buf());
-        let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && dataman_core::os::canonical(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
+        let saved = self
+            .store
+            .read(cx)
+            .profiles
+            .iter()
+            .find(|p| p.engine.is_file() && dataman_core::os::canonical(p.file_path()).is_ok_and(|c| c == canonical))
+            .map(|p| p.id.clone());
         match saved {
             Some(id) => {
                 self.current_conn = Some(id.clone());
@@ -2787,11 +2814,7 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
 /// terminator (a `;` would be part of a Redis key, or break a search's JSON).
 pub(crate) fn statement_text(sql: &str, engine: Option<dataman_core::Engine>) -> String {
     let body = sql.trim_end().trim_end_matches(';');
-    if engine.is_some_and(|e| !e.is_sql()) {
-        sql.trim_end().to_string()
-    } else {
-        format!("{body};")
-    }
+    if engine.is_some_and(|e| !e.is_sql()) { sql.trim_end().to_string() } else { format!("{body};") }
 }
 
 impl Render for Workspace {
@@ -2820,7 +2843,9 @@ impl Render for Workspace {
                 self.explorer_tween = None;
             }
         }
-        let production = !first_run && self.view != NavView::Agents && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
+        let production = !first_run
+            && self.view != NavView::Agents
+            && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
         let docks = self.render_docks(&pass, production, window, cx);
         let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
         let left_shown = left_w > 0.5;
@@ -3186,9 +3211,7 @@ mod tests {
             crate::keymap::kb("cmd-alt-]", NextResult, w),
             crate::keymap::kb("cmd-alt-[", PrevResult, w),
         ]);
-        let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
-        };
+        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string());
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]] {
             assert_eq!(first("cmd-alt-]", ctx).as_deref(), Some("workspace::NextResult"), "{ctx:?}");
             assert_eq!(first("cmd-alt-[", ctx).as_deref(), Some("workspace::PrevResult"), "{ctx:?}");
@@ -3208,9 +3231,7 @@ mod tests {
             crate::keymap::kb("up", crate::plan::SelectPrev, Some(crate::plan::CONTEXT)),
             crate::keymap::kb("escape", FocusEditor, w),
         ]);
-        let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
-        };
+        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string());
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "PlanView"]] {
             assert_eq!(first("cmd-l", ctx).as_deref(), Some("workspace::Explain"), "{ctx:?}");
             assert_eq!(first("cmd-alt-l", ctx).as_deref(), Some("workspace::ExplainAnalyze"), "{ctx:?}");
@@ -3234,9 +3255,7 @@ mod tests {
             crate::keymap::kb("escape", crate::value_edit::CancelValue, Some(crate::value_edit::CONTEXT)),
             crate::keymap::kb("escape", crate::table_view::CloseFilter, Some(crate::table_view::POPOVER_CONTEXT)),
         ]);
-        let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
-        };
+        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string());
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"]] {
             assert_eq!(first("cmd-alt-right", ctx).as_deref(), Some("workspace::NextPage"), "{ctx:?}");
             assert_eq!(first("cmd-alt-left", ctx).as_deref(), Some("workspace::PrevPage"), "{ctx:?}");
@@ -3262,9 +3281,7 @@ mod tests {
             crate::keymap::kb("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
             crate::keymap::kb("escape", SheetCancel, Some(SHEET_CONTEXT)),
         ]);
-        let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
-        };
+        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string());
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]] {
             assert_eq!(first("ctrl-cmd-enter", ctx).as_deref(), Some("workspace::CommitTx"), "{ctx:?}");
             assert_eq!(first("ctrl-cmd-backspace", ctx).as_deref(), Some("workspace::RollbackTx"), "{ctx:?}");
@@ -3333,9 +3350,7 @@ mod tests {
             crate::keymap::kb("cmd-s", ReviewChanges, Some("ResultGrid")),
             crate::keymap::kb("cmd-shift-s", SaveAs, w),
         ]);
-        let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
-        };
+        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string());
         assert_eq!(first("cmd-s", &["Workspace", "CodeEditor"]).as_deref(), Some("workspace::SaveFavorite"));
         assert_eq!(first("cmd-s", &["Workspace", "ResultGrid"]).as_deref(), Some("workspace::ReviewChanges"));
         assert_eq!(first("cmd-s", &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]).as_deref(), Some("workspace::ReviewChanges"));

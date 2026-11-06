@@ -4,10 +4,10 @@
 //! Project, where what is shared changes the file; a connection made here joins it, an edit
 //! "pulled" into the file reaches the app, and projects off stops it all.
 
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::Engine;
 use dataman_core::format::KeywordCase;
 use dataman_core::project::{self, ProjectFile};
+use gpui::{AsyncWindowContext, Entity};
 
 use crate::app::Workspace;
 use crate::check::{Report, click_probe, core, draw, key, pause, probed, typ, until};
@@ -92,7 +92,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
 
     click_probe("project-share-editor", cx);
     let f = file(&root);
-    r.check("unticking SQL format takes it out of the file", f.as_ref().is_some_and(|f| f.editor.is_none() && !f.share.editor), format!("{:?}", f.map(|f| f.share)));
+    r.check(
+        "unticking SQL format takes it out of the file",
+        f.as_ref().is_some_and(|f| f.editor.is_none() && !f.share.editor),
+        format!("{:?}", f.map(|f| f.share)),
+    );
 
     // A connection made while the project is open joins it.
     let mut made = dataman_core::ConnectionProfile::new_file(Engine::Sqlite, dataman_core::config::tilde(&root.join("made.sqlite").to_string_lossy()));
@@ -133,7 +137,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("…and changes nothing until then, nor writes over the file", same, format!("{:?}", core.config.get("team-shop").map(|p| (p.mcp, p.host))));
     click_probe("project-review-keep", cx);
     let held = until(cx, 2, |cx| cx.update(|_, cx| ws.read(cx).project_review.is_none()).unwrap_or(false)).await;
-    r.check("Not now: still held, Settings › Project offers the review", held && core.project.review().is_some_and(|r| r.declined) && probed("project-review", cx).is_some(), "");
+    r.check(
+        "Not now: still held, Settings › Project offers the review",
+        held && core.project.review().is_some_and(|r| r.declined) && probed("project-review", cx).is_some(),
+        "",
+    );
     click_probe("project-review", cx);
     let again = until(cx, 2, |cx| probed("project-review-apply", cx).is_some()).await;
     key(cx, "escape");
@@ -161,7 +169,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let _ = core.config.upsert(g);
     pause(cx, 1500).await;
     let f = file(&root);
-    r.check("…and nothing reaches the file", f.as_ref().is_some_and(|f| f.connections[0].name == "Team shop (renamed)"), format!("{:?}", f.map(|f| f.connections[0].name.clone())));
+    r.check(
+        "…and nothing reaches the file",
+        f.as_ref().is_some_and(|f| f.connections[0].name == "Team shop (renamed)"),
+        format!("{:?}", f.map(|f| f.connections[0].name.clone())),
+    );
     key(cx, "escape");
     let label = palette_label(">open project", cx, ws).await;
     r.check("…nor the palette", label != "Open project…", &label);

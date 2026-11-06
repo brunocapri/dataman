@@ -505,7 +505,13 @@ fn print_val(v: &Val) -> String {
         Val::Bool(b) => b.to_string(),
         Val::Int(n) => n.to_string(),
         Val::Float(f) if f.is_nan() => "NaN".into(),
-        Val::Float(f) if f.is_infinite() => if *f > 0. { "Infinity".into() } else { "-Infinity".into() },
+        Val::Float(f) if f.is_infinite() => {
+            if *f > 0. {
+                "Infinity".into()
+            } else {
+                "-Infinity".into()
+            }
+        }
         Val::Float(f) => format!("{f:?}"),
         Val::Str(s) => shell::quote(s),
         Val::Arr(a) => format!("[{}]", a.iter().map(print_val).collect::<Vec<_>>().join(", ")),
@@ -535,7 +541,19 @@ fn value_output(text: &str) -> Result<Output, Failed> {
     })
 }
 
-const BOUNDED: &[&str] = &["insertOne", "insertMany", "insert", "updateOne", "replaceOne", "findOneAndUpdate", "findOneAndReplace", "findOneAndDelete", "findAndModify", "deleteOne", "save"];
+const BOUNDED: &[&str] = &[
+    "insertOne",
+    "insertMany",
+    "insert",
+    "updateOne",
+    "replaceOne",
+    "findOneAndUpdate",
+    "findOneAndReplace",
+    "findOneAndDelete",
+    "findAndModify",
+    "deleteOne",
+    "save",
+];
 const FILTERED: &[&str] = &["updateMany", "deleteMany", "remove", "update"];
 const DESTRUCTIVE: &[(&str, &str)] = &[
     ("drop", "drops a collection"),
@@ -688,7 +706,9 @@ mod tests {
             Ok(match op {
                 Op::Find { one, filter, limit: lim, .. } => {
                     let all: Vec<Doc> = (0..120)
-                        .map(|i| doc! { "_id": i, "n": i, "at": mongodb::bson::DateTime::from_millis(1_700_000_000_000 + i as i64), "l": Bson::Int64(i as i64) })
+                        .map(
+                            |i| doc! { "_id": i, "n": i, "at": mongodb::bson::DateTime::from_millis(1_700_000_000_000 + i as i64), "l": Bson::Int64(i as i64) },
+                        )
                         .filter(|d| filter.get_i32("n").map_or(true, |n| d.get_i32("n") == Ok(n)))
                         .map(|d| Doc { id: d.get("_id").cloned().map(Body::Bson), index: None, body: Body::doc(d) })
                         .take(lim.map_or(usize::MAX, |l| l.unsigned_abs() as usize))
@@ -706,7 +726,11 @@ mod tests {
                     detail: Some(Body::doc(doc! { "insertedIds": docs.iter().map(|d| d.get("_id").cloned().unwrap_or(Bson::Int32(0))).collect::<Vec<_>>() })),
                 },
                 Op::Delete { .. } => Output::Written { affected: 3, summary: "3 deleted".into(), detail: None },
-                Op::Update { .. } => Output::Written { affected: 1, summary: "1 matched, 1 modified".into(), detail: Some(Body::doc(doc! { "matchedCount": 1i64, "modifiedCount": 1i64 })) },
+                Op::Update { .. } => Output::Written {
+                    affected: 1,
+                    summary: "1 matched, 1 modified".into(),
+                    detail: Some(Body::doc(doc! { "matchedCount": 1i64, "modifiedCount": 1i64 })),
+                },
                 _ => Output::Value(Body::doc(doc! { "ok": 1 })),
             })
         }
@@ -734,7 +758,22 @@ mod tests {
     /// Read as a read, a script never reaches a write, however it names or reaches the call.
     #[test]
     fn indirect_writes_stop_at_the_ceiling() {
-        let writes = ["Insert", "Delete", "Update", "Replace", "FindAndModify", "BulkWrite", "Drop", "Rename", "CreateIndex", "CreateCollection", "shutdown", "repair", "$out", "$merge"];
+        let writes = [
+            "Insert",
+            "Delete",
+            "Update",
+            "Replace",
+            "FindAndModify",
+            "BulkWrite",
+            "Drop",
+            "Rename",
+            "CreateIndex",
+            "CreateCollection",
+            "shutdown",
+            "repair",
+            "$out",
+            "$merge",
+        ];
         let mut read = 0;
         for text in [
             "const m = ['delete', 'Many'].join(''); db.users[m]({x: 1})",
@@ -783,10 +822,16 @@ mod tests {
         assert!(matches!(value("ObjectId()"), Bson::ObjectId(_)));
         assert_eq!(value("ObjectId('65a1b2c3d4e5f60718293a4b').getTimestamp().getTime()"), Bson::Int64(1_705_095_875_000));
         assert_eq!(value("NumberLong(5) + 1"), Bson::Int32(6));
-        assert_eq!(value("({l: NumberLong('9007199254740993'), d: NumberDecimal('1.10')})"), Bson::Document(doc! { "l": Bson::Int64(9007199254740993), "d": Bson::Decimal128("1.10".parse().unwrap()) }));
+        assert_eq!(
+            value("({l: NumberLong('9007199254740993'), d: NumberDecimal('1.10')})"),
+            Bson::Document(doc! { "l": Bson::Int64(9007199254740993), "d": Bson::Decimal128("1.10".parse().unwrap()) })
+        );
         assert_eq!(value("typeof Date.now()"), Bson::String("number".into()));
         assert!(matches!(value("UUID()"), Bson::Binary(b) if b.bytes.len() == 16));
-        assert_eq!(value("[/a+b/i, MinKey()]"), Bson::Array(vec![Bson::RegularExpression(mongodb::bson::Regex { pattern: "a+b".into(), options: "i".into() }), Bson::MinKey]));
+        assert_eq!(
+            value("[/a+b/i, MinKey()]"),
+            Bson::Array(vec![Bson::RegularExpression(mongodb::bson::Regex { pattern: "a+b".into(), options: "i".into() }), Bson::MinKey])
+        );
         assert_eq!(value("print('a', 1); printjson({x: NumberLong(2)})"), Bson::String("a 1\n{\n  \"x\": NumberLong(2)\n}".into()));
         let (r, _) = script("print('hello'); 42");
         let r = r.unwrap();
@@ -807,11 +852,17 @@ mod tests {
         assert!(matches!(&r.output, Output::Docs(d) if d.docs.len() == 50 && d.more));
         assert!(matches!(&r.rerun, Some((db, Op::Find { sort: Some(s), .. })) if db == "shop" && s.get_i32("n") == Ok(-1)));
         assert!(log[0].contains("Find") && log[0].ends_with(" 0 1000"), "{log:?}");
-        assert_eq!(value("const d = db.items.findOne({n: 3}); [d.l instanceof NumberLong, d.at instanceof Date, d._id]"), Bson::Array(vec![Bson::Boolean(true), Bson::Boolean(true), Bson::Int32(3)]));
+        assert_eq!(
+            value("const d = db.items.findOne({n: 3}); [d.l instanceof NumberLong, d.at instanceof Date, d._id]"),
+            Bson::Array(vec![Bson::Boolean(true), Bson::Boolean(true), Bson::Int32(3)])
+        );
         assert_eq!(value("db.items.countDocuments({}) === 120"), Bson::Boolean(true));
         assert_eq!(value("db.items.find().toArray().length"), Bson::Int32(120));
         assert_eq!(value("db.items.find().map(d => d.n).length"), Bson::Int32(120));
-        assert_eq!(value("const out = []; for (const d of db.items.find().limit(3)) out.push(d.n); out"), Bson::Array(vec![Bson::Int32(0), Bson::Int32(1), Bson::Int32(2)]));
+        assert_eq!(
+            value("const out = []; for (const d of db.items.find().limit(3)) out.push(d.n); out"),
+            Bson::Array(vec![Bson::Int32(0), Bson::Int32(1), Bson::Int32(2)])
+        );
         assert_eq!(value("db.items.insertOne({_id: 7, at: new Date(5)}).insertedId"), Bson::Int32(7));
         assert_eq!(value("db.items.deleteMany({n: {$gt: 1}}).deletedCount"), Bson::Int32(3));
         let (r, log) = script("use other\ndb.getSiblingDB('x').system.users.findOne()\ndb.version()");
@@ -840,10 +891,17 @@ mod tests {
         assert_eq!(c("// db.a.drop()\nprint('db.a.drop()')"), WriteClass::Read);
         assert!(class("let x = ;").unwrap_err().at.is_some());
         let log = std::rc::Rc::new(RefCell::new(Vec::new()));
-        let r = run("const m = 'delete' + 'Many'; db.a[m]({})", "shop", &WriteClass::Read, Box::new(Fake { log: log.clone(), read_only: false }), Page::default());
+        let r =
+            run("const m = 'delete' + 'Many'; db.a[m]({})", "shop", &WriteClass::Read, Box::new(Fake { log: log.clone(), read_only: false }), Page::default());
         assert!(r.err().unwrap().message.starts_with("refused: this call deleteMany without a filter"));
         assert!(log.borrow().is_empty());
-        let r = run("const m = 'insert' + 'One'; db.a[m]({x: 1})", "shop", &WriteClass::Read, Box::new(Fake { log: log.clone(), read_only: false }), Page::default());
+        let r = run(
+            "const m = 'insert' + 'One'; db.a[m]({x: 1})",
+            "shop",
+            &WriteClass::Read,
+            Box::new(Fake { log: log.clone(), read_only: false }),
+            Page::default(),
+        );
         assert!(r.err().unwrap().message.starts_with("refused: this call writes"));
         let r = run("db.a.insertOne({x: 1})", "shop", &WriteClass::SafeWrite, Box::new(Fake { log: log.clone(), read_only: true }), Page::default());
         assert!(r.err().unwrap().message.contains("read-only"));
@@ -859,6 +917,9 @@ mod tests {
         assert!(!is_script_start("  // note\n db.a.find()"));
         assert!(!is_script_start("show dbs"));
         assert!(!is_script_start("db == 1"));
-        assert_eq!(prepare("use shop\n  show collections;\nshow dbs"), "db = __B.database(\"shop\");\n  db.getCollectionNames();\ndb.adminCommand({listDatabases: 1, nameOnly: true}).databases.map(d => d.name);");
+        assert_eq!(
+            prepare("use shop\n  show collections;\nshow dbs"),
+            "db = __B.database(\"shop\");\n  db.getCollectionNames();\ndb.adminCommand({listDatabases: 1, nameOnly: true}).databases.map(d => d.name);"
+        );
     }
 }

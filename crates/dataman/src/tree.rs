@@ -4,15 +4,15 @@ use std::sync::Arc;
 
 use std::time::{Duration, Instant};
 
-use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString, Subscription, UniformListScrollHandle, Window, actions,
-    anchored, deferred, div, point, prelude::*, uniform_list,
-};
 use crate::theme::{Pt, px};
 use dataman_core::Connection;
 use dataman_core::pins::Pin;
 use dataman_core::schema::objects::{approx_count, constraint_summary, human_size, partition_bound_summary};
 use dataman_core::schema::{ConstraintKind, FuncKind, RelKind, RelStats, TypeKind};
+use gpui::{
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    SharedString, Subscription, UniformListScrollHandle, Window, actions, anchored, deferred, div, point, prelude::*, uniform_list,
+};
 
 use crate::assets::{Icon, icon};
 use crate::conns::{ConnState, ConnStore};
@@ -423,7 +423,10 @@ pub struct DraggedFolder(pub String);
 pub enum ConnDrop {
     Into(String),
     /// Among a group's connections (a folder's, or the top level's): before one, or at the end.
-    At { folder: Option<String>, before: Option<String> },
+    At {
+        folder: Option<String>,
+        before: Option<String>,
+    },
 }
 
 impl EventEmitter<TreeEvent> for SchemaTree {}
@@ -619,7 +622,8 @@ impl SchemaTree {
         self.unfold = None;
         self.advanced = on;
         self.rebuild(cx);
-        let open: Vec<(String, Kind)> = self.rows.iter().filter(|r| r.expanded && matches!(r.kind, Kind::Conn { .. })).map(|r| (r.id.to_string(), r.kind.clone())).collect();
+        let open: Vec<(String, Kind)> =
+            self.rows.iter().filter(|r| r.expanded && matches!(r.kind, Kind::Conn { .. })).map(|r| (r.id.to_string(), r.kind.clone())).collect();
         for (id, kind) in open {
             if self.conn(id.trim_start_matches("c:"), cx).is_some() {
                 self.load(&id, &kind, cx);
@@ -733,7 +737,9 @@ impl SchemaTree {
                         None => true,
                     }
                 }),
-                Kind::Db { conn, db } => self.conn(conn, cx).is_some_and(|c| if c.caps().schemas { c.schema.cached_schemas(db).is_none() } else { c.schema.cached_relations(db, db).is_none() }),
+                Kind::Db { conn, db } => self
+                    .conn(conn, cx)
+                    .is_some_and(|c| if c.caps().schemas { c.schema.cached_schemas(db).is_none() } else { c.schema.cached_relations(db, db).is_none() }),
                 Kind::Schema { conn, db, schema } => self.conn(conn, cx).is_some_and(|c| c.schema.cached_relations(db, schema).is_none()),
                 Kind::Group { conn, db, schema, g } => self.conn(conn, cx).is_some_and(|c| {
                     let k = &c.schema;
@@ -810,7 +816,8 @@ impl SchemaTree {
 
     fn folder_row(&self, d: &dataman_core::ConnFolder, n: usize, open: bool, t: &Theme) -> Row {
         let color = folder_color(d, t);
-        let mut r = Row::new(fid(&d.id), 0, d.name.clone(), Kind::Folder { id: d.id.clone() }).tone(Tone::Folder).meta(n.to_string(), Meta::Plain).expandable(open);
+        let mut r =
+            Row::new(fid(&d.id), 0, d.name.clone(), Kind::Folder { id: d.id.clone() }).tone(Tone::Folder).meta(n.to_string(), Meta::Plain).expandable(open);
         r.icon = Some((Icon::Schema, color));
         r.in_folder = Some(d.id.clone().into());
         r
@@ -879,7 +886,9 @@ impl SchemaTree {
                     if n > 0 {
                         matches += n;
                         let label = conn.engine().db_label(&db.name);
-                        block.push(Row::new(did(c, &db.name), 1, label, Kind::DocDb { conn: c.into(), db: db.name.clone() }).icon(Icon::Database).expandable(true));
+                        block.push(
+                            Row::new(did(c, &db.name), 1, label, Kind::DocDb { conn: c.into(), db: db.name.clone() }).icon(Icon::Database).expandable(true),
+                        );
                         block.extend(db_block);
                     }
                 }
@@ -950,7 +959,11 @@ impl SchemaTree {
                         if !hits.is_empty() {
                             matches += hits.len();
                             if !at_home && !flat {
-                                db_block.push(Row::new(sid(c, &db, &s), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(true));
+                                db_block.push(
+                                    Row::new(sid(c, &db, &s), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() })
+                                        .icon(Icon::Schema)
+                                        .expandable(true),
+                                );
                             }
                             db_block.extend(hits);
                         }
@@ -984,7 +997,11 @@ impl SchemaTree {
                     if !hits.is_empty() {
                         matches += hits.len();
                         if !flat {
-                            db_block.push(Row::new(sid(c, &db, &s), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(true));
+                            db_block.push(
+                                Row::new(sid(c, &db, &s), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() })
+                                    .icon(Icon::Schema)
+                                    .expandable(true),
+                            );
                         }
                         db_block.extend(hits);
                     }
@@ -1000,7 +1017,8 @@ impl SchemaTree {
                 }
                 if !db_block.is_empty() {
                     let ro = store.connection(c).is_some_and(|x| x.read_only_for(&db));
-                    block.push(Row::new(did(c, &db), 1, db.clone(), Kind::Db { conn: c.into(), db: db.clone() }).icon(Icon::Database).lock(ro).expandable(true));
+                    block
+                        .push(Row::new(did(c, &db), 1, db.clone(), Kind::Db { conn: c.into(), db: db.clone() }).icon(Icon::Database).lock(ro).expandable(true));
                     block.extend(db_block);
                 }
             }
@@ -1192,7 +1210,9 @@ impl SchemaTree {
             for s in schemas.iter().filter(|s| !conn.engine().is_system_schema(s) && Some(*s) != home.as_ref()) {
                 let sv = sid(c, &db, s);
                 let open = self.expanded.contains(&sv);
-                rows.push(Row::new(sv.clone(), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(open));
+                rows.push(
+                    Row::new(sv.clone(), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(open),
+                );
                 if open && !self.push_status(rows, &sv, 3, t) {
                     self.push_tables(rows, c, &db, s, conn, t, 3);
                 }
@@ -1284,8 +1304,13 @@ impl SchemaTree {
                         if open {
                             rows.extend(x.labels.iter().enumerate().map(|(i, l)| {
                                 let what = Obj::EnumLabel;
-                                Row::new(format!("{id}/l:{i}"), d0 + 2, l.clone(), Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: l.clone(), what })
-                                    .icon(Icon::Label)
+                                Row::new(
+                                    format!("{id}/l:{i}"),
+                                    d0 + 2,
+                                    l.clone(),
+                                    Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: l.clone(), what },
+                                )
+                                .icon(Icon::Label)
                             }));
                         }
                     }
@@ -1353,8 +1378,13 @@ impl SchemaTree {
             if open {
                 for k in cons {
                     let what = Obj::Constraint { table: name.into(), definition: k.definition.clone() };
-                    let row = Row::new(format!("{g}/{}", k.name), d + 1, k.name.clone(), Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: k.name.clone(), what })
-                        .meta(clip(&constraint_summary(k.kind, k.definition.as_deref()), 36), Meta::Plain);
+                    let row = Row::new(
+                        format!("{g}/{}", k.name),
+                        d + 1,
+                        k.name.clone(),
+                        Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: k.name.clone(), what },
+                    )
+                    .meta(clip(&constraint_summary(k.kind, k.definition.as_deref()), 36), Meta::Plain);
                     rows.push(match k.kind {
                         ConstraintKind::Primary => row.icon_colored(Icon::Key, t.num),
                         ConstraintKind::Foreign => row.icon(Icon::Link),
@@ -1379,7 +1409,12 @@ impl SchemaTree {
             if open {
                 for p in parts {
                     let label = if p.schema == s || p.schema.is_empty() { p.name.clone() } else { format!("{}.{}", p.schema, p.name) };
-                    let kind = Kind::RelRef { conn: c.into(), db: db.into(), schema: if p.schema.is_empty() { s.into() } else { p.schema.clone() }, name: p.name.clone() };
+                    let kind = Kind::RelRef {
+                        conn: c.into(),
+                        db: db.into(),
+                        schema: if p.schema.is_empty() { s.into() } else { p.schema.clone() },
+                        name: p.name.clone(),
+                    };
                     rows.push(
                         Row::new(format!("{g}/{}.{}", p.schema, p.name), d + 1, label, kind)
                             .icon(Icon::Table)
@@ -1546,7 +1581,8 @@ impl SchemaTree {
             if !self.expanded.contains(&id) || self.loading.contains(&id) || self.errors.contains_key(&id) {
                 continue;
             }
-            let unread = |conn: &Arc<Connection>| if conn.engine().is_sql() { conn.schema.cached_databases().is_none() } else { conn.cached_tree(None).is_none() };
+            let unread =
+                |conn: &Arc<Connection>| if conn.engine().is_sql() { conn.schema.cached_databases().is_none() } else { conn.cached_tree(None).is_none() };
             if self.conn(&c, cx).is_some_and(|conn| unread(&conn)) {
                 self.load(&id, &Kind::Conn { id: c.clone() }, cx);
             }
@@ -1763,12 +1799,21 @@ impl SchemaTree {
                 if !self.collapsed.contains(conn) {
                     self.expanded.insert(format!("{id}/cols"));
                 }
-                self.conn(conn, cx).map(|c| join_all(vec![unit(c.columns(db, schema, name)), unit(c.indexes(db, schema, name)), unit(c.table_extras(db, schema, name))]))
+                self.conn(conn, cx)
+                    .map(|c| join_all(vec![unit(c.columns(db, schema, name)), unit(c.indexes(db, schema, name)), unit(c.table_extras(db, schema, name))]))
             }
             Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
             Kind::Indexes { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.indexes(db, schema, name))),
             Kind::TableSub { conn, db, schema, name, .. } => self.conn(conn, cx).map(|c| unit(c.table_extras(db, schema, name))),
-            Kind::Folder { .. } | Kind::Pinned { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Coll { .. } | Kind::Error { .. } | Kind::Leaf => None,
+            Kind::Folder { .. }
+            | Kind::Pinned { .. }
+            | Kind::RelRef { .. }
+            | Kind::Object { .. }
+            | Kind::Column { .. }
+            | Kind::Index { .. }
+            | Kind::Coll { .. }
+            | Kind::Error { .. }
+            | Kind::Leaf => None,
         };
         let Some(task) = task else { return };
         let id = id.to_string();
@@ -2019,12 +2064,7 @@ impl SchemaTree {
     fn picked_conns(&self, cx: &App) -> Vec<String> {
         let store = self.store.read(cx);
         let picked = |prefix: &str, id: &str| self.picked.iter().any(|p| p.strip_prefix(prefix) == Some(id));
-        store
-            .profiles
-            .iter()
-            .filter(|p| picked("c:", &p.id) || store.folder_of(&p.id).is_some_and(|d| picked("f:", &d.id)))
-            .map(|p| p.id.clone())
-            .collect()
+        store.profiles.iter().filter(|p| picked("c:", &p.id) || store.folder_of(&p.id).is_some_and(|d| picked("f:", &d.id))).map(|p| p.id.clone()).collect()
     }
 
     /// The connections a drag of `id` takes: all that are picked when it is among them.
@@ -2038,7 +2078,13 @@ impl SchemaTree {
         let conns = self.picked_conns(cx);
         Target::Picked {
             foldered: conns.iter().any(|c| store.folder_of(c).is_some()),
-            conns: conns.into_iter().map(|c| { let s = self.phase(&c, cx); (c, s) }).collect(),
+            conns: conns
+                .into_iter()
+                .map(|c| {
+                    let s = self.phase(&c, cx);
+                    (c, s)
+                })
+                .collect(),
             folders: self.picked.iter().filter_map(|p| p.strip_prefix("f:")).map(str::to_string).collect(),
             only_folders: self.picked.iter().all(|p| p.starts_with("f:")),
         }
@@ -2058,7 +2104,11 @@ impl SchemaTree {
         match t {
             Target::Conn { id, .. } => vec![id.clone()],
             Target::Picked { conns, .. } => conns.iter().map(|(c, _)| c.clone()).collect(),
-            Target::Folder { id, .. } => store.folders.iter().find(|d| d.id == *id).map_or_else(Vec::new, |d| store.profiles.iter().filter(|p| d.holds(&p.id)).map(|p| p.id.clone()).collect()),
+            Target::Folder { id, .. } => store
+                .folders
+                .iter()
+                .find(|d| d.id == *id)
+                .map_or_else(Vec::new, |d| store.profiles.iter().filter(|p| d.holds(&p.id)).map(|p| p.id.clone()).collect()),
             _ => vec![],
         }
     }
@@ -2094,17 +2144,12 @@ impl SchemaTree {
                     last: at + 1 == store.folders.len(),
                 }
             }
-            Kind::Conn { id } => Target::Conn {
-                id: id.clone(),
-                name: store.profile(id).map(|p| p.name.clone()).unwrap_or_default(),
-                state: self.phase(id, cx),
-            },
-            Kind::Db { conn, db } => Target::Db {
-                conn: conn.clone(),
-                db: db.clone(),
-                current: store.connection(conn).is_some_and(|c| c.database() == db),
-                ro: ro(conn, db),
-            },
+            Kind::Conn { id } => {
+                Target::Conn { id: id.clone(), name: store.profile(id).map(|p| p.name.clone()).unwrap_or_default(), state: self.phase(id, cx) }
+            }
+            Kind::Db { conn, db } => {
+                Target::Db { conn: conn.clone(), db: db.clone(), current: store.connection(conn).is_some_and(|c| c.database() == db), ro: ro(conn, db) }
+            }
             Kind::Schema { conn, db, schema } => Target::Schema { conn: conn.clone(), db: db.clone(), schema: schema.clone(), ro: ro(conn, db) },
             Kind::Group { .. }
             | Kind::Columns { .. }
@@ -2204,7 +2249,14 @@ impl SchemaTree {
             };
             let mut es = menu::with_folders(entries, &target, &folders, current);
             if matches!(target, Target::Folder { .. }) {
-                let conns: Vec<_> = self.conns_of(&target, cx).into_iter().map(|c| { let s = self.phase(&c, cx); (c, s) }).collect();
+                let conns: Vec<_> = self
+                    .conns_of(&target, cx)
+                    .into_iter()
+                    .map(|c| {
+                        let s = self.phase(&c, cx);
+                        (c, s)
+                    })
+                    .collect();
                 es = menu::with_conns(es, &conns);
             }
             for e in &mut es {
@@ -2395,11 +2447,15 @@ impl SchemaTree {
             (Act::FolderColor(c), Target::Folder { id, name, .. }) => {
                 let id = id.clone();
                 let swatch = c.and_then(|i| crate::theme::SWATCHES.get(i)).map(|s| s.to_string());
-                self.change_folders(format!("Color folder '{name}'"), |f| {
-                    if let Some(d) = f.iter_mut().find(|d| d.id == id) {
-                        d.color = swatch;
-                    }
-                }, cx);
+                self.change_folders(
+                    format!("Color folder '{name}'"),
+                    |f| {
+                        if let Some(d) = f.iter_mut().find(|d| d.id == id) {
+                            d.color = swatch;
+                        }
+                    },
+                    cx,
+                );
             }
             (Act::Reload, Target::Header) => self.refresh_all(cx),
             (Act::Reload, Target::Picked { .. }) => {
@@ -2529,7 +2585,8 @@ impl SchemaTree {
         let before = animate.then(|| ids(&self.rows));
         self.rebuild(cx);
         if let Some(before) = before {
-            self.slide = slide_from(&before, &ids(&self.rows)).map(|from| Slide { from, left: crate::motion::Fold::new(1., 0., crate::motion::TREE_REORDER), now: 1. });
+            self.slide =
+                slide_from(&before, &ids(&self.rows)).map(|from| Slide { from, left: crate::motion::Fold::new(1., 0., crate::motion::TREE_REORDER), now: 1. });
         }
         cx.notify();
     }
@@ -2551,11 +2608,15 @@ impl SchemaTree {
         if let Some(d) = &dest {
             self.shut_folders.remove(d);
         }
-        self.change_folders(label, |f| {
-            for c in &conns {
-                set_folder(f, c, dest.as_deref());
-            }
-        }, cx);
+        self.change_folders(
+            label,
+            |f| {
+                for c in &conns {
+                    set_folder(f, c, dest.as_deref());
+                }
+            },
+            cx,
+        );
         if let Some(ix) = self.selected_ix() {
             self.select(ix, cx);
         }
@@ -2570,12 +2631,16 @@ impl SchemaTree {
         }
         let d = dataman_core::ConnFolder::new("New folder", &self.store.read(cx).folders);
         let (id, label) = (d.id.clone(), format!("New folder '{}'", d.name));
-        self.change_folders(label, |f| {
-            f.push(d);
-            for c in &conns {
-                set_folder(f, c, Some(id.as_str()));
-            }
-        }, cx);
+        self.change_folders(
+            label,
+            |f| {
+                f.push(d);
+                for c in &conns {
+                    set_folder(f, c, Some(id.as_str()));
+                }
+            },
+            cx,
+        );
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == fid(&id)) {
             self.select(ix, cx);
             self.start_naming(id, window, cx);
@@ -2619,11 +2684,15 @@ impl SchemaTree {
         let name = input.read(cx).text().trim().to_string();
         let from = self.store.read(cx).folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
         match from {
-            Some(from) if !name.is_empty() && from != name => self.change_folders(format!("Rename folder '{from}'"), |f| {
-                if let Some(d) = f.iter_mut().find(|d| d.id == id) {
-                    d.name = name;
-                }
-            }, cx),
+            Some(from) if !name.is_empty() && from != name => self.change_folders(
+                format!("Rename folder '{from}'"),
+                |f| {
+                    if let Some(d) = f.iter_mut().find(|d| d.id == id) {
+                        d.name = name;
+                    }
+                },
+                cx,
+            ),
             _ => cx.notify(),
         }
     }
@@ -2792,19 +2861,31 @@ impl SchemaTree {
                 Entry::Sep => items.push(ui::menu_sep(&t).into_any_element()),
                 Entry::Item(it) => {
                     let hi = m.hi == Some(i) && m.sub_hi.is_none();
-                    let el = menu_row(&t, ("menu-item", i), it.label.clone(), it.icon, it.dot, it.key.clone(), it.disabled, it.bold, it.danger, it.checked, hi, false)
-                        .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
-                            if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
-                                m.hi = Some(i);
-                                m.sub = None;
-                                m.sub_hi = None;
-                                cx.notify();
-                            }
-                        }));
+                    let el = menu_row(
+                        &t,
+                        ("menu-item", i),
+                        it.label.clone(),
+                        it.icon,
+                        it.dot,
+                        it.key.clone(),
+                        it.disabled,
+                        it.bold,
+                        it.danger,
+                        it.checked,
+                        hi,
+                        false,
+                    )
+                    .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
+                        if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
+                            m.hi = Some(i);
+                            m.sub = None;
+                            m.sub_hi = None;
+                            cx.notify();
+                        }
+                    }));
                     let act = it.act;
                     items.push(if it.enabled() {
-                        el.on_click(cx.listener(move |tr, ev: &ClickEvent, window, cx| tr.run_menu(act, ev.modifiers().alt, window, cx)))
-                            .into_any_element()
+                        el.on_click(cx.listener(move |tr, ev: &ClickEvent, window, cx| tr.run_menu(act, ev.modifiers().alt, window, cx))).into_any_element()
                     } else {
                         el.into_any_element()
                     });
@@ -2861,7 +2942,8 @@ impl SchemaTree {
                 tr.close_menu(true, window, cx);
             }))
             .children(items);
-        let mut out = vec![deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(ui::menu_in("row-menu-in", main))).priority(2).into_any_element()];
+        let mut out =
+            vec![deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(ui::menu_in("row-menu-in", main))).priority(2).into_any_element()];
         if let Some(((x, y), _, items)) = sub {
             let rows: Vec<AnyElement> = items
                 .iter()
@@ -2869,28 +2951,35 @@ impl SchemaTree {
                 .map(|(j, it)| {
                     let hi = m.sub_hi == Some(j);
                     let act = it.act;
-                    let el = menu_row(&t, ("sub-item", j), it.label.clone(), it.icon, it.dot, it.key.clone(), it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
-                        move |tr, h: &bool, _, cx| {
-                            if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
-                                m.sub_hi = Some(j);
-                                cx.notify();
-                            }
-                        },
-                    ));
+                    let el = menu_row(
+                        &t,
+                        ("sub-item", j),
+                        it.label.clone(),
+                        it.icon,
+                        it.dot,
+                        it.key.clone(),
+                        it.disabled,
+                        it.bold,
+                        it.danger,
+                        it.checked,
+                        hi,
+                        false,
+                    )
+                    .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
+                        if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
+                            m.sub_hi = Some(j);
+                            cx.notify();
+                        }
+                    }));
                     if it.enabled() {
-                        el.on_click(cx.listener(move |tr, ev: &ClickEvent, window, cx| tr.run_menu(act, ev.modifiers().alt, window, cx)))
-                            .into_any_element()
+                        el.on_click(cx.listener(move |tr, ev: &ClickEvent, window, cx| tr.run_menu(act, ev.modifiers().alt, window, cx))).into_any_element()
                     } else {
                         el.into_any_element()
                     }
                 })
                 .collect();
-            let pop = ui::popover(&t)
-                .id("row-submenu")
-                .w(px(menu::SUB_W))
-                .text_size(px(crate::theme::text::BODY))
-                .font_family(crate::theme::mono())
-                .children(rows);
+            let pop =
+                ui::popover(&t).id("row-submenu").w(px(menu::SUB_W)).text_size(px(crate::theme::text::BODY)).font_family(crate::theme::mono()).children(rows);
             out.push(deferred(anchored().position(point(px(x), px(y))).child(ui::menu_in("row-submenu-in", pop))).priority(3).into_any_element());
         }
         out
@@ -3210,136 +3299,147 @@ impl SchemaTree {
             .w_full()
             .px(px(6.))
             .when_some(slide, |d, (_, opacity)| d.opacity(opacity))
-            .when_some(conn_bounds, |d, (all, id)| d.on_children_prepainted(move |b, _, _| {
-                if let Some(b) = b.first() {
-                    all.borrow_mut().insert(id.clone(), *b);
-                }
-            }))
-            .child(div()
-            .id(ix)
-            .group(ROW_GROUP)
-            .relative()
-            // On this element: the list lays the one outside out as a root, where an inset is lost.
-            .when_some(slide, |d, (y, _)| d.top(px(y)))
-            .w_full()
-            .h(px(22.))
-            .pl(px(6. + r.depth as f32 * 12.))
-            .pr(px(8.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(5.))
-            .map(|d| ui::selectable(d, t, sel && !dropping, focused))
-            .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
-            .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
-            .when(!is_naming, |d| d.cursor_pointer())
-            .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
-            // The row is the field's while it is named: the tree below would take the focus.
-            .when(is_naming, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
-            .when_some(drag_conn, |d, id| {
-                let n = if picked { self.picked_with(&id, cx).len() } else { 1 };
-                let label: SharedString = if n > 1 { format!("{n} connections").into() } else { r.label.clone() };
-                let chip = r.chip;
-                d.on_drag(DraggedConn(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
-            })
-            .when_some(drag_folder, |d, id| {
-                let (label, chip) = (r.label.clone(), r.icon.and_then(|(_, c)| c));
-                d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
-            })
-            .when(reorder, |d| {
-                d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
-                    let pos = ev.event.position;
-                    if !ev.bounds.contains(&pos) {
-                        return;
+            .when_some(conn_bounds, |d, (all, id)| {
+                d.on_children_prepainted(move |b, _, _| {
+                    if let Some(b) = b.first() {
+                        all.borrow_mut().insert(id.clone(), *b);
                     }
-                    let id = ev.drag(cx).0.clone();
-                    let target = t.folder_target(&id, ix, &ev.bounds, pos, cx);
-                    t.conn_drop = None;
-                    if target != t.folder_drop {
-                        t.folder_drop = target;
-                        cx.notify();
-                    }
-                }))
-                .on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
-                    let pos = ev.event.position;
-                    if !ev.bounds.contains(&pos) {
-                        return;
-                    }
-                    let id = ev.drag(cx).0.clone();
-                    let target = t.conn_target(&id, ix, &ev.bounds, pos, cx);
-                    t.folder_drop = None;
-                    if target != t.conn_drop {
-                        t.conn_drop = target;
-                        cx.notify();
-                    }
-                }))
-            })
-            .on_hover(cx.listener({
-                let id = r.id.clone();
-                move |t, on: &bool, _, cx| {
-                    if *on {
-                        if t.hovered.as_ref() != Some(&id) {
-                            t.hovered = Some(id.clone());
-                            cx.notify();
-                        }
-                    } else if t.hovered.as_ref() == Some(&id) {
-                        t.hovered = None;
-                        cx.notify();
-                    }
-                }
-            }))
-            .when(has_menu, |d| {
-                d.on_mouse_down(MouseButton::Right, cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
-                    t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
-                }))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
-                    if crate::keymap::menu_click(&ev.modifiers) {
-                        t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    }
-                }))
+                })
             })
             .child(
                 div()
-                    .w(px(10.))
-                    .flex_none()
+                    .id(ix)
+                    .group(ROW_GROUP)
+                    .relative()
+                    // On this element: the list lays the one outside out as a root, where an inset is lost.
+                    .when_some(slide, |d, (y, _)| d.top(px(y)))
+                    .w_full()
+                    .h(px(22.))
+                    .pl(px(6. + r.depth as f32 * 12.))
+                    .pr(px(8.))
                     .flex()
-                    .justify_center()
-                    .children(chevron)
-                    .children(r.gutter_icon.map(|(i, c)| icon(i).flex_none().size(px(14.)).text_color(c))),
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .map(|d| ui::selectable(d, t, sel && !dropping, focused))
+                    .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
+                    .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
+                    .when(!is_naming, |d| d.cursor_pointer())
+                    .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
+                    // The row is the field's while it is named: the tree below would take the focus.
+                    .when(is_naming, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
+                    .when_some(drag_conn, |d, id| {
+                        let n = if picked { self.picked_with(&id, cx).len() } else { 1 };
+                        let label: SharedString = if n > 1 { format!("{n} connections").into() } else { r.label.clone() };
+                        let chip = r.chip;
+                        d.on_drag(DraggedConn(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
+                    })
+                    .when_some(drag_folder, |d, id| {
+                        let (label, chip) = (r.label.clone(), r.icon.and_then(|(_, c)| c));
+                        d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
+                    })
+                    .when(reorder, |d| {
+                        d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
+                            let pos = ev.event.position;
+                            if !ev.bounds.contains(&pos) {
+                                return;
+                            }
+                            let id = ev.drag(cx).0.clone();
+                            let target = t.folder_target(&id, ix, &ev.bounds, pos, cx);
+                            t.conn_drop = None;
+                            if target != t.folder_drop {
+                                t.folder_drop = target;
+                                cx.notify();
+                            }
+                        }))
+                        .on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
+                            let pos = ev.event.position;
+                            if !ev.bounds.contains(&pos) {
+                                return;
+                            }
+                            let id = ev.drag(cx).0.clone();
+                            let target = t.conn_target(&id, ix, &ev.bounds, pos, cx);
+                            t.folder_drop = None;
+                            if target != t.conn_drop {
+                                t.conn_drop = target;
+                                cx.notify();
+                            }
+                        }))
+                    })
+                    .on_hover(cx.listener({
+                        let id = r.id.clone();
+                        move |t, on: &bool, _, cx| {
+                            if *on {
+                                if t.hovered.as_ref() != Some(&id) {
+                                    t.hovered = Some(id.clone());
+                                    cx.notify();
+                                }
+                            } else if t.hovered.as_ref() == Some(&id) {
+                                t.hovered = None;
+                                cx.notify();
+                            }
+                        }
+                    }))
+                    .when(has_menu, |d| {
+                        d.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
+                                t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
+                                if crate::keymap::menu_click(&ev.modifiers) {
+                                    t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                }
+                            }),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(10.))
+                            .flex_none()
+                            .flex()
+                            .justify_center()
+                            .children(chevron)
+                            .children(r.gutter_icon.map(|(i, c)| icon(i).flex_none().size(px(14.)).text_color(c))),
+                    )
+                    .when_some(r.tip.clone(), |d, tip| if r.tip_err { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
+                    .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
+                    .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
+                    .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
+                        let c = c.unwrap_or(t.tx3);
+                        if i != Icon::Schema {
+                            return icon(i).size(px(14.)).text_color(c).into_any_element();
+                        }
+                        let fill =
+                            self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
+                        ui::folder_icon(open, fill, 14., if dropping { t.acc_t } else { c })
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_color(label_color)
+                            .when(bold, |d| d.font_weight(FontWeight::SEMIBOLD))
+                            .when(r.tone == Tone::Italic, |d| d.italic())
+                            .child(label),
+                    )
+                    .when(r.tunnel, |d| d.child(icon(Icon::Tunnel).size(px(11.)).text_color(t.tx3)))
+                    .when(r.lock, |d| d.child(icon(Icon::Lock).flex_none().size(px(11.)).text_color(t.tx3)))
+                    // A hover style cannot move the meta: GPUI lays out before it knows the hover.
+                    .children(meta.map(|m| div().flex_none().when(has_menu && !is_naming && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
+                    .children(more)
+                    .children(line.map(|after| crate::dnd::drop_line(t, false, after))),
             )
-            .when_some(r.tip.clone(), |d, tip| if r.tip_err { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
-            .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
-            .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
-            .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
-                let c = c.unwrap_or(t.tx3);
-                if i != Icon::Schema {
-                    return icon(i).size(px(14.)).text_color(c).into_any_element();
-                }
-                let fill = self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
-                ui::folder_icon(open, fill, 14., if dropping { t.acc_t } else { c })
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_color(label_color)
-                    .when(bold, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .when(r.tone == Tone::Italic, |d| d.italic())
-                    .child(label),
-            )
-            .when(r.tunnel, |d| d.child(icon(Icon::Tunnel).size(px(11.)).text_color(t.tx3)))
-            .when(r.lock, |d| d.child(icon(Icon::Lock).flex_none().size(px(11.)).text_color(t.tx3)))
-            // A hover style cannot move the meta: GPUI lays out before it knows the hover.
-            .children(meta.map(|m| div().flex_none().when(has_menu && !is_naming && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
-            .children(more)
-            .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
     }
 
     /// Row slot `j` while a node unfolds (`j` at or under its first child): it shows what lies
@@ -3420,16 +3520,29 @@ fn pop_overlay(text: String, f: PopFrame, t: &Theme) -> impl IntoElement + use<>
     )
 }
 
-fn rel_row(c: &str, db: &str, s: &str, r: &dataman_core::schema::Relation, depth: usize, open: bool, stats: Option<&std::collections::HashMap<String, RelStats>>) -> Row {
+fn rel_row(
+    c: &str,
+    db: &str,
+    s: &str,
+    r: &dataman_core::schema::Relation,
+    depth: usize,
+    open: bool,
+    stats: Option<&std::collections::HashMap<String, RelStats>>,
+) -> Row {
     let icon = match r.kind {
         RelKind::View => Icon::View,
         RelKind::MaterializedView => Icon::MatView,
         RelKind::Partitioned => Icon::Partition,
         RelKind::Table | RelKind::Foreign => Icon::Table,
     };
-    let mut row = Row::new(rid(c, db, s, &r.name), depth, r.name.clone(), Kind::Rel { conn: c.into(), db: db.into(), schema: s.into(), name: r.name.clone(), kind: r.kind })
-        .icon(icon)
-        .expandable(open);
+    let mut row = Row::new(
+        rid(c, db, s, &r.name),
+        depth,
+        r.name.clone(),
+        Kind::Rel { conn: c.into(), db: db.into(), schema: s.into(), name: r.name.clone(), kind: r.kind },
+    )
+    .icon(icon)
+    .expandable(open);
     match (r.kind, stats.and_then(|m| m.get(&r.name))) {
         (RelKind::Foreign, _) => row = row.meta("foreign", Meta::Plain),
         (RelKind::View, _) | (_, None) => {}
@@ -3583,7 +3696,8 @@ fn type_row(c: &str, db: &str, s: &str, x: &dataman_core::schema::UserType, dept
         (TypeKind::Domain, Some(b)) => format!("domain {}", short_type(b, pg)),
         (k, _) => k.label().to_string(),
     };
-    let row = Row::new(type_id(c, db, s, &x.name), depth, x.name.clone(), obj_kind(c, db, s, &x.name, Obj::Type)).icon(Icon::Type).meta(clip(&meta, 30), Meta::Plain);
+    let row =
+        Row::new(type_id(c, db, s, &x.name), depth, x.name.clone(), obj_kind(c, db, s, &x.name, Obj::Type)).icon(Icon::Type).meta(clip(&meta, 30), Meta::Plain);
     if x.kind == TypeKind::Enum && !x.labels.is_empty() { row.expandable(open) } else { row }
 }
 
@@ -3591,11 +3705,7 @@ fn trigger_row(id: String, c: &str, db: &str, s: &str, x: &dataman_core::schema:
     let what = Obj::Trigger { table: x.table.clone(), enabled: x.enabled, definition: x.definition.clone() };
     let base = if in_schema { x.table.clone() } else { x.events.clone() };
     let row = Row::new(id, depth, x.name.clone(), obj_kind(c, db, s, &x.name, what)).icon(Icon::Trigger);
-    if x.enabled {
-        row.meta(clip(&base, 30), Meta::Plain)
-    } else {
-        row.tone(Tone::Muted).meta(format!("off · {}", clip(&base, 24)), Meta::Off)
-    }
+    if x.enabled { row.meta(clip(&base, 30), Meta::Plain) } else { row.tone(Tone::Muted).meta(format!("off · {}", clip(&base, 24)), Meta::Off) }
 }
 
 fn extension_row(c: &str, db: &str, x: &dataman_core::schema::Extension, depth: usize) -> Row {
@@ -3631,7 +3741,13 @@ fn menu_row(
     sub: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let on = hi && disabled.is_none();
-    let fg = if disabled.is_some() { t.tx4 } else if on { t.on_acc } else { t.tx };
+    let fg = if disabled.is_some() {
+        t.tx4
+    } else if on {
+        t.on_acc
+    } else {
+        t.tx
+    };
     let icon_fg = if disabled.is_some() {
         t.tx4
     } else if on {
@@ -3641,7 +3757,13 @@ fn menu_row(
     } else {
         t.tx3
     };
-    let key_fg = if on { t.on_acc.opacity(0.8) } else if disabled.is_some() { t.tx4 } else { t.tx3 };
+    let key_fg = if on {
+        t.on_acc.opacity(0.8)
+    } else if disabled.is_some() {
+        t.tx4
+    } else {
+        t.tx3
+    };
     div()
         .id(id)
         .h(px(menu::ITEM_H))
@@ -3659,7 +3781,12 @@ fn menu_row(
             None => icon(ic).size(px(14.)).text_color(icon_fg).into_any_element(),
         })
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
-        .children(disabled.map(SharedString::from).or(key).map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(key_fg).child(crate::ui::keys_text(k))))
+        .children(
+            disabled
+                .map(SharedString::from)
+                .or(key)
+                .map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(key_fg).child(crate::ui::keys_text(k))),
+        )
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
 }
@@ -3671,7 +3798,8 @@ fn coll_row(c: &str, db: &str, x: &dataman_core::nosql::Item, depth: usize) -> R
         (None, true) => Icon::View,
         (None, false) => Icon::Collection,
     };
-    let mut r = Row::new(format!("{}/k:{}", did(c, db), x.name), depth, x.name.clone(), Kind::Coll { conn: c.into(), db: db.into(), name: x.name.clone() }).icon(icon);
+    let mut r =
+        Row::new(format!("{}/k:{}", did(c, db), x.name), depth, x.name.clone(), Kind::Coll { conn: c.into(), db: db.into(), name: x.name.clone() }).icon(icon);
     if let Some(n) = x.count {
         r = r.meta(approx_count(n as f64), Meta::Plain);
     }
@@ -3855,11 +3983,14 @@ impl Render for SchemaTree {
         let menu_layer = self.render_menu(window, cx);
         let header = div()
             .id("x-header")
-            .on_mouse_down(MouseButton::Right, cx.listener(|t, ev: &MouseDownEvent, window, cx| {
-                t.open_menu(None, MenuAnchor::Header(ev.position), window, cx);
-                window.prevent_default();
-                cx.stop_propagation();
-            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|t, ev: &MouseDownEvent, window, cx| {
+                    t.open_menu(None, MenuAnchor::Header(ev.position), window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }),
+            )
             .h(px(34.))
             .flex_none()
             .pl(px(14.))
@@ -3907,15 +4038,7 @@ impl Render for SchemaTree {
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
             .children(filter_meta.map(|m| div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(m)));
         let body: gpui::AnyElement = if empty {
-            div()
-                .flex_1()
-                .pt(px(48.))
-                .px(px(20.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .child(ui::empty_state(&t, "[ EMPTY ]", 22., None))
-                .into_any_element()
+            div().flex_1().pt(px(48.)).px(px(20.)).flex().flex_col().items_center().child(ui::empty_state(&t, "[ EMPTY ]", 22., None)).into_any_element()
         } else if no_match {
             let near = self.filter_stats.as_ref().and_then(|(_, _, n)| n.clone());
             div()
@@ -3928,9 +4051,7 @@ impl Render for SchemaTree {
                 .gap(px(8.))
                 .text_center()
                 .child(ui::no_match(&t, "x-reset-filters", cx.listener(|t, _, _, cx| t.clear_filter(cx))))
-                .children(near.map(|n| {
-                    div().flex().flex_row().text_color(t.tx2).child("Did you mean ").child(div().text_color(t.acc_t).child(n)).child("?")
-                }))
+                .children(near.map(|n| div().flex().flex_row().text_color(t.tx2).child("Did you mean ").child(div().text_color(t.acc_t).child(n)).child("?")))
                 .into_any_element()
         } else {
             let theme = t.clone();
@@ -3949,13 +4070,16 @@ impl Render for SchemaTree {
             .track_scroll(&self.scroll)
             .flex_1()
             .pt(px(2.))
-            .on_mouse_down(MouseButton::Right, cx.listener(|t, ev: &MouseDownEvent, window, cx| {
-                if t.below_rows(ev.position) {
-                    t.open_menu(None, MenuAnchor::Mouse(ev.position), window, cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
-                }
-            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|t, ev: &MouseDownEvent, window, cx| {
+                    if t.below_rows(ev.position) {
+                        t.open_menu(None, MenuAnchor::Mouse(ev.position), window, cx);
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .into_any_element()
         };
         div()
@@ -4050,11 +4174,14 @@ impl Render for SchemaTree {
                     t.clear_filter(cx);
                 }
             }))
-            .on_mouse_down(MouseButton::Left, cx.listener(|t, _, window, cx| {
-                if !t.filter.focus_handle(cx).is_focused(window) {
-                    window.focus(&t.focus, cx);
-                }
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|t, _, window, cx| {
+                    if !t.filter.focus_handle(cx).is_focused(window) {
+                        window.focus(&t.focus, cx);
+                    }
+                }),
+            )
             .child(header)
             .child(filter_box)
             .child(body)

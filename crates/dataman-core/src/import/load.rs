@@ -361,13 +361,7 @@ async fn copy_supported(client: &Client) -> bool {
     }
 }
 
-pub(crate) async fn run(
-    conn: Arc<crate::Connection>,
-    db: Option<String>,
-    path: PathBuf,
-    opts: ImportOptions,
-    progress: Arc<ImportProgress>,
-) -> ImportReport {
+pub(crate) async fn run(conn: Arc<crate::Connection>, db: Option<String>, path: PathBuf, opts: ImportOptions, progress: Arc<ImportProgress>) -> ImportReport {
     let t0 = Instant::now();
     let mut report = ImportReport {
         outcome: Outcome::Done,
@@ -430,14 +424,8 @@ pub(crate) async fn run(
     report.method = method;
     let one_tx = opts.one_transaction;
     let skip = opts.on_error == OnError::Skip;
-    let mut loader = Loader {
-        client,
-        opts: &opts,
-        copy: None,
-        insert_head: opts.insert_head(),
-        one_tx,
-        savepoints: one_tx && (skip || method == Method::Insert),
-    };
+    let mut loader =
+        Loader { client, opts: &opts, copy: None, insert_head: opts.insert_head(), one_tx, savepoints: one_tx && (skip || method == Method::Insert) };
 
     let setup = async {
         if one_tx {

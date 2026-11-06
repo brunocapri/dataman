@@ -128,31 +128,166 @@ impl Analysis {
 }
 
 const NOT_COLUMNS: &[&str] = &[
-    "precision", "varying", "zone", "at", "local", "localtime", "localtimestamp", "current_date", "current_time",
-    "current_timestamp", "current_user", "current_role", "current_schema", "current_catalog", "session_user", "user",
-    "year", "month", "day", "hour", "minute", "second", "epoch", "dow", "doy", "isodow", "isoyear", "week", "quarter",
-    "decade", "century", "millennium", "microseconds", "milliseconds", "timezone", "timezone_hour", "timezone_minute",
-    "julian", "placing", "leading", "trailing", "both", "escape", "nulls", "first", "last", "ordinality", "true",
-    "false", "null", "unknown", "default", "value", "nfc", "nfd", "nfkc", "nfkd", "normalized", "symmetric",
-    "asymmetric", "isnull", "notnull", "sets", "ties", "only", "rows", "range", "groups", "preceding", "following",
-    "unbounded", "current", "exclude", "others", "no", "row", "array", "interval", "distinct", "all", "any", "some",
-    "excluded", "new", "old", "collate", "uescape", "xmlnamespaces", "passing", "columns", "path", "ref", "by",
-    "grouping", "cube", "rollup", "character", "utc_timestamp", "utc_date", "utc_time",
+    "precision",
+    "varying",
+    "zone",
+    "at",
+    "local",
+    "localtime",
+    "localtimestamp",
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "current_user",
+    "current_role",
+    "current_schema",
+    "current_catalog",
+    "session_user",
+    "user",
+    "year",
+    "month",
+    "day",
+    "hour",
+    "minute",
+    "second",
+    "epoch",
+    "dow",
+    "doy",
+    "isodow",
+    "isoyear",
+    "week",
+    "quarter",
+    "decade",
+    "century",
+    "millennium",
+    "microseconds",
+    "milliseconds",
+    "timezone",
+    "timezone_hour",
+    "timezone_minute",
+    "julian",
+    "placing",
+    "leading",
+    "trailing",
+    "both",
+    "escape",
+    "nulls",
+    "first",
+    "last",
+    "ordinality",
+    "true",
+    "false",
+    "null",
+    "unknown",
+    "default",
+    "value",
+    "nfc",
+    "nfd",
+    "nfkc",
+    "nfkd",
+    "normalized",
+    "symmetric",
+    "asymmetric",
+    "isnull",
+    "notnull",
+    "sets",
+    "ties",
+    "only",
+    "rows",
+    "range",
+    "groups",
+    "preceding",
+    "following",
+    "unbounded",
+    "current",
+    "exclude",
+    "others",
+    "no",
+    "row",
+    "array",
+    "interval",
+    "distinct",
+    "all",
+    "any",
+    "some",
+    "excluded",
+    "new",
+    "old",
+    "collate",
+    "uescape",
+    "xmlnamespaces",
+    "passing",
+    "columns",
+    "path",
+    "ref",
+    "by",
+    "grouping",
+    "cube",
+    "rollup",
+    "character",
+    "utc_timestamp",
+    "utc_date",
+    "utc_time",
 ];
 
 const DATE_PART_FUNCS: &[&str] = &["dateadd", "datediff", "datediff_big", "datepart", "datename", "datetrunc", "date_bucket", "timestampadd", "timestampdiff"];
 
 const SPECIAL_ARGS: &[&str] = &[
-    "extract", "overlay", "position", "substring", "trim", "normalize", "xmlelement", "xmlforest", "xmlparse",
-    "xmlserialize", "xmltable", "json_table", "json_object", "json_array", "json_value", "json_query", "json_exists",
+    "extract",
+    "overlay",
+    "position",
+    "substring",
+    "trim",
+    "normalize",
+    "xmlelement",
+    "xmlforest",
+    "xmlparse",
+    "xmlserialize",
+    "xmltable",
+    "json_table",
+    "json_object",
+    "json_array",
+    "json_value",
+    "json_query",
+    "json_exists",
     "collation",
 ];
 
 pub const UNMODELED: &[&str] = &[
-    "APPLY", "PIVOT", "UNPIVOT", "MERGE", "OUTPUT", "TRY", "CATCH", "IF", "ELSE", "WHILE", "BREAK", "CONTINUE", "GOTO",
-    "RETURN", "THROW", "RAISERROR", "PRINT", "WAITFOR", "DECLARE", "EXEC", "EXECUTE", "CURSOR", "OPENJSON", "OPENROWSET",
-    "OPENQUERY", "OPENXML", "OPENDATASOURCE", "CONTAINSTABLE", "FREETEXTTABLE", "CHANGETABLE", "PREDICT", "WITHIN",
-    "MATCH", "AGAINST",
+    "APPLY",
+    "PIVOT",
+    "UNPIVOT",
+    "MERGE",
+    "OUTPUT",
+    "TRY",
+    "CATCH",
+    "IF",
+    "ELSE",
+    "WHILE",
+    "BREAK",
+    "CONTINUE",
+    "GOTO",
+    "RETURN",
+    "THROW",
+    "RAISERROR",
+    "PRINT",
+    "WAITFOR",
+    "DECLARE",
+    "EXEC",
+    "EXECUTE",
+    "CURSOR",
+    "OPENJSON",
+    "OPENROWSET",
+    "OPENQUERY",
+    "OPENXML",
+    "OPENDATASOURCE",
+    "CONTAINSTABLE",
+    "FREETEXTTABLE",
+    "CHANGETABLE",
+    "PREDICT",
+    "WITHIN",
+    "MATCH",
+    "AGAINST",
 ];
 
 fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bool {
@@ -207,9 +342,38 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
 pub const SYSTEM_COLUMNS: &[&str] = &["ctid", "xmin", "xmax", "cmin", "cmax", "tableoid", "oid"];
 
 const CLAUSE_WORDS: &[&str] = &[
-    "FROM", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT",
-    "EXCEPT", "RETURNING", "INTO", "ON", "USING", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "SET",
-    "VALUES", "SELECT", "OUTER", "LATERAL", "TABLESAMPLE", "DO", "WITH",
+    "FROM",
+    "WHERE",
+    "GROUP",
+    "HAVING",
+    "WINDOW",
+    "ORDER",
+    "LIMIT",
+    "OFFSET",
+    "FETCH",
+    "FOR",
+    "UNION",
+    "INTERSECT",
+    "EXCEPT",
+    "RETURNING",
+    "INTO",
+    "ON",
+    "USING",
+    "JOIN",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "INNER",
+    "CROSS",
+    "NATURAL",
+    "SET",
+    "VALUES",
+    "SELECT",
+    "OUTER",
+    "LATERAL",
+    "TABLESAMPLE",
+    "DO",
+    "WITH",
 ];
 
 pub fn analyze(src: &str, toks: &[Token]) -> Analysis {
@@ -429,7 +593,8 @@ impl<'a> P<'a> {
                         continue;
                     }
                     "INTO" | "INSERT"
-                        if (w == "INTO" && self.any_word(i.wrapping_sub(1), &["INSERT", "REPLACE", "IGNORE", "LOW_PRIORITY", "HIGH_PRIORITY", "DELAYED"])) || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
+                        if (w == "INTO" && self.any_word(i.wrapping_sub(1), &["INSERT", "REPLACE", "IGNORE", "LOW_PRIORITY", "HIGH_PRIORITY", "DELAYED"]))
+                            || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
                     {
                         i = self.insert_target(i + 1, hi, id);
                         if i < hi && self.starts_query(i) {
@@ -532,7 +697,10 @@ impl<'a> P<'a> {
         self.qualified = rest;
         for (mut t, q) in mine {
             let srcs = &self.a.scopes[id].sources;
-            let found = srcs.iter().position(|x| x.alias.as_deref() == Some(&q)).or_else(|| srcs.iter().position(|x| x.alias.is_none() && x.visible_name() == Some(&q)));
+            let found = srcs
+                .iter()
+                .position(|x| x.alias.as_deref() == Some(&q))
+                .or_else(|| srcs.iter().position(|x| x.alias.is_none() && x.visible_name() == Some(&q)));
             if let Some(s) = found {
                 t.source = s;
                 self.a.targets.push(t);
@@ -598,8 +766,13 @@ impl<'a> P<'a> {
             let schema = (parts.len() > 1).then(|| self.value(parts[parts.len() - 2]));
             self.a.calls.push((schema, name.clone(), self.t[last].range()));
             let sp = SPECIAL_ARGS.contains(&name.as_str());
-            let keyword_first = DATE_PART_FUNCS.contains(&name.as_str()) || (self.dialect == Dialect::TSql && matches!(name.as_str(), "convert" | "try_convert" | "try_parse" | "parse"));
-            if keyword_first && parts.len() == 1 && matches!(self.t.get(k + 1).map(|t| t.kind), Some(TokenKind::Ident | TokenKind::Keyword)) && self.punct(k + 2, ",") {
+            let keyword_first = DATE_PART_FUNCS.contains(&name.as_str())
+                || (self.dialect == Dialect::TSql && matches!(name.as_str(), "convert" | "try_convert" | "try_parse" | "parse"));
+            if keyword_first
+                && parts.len() == 1
+                && matches!(self.t.get(k + 1).map(|t| t.kind), Some(TokenKind::Ident | TokenKind::Keyword))
+                && self.punct(k + 2, ",")
+            {
                 let j = self.close[k].min(hi);
                 self.expr(k + 3, j, id, clause, sp);
                 return j + 1;
@@ -613,24 +786,21 @@ impl<'a> P<'a> {
                 s == "::"
                     || s == "."
                     || (p.kind == TokenKind::Punct && s == ":")
-                    || (p.kind == TokenKind::Keyword && ["AS", "OVER", "CONSTRAINT", "COLLATE", "OF", "WINDOW", "CHARSET"].iter().any(|w| s.eq_ignore_ascii_case(w)))
+                    || (p.kind == TokenKind::Keyword
+                        && ["AS", "OVER", "CONSTRAINT", "COLLATE", "OF", "WINDOW", "CHARSET"].iter().any(|w| s.eq_ignore_ascii_case(w)))
             })
             || self.t.get(k).is_some_and(|t| t.kind == TokenKind::String || t.text(self.src) == "=>")
-            || (parts.len() == 1 && i >= 2 && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("SET")) && self.t[i - 2].text(self.src).eq_ignore_ascii_case("CHARACTER"))
+            || (parts.len() == 1
+                && i >= 2
+                && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("SET"))
+                && self.t[i - 2].text(self.src).eq_ignore_ascii_case("CHARACTER"))
             || (parts.len() == 1 && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("USING")) && !self.punct(k, "("))
             || (self.dialect == Dialect::TSql && parts.len() == 1 && self.punct(k, ":") && self.punct(k + 1, ":"))
             || (parts.len() == 1 && NOT_COLUMNS.contains(&self.value(i).to_ascii_lowercase().as_str()));
         if !skip {
             let name = self.value(last);
             let qualifier = (parts.len() > 1).then(|| self.value(parts[parts.len() - 2]));
-            self.a.refs.push(ColRef {
-                scope: id,
-                qualifier,
-                name,
-                range: self.t[i].start..self.t[last].end,
-                name_range: self.t[last].range(),
-                clause,
-            });
+            self.a.refs.push(ColRef { scope: id, qualifier, name, range: self.t[i].start..self.t[last].end, name_range: self.t[last].range(), clause });
         }
         k
     }
@@ -646,7 +816,20 @@ impl<'a> P<'a> {
                 i = j + 1;
             }
         }
-        while self.any_word(i, &["DISTINCTROW", "HIGH_PRIORITY", "STRAIGHT_JOIN", "SQL_SMALL_RESULT", "SQL_BIG_RESULT", "SQL_BUFFER_RESULT", "SQL_NO_CACHE", "SQL_CACHE", "SQL_CALC_FOUND_ROWS"]) {
+        while self.any_word(
+            i,
+            &[
+                "DISTINCTROW",
+                "HIGH_PRIORITY",
+                "STRAIGHT_JOIN",
+                "SQL_SMALL_RESULT",
+                "SQL_BIG_RESULT",
+                "SQL_BUFFER_RESULT",
+                "SQL_NO_CACHE",
+                "SQL_CACHE",
+                "SQL_CALC_FOUND_ROWS",
+            ],
+        ) {
             i += 1;
         }
         let mut start = i;
@@ -692,9 +875,26 @@ impl<'a> P<'a> {
     fn is_clause_end(&self, k: usize) -> bool {
         self.t.get(k).is_some_and(|t| t.kind == TokenKind::Keyword)
             && !(self.word(k, "FROM") && self.word(k.wrapping_sub(1), "DISTINCT"))
-            && ["FROM", "INTO", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT", "EXCEPT", "RETURNING", "ON"]
-                .iter()
-                .any(|w| self.word(k, w))
+            && [
+                "FROM",
+                "INTO",
+                "WHERE",
+                "GROUP",
+                "HAVING",
+                "WINDOW",
+                "ORDER",
+                "LIMIT",
+                "OFFSET",
+                "FETCH",
+                "FOR",
+                "UNION",
+                "INTERSECT",
+                "EXCEPT",
+                "RETURNING",
+                "ON",
+            ]
+            .iter()
+            .any(|w| self.word(k, w))
     }
 
     fn item(&mut self, lo: usize, hi: usize, id: usize, clause: Clause) {
@@ -714,11 +914,7 @@ impl<'a> P<'a> {
             Item::Star(Some(String::new()))
         } else if n >= 2 && self.word(hi - 2, "AS") && (self.is_name(hi - 1) || self.t[hi - 1].kind == TokenKind::Keyword) {
             Item::Named(self.value(hi - 1))
-        } else if n >= 2
-            && self.is_name(hi - 1)
-            && !self.punct(hi - 2, ".")
-            && !matches!(self.t[hi - 2].kind, TokenKind::Operator)
-            && !self.word(hi - 2, "AS")
+        } else if n >= 2 && self.is_name(hi - 1) && !self.punct(hi - 2, ".") && !matches!(self.t[hi - 2].kind, TokenKind::Operator) && !self.word(hi - 2, "AS")
         {
             Item::Named(self.value(hi - 1))
         } else if self.is_name(hi - 1) && (n == 1 || self.punct(hi - 2, ".")) {
@@ -733,7 +929,11 @@ impl<'a> P<'a> {
             Item::Expr
         };
         let alias_at = match &item {
-            Item::Named(_) if n >= 2 && (self.word(hi - 2, "AS") || (self.is_name(hi - 1) && !self.punct(hi - 2, ".") && !matches!(self.t[hi - 2].kind, TokenKind::Operator))) => {
+            Item::Named(_)
+                if n >= 2
+                    && (self.word(hi - 2, "AS")
+                        || (self.is_name(hi - 1) && !self.punct(hi - 2, ".") && !matches!(self.t[hi - 2].kind, TokenKind::Operator))) =>
+            {
                 Some(if self.word(hi - 2, "AS") { hi - 2 } else { hi - 1 })
             }
             _ => None,
@@ -845,7 +1045,13 @@ impl<'a> P<'a> {
             }
         }
         let name = parts.pop().unwrap_or_default();
-        let schema = if gap && parts.len() == 1 { Some(format!("{}..", parts[0])) } else if parts.is_empty() { None } else { Some(parts.join(".")) };
+        let schema = if gap && parts.len() == 1 {
+            Some(format!("{}..", parts[0]))
+        } else if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("."))
+        };
         (schema, name, k)
     }
 
@@ -1009,12 +1215,7 @@ impl<'a> P<'a> {
             }
         }
         if let Some(kind) = kind {
-            self.a.scopes[id].sources.push(Source {
-                alias,
-                kind,
-                name_range: self.t[start].start..name_end,
-                alias_columns,
-            });
+            self.a.scopes[id].sources.push(Source { alias, kind, name_range: self.t[start].start..name_end, alias_columns });
         }
         if self.word(i, "TABLESAMPLE") {
             i += 2;
@@ -1128,9 +1329,7 @@ impl Analysis {
                 Some(cols) => Some(renamed(cols)),
                 None => src.alias_columns.as_ref().map(|v| v.iter().map(|n| (n.clone(), String::new())).collect()),
             },
-            SourceKind::Function(_) | SourceKind::Values => {
-                src.alias_columns.as_ref().map(|v| v.iter().map(|n| (n.clone(), String::new())).collect())
-            }
+            SourceKind::Function(_) | SourceKind::Values => src.alias_columns.as_ref().map(|v| v.iter().map(|n| (n.clone(), String::new())).collect()),
         }
     }
 
@@ -1334,12 +1533,7 @@ mod tests {
         let refs: Vec<(Option<&str>, &str, Clause)> = a.refs.iter().map(|r| (r.qualifier.as_deref(), r.name.as_str(), r.clause)).collect();
         assert_eq!(
             refs,
-            vec![
-                (Some("p"), "id", Clause::Select),
-                (None, "total", Clause::Select),
-                (Some("p"), "status", Clause::Where),
-                (None, "t", Clause::OrderBy),
-            ]
+            vec![(Some("p"), "id", Clause::Select), (None, "total", Clause::Select), (Some("p"), "status", Clause::Where), (None, "t", Clause::OrderBy),]
         );
         assert_eq!(a.scopes[0].items, vec![Item::Named("id".into()), Item::Named("t".into()), Item::Named("n".into())]);
         assert!(a.calls.iter().any(|c| c.1 == "count") && a.calls.iter().any(|c| c.1 == "extract"));

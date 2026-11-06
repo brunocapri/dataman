@@ -11,8 +11,8 @@ mod pg;
 pub use catalog::{Catalog, FuncSig, TypeEntry};
 pub use model::{Column, Index, RelKind, Relation, SchemaSnapshot};
 pub use objects::{
-    Constraint, ConstraintKind, Extension, FuncKind, Function, ObjectCounts, Partition, Privileges, RelStats, Role, Sequence, TableExtras,
-    Trigger, TypeKind, UserType, ViewSource, ViewSourceKind,
+    Constraint, ConstraintKind, Extension, FuncKind, Function, ObjectCounts, Partition, Privileges, RelStats, Role, Sequence, TableExtras, Trigger, TypeKind,
+    UserType, ViewSource, ViewSourceKind,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -471,13 +471,7 @@ impl Connection {
                 }
             }
             v.sort_by(|a, b| b.primary.cmp(&a.primary).then_with(|| a.name.cmp(&b.name)));
-            this.schema
-                .dbs
-                .write()
-                .entry(db.clone())
-                .or_default()
-                .indexes
-                .insert((schema.clone(), rel.clone()), v.clone());
+            this.schema.dbs.write().entry(db.clone()).or_default().indexes.insert((schema.clone(), rel.clone()), v.clone());
             this.schema.bump();
             Ok(v)
         })
@@ -519,13 +513,7 @@ impl Connection {
                 let (Some(s), Some(t), Some(name)) = (get(0), get(1), get(2)) else { continue };
                 by_rel.entry((s, t)).or_default().push((
                     get(5).and_then(|n| n.parse().ok()).unwrap_or(0),
-                    Column {
-                        name,
-                        type_name: get(3).unwrap_or_default(),
-                        nullable: parse_bool(&get(4)),
-                        primary_key: false,
-                        default: None,
-                    },
+                    Column { name, type_name: get(3).unwrap_or_default(), nullable: parse_bool(&get(4)), primary_key: false, default: None },
                 ));
             }
             {

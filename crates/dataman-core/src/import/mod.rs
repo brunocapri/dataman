@@ -327,7 +327,8 @@ pub fn auto_map(source: &[SourceColumn], target: &[String], named: bool) -> Vec<
             if out[i].is_some() {
                 continue;
             }
-            let hit = target.iter().enumerate().position(|(j, t)| !used[j] && if exact { *t == s.name } else { norm(t) == norm(&s.name) && !norm(t).is_empty() });
+            let hit =
+                target.iter().enumerate().position(|(j, t)| !used[j] && if exact { *t == s.name } else { norm(t) == norm(&s.name) && !norm(t).is_empty() });
             if let Some(j) = hit {
                 used[j] = true;
                 out[i] = Some(j);
@@ -358,8 +359,8 @@ pub fn kind_of_type(type_name: &str) -> Kind {
     }
     let base = t.split('(').next().unwrap_or("").trim().trim_matches('"');
     match base {
-        "smallint" | "integer" | "bigint" | "int" | "int2" | "int4" | "int8" | "smallserial" | "serial" | "bigserial" | "serial2" | "serial4"
-        | "serial8" | "oid" => Kind::Int,
+        "smallint" | "integer" | "bigint" | "int" | "int2" | "int4" | "int8" | "smallserial" | "serial" | "bigserial" | "serial2" | "serial4" | "serial8"
+        | "oid" => Kind::Int,
         "real" | "float4" => Kind::Float4,
         "double precision" | "float8" | "float" => Kind::Float,
         "numeric" | "decimal" => Kind::Numeric,

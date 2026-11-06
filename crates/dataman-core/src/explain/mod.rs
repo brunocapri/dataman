@@ -431,7 +431,10 @@ impl Plan {
         }
         // DuckDB's EXPLAIN: the physical plan's text.
         if let (Some(k), Some(v)) = (col("explain_key"), col("explain_value")) {
-            let pick = rows.iter().find(|r| r.get(k).and_then(|x| x.as_deref()).is_some_and(|x| x.contains("physical") || x.contains("analyzed"))).or_else(|| rows.first());
+            let pick = rows
+                .iter()
+                .find(|r| r.get(k).and_then(|x| x.as_deref()).is_some_and(|x| x.contains("physical") || x.contains("analyzed")))
+                .or_else(|| rows.first());
             return pick.and_then(|r| r.get(v).cloned().flatten()).unwrap_or_default();
         }
         if let (Some(t), Some(p)) = (col("plan_type"), col("plan")) {
@@ -441,10 +444,7 @@ impl Plan {
                 .or_else(|| rows.first());
             return pick.and_then(|r| r.get(p).cloned().flatten()).unwrap_or_default();
         }
-        rows.iter()
-            .map(|r| r.iter().map(|c| c.as_deref().unwrap_or("")).collect::<Vec<_>>().join(" "))
-            .collect::<Vec<_>>()
-            .join("\n")
+        rows.iter().map(|r| r.iter().map(|c| c.as_deref().unwrap_or("")).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join("\n")
     }
 
     fn from_json(v: &Value, source: &str) -> Option<Plan> {
@@ -473,16 +473,11 @@ impl Plan {
         }
         if let Some(j) = top.get("JIT") {
             let timing = j.get("Timing");
-            let ms = |k: &str| {
-                timing.and_then(|t| t.get(k)).and_then(|x| x.as_f64().or_else(|| x.get("Total").and_then(Value::as_f64)))
-            };
+            let ms = |k: &str| timing.and_then(|t| t.get(k)).and_then(|x| x.as_f64().or_else(|| x.get("Total").and_then(Value::as_f64)));
             totals.jit = Some(Jit {
                 functions: j.get("Functions").and_then(Value::as_f64).unwrap_or(0.),
                 total_ms: ms("Total").unwrap_or(0.),
-                phases: ["Generation", "Inlining", "Optimization", "Emission"]
-                    .iter()
-                    .filter_map(|p| ms(p).map(|m| (p.to_ascii_lowercase(), m)))
-                    .collect(),
+                phases: ["Generation", "Inlining", "Optimization", "Emission"].iter().filter_map(|p| ms(p).map(|m| (p.to_ascii_lowercase(), m))).collect(),
             });
         }
         if let Some(Value::Object(s)) = top.get("Settings") {
@@ -950,7 +945,11 @@ mod tests {
             let kids = if depth == 0 {
                 String::new()
             } else {
-                format!(r#","Plans":[{},{}]"#, node(depth - 1, i * 2), node(depth - 1, i * 2 + 1).replace("\"Parent Relationship\":\"Outer\"", "\"Parent Relationship\":\"Inner\""))
+                format!(
+                    r#","Plans":[{},{}]"#,
+                    node(depth - 1, i * 2),
+                    node(depth - 1, i * 2 + 1).replace("\"Parent Relationship\":\"Outer\"", "\"Parent Relationship\":\"Inner\"")
+                )
             };
             format!(
                 r#"{{"Node Type":"{}","Parent Relationship":"Outer","Relation Name":"t{i}","Startup Cost":0.0,"Total Cost":{}.0,"Plan Rows":100,"Plan Width":8,"Actual Startup Time":0.01,"Actual Total Time":{}.0,"Actual Rows":100.0,"Actual Loops":1,"Filter":"(x = {i})","Rows Removed by Filter":10{kids}}}"#,
@@ -959,7 +958,11 @@ mod tests {
                 depth * 2 + 1,
             )
         }
-        let s = format!(r#"[{{"Plan":{{"Node Type":"Append","Actual Total Time":50.0,"Actual Loops":1,"Total Cost":100.0,"Plans":[{},{}]}}}}]"#, node(9, 1), node(9, 2));
+        let s = format!(
+            r#"[{{"Plan":{{"Node Type":"Append","Actual Total Time":50.0,"Actual Loops":1,"Total Cost":100.0,"Plans":[{},{}]}}}}]"#,
+            node(9, 1),
+            node(9, 2)
+        );
         let t0 = std::time::Instant::now();
         let p = Plan::parse(&s);
         let took = t0.elapsed();

@@ -267,11 +267,8 @@ fn changed_host_key_is_refused() {
     let e = env();
     std::fs::create_dir_all(&e.core.dirs.config).unwrap();
     let name = if s.ssh.1 == 22 { s.ssh.0.clone() } else { format!("[{}]:{}", s.ssh.0, s.ssh.1) };
-    std::fs::write(
-        e.core.dirs.known_hosts_file(),
-        format!("{name} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n"),
-    )
-    .unwrap();
+    std::fs::write(e.core.dirs.known_hosts_file(), format!("{name} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n"))
+        .unwrap();
     let err = fails(&e, &db_profile(key_auth(s, "k_ed")));
     match ssh_error(&err) {
         Some(SshError::HostKeyChanged { line, .. }) => assert_eq!(line, 1),
@@ -284,7 +281,9 @@ fn changed_host_key_is_refused() {
 #[cfg(unix)]
 fn unix_socket_host() {
     let (pg_host, pg_port) = ("127.0.0.1", 55432u16);
-    if !TcpStream::connect_timeout(&format!("{pg_host}:{pg_port}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok()) {
+    if !TcpStream::connect_timeout(&format!("{pg_host}:{pg_port}").parse().unwrap(), Duration::from_secs(1))
+        .is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
+    {
         eprintln!("skipping: no PostgreSQL at {pg_host}:{pg_port}");
         return;
     }

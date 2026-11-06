@@ -14,7 +14,8 @@ use crate::backend::redis::Client;
 use crate::privacy::{ItemKind, VisibleMode};
 
 /// Reads Dataman allows that Redis files under `@dangerous` or `@admin`.
-const READS_BACK: &[&str] = &["+info", "+role", "+latency|latest", "+memory|usage", "+memory|stats", "+cluster|info", "+cluster|nodes", "+acl|whoami", "+select", "+ping", "+echo"];
+const READS_BACK: &[&str] =
+    &["+info", "+role", "+latency|latest", "+memory|usage", "+memory|stats", "+cluster|info", "+cluster|nodes", "+acl|whoami", "+select", "+ping", "+echo"];
 
 pub fn marker(conn: &str) -> String {
     format!("(%R~dataman-managed:{} -@all)", key_pattern(conn))
@@ -90,7 +91,18 @@ fn args(spec: &Spec, password_hash: &str) -> Vec<String> {
 }
 
 fn shown(a: &[String]) -> String {
-    a.iter().map(|x| if x.starts_with('#') && x.len() == 65 { "#<sha256 of the password>".to_string() } else if x.contains(' ') { format!("\"{x}\"") } else { x.clone() }).collect::<Vec<_>>().join(" ")
+    a.iter()
+        .map(|x| {
+            if x.starts_with('#') && x.len() == 65 {
+                "#<sha256 of the password>".to_string()
+            } else if x.contains(' ') {
+                format!("\"{x}\"")
+            } else {
+                x.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn step(group: &str, a: Vec<String>) -> Step {
@@ -117,7 +129,11 @@ fn rules(spec: &Spec, keys_held: bool, persist: &Persist, prod: bool) -> Vec<Rul
             cats.push("@pubsub");
         }
     }
-    v.push(line(format!("Commands: {}", if cats.is_empty() { "none".into() } else { cats.join(" ") }), "the user's categories, never @dangerous", Who::Database));
+    v.push(line(
+        format!("Commands: {}", if cats.is_empty() { "none".into() } else { cats.join(" ") }),
+        "the user's categories, never @dangerous",
+        Who::Database,
+    ));
     v.push(line("Scripts after your Allow", "run on your login; the agent's has no @scripting", Who::Database));
     if !r.visible.is_open() {
         if keys_held {
@@ -130,7 +146,11 @@ fn rules(spec: &Spec, keys_held: bool, persist: &Persist, prod: bool) -> Vec<Rul
     if r.visible.has_columns() || r.view == AgentView::Masked {
         v.push(line("Hidden or masked fields", "an ACL has no fields", Who::Dataman));
     }
-    v.push(line(if spec.activity { "Server activity" } else { "No server activity" }, if spec.activity { "+client|list" } else { "no CLIENT LIST" }, Who::Database));
+    v.push(line(
+        if spec.activity { "Server activity" } else { "No server activity" },
+        if spec.activity { "+client|list" } else { "no CLIENT LIST" },
+        Who::Database,
+    ));
     v.push(line(time_label(spec.time_limit_s), "no time limit per user", Who::Dataman));
     match persist {
         Persist::AclFile | Persist::Config => {}
@@ -218,7 +238,10 @@ pub(crate) async fn probe(c: &Client, user: &str, conn: &str) -> Result<(Probe, 
     if p.flavor.major > 0 && p.flavor.major < 7 {
         p.lacks.push("Redis 7 or later is needed (selectors mark Dataman's users)".into());
     }
-    let can = call(c, &["ACL".into(), "DRYRUN".into(), login.clone(), "ACL".into(), "SETUSER".into(), "x".into()]).await.map(|r| r.text().unwrap_or_default() == "OK").unwrap_or(false)
+    let can = call(c, &["ACL".into(), "DRYRUN".into(), login.clone(), "ACL".into(), "SETUSER".into(), "x".into()])
+        .await
+        .map(|r| r.text().unwrap_or_default() == "OK")
+        .unwrap_or(false)
         || call(c, &["ACL".into(), "LIST".into()]).await.is_ok();
     p.can_create = can && p.lacks.is_empty();
     if !can {
@@ -256,9 +279,16 @@ pub(crate) async fn exists(c: &Client, user: &str, conn: &str) -> Result<Option<
 /// The user's rules as Redis prints them, and those the rules want, made comparable: the want
 /// side is set on a throwaway user that can't log in, read back, and deleted.
 pub(crate) async fn have_and_want(c: &Client, spec: &Spec) -> Result<(Vec<String>, Vec<String>)> {
-    let canon = |l: &str| -> Vec<String> { l.split_whitespace().skip(2).filter(|t| !matches!(*t, "on" | "off" | "nopass" | "resetpass") && !t.starts_with('#') && !t.starts_with('>')).map(str::to_string).collect() };
+    let canon = |l: &str| -> Vec<String> {
+        l.split_whitespace()
+            .skip(2)
+            .filter(|t| !matches!(*t, "on" | "off" | "nopass" | "resetpass") && !t.starts_with('#') && !t.starts_with('>'))
+            .map(str::to_string)
+            .collect()
+    };
     let list = call(c, &["ACL".into(), "LIST".into()]).await?.texts();
-    let have = list.iter().find(|l| l.starts_with(&format!("user {} ", spec.user))).map(|l| canon(l)).ok_or_else(|| anyhow!("{} is not on this server", spec.user))?;
+    let have =
+        list.iter().find(|l| l.starts_with(&format!("user {} ", spec.user))).map(|l| canon(l)).ok_or_else(|| anyhow!("{} is not on this server", spec.user))?;
     let tmp = format!("{}_check", spec.user);
     let mut a = vec!["ACL".into(), "SETUSER".into(), tmp.clone(), "reset".into(), "off".into()];
     a.extend(rules_for(spec).0);

@@ -1,19 +1,19 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{
-    App, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window, actions, div, prelude::*,
-};
 use dataman_core::Connection;
 use dataman_core::guard::WriteClass;
 use dataman_core::nosql::{self, Body, Docs, Failed, Output, Page, Ran, Source};
+use gpui::{
+    App, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, MouseDownEvent,
+    MouseMoveEvent, SharedString, Window, actions, div, prelude::*,
+};
 
 use crate::assets::{Icon, icon};
 use crate::editor::{CodeEditor, EditorEvent, Stmt};
 use crate::theme::{ActiveTheme, Theme, metrics, px};
-use crate::ui::{self, Btn};
 use crate::ui::Tipped;
+use crate::ui::{self, Btn};
 
 actions!(doc_view, [NextDocument, PrevDocument]);
 
@@ -26,10 +26,7 @@ const LIST_MIN: f32 = 220.;
 const DETAIL_MIN: f32 = 260.;
 
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        crate::keymap::kb("down", NextDocument, Some("DocList")),
-        crate::keymap::kb("up", PrevDocument, Some("DocList")),
-    ]);
+    cx.bind_keys([crate::keymap::kb("down", NextDocument, Some("DocList")), crate::keymap::kb("up", PrevDocument, Some("DocList"))]);
 }
 
 pub enum DocEvent {
@@ -291,7 +288,13 @@ impl DocPane {
                 _ => {}
             }
         }
-        let what = if stmts.len() > 1 { "This run" } else if nosql::is_script(self.conn.engine(), &stmts[0].sql) { "This script" } else { "This statement" };
+        let what = if stmts.len() > 1 {
+            "This run"
+        } else if nosql::is_script(self.conn.engine(), &stmts[0].sql) {
+            "This script"
+        } else {
+            "This statement"
+        };
         let why = if !reasons.is_empty() {
             Some(format!("{what} {}.", reasons.join(", ")))
         } else if writes && self.conn.profile.env.is_production() {
@@ -388,11 +391,7 @@ impl DocPane {
             self.queue.clear();
         }
         let lines = match &result {
-            Ok(Ran { output: Output::Docs(d), .. }) => d
-                .docs
-                .iter()
-                .map(line)
-                .collect(),
+            Ok(Ran { output: Output::Docs(d), .. }) => d.docs.iter().map(line).collect(),
             _ => Vec::new(),
         };
         let same = self.last.as_ref().is_some_and(|l| l.stmt.sql == stmt.sql && l.page == page);
@@ -466,7 +465,9 @@ impl DocPane {
         let Some(l) = &self.last else { return String::new() };
         match &l.result {
             Ok(Ran { output: Output::Docs(d), .. }) => match self.selected.and_then(|i| Some((i, d.docs.get(i)?))) {
-                Some((_, doc)) if doc.id.is_some() => format!("{:?} {} {}", d.source, doc.index.as_deref().unwrap_or(""), doc.id.as_ref().map(Body::to_json).unwrap_or_default()),
+                Some((_, doc)) if doc.id.is_some() => {
+                    format!("{:?} {} {}", d.source, doc.index.as_deref().unwrap_or(""), doc.id.as_ref().map(Body::to_json).unwrap_or_default())
+                }
                 Some((i, _)) => format!("{:?} {} #{}", d.source, l.stmt.sql, d.skip as usize + i),
                 None => String::new(),
             },
@@ -590,9 +591,12 @@ impl DocPane {
                 match r {
                     Ok(id) => {
                         p.new_doc = false;
-                        let body = search_index.as_ref().and_then(|_| nosql::shell::parse(&text).ok()).and_then(|v| nosql::shell::to_json(&v).ok()).map(Body::Json);
+                        let body =
+                            search_index.as_ref().and_then(|_| nosql::shell::parse(&text).ok()).and_then(|v| nosql::shell::to_json(&v).ok()).map(Body::Json);
                         let edit = match (body, &search_index, inserted, saved) {
-                            (Some(body), Some(index), true, _) => Some(SearchEdit::Inserted(nosql::Doc { id: Some(id.clone()), index: Some(index.clone()), body })),
+                            (Some(body), Some(index), true, _) => {
+                                Some(SearchEdit::Inserted(nosql::Doc { id: Some(id.clone()), index: Some(index.clone()), body }))
+                            }
                             (Some(body), Some(_), false, Some((id, index))) => Some(SearchEdit::Saved { id, index, body }),
                             _ => None,
                         };
@@ -741,7 +745,13 @@ impl DocPane {
         let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(crate::theme::text::UI));
         let mut left: Vec<gpui::AnyElement> = Vec::new();
         let metric = |k: &str, v: String| {
-            div().flex().flex_row().gap(px(5.)).child(div().text_color(t.tx4).child("·")).child(div().text_color(t.tx3).child(k.to_string())).child(div().text_color(t.tx).child(v))
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(5.))
+                .child(div().text_color(t.tx4).child("·"))
+                .child(div().text_color(t.tx3).child(k.to_string()))
+                .child(div().text_color(t.tx).child(v))
         };
         let count = |n: String, what: &str| {
             div()
@@ -787,25 +797,21 @@ impl DocPane {
                                         .flex_row()
                                         .items_center()
                                         .gap(px(2.))
-                                        .child(
-                                            ui::icon_button(t, "doc-prev", Icon::ChevronLeft, 22., 12.)
-                                                .when(!prev_on, |d| d.opacity(0.35))
-                                                .on_click(cx.listener(move |p, _, _, cx| {
-                                                    if prev_on {
-                                                        p.go_page(skip.saturating_sub(limit), cx);
-                                                    }
-                                                })),
-                                        )
+                                        .child(ui::icon_button(t, "doc-prev", Icon::ChevronLeft, 22., 12.).when(!prev_on, |d| d.opacity(0.35)).on_click(
+                                            cx.listener(move |p, _, _, cx| {
+                                                if prev_on {
+                                                    p.go_page(skip.saturating_sub(limit), cx);
+                                                }
+                                            }),
+                                        ))
                                         .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child(range))
-                                        .child(
-                                            ui::icon_button(t, "doc-next", Icon::ChevronRight, 22., 12.)
-                                                .when(!next_on, |d| d.opacity(0.35))
-                                                .on_click(cx.listener(move |p, _, _, cx| {
-                                                    if next_on {
-                                                        p.go_page(skip + limit, cx);
-                                                    }
-                                                })),
-                                        ),
+                                        .child(ui::icon_button(t, "doc-next", Icon::ChevronRight, 22., 12.).when(!next_on, |d| d.opacity(0.35)).on_click(
+                                            cx.listener(move |p, _, _, cx| {
+                                                if next_on {
+                                                    p.go_page(skip + limit, cx);
+                                                }
+                                            }),
+                                        )),
                                 );
                             }
                         }
@@ -885,16 +891,9 @@ impl DocPane {
             .border_color(if prod { t.err } else { t.warn })
             .text_size(px(crate::theme::text::UI))
             .child(div().flex_none().text_color(if prod { t.err } else { t.warn }).child("!"))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(div().text_color(t.tx).child(c.why.clone()))
-                    .child(div().text_color(t.tx3).overflow_hidden().whitespace_nowrap().text_ellipsis().child(c.stmt.sql.lines().next().unwrap_or("").to_string())),
-            )
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(c.why.clone())).child(
+                div().text_color(t.tx3).overflow_hidden().whitespace_nowrap().text_ellipsis().child(c.stmt.sql.lines().next().unwrap_or("").to_string()),
+            ))
             .child(ui::button(t, "doc-confirm-cancel", Btn::Ghost).h(px(26.)).child("Cancel").on_click(cx.listener(|p, _, _, cx| p.resolve_confirm(false, cx))))
             .child(
                 ui::button(t, "doc-confirm-run", if prod { Btn::Danger } else { Btn::Primary })
@@ -922,7 +921,9 @@ impl DocPane {
                 .map(|d| ui::selectable(d, t, sel, true))
                 .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                 .child(div().w(px(28.)).flex_none().text_right().text_color(t.tx4).child((base + i + 1).to_string()))
-                .when(!id.is_empty(), |d| d.child(div().flex_none().max_w(px(240.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.num).child(id.clone())))
+                .when(!id.is_empty(), |d| {
+                    d.child(div().flex_none().max_w(px(240.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.num).child(id.clone()))
+                })
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(sum.clone()))
                 .cursor_pointer()
                 .on_click(cx.listener(move |p, _, window, cx| {
@@ -941,7 +942,9 @@ impl DocPane {
             .overflow_y_scroll()
             .py(px(4.))
             .children(rows)
-            .when(lines.is_empty(), |d| d.child(div().pt(px(40.)).flex().justify_center().text_color(t.tx3).text_size(px(crate::theme::text::BODY)).child("No documents")))
+            .when(lines.is_empty(), |d| {
+                d.child(div().pt(px(40.)).flex().justify_center().text_color(t.tx3).text_size(px(crate::theme::text::BODY)).child("No documents"))
+            })
     }
 
     fn render_detail(&self, editor: Entity<CodeEditor>, editable: bool, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -971,7 +974,14 @@ impl DocPane {
                     "Save"
                 })
                 .on_click(cx.listener(|p, _, _, cx| p.save(cx)));
-            let revert = (dirty && !self.saving).then(|| ui::button(t, "doc-revert", Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(crate::theme::text::UI)).child("Revert").on_click(cx.listener(|p, _, _, cx| p.revert(cx))));
+            let revert = (dirty && !self.saving).then(|| {
+                ui::button(t, "doc-revert", Btn::Ghost)
+                    .h(px(24.))
+                    .px(px(8.))
+                    .text_size(px(crate::theme::text::UI))
+                    .child("Revert")
+                    .on_click(cx.listener(|p, _, _, cx| p.revert(cx)))
+            });
             let delete = (!self.new_doc && self.selected.is_some()).then(|| {
                 ui::button(t, "doc-delete", if self.delete_armed { Btn::Danger } else { Btn::Ghost })
                     .h(px(24.))
@@ -997,7 +1007,15 @@ impl DocPane {
                     if err {
                         ui::error_line(t, "doc-note-error", n).text_size(px(crate::theme::text::SMALL)).into_any_element()
                     } else {
-                        div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.ok).child(n).into_any_element()
+                        div()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(crate::theme::text::SMALL))
+                            .text_color(t.ok)
+                            .child(n)
+                            .into_any_element()
                     }
                 }))
                 .child(div().flex_1())
@@ -1005,37 +1023,35 @@ impl DocPane {
                 .children(revert)
                 .child(save)
         });
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .children(header)
-            .child(div().flex_1().min_h_0().relative().overflow_hidden().child(editor))
+        div().size_full().flex().flex_col().children(header).child(div().flex_1().min_h_0().relative().overflow_hidden().child(editor))
     }
 
     /// While the seam is dragged: the pointer anywhere in the window moves it, the button's
     /// release ends it.
     fn split_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let me = cx.entity();
-        gpui::canvas(|_, _, _| {}, move |bounds, _, window, _| {
-            window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
-            window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
-                if phase != DispatchPhase::Bubble {
-                    return;
-                }
-                me.update(cx, |p, cx| {
-                    if ev.pressed_button != Some(MouseButton::Left) {
-                        p.split_drag = false;
-                    } else {
-                        let w = bounds.size.width;
-                        let lo = (px(DETAIL_MIN) / w).min(0.5);
-                        let hi = (1. - px(LIST_MIN) / w).max(0.5);
-                        p.detail_frac = ((bounds.right() - ev.position.x) / w).clamp(lo, hi);
+        gpui::canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
+                window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
                     }
-                    cx.notify();
+                    me.update(cx, |p, cx| {
+                        if ev.pressed_button != Some(MouseButton::Left) {
+                            p.split_drag = false;
+                        } else {
+                            let w = bounds.size.width;
+                            let lo = (px(DETAIL_MIN) / w).min(0.5);
+                            let hi = (1. - px(LIST_MIN) / w).max(0.5);
+                            p.detail_frac = ((bounds.right() - ev.position.x) / w).clamp(lo, hi);
+                        }
+                        cx.notify();
+                    });
                 });
-            });
-        })
+            },
+        )
         .absolute()
         .size_full()
     }
@@ -1111,23 +1127,19 @@ impl Render for DocPane {
                     .flex_row()
                     .child(div().flex_1().min_w(px(LIST_MIN)).h_full().child(self.render_list(&d, &lines, &t, cx)))
                     .when(show_detail, |row| {
-                        let seam = div()
-                            .id("doc-seam")
-                            .absolute()
-                            .left(px(-3.))
-                            .top_0()
-                            .bottom_0()
-                            .w(px(6.))
-                            .cursor(CursorStyle::ResizeLeftRight)
-                            .on_mouse_down(MouseButton::Left, cx.listener(|p, ev: &MouseDownEvent, _, cx| {
-                                if ev.click_count == 2 {
-                                    p.detail_frac = 0.5;
-                                } else {
-                                    p.split_drag = true;
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
-                            }));
+                        let seam =
+                            div().id("doc-seam").absolute().left(px(-3.)).top_0().bottom_0().w(px(6.)).cursor(CursorStyle::ResizeLeftRight).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|p, ev: &MouseDownEvent, _, cx| {
+                                    if ev.click_count == 2 {
+                                        p.detail_frac = 0.5;
+                                    } else {
+                                        p.split_drag = true;
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            );
                         row.child(
                             div()
                                 .w(gpui::relative(self.detail_frac))
@@ -1165,12 +1177,15 @@ impl Render for DocPane {
             .size_full()
             .flex()
             .flex_col()
-            .on_mouse_up(MouseButton::Left, cx.listener(|p, _, _, cx| {
-                if p.split_drag {
-                    p.split_drag = false;
-                    cx.notify();
-                }
-            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|p, _, _, cx| {
+                    if p.split_drag {
+                        p.split_drag = false;
+                        cx.notify();
+                    }
+                }),
+            )
             .child(bar)
             .children(confirm)
             .children(printed)

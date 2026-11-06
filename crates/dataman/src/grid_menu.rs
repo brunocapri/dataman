@@ -1,6 +1,6 @@
-use gpui::{SharedString, div, prelude::*};
 use crate::theme::px;
 use dataman_core::fknav::FkJump;
+use gpui::{SharedString, div, prelude::*};
 
 use crate::assets::{Icon, icon};
 use crate::theme::Theme;
@@ -169,16 +169,7 @@ pub fn row(
         .when(hi, |d| d.bg(t.acc))
         .child(icon(ic).size(px(14.)).text_color(if hi { t.on_acc } else { t.tx3 }))
         .child(div().flex_none().child(label))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .text_size(px(crate::theme::text::SMALL))
-                .text_color(soft)
-                .children(detail),
-        )
+        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(soft).children(detail))
         .children(key.map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(soft).child(crate::ui::keys_text(k))))
 }
 
@@ -219,7 +210,13 @@ mod tests {
         assert_eq!(h[5], Entry::Item(Item::Hide(2)));
         assert_eq!(
             header_entries(0, false, 3, false),
-            vec![Entry::Item(Item::SortAsc(0)), Entry::Item(Item::SortDesc(0)), Entry::Sep, Entry::Item(Item::CopyColumnName(0)), Entry::Item(Item::ShowAll(3))]
+            vec![
+                Entry::Item(Item::SortAsc(0)),
+                Entry::Item(Item::SortDesc(0)),
+                Entry::Sep,
+                Entry::Item(Item::CopyColumnName(0)),
+                Entry::Item(Item::ShowAll(3))
+            ]
         );
         assert_eq!(
             header_entries(1, false, 0, false),

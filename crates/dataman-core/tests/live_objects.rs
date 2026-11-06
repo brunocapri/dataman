@@ -19,9 +19,7 @@ fn pg_every_kind() {
         format!("CREATE TYPE {S}.mood AS ENUM ('sad', 'ok', 'happy')"),
         format!("CREATE TYPE {S}.point2 AS (x integer, y integer)"),
         format!("CREATE DOMAIN {S}.price AS numeric(12,2) NOT NULL DEFAULT 0 CONSTRAINT price_positive CHECK (VALUE >= 0)"),
-        format!(
-            "CREATE TABLE {S}.customers (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL UNIQUE, mood {S}.mood)"
-        ),
+        format!("CREATE TABLE {S}.customers (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, email text NOT NULL UNIQUE, mood {S}.mood)"),
         format!(
             "CREATE TABLE {S}.orders (id serial PRIMARY KEY, customer bigint REFERENCES {S}.customers(id) ON DELETE CASCADE, \
              total {S}.price, qty int CONSTRAINT qty_positive CHECK (qty > 0))"
@@ -98,7 +96,10 @@ fn pg_every_kind() {
     let comp = run!(c.type_definition(&db, S, "point2")).unwrap().unwrap();
     assert!(comp.contains("x integer,\n    y integer"), "{comp}");
     let dom = run!(c.type_definition(&db, S, "price")).unwrap().unwrap();
-    assert!(dom.contains("AS numeric(12,2)") && dom.contains("DEFAULT 0") && dom.contains("NOT NULL") && dom.contains("CONSTRAINT price_positive CHECK"), "{dom}");
+    assert!(
+        dom.contains("AS numeric(12,2)") && dom.contains("DEFAULT 0") && dom.contains("NOT NULL") && dom.contains("CONSTRAINT price_positive CHECK"),
+        "{dom}"
+    );
 
     let trg = run!(c.triggers(&db, S)).unwrap();
     assert_eq!(trg.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["orders_audit", "orders_touch"]);

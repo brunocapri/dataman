@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use gpui::{App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, Window, div, prelude::*};
 use crate::theme::px;
 use dataman_core::Connection;
 use dataman_core::schema::Privileges;
 use dataman_core::schema::objects::Cell;
 use dataman_core::sqlgen;
+use gpui::{App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, Window, div, prelude::*};
 
 use crate::assets::{Icon, icon};
 use crate::theme::ActiveTheme;
-use crate::ui::{self, Btn};
 use crate::ui::Tipped;
+use crate::ui::{self, Btn};
 
 pub enum PrivilegesEvent {
     Template(String),
@@ -128,10 +128,7 @@ impl Render for PrivilegesPanel {
             .border_color(t.line)
             .child(ui::caps(&t, "PRIVILEGES"))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(self.target()))
-            .child(
-                ui::icon_button(&t, "priv-close", Icon::Close, 24., 13.)
-                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PrivilegesEvent::Close))),
-            );
+            .child(ui::icon_button(&t, "priv-close", Icon::Close, 24., 13.).on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PrivilegesEvent::Close))));
         let body: gpui::AnyElement = match &self.state {
             State::Loading => div().px(px(14.)).py(px(10.)).italic().text_color(t.tx3).child("loading…").into_any_element(),
             State::NotReported => div().px(px(14.)).py(px(12.)).flex().child(ui::not_reported(&t)).into_any_element(),
@@ -236,16 +233,8 @@ impl Render for PrivilegesPanel {
             .gap(px(8.))
             .border_t_1()
             .border_color(t.line)
-            .child(
-                ui::button(&t, "priv-grant", Btn::Secondary)
-                    .child("GRANT…")
-                    .on_click(cx.listener(|p, _: &ClickEvent, _, cx| p.template(true, cx))),
-            )
-            .child(
-                ui::button(&t, "priv-revoke", Btn::Secondary)
-                    .child("REVOKE…")
-                    .on_click(cx.listener(|p, _: &ClickEvent, _, cx| p.template(false, cx))),
-            )
+            .child(ui::button(&t, "priv-grant", Btn::Secondary).child("GRANT…").on_click(cx.listener(|p, _: &ClickEvent, _, cx| p.template(true, cx))))
+            .child(ui::button(&t, "priv-revoke", Btn::Secondary).child("REVOKE…").on_click(cx.listener(|p, _: &ClickEvent, _, cx| p.template(false, cx))))
             .child(div().flex_1())
             .children(self.picked.clone().filter(|_| ready).map(|r| {
                 div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(r)

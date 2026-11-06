@@ -216,7 +216,10 @@ pub fn guard(p: &ConnectionProfile) -> Result<(), SignInError> {
     if !host_allowed(kind, &p.host) {
         return Err(SignInError::new(
             format!("No {} token for {}", kind.label(), p.host),
-            format!("The connection comes from {whose} and the host is not a known {} database address: open it in Edit Connection and save it to send your token there.", Cli::of(kind).map_or("", Cli::cloud)),
+            format!(
+                "The connection comes from {whose} and the host is not a known {} database address: open it in Edit Connection and save it to send your token there.",
+                Cli::of(kind).map_or("", Cli::cloud)
+            ),
         ));
     }
     if p.ssh.is_some() && kind != AuthKind::AwsIam {
@@ -248,7 +251,11 @@ pub fn plain_value(v: &str) -> bool {
 /// smuggle a flag or anything a shell would read (there is no shell either).
 fn arg(what: &str, v: &str) -> Result<String, SignInError> {
     let v = v.trim();
-    if plain_value(v) { Ok(v.to_string()) } else { Err(SignInError::new(format!("The {what} {v:?} cannot be passed to the cloud CLI"), "Use letters, digits and . _ @ : / + - only.")) }
+    if plain_value(v) {
+        Ok(v.to_string())
+    } else {
+        Err(SignInError::new(format!("The {what} {v:?} cannot be passed to the cloud CLI"), "Use letters, digits and . _ @ : / + - only."))
+    }
 }
 
 fn opt(name: &str, what: &str, v: Option<&str>) -> Result<Option<String>, SignInError> {
@@ -285,10 +292,15 @@ fn request(p: &ConnectionProfile) -> Result<Request, SignInError> {
         Auth::AwsIam { profile, region } => {
             let region = match region.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
                 Some(r) => r.to_string(),
-                None => aws_region_of(&p.host).ok_or_else(|| SignInError::new("No AWS region", format!("{} is not an RDS endpoint name: set the region in the connection's settings.", p.host)))?,
+                None => aws_region_of(&p.host).ok_or_else(|| {
+                    SignInError::new("No AWS region", format!("{} is not an RDS endpoint name: set the region in the connection's settings.", p.host))
+                })?,
             };
             if p.user.trim().is_empty() {
-                return Err(SignInError::new("No database user", "AWS IAM signs in as a database user granted rds_iam (PostgreSQL) or created WITH AWSAuthenticationPlugin (MySQL)."));
+                return Err(SignInError::new(
+                    "No database user",
+                    "AWS IAM signs in as a database user granted rds_iam (PostgreSQL) or created WITH AWSAuthenticationPlugin (MySQL).",
+                ));
             }
             args.extend(["rds", "generate-db-auth-token", "--output=text"].map(String::from));
             args.push(format!("--hostname={}", arg("host", &p.host)?));
@@ -422,7 +434,10 @@ impl Tree {
 
     #[cfg(windows)]
     fn of(child: &tokio::process::Child) -> Tree {
-        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
         // SAFETY: the job is ours until `Drop` closes it, the limits outlive the call, and the
         // child's handle is valid while `child` lives.
         unsafe {
@@ -501,7 +516,11 @@ async fn run(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth) -> Result
 
 async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout: Duration) -> Result<Result<String, String>, SignInError> {
     let Some(path) = locate(cli.program(), dirs) else {
-        return Err(SignInError::new(format!("{} ({}) not found", cli.name(), cli.program()), format!("Dataman signs in through it: install it ({}), then sign in.", cli.install_url())).fix(Fix::Install(cli)));
+        return Err(SignInError::new(
+            format!("{} ({}) not found", cli.name(), cli.program()),
+            format!("Dataman signs in through it: install it ({}), then sign in.", cli.install_url()),
+        )
+        .fix(Fix::Install(cli)));
     };
     let mut cmd = command(&path, dirs);
     cmd.args(args)
@@ -513,7 +532,13 @@ async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout:
     let out = match run_tree(&mut cmd, timeout).await {
         Some(Ok(o)) => o,
         Some(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
-        None => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth))).fix(Fix::Again(cli))),
+        None => {
+            return Err(SignInError::new(
+                format!("{} did not answer in {} s", cli.name(), timeout.as_secs()),
+                format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth)),
+            )
+            .fix(Fix::Again(cli)));
+        }
     };
     if !out.status.success() {
         return Ok(Err(String::from_utf8_lossy(&out.stderr).into_owned()));
@@ -588,7 +613,13 @@ pub fn login_command(cli: Cli, auth: &Auth) -> String {
 fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError {
     let low = stderr.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| low.contains(&n.to_ascii_lowercase()));
-    let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim_start_matches("ERROR").trim_start_matches(':').trim()).find(|l| !l.is_empty()).unwrap_or("").to_string();
+    let first = stderr
+        .lines()
+        .map(str::trim)
+        .map(|l| l.trim_start_matches("ERROR:").trim_start_matches("ERROR").trim_start_matches(':').trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .to_string();
     let first: String = first.chars().take(300).collect();
     let login = login_command(cli, auth);
     let signed_out = |detail: &str| SignInError::new(cli.signed_out(), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
@@ -596,9 +627,23 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
         Cli::Az => {
             if has(&AZ_INTERACTION) {
                 let scope = entra_scope(args);
-                return SignInError::new("Azure asks to sign in again (MFA or Conditional Access)", format!("Sign in again, or run `{login} --scope {scope}` in a terminal.")).fix(Fix::SignIn(cli));
+                return SignInError::new(
+                    "Azure asks to sign in again (MFA or Conditional Access)",
+                    format!("Sign in again, or run `{login} --scope {scope}` in a terminal."),
+                )
+                .fix(Fix::SignIn(cli));
             }
-            if has(&["az login", "AADSTS70043", "AADSTS700082", "AADSTS50173", "AADSTS50133", "AADSTS700024", "refresh token has expired", "No subscription found", "Please run 'az login'"]) {
+            if has(&[
+                "az login",
+                "AADSTS70043",
+                "AADSTS700082",
+                "AADSTS50173",
+                "AADSTS50133",
+                "AADSTS700024",
+                "refresh token has expired",
+                "No subscription found",
+                "Please run 'az login'",
+            ]) {
                 return signed_out("");
             }
             if has(&["AADSTS90002", "AADSTS900023"]) {
@@ -607,7 +652,9 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
             if has(&["AADSTS65001", "AADSTS500011", "AADSTS650057", "consent"]) {
                 return SignInError::new(
                     "Your Entra tenant gave no token for the database",
-                    format!("An administrator may need to allow Azure CLI to sign in to Azure databases, or Microsoft Entra authentication is off for this server ({first})."),
+                    format!(
+                        "An administrator may need to allow Azure CLI to sign in to Azure databases, or Microsoft Entra authentication is off for this server ({first})."
+                    ),
                 );
             }
         }
@@ -617,7 +664,10 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
                     Auth::AwsIam { profile: Some(p), .. } => p.trim().to_string(),
                     _ => "default".into(),
                 };
-                return SignInError::new(format!("No AWS profile {p:?}"), format!("Create it with `aws configure sso --profile {p}` (or fix the profile in the connection's settings)."));
+                return SignInError::new(
+                    format!("No AWS profile {p:?}"),
+                    format!("Create it with `aws configure sso --profile {p}` (or fix the profile in the connection's settings)."),
+                );
             }
             if has(&["Unable to locate credentials"]) {
                 let profile = match auth {
@@ -630,7 +680,16 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
                 )
                 .fix(Fix::SignIn(cli));
             }
-            if has(&["token has expired", "sso session", "sso token", "UnauthorizedSSOTokenError", "ExpiredToken", "refresh failed", "Error when retrieving token from sso", "reauthenticate"]) {
+            if has(&[
+                "token has expired",
+                "sso session",
+                "sso token",
+                "UnauthorizedSSOTokenError",
+                "ExpiredToken",
+                "refresh failed",
+                "Error when retrieving token from sso",
+                "reauthenticate",
+            ]) {
                 return signed_out("");
             }
             if has(&["invalid choice"]) {
@@ -644,7 +703,14 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
             if has(&["invalid choice", "generate-login-token"]) && has(&["invalid choice"]) {
                 return SignInError::new("This Google Cloud CLI cannot make database tokens", "Update it: `gcloud components update`.");
             }
-            if has(&["You do not currently have an active account", "gcloud auth login", "Reauthentication", "invalid_grant", "problem refreshing your current auth tokens", "credentialed account"]) {
+            if has(&[
+                "You do not currently have an active account",
+                "gcloud auth login",
+                "Reauthentication",
+                "invalid_grant",
+                "problem refreshing your current auth tokens",
+                "credentialed account",
+            ]) {
                 return signed_out("");
             }
             if has(&["PERMISSION_DENIED", "permission"]) {
@@ -652,7 +718,10 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
             }
         }
     }
-    SignInError::new(format!("{} could not make a token", cli.name()), if first.is_empty() { format!("Run `{login}` in a terminal, then try again.") } else { first })
+    SignInError::new(
+        format!("{} could not make a token", cli.name()),
+        if first.is_empty() { format!("Run `{login}` in a terminal, then try again.") } else { first },
+    )
 }
 
 fn from_epoch(secs: i64) -> SystemTime {
@@ -798,9 +867,7 @@ impl TokenSource {
     async fn fetch(&self, r: &Request, auth: &Auth, force: bool) -> Result<String, SignInError> {
         let slot = self.cache.slot(r);
         let mut held = slot.lock().await;
-        if !force
-            && let Some(t) = held.as_ref().filter(|t| t.usable(SystemTime::now()))
-        {
+        if !force && let Some(t) = held.as_ref().filter(|t| t.usable(SystemTime::now())) {
             return Ok(t.secret.clone());
         }
         *held = None;
@@ -840,7 +907,8 @@ impl TokenSource {
             Err(stderr) => {
                 let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim()).find(|l| !l.is_empty()).unwrap_or("");
                 let first: String = first.chars().take(300).collect();
-                Err(SignInError::new(format!("The {} sign-in did not finish", r.cli.name()), if first.is_empty() { "Try again.".to_string() } else { first }).fix(Fix::SignIn(r.cli)))
+                Err(SignInError::new(format!("The {} sign-in did not finish", r.cli.name()), if first.is_empty() { "Try again.".to_string() } else { first })
+                    .fix(Fix::SignIn(r.cli)))
             }
         }
     }
@@ -890,13 +958,27 @@ pub fn hint_of(e: &anyhow::Error) -> Option<&'static str> {
 
 fn refusal(p: &ConnectionProfile) -> Option<&'static str> {
     Some(match (p.auth.kind(), p.engine) {
-        (AuthKind::EntraId, Engine::Postgres) => "The server refused the Entra token: the user must be the exact name (case-sensitive) of a principal created with pgaadauth_create_principal, and the server must have Microsoft Entra authentication on.",
-        (AuthKind::EntraId, Engine::MySql) => "The server refused the Entra token: the user must be a principal created with CREATE AADUSER, and the server must have Microsoft Entra authentication on.",
-        (AuthKind::EntraId, _) => "The server refused the Entra token: the database needs a user created with CREATE USER [name] FROM EXTERNAL PROVIDER, and the server Microsoft Entra authentication on.",
-        (AuthKind::AwsIam, Engine::MySql) => "The server refused the IAM token: IAM database authentication must be on for the instance, the user created WITH AWSAuthenticationPlugin AS 'RDS', and your IAM policy must allow rds-db:connect for this user.",
-        (AuthKind::AwsIam, _) => "The server refused the IAM token: IAM database authentication must be on for the instance, the user granted rds_iam, and your IAM policy must allow rds-db:connect for this user.",
-        (AuthKind::GoogleIam, Engine::MySql) => "The server refused the Google token: the instance needs cloudsql_iam_authentication on and the IAM user added to it; the user is the e-mail's part before @.",
-        (AuthKind::GoogleIam, _) => "The server refused the Google token: the instance needs cloudsql.iam_authentication on and the IAM user added to it; the user is the full e-mail (a service account's without .gserviceaccount.com).",
+        (AuthKind::EntraId, Engine::Postgres) => {
+            "The server refused the Entra token: the user must be the exact name (case-sensitive) of a principal created with pgaadauth_create_principal, and the server must have Microsoft Entra authentication on."
+        }
+        (AuthKind::EntraId, Engine::MySql) => {
+            "The server refused the Entra token: the user must be a principal created with CREATE AADUSER, and the server must have Microsoft Entra authentication on."
+        }
+        (AuthKind::EntraId, _) => {
+            "The server refused the Entra token: the database needs a user created with CREATE USER [name] FROM EXTERNAL PROVIDER, and the server Microsoft Entra authentication on."
+        }
+        (AuthKind::AwsIam, Engine::MySql) => {
+            "The server refused the IAM token: IAM database authentication must be on for the instance, the user created WITH AWSAuthenticationPlugin AS 'RDS', and your IAM policy must allow rds-db:connect for this user."
+        }
+        (AuthKind::AwsIam, _) => {
+            "The server refused the IAM token: IAM database authentication must be on for the instance, the user granted rds_iam, and your IAM policy must allow rds-db:connect for this user."
+        }
+        (AuthKind::GoogleIam, Engine::MySql) => {
+            "The server refused the Google token: the instance needs cloudsql_iam_authentication on and the IAM user added to it; the user is the e-mail's part before @."
+        }
+        (AuthKind::GoogleIam, _) => {
+            "The server refused the Google token: the instance needs cloudsql.iam_authentication on and the IAM user added to it; the user is the full e-mail (a service account's without .gserviceaccount.com)."
+        }
         (AuthKind::Password, _) => return None,
     })
 }
@@ -910,7 +992,9 @@ pub(crate) fn explain(p: &ConnectionProfile, e: anyhow::Error) -> anyhow::Error 
     let code = crate::backend::server_error(&e).and_then(|i| i.code).unwrap_or_default();
     let msg = format!("{e:#}").to_ascii_lowercase();
     let refused = ["28P01", "28000", "1045", "18456"].contains(&code.as_str())
-        || ["password authentication failed", "pam authentication failed", "access denied", "login failed", "token-identified principal"].iter().any(|w| msg.contains(w));
+        || ["password authentication failed", "pam authentication failed", "access denied", "login failed", "token-identified principal"]
+            .iter()
+            .any(|w| msg.contains(w));
     if refused { e.context(Hint(hint)) } else { e }
 }
 
@@ -942,7 +1026,8 @@ mod tree_tests {
         #[cfg(windows)]
         {
             let f = dir.join("cli.cmd");
-            std::fs::write(&f, format!("@powershell -NoProfile -Command \"$PID | Out-File -Encoding ascii '{}'; Start-Sleep 300\"\r\n", pid.display())).unwrap();
+            std::fs::write(&f, format!("@powershell -NoProfile -Command \"$PID | Out-File -Encoding ascii '{}'; Start-Sleep 300\"\r\n", pid.display()))
+                .unwrap();
             f
         }
     }
@@ -1047,12 +1132,17 @@ mod tests {
     #[test]
     fn az_output_parses_with_either_expiry() {
         let token = jwt(r#"{"upn":"ana@contoso.com","tid":"t"}"#);
-        let new = format!(r#"{{"accessToken":"{token}","expiresOn":"2026-10-28 13:00:00.000000","expires_on":1793192400,"subscription":"s","tenant":"t","tokenType":"Bearer"}}"#);
+        let new = format!(
+            r#"{{"accessToken":"{token}","expiresOn":"2026-10-28 13:00:00.000000","expires_on":1793192400,"subscription":"s","tenant":"t","tokenType":"Bearer"}}"#
+        );
         let t = parse_az(&new, at(0)).unwrap();
         assert_eq!((t.secret.as_str(), t.expires), (token.as_str(), at(1793192400)));
         let old = format!(r#"{{"accessToken":"{token}","expiresOn":"2026-10-28 13:00:00.000000","tokenType":"Bearer"}}"#);
         let local = chrono::NaiveDateTime::parse_from_str("2026-10-28 13:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-        let want = { use chrono::TimeZone as _; chrono::Local.from_local_datetime(&local).earliest().unwrap().timestamp() };
+        let want = {
+            use chrono::TimeZone as _;
+            chrono::Local.from_local_datetime(&local).earliest().unwrap().timestamp()
+        };
         assert_eq!(parse_az(&old, at(0)).unwrap().expires, at(want as u64));
         let string_epoch = format!(r#"{{"accessToken":"{token}","expires_on":"1793192400"}}"#);
         assert_eq!(parse_az(&string_epoch, at(0)).unwrap().expires, at(1793192400));
@@ -1116,7 +1206,10 @@ mod tests {
     fn requests_name_the_right_audience_and_only_plain_values() {
         let pg = profile(Engine::Postgres, "srv.postgres.database.azure.com", Auth::EntraId { tenant: Some("contoso.onmicrosoft.com".into()) });
         let r = request(&pg).unwrap();
-        assert_eq!((r.cli, r.args.join(" ")), (Cli::Az, "account get-access-token --output=json --resource-type=oss-rdbms --tenant=contoso.onmicrosoft.com".to_string()));
+        assert_eq!(
+            (r.cli, r.args.join(" ")),
+            (Cli::Az, "account get-access-token --output=json --resource-type=oss-rdbms --tenant=contoso.onmicrosoft.com".to_string())
+        );
         let ms = profile(Engine::SqlServer, "srv.database.usgovcloudapi.net", Auth::EntraId { tenant: None });
         assert!(request(&ms).unwrap().args.contains(&"--resource=https://database.usgovcloudapi.net/".to_string()));
         let mut rds = profile(Engine::MySql, "db.abc.eu-west-1.rds.amazonaws.com", Auth::AwsIam { profile: Some("dev".into()), region: None });
@@ -1140,10 +1233,25 @@ mod tests {
 
     #[test]
     fn hosts_of_each_cloud() {
-        for h in ["srv.database.windows.net", "srv.postgres.database.azure.com", "SRV.MySQL.Database.Azure.com.", "mi.abc123.database.windows.net", "srv.privatelink.database.windows.net", "srv.postgres.database.chinacloudapi.cn"] {
+        for h in [
+            "srv.database.windows.net",
+            "srv.postgres.database.azure.com",
+            "SRV.MySQL.Database.Azure.com.",
+            "mi.abc123.database.windows.net",
+            "srv.privatelink.database.windows.net",
+            "srv.postgres.database.chinacloudapi.cn",
+        ] {
             assert!(host_allowed(AuthKind::EntraId, h), "{h}");
         }
-        for h in ["evil.example", "database.windows.net", "srv.database.windows.net.evil.example", "evil.example/.database.windows.net", "a@srv.database.windows.net", "10.0.0.1", "srv..database.windows.net"] {
+        for h in [
+            "evil.example",
+            "database.windows.net",
+            "srv.database.windows.net.evil.example",
+            "evil.example/.database.windows.net",
+            "a@srv.database.windows.net",
+            "10.0.0.1",
+            "srv..database.windows.net",
+        ] {
             assert!(!host_allowed(AuthKind::EntraId, h), "{h}");
         }
         assert!(host_allowed(AuthKind::AwsIam, "db.abc.us-east-1.rds.amazonaws.com"));
@@ -1179,9 +1287,15 @@ mod tests {
         let e = classify(Cli::Az, "ERROR: Please run 'az login' to setup account.\n", &entra, &[]);
         assert_eq!(e.title, "Not signed in to Azure");
         assert!(e.body.contains("`az login --tenant contoso.onmicrosoft.com`"), "{e}");
-        let e = classify(Cli::Az, "ERROR: AADSTS50076: Due to a configuration change made by your administrator, you must use multi-factor authentication.", &Auth::EntraId { tenant: None }, &[]);
+        let e = classify(
+            Cli::Az,
+            "ERROR: AADSTS50076: Due to a configuration change made by your administrator, you must use multi-factor authentication.",
+            &Auth::EntraId { tenant: None },
+            &[],
+        );
         assert!(e.body.contains("az login --scope https://ossrdbms-aad.database.windows.net/.default"), "{e}");
-        let e = classify(Cli::Az, "ERROR: AADSTS65001: The user or administrator has not consented to use the application", &Auth::EntraId { tenant: None }, &[]);
+        let e =
+            classify(Cli::Az, "ERROR: AADSTS65001: The user or administrator has not consented to use the application", &Auth::EntraId { tenant: None }, &[]);
         assert!(e.title.contains("no token"), "{e}");
         let aws = Auth::AwsIam { profile: Some("dev".into()), region: None };
         let e = classify(Cli::Aws, "\nUnable to locate credentials. You can configure credentials by running \"aws configure\".\n", &aws, &[]);
@@ -1195,7 +1309,12 @@ mod tests {
         let e = classify(Cli::Aws, "\nThe config profile (dev) could not be found\n", &aws, &[]);
         assert!(e.body.contains("aws configure sso --profile dev"), "{e}");
         let g = Auth::GoogleIam { account: None };
-        let e = classify(Cli::Gcloud, "ERROR: (gcloud.sql.generate-login-token) You do not currently have an active account selected.\nPlease run:\n\n  $ gcloud auth login\n", &g, &[]);
+        let e = classify(
+            Cli::Gcloud,
+            "ERROR: (gcloud.sql.generate-login-token) You do not currently have an active account selected.\nPlease run:\n\n  $ gcloud auth login\n",
+            &g,
+            &[],
+        );
         assert!(e.body.contains("`gcloud auth login`"), "{e}");
         let e = classify(Cli::Gcloud, "ERROR: (gcloud.sql) Invalid choice: 'generate-login-token'.", &g, &[]);
         assert!(e.body.contains("gcloud components update"), "{e}");
@@ -1248,8 +1367,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         let r = d.display();
-        let gate = if mfa { format!("[ -f '{r}/scoped' ] || {{ echo 'ERROR: AADSTS50076: you must use multi-factor authentication.' >&2; exit 1; }}") } else { String::new() };
-        fake(d, "az", &format!("echo \"$*\" >> '{r}/runs'\ncase \"$1 $2\" in\n'account show') echo the-tenant ;;\naccount*) {gate}\n  echo token ;;\nlogin*) case \"$*\" in *--scope*) : > '{r}/scoped' ;; esac ;;\nesac"));
+        let gate = if mfa {
+            format!("[ -f '{r}/scoped' ] || {{ echo 'ERROR: AADSTS50076: you must use multi-factor authentication.' >&2; exit 1; }}")
+        } else {
+            String::new()
+        };
+        fake(
+            d,
+            "az",
+            &format!(
+                "echo \"$*\" >> '{r}/runs'\ncase \"$1 $2\" in\n'account show') echo the-tenant ;;\naccount*) {gate}\n  echo token ;;\nlogin*) case \"$*\" in *--scope*) : > '{r}/scoped' ;; esac ;;\nesac"
+            ),
+        );
         let src = TokenSource::in_dirs(vec![d.to_path_buf()]);
         let p = profile(Engine::SqlServer, "srv.database.windows.net", Auth::EntraId { tenant: tenant.map(str::to_string) });
         src.sign_in(&p).await.unwrap();
@@ -1264,7 +1393,15 @@ mod tests {
         assert_eq!(az_sign_in_runs(None, false).await, ["login --output=none", TOKEN]);
         assert_eq!(az_sign_in_runs(Some("  "), false).await, ["login --output=none", TOKEN]);
         assert_eq!(az_sign_in_runs(Some("contoso"), false).await, [format!("login --output=none --tenant=contoso {SCOPE}")]);
-        assert_eq!(az_sign_in_runs(None, true).await, ["login --output=none".to_string(), TOKEN.to_string(), "account show --query=tenantId --output=tsv".to_string(), format!("login --output=none --tenant=the-tenant {SCOPE}")]);
+        assert_eq!(
+            az_sign_in_runs(None, true).await,
+            [
+                "login --output=none".to_string(),
+                TOKEN.to_string(),
+                "account show --query=tenantId --output=tsv".to_string(),
+                format!("login --output=none --tenant=the-tenant {SCOPE}")
+            ]
+        );
     }
 
     #[cfg(unix)]

@@ -58,9 +58,11 @@ pub(crate) fn load() -> Result<()> {
     if g.is_some() {
         return Ok(());
     }
-    let path = places().into_iter().map(|d| d.join(FILE)).find(|p| p.is_file()).ok_or_else(|| {
-        anyhow!("DuckDB's engine ({FILE}) is missing: it ships beside Dataman (a build of one's own: scripts/duckdb-engine.sh)")
-    })?;
+    let path = places()
+        .into_iter()
+        .map(|d| d.join(FILE))
+        .find(|p| p.is_file())
+        .ok_or_else(|| anyhow!("DuckDB's engine ({FILE}) is missing: it ships beside Dataman (a build of one's own: scripts/duckdb-engine.sh)"))?;
     open(&path)?;
     log::info!("DuckDB {VERSION} from {}", path.display());
     *g = Some(path);
@@ -93,7 +95,8 @@ fn open(path: &Path) -> Result<()> {
     // Before anything of its table is read: the engine was built from this list and this
     // libduckdb-sys (an older one, in another order, would be called at the wrong functions).
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
-    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint ({REBUILD})", what()))?;
+    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }
+        .map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint ({REBUILD})", what()))?;
     let fp = unsafe { fp() };
     if fp != FINGERPRINT {
         bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}; {REBUILD})", what());
@@ -113,7 +116,8 @@ fn open(path: &Path) -> Result<()> {
     }
     let access = ffi::duckdb_extension_access { set_error: None, get_database: None, get_api: Some(get_api) };
     // SAFETY: get_api returns `api`, alive for the call; the pointers are copied out of it.
-    let ok = unsafe { ffi::duckdb_rs_extension_api_init(&api as *const ffi::duckdb_ext_api_v1 as ffi::duckdb_extension_info, &access, VERSION) }.map_err(|e| anyhow!("{}: {e}", what()))?;
+    let ok = unsafe { ffi::duckdb_rs_extension_api_init(&api as *const ffi::duckdb_ext_api_v1 as ffi::duckdb_extension_info, &access, VERSION) }
+        .map_err(|e| anyhow!("{}: {e}", what()))?;
     if !ok {
         bail!(what());
     }

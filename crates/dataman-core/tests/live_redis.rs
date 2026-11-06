@@ -10,7 +10,15 @@ const DB: &str = "9";
 fn profile() -> ConnectionProfile {
     let v = std::env::var("DATAMAN_REDIS").unwrap_or_else(|_| "127.0.0.1:63790".into());
     let (host, port) = v.rsplit_once(':').unwrap();
-    ConnectionProfile { host: host.into(), port: port.parse().unwrap(), user: String::new(), database: DB.into(), sslmode: SslMode::Disable, engine: Engine::Redis, ..ConnectionProfile::new("redis") }
+    ConnectionProfile {
+        host: host.into(),
+        port: port.parse().unwrap(),
+        user: String::new(),
+        database: DB.into(),
+        sslmode: SslMode::Disable,
+        engine: Engine::Redis,
+        ..ConnectionProfile::new("redis")
+    }
 }
 
 fn password() -> String {
@@ -84,7 +92,10 @@ fn keys_values_and_entries() {
     let first = d.docs[0].clone();
     let Body::Json(f) = first.body.clone() else { panic!() };
     let old = f["field"].as_str().unwrap().to_string();
-    let id = e.core.block_on(c.save_document(&src, first.id.clone(), &format!("{{\"field\": \"renamed\", \"value\": \"{}\"}}", f["value"].as_str().unwrap()))).unwrap();
+    let id = e
+        .core
+        .block_on(c.save_document(&src, first.id.clone(), &format!("{{\"field\": \"renamed\", \"value\": \"{}\"}}", f["value"].as_str().unwrap())))
+        .unwrap();
     assert_eq!(id, Body::Json(json!("renamed")));
     assert_eq!(ok(&e, &c, &format!("HEXISTS user:1 {old}")), Output::Value(Body::Json(json!(0))));
     e.core.block_on(c.save_document(&src, None, "{field: 'new', value: 42}")).unwrap();

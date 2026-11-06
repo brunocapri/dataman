@@ -445,8 +445,20 @@ fn arith(op: char, a: Val, b: Val) -> Val {
 }
 
 const EXT_KEYS: &[&str] = &[
-    "$oid", "$date", "$numberLong", "$numberInt", "$numberDouble", "$numberDecimal", "$binary", "$uuid", "$timestamp",
-    "$minKey", "$maxKey", "$regularExpression", "$symbol", "$code",
+    "$oid",
+    "$date",
+    "$numberLong",
+    "$numberInt",
+    "$numberDouble",
+    "$numberDecimal",
+    "$binary",
+    "$uuid",
+    "$timestamp",
+    "$minKey",
+    "$maxKey",
+    "$regularExpression",
+    "$symbol",
+    "$code",
 ];
 
 pub fn to_bson(v: &Val) -> Result<Bson, String> {
@@ -784,19 +796,25 @@ mod tests {
         assert!(parse("{a: foo}").unwrap_err().message.contains("quotes"));
         assert!(parse("'open").is_err());
         assert_eq!(parse("400 / 6378.1").unwrap(), Val::Float(400. / 6378.1));
-        assert_eq!(parse("[7 * 24 * 3600, 10 - 2 * 3, 9 / 3, 7 / 2, -1 + 1]").unwrap(), Val::Arr(vec![Val::Int(604800), Val::Int(4), Val::Int(3), Val::Float(3.5), Val::Int(0)]));
+        assert_eq!(
+            parse("[7 * 24 * 3600, 10 - 2 * 3, 9 / 3, 7 / 2, -1 + 1]").unwrap(),
+            Val::Arr(vec![Val::Int(604800), Val::Int(4), Val::Int(3), Val::Float(3.5), Val::Int(0)])
+        );
         assert_eq!(parse("{a: 1 /* note */, b: 2 // end\n}").unwrap(), Val::Obj(vec![("a".into(), Val::Int(1)), ("b".into(), Val::Int(2))]));
         assert!(parse("1 + 'a'").is_err());
     }
 
     #[test]
     fn constructors_become_their_types() {
-        let d = to_document(&parse(
-            r#"{_id: ObjectId("65a1b2c3d4e5f60718293a4b"), at: ISODate("2024-01-02T03:04:05Z"), day: ISODate("2024-01-02"),
+        let d = to_document(
+            &parse(
+                r#"{_id: ObjectId("65a1b2c3d4e5f60718293a4b"), at: ISODate("2024-01-02T03:04:05Z"), day: ISODate("2024-01-02"),
                n: 5, big: 9007199254740993, l: NumberLong(5), i: NumberInt("7"), f: 5.0, dec: NumberDecimal("1.25"),
                u: UUID("123e4567-e89b-12d3-a456-426614174000"), ts: Timestamp(10, 2), x: {"$oid": "65a1b2c3d4e5f60718293a4c"},
                q: {$regex: "a", $options: "i"}}"#,
-        ).unwrap())
+            )
+            .unwrap(),
+        )
         .unwrap();
         assert!(matches!(d.get("_id"), Some(Bson::ObjectId(_))));
         assert_eq!(d.get_datetime("at").unwrap().timestamp_millis(), 1704164645000);

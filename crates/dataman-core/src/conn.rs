@@ -7,7 +7,7 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use tokio::runtime::Handle;
 
-use crate::backend::{self, Caps, Canceller, Db, Dedicated, Ran};
+use crate::backend::{self, Canceller, Caps, Db, Dedicated, Ran};
 use crate::config::{ConnectionProfile, Engine};
 use crate::history::{History, HistoryEntry, Outcome};
 use crate::result::{ErrorInfo, Phase, ResultSet};
@@ -191,10 +191,7 @@ impl Connection {
         Ok(client)
     }
 
-    pub(crate) fn spawn<T: Send + 'static>(
-        &self,
-        fut: impl std::future::Future<Output = Result<T>> + Send + 'static,
-    ) -> Task<T> {
+    pub(crate) fn spawn<T: Send + 'static>(&self, fut: impl std::future::Future<Output = Result<T>> + Send + 'static) -> Task<T> {
         spawn(&self.rt, fut)
     }
 
@@ -412,9 +409,8 @@ impl Session {
         {
             // A file database is opened read-only or not: a change of mind reopens it (between
             // transactions only).
-            let stale = self.conn.engine().is_file()
-                && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database))
-                && !self.tx.get().status.is_open();
+            let stale =
+                self.conn.engine().is_file() && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database)) && !self.tx.get().status.is_open();
             if !stale {
                 return Ok(c.clone());
             }
@@ -422,7 +418,9 @@ impl Session {
         self.tx.closed();
         let p = self.conn.profile_for(&self.database);
         let password = self.conn.cred.secret(&p).await?;
-        let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
+        let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx)
+            .await
+            .map_err(|e| crate::cloudauth::explain(&p, e))?;
         *self.cancel.lock() = Some(cancel);
         *self.ro_applied.lock() = Some(self.conn.read_only_for(&self.database));
         *g = Some(client.clone());
@@ -537,7 +535,10 @@ impl Session {
             // one of its own, or not at all.
             let read_only = rs.read_only.load(AtomicOrdering::Acquire);
             if read_only && savepoint {
-                let info = ErrorInfo { message: "a transaction is open in this tab: an agent's read runs in a read-only transaction of its own".into(), ..Default::default() };
+                let info = ErrorInfo {
+                    message: "a transaction is open in this tab: an agent's read runs in a read-only transaction of its own".into(),
+                    ..Default::default()
+                };
                 self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
                 rs.update_status(|s| {
                     s.phase = Some(Phase::Failed);

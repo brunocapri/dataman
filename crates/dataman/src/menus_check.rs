@@ -4,9 +4,9 @@
 //! what resets them, and its days shut and opened.
 
 use chrono::Datelike as _;
-use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::Engine;
 use dataman_core::layout::NavView;
+use gpui::{AsyncWindowContext, Entity};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -92,7 +92,9 @@ pub async fn run_history_filter(ws: &Entity<Workspace>, r: &mut Report, cx: &mut
     r.check("the history lists the runs of both connections", all >= 4, all);
 
     click_probe("history-scope", cx);
-    let listed = probed(&format!("hscope:{}", pg.id), cx).is_some() && probed(&format!("hscope:{}", my.id), cx).is_some() && probed(&format!("hscope:{}:{}", my.id, my.database), cx).is_some();
+    let listed = probed(&format!("hscope:{}", pg.id), cx).is_some()
+        && probed(&format!("hscope:{}", my.id), cx).is_some()
+        && probed(&format!("hscope:{}:{}", my.id, my.database), cx).is_some();
     r.check("the connection filter lists every connection and the databases their history used", listed, "");
     click_probe(&format!("hscope:{}", pg.id), cx);
     pause(cx, 100).await;
@@ -188,7 +190,9 @@ async fn days(ws: &Entity<Workspace>, conn: &str, h: &Entity<HistoryPanel>, r: &
     let older = (now - chrono::Duration::days(9)).date_naive();
     let older = if older.year() == now.year() { older.format("%a %d %b") } else { older.format("%d %b %Y") }.to_string().to_uppercase();
     let store = core(ws, cx);
-    let wrote = store.history.append(conn, &run(9, "SELECT 'older_day'", dataman_core::Outcome::Ok))
+    let wrote = store
+        .history
+        .append(conn, &run(9, "SELECT 'older_day'", dataman_core::Outcome::Ok))
         .and_then(|_| store.history.append(conn, &run(1, "SELECT 'yesterday_ok'", dataman_core::Outcome::Ok)))
         .and_then(|_| store.history.append(conn, &run(1, "SELECT 'yesterday_failed'", dataman_core::Outcome::Error)));
     r.check("runs of other days written", wrote.is_ok(), format!("{wrote:?}"));
@@ -200,7 +204,9 @@ async fn days(ws: &Entity<Workspace>, conn: &str, h: &Entity<HistoryPanel>, r: &
     let entries = |cx: &mut AsyncWindowContext| rows(cx).iter().filter(|x| *x == "entry").count();
     let all = rows(cx);
     let n = entries(cx);
-    let ordered = all.first().map(String::as_str) == Some("▾ TODAY") && at(&open_y, cx).is_some_and(|y| all.get(y + 1).is_some_and(|x| x == "entry") && all.get(y + 2).is_some_and(|x| x == "entry") && all.get(y + 3) == Some(&open_o));
+    let ordered = all.first().map(String::as_str) == Some("▾ TODAY")
+        && at(&open_y, cx)
+            .is_some_and(|y| all.get(y + 1).is_some_and(|x| x == "entry") && all.get(y + 2).is_some_and(|x| x == "entry") && all.get(y + 3) == Some(&open_o));
     r.check("the history is grouped under its days, newest first, all open", ordered, format!("{all:?}"));
 
     let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| h.read(cx).demo_scope().2).unwrap_or(0);
@@ -216,7 +222,11 @@ async fn days(ws: &Entity<Workspace>, conn: &str, h: &Entity<HistoryPanel>, r: &
     let after = rows(cx);
     r.check(
         "a click shuts a day: its runs go, the header stays, selected; the search's count still has them",
-        after.get(header) == Some(&shut_y) && after.get(header + 1) == Some(&open_o) && entries(cx) == n - 2 && shown(cx) == total && selected(cx).as_ref() == Some(&shut_y),
+        after.get(header) == Some(&shut_y)
+            && after.get(header + 1) == Some(&open_o)
+            && entries(cx) == n - 2
+            && shown(cx) == total
+            && selected(cx).as_ref() == Some(&shut_y),
         format!("{after:?} shown {} of {total}, selected {:?}", shown(cx), selected(cx)),
     );
     let focus = |cx: &mut AsyncWindowContext| cx.update(|window, cx| h.read(cx).demo_has_focus(window)).unwrap_or(false);
@@ -233,7 +243,11 @@ async fn days(ws: &Entity<Workspace>, conn: &str, h: &Entity<HistoryPanel>, r: &
     let back = selected(cx).as_ref() == Some(&open_y) && rows(cx).contains(&open_y);
     key(cx, "up");
     let above = selected(cx).as_deref() == Some("entry");
-    r.check("→ opens the day, ← shuts it, ↩ toggles it; ↓ reaches a run, ← from there goes up to its day, ↑ moves on", opened && shut && entered && on_run && back && above, format!("{opened} {shut} {entered} {on_run} {back} {above}"));
+    r.check(
+        "→ opens the day, ← shuts it, ↩ toggles it; ↓ reaches a run, ← from there goes up to its day, ↑ moves on",
+        opened && shut && entered && on_run && back && above,
+        format!("{opened} {shut} {entered} {on_run} {back} {above}"),
+    );
 
     let Some(p) = crate::history_check::row_point(h, header, cx).await else {
         r.check("the day's header has bounds", false, "");
@@ -260,7 +274,11 @@ async fn days(ws: &Entity<Workspace>, conn: &str, h: &Entity<HistoryPanel>, r: &
     };
     let found = search("yesterday_", cx);
     let matched = shown(cx);
-    r.check("a search opens the day holding its matches, shut or not", found == [open_y.as_str(), "entry", "entry"] && matched == 2, format!("{found:?} {matched}"));
+    r.check(
+        "a search opens the day holding its matches, shut or not",
+        found == [open_y.as_str(), "entry", "entry"] && matched == 2,
+        format!("{found:?} {matched}"),
+    );
     let Some(p) = crate::history_check::row_point(h, 0, cx).await else {
         r.check("the day's header has bounds", false, "");
         return;
@@ -284,5 +302,9 @@ async fn days(ws: &Entity<Workspace>, conn: &str, h: &Entity<HistoryPanel>, r: &
     draw(cx);
     show_history(ws, cx);
     let returned = rows(cx);
-    r.check("a day stays shut across a reload of the files and a trip to another view", reloaded.contains(&shut_y) && returned.contains(&shut_y), format!("{reloaded:?} {returned:?}"));
+    r.check(
+        "a day stays shut across a reload of the files and a trip to another view",
+        reloaded.contains(&shut_y) && returned.contains(&shut_y),
+        format!("{reloaded:?} {returned:?}"),
+    );
 }

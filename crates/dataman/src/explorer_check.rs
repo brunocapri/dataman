@@ -3,8 +3,8 @@
 //! CREATE TABLE on PostgreSQL, MySQL and SQL Server read back by dropping the table and running
 //! the generated DDL.
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton};
 use dataman_core::config::Engine;
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -95,14 +95,22 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let labels = cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default();
     let want = ["customers", "orders", "events", "open_orders", "daily_sales", "order_total", "refresh_sales", "invoice_no", "order_status", "orders_touch"];
     let missing: Vec<&str> = want.iter().copied().filter(|w| !labels.iter().any(|l| l.starts_with(w))).collect();
-    r.check("the schema lists its tables, partitioned table, views, matview, routines, sequence, types and triggers", missing.is_empty(), format!("missing {missing:?} in {labels:?}"));
+    r.check(
+        "the schema lists its tables, partitioned table, views, matview, routines, sequence, types and triggers",
+        missing.is_empty(),
+        format!("missing {missing:?} in {labels:?}"),
+    );
 
     let _ = cx.update(|window, cx| window.focus(&t.focus_handle(cx), cx));
     key(cx, "/");
     typ(cx, "invoice");
     pause(cx, 300).await;
     let shown = cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default();
-    r.check("/ then typing filters the tree to the matches", shown.iter().any(|l| l.starts_with("invoice_no")) && !shown.iter().any(|l| l.starts_with("customers")), format!("{shown:?}"));
+    r.check(
+        "/ then typing filters the tree to the matches",
+        shown.iter().any(|l| l.starts_with("invoice_no")) && !shown.iter().any(|l| l.starts_with("customers")),
+        format!("{shown:?}"),
+    );
     key(cx, "escape");
     pause(cx, 300).await;
     let back = cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default();
@@ -152,14 +160,22 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let text = editor_text(ws, cx);
     let res = run_editor(ws, cx).await;
     let left = sql1(&core, &pg, &pw, "SELECT count(*) FROM dataman_shop.order_items", cx).await;
-    r.check("Truncate: a template, run through the guard's question, empties the table", text.contains("TRUNCATE") && left.as_deref() == Some("0"), format!("{text:?} {res:?} {left:?}"));
+    r.check(
+        "Truncate: a template, run through the guard's question, empties the table",
+        text.contains("TRUNCATE") && left.as_deref() == Some("0"),
+        format!("{text:?} {res:?} {left:?}"),
+    );
 
     menu(&t, &view, Act::DropView, cx).await;
     let text = editor_text(ws, cx);
     run_editor(ws, cx).await;
     let views = sql1(&core, &pg, &pw, "SELECT count(*) FROM pg_views WHERE schemaname = 'dataman_shop' AND viewname = 'open_orders'", cx).await;
     let listed = until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default().iter().any(|l| l.starts_with("customers"))).await;
-    r.check("after a DROP run in a tab, the open schema lists its objects again", listed, format!("{:?}", cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default()));
+    r.check(
+        "after a DROP run in a tab, the open schema lists its objects again",
+        listed,
+        format!("{:?}", cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default()),
+    );
     r.check("Drop view: its template drops the view", text.contains("DROP VIEW") && views.as_deref() == Some("0"), format!("{text:?} {views:?}"));
 
     let trg = format!("{s}/triggers");
@@ -204,7 +220,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let leaked: Vec<&String> = ids.iter().filter(|i| hidden.iter().any(|h| i.ends_with(h))).collect();
     r.check(
         "the simple view lists the schema's tables and views, not its routines, sequences, groups or the system's schemas",
-        leaked.is_empty() && ["customers", "orders", "daily_sales"].iter().all(|w| shop.iter().any(|l| l == w)) && !shop.iter().any(|l| l == "order_total" || l == "invoice_no"),
+        leaked.is_empty()
+            && ["customers", "orders", "daily_sales"].iter().all(|w| shop.iter().any(|l| l == w))
+            && !shop.iter().any(|l| l == "order_total" || l == "invoice_no"),
         format!("leaked {leaked:?}, {shop:?}"),
     );
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(true, cx)));
@@ -215,7 +233,13 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
 
 /// A table with a key, a unique, a default, a check and an index; its generated CREATE TABLE
 /// must rebuild it (same columns, same constraints) once it is dropped.
-async fn ddl_round_trip(ws: &Entity<Workspace>, e: Engine, connected: Option<(dataman_core::ConnectionProfile, String)>, r: &mut Report, cx: &mut AsyncWindowContext) {
+async fn ddl_round_trip(
+    ws: &Entity<Workspace>,
+    e: Engine,
+    connected: Option<(dataman_core::ConnectionProfile, String)>,
+    r: &mut Report,
+    cx: &mut AsyncWindowContext,
+) {
     let fresh = connected.is_none();
     let (p, pw) = connected.unwrap_or_else(|| profile(e));
     if fresh {

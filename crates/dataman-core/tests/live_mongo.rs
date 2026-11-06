@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use dataman_core::config::{ConnectionProfile, Engine, SslMode};
-use dataman_core::nosql::{bson, Body, Failed, ItemKind, Output, Page, Ran, Source};
+use dataman_core::nosql::{Body, Failed, ItemKind, Output, Page, Ran, Source, bson};
 
 fn mongo_profile(database: &str) -> ConnectionProfile {
     let v = std::env::var("DATAMAN_MONGO").unwrap_or_else(|_| "127.0.0.1:27027".into());

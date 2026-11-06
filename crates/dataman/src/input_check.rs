@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use gpui::{
-    AsyncWindowContext, ClipboardItem, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PlatformInput, Pixels, Point, point, px,
+    AsyncWindowContext, ClipboardItem, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point,
+    point, px,
 };
 
 use crate::app::Workspace;

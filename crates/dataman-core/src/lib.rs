@@ -1,11 +1,11 @@
 pub mod activity;
 pub mod agent_login;
-pub mod audit;
-pub mod agents_config;
-pub mod approved;
 pub mod agent_nosql;
 pub mod agent_scan;
 pub mod agent_sql;
+pub mod agents_config;
+pub mod approved;
+pub mod audit;
 pub mod backend;
 pub mod batch;
 pub mod bounded;
@@ -13,8 +13,8 @@ pub mod cloudauth;
 pub mod complete;
 pub mod config;
 pub mod conn;
-pub mod crash;
 pub mod connstr;
+pub mod crash;
 pub mod dataview;
 pub mod ddl;
 pub mod edit;
@@ -34,16 +34,16 @@ pub mod import;
 pub mod jsontree;
 pub mod layout;
 pub mod lint;
+pub mod mask;
 pub mod nosql;
-pub mod os;
 pub mod order;
+pub mod os;
 pub mod own;
 pub mod params;
 pub mod parse_check;
-pub mod mask;
 pub mod pgpass;
-mod pgtypes;
 pub mod pgservice;
+mod pgtypes;
 pub mod pins;
 pub mod privacy;
 pub mod project;
@@ -56,8 +56,8 @@ pub mod session;
 pub mod settings;
 pub mod sql;
 pub mod sqlgen;
-pub mod stamp;
 pub mod ssh;
+pub mod stamp;
 pub mod tx;
 pub mod update;
 pub mod value;
@@ -74,15 +74,15 @@ use parking_lot::Mutex;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::oneshot;
 
-pub use backend::{Caps, ConnectError, needs_password, server_error, server_error_class};
 pub use backend::duck::EXTERNAL_ACCESS as DUCKDB_EXTERNAL_ACCESS;
-pub use config::{Auth, AuthKind, ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
-pub use engine::{EngineSpec, Nouns};
-pub use sql::Dialect;
+pub use backend::{Caps, ConnectError, needs_password, server_error, server_error_class};
+pub use config::{
+    Auth, AuthKind, ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode,
+    default_sslmode, is_local_host,
+};
 pub use conn::TxEnd;
-pub use tx::{TxState, TxStatus};
-pub use ssh::{HostKeyPrompt, SshError};
 pub use conn::{Connection, Session};
+pub use engine::{EngineSpec, Nouns};
 pub use favorites::{Favorite, FavoritesStore, NameMatch};
 pub use history::{History, HistoryEntry, Outcome};
 pub use pins::PinStore;
@@ -90,6 +90,9 @@ pub use result::{ErrorClass, ErrorInfo, Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};
 pub use server::{Flavor, ServerInfo};
 pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
+pub use sql::Dialect;
+pub use ssh::{HostKeyPrompt, SshError};
+pub use tx::{TxState, TxStatus};
 
 /// Work running on the core's runtime. Dropping it leaves the work running, unless it was made
 /// to stop then (`abort_on_drop`).
@@ -295,7 +298,12 @@ pub(crate) fn secret_shown(s: &Option<String>) -> Option<&'static str> {
 
 impl std::fmt::Debug for Importable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Importable").field("source", &self.source).field("profile", &self.profile).field("password", &secret_shown(&self.password)).field("exists", &self.exists).finish()
+        f.debug_struct("Importable")
+            .field("source", &self.source)
+            .field("profile", &self.profile)
+            .field("password", &secret_shown(&self.password))
+            .field("exists", &self.exists)
+            .finish()
     }
 }
 
@@ -309,11 +317,7 @@ impl Core {
         if let Err(e) = dirs.ensure_private() {
             log::warn!("{}: {e}", dirs.config.display());
         }
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("dataman-core")
-            .enable_all()
-            .build()?;
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("dataman-core").enable_all().build()?;
         // Before any TLS: drivers that build their own TLS config take the process' provider.
         backend::install_tls_provider();
         let config = ConfigStore::open_with(&dirs, approved.clone())?;
@@ -388,12 +392,7 @@ impl Core {
         self.config.remove(id)
     }
 
-    pub fn test_connection(
-        &self,
-        profile: ConnectionProfile,
-        password: Option<String>,
-        ssh_secret: Option<String>,
-    ) -> Task<(ServerInfo, std::time::Duration)> {
+    pub fn test_connection(&self, profile: ConnectionProfile, password: Option<String>, ssh_secret: Option<String>) -> Task<(ServerInfo, std::time::Duration)> {
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {

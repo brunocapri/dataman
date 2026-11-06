@@ -15,7 +15,15 @@ fn search_profile(engine: Engine) -> (ConnectionProfile, Option<String>) {
     };
     let v = std::env::var(var).unwrap_or_else(|_| default.into());
     let (host, port) = v.rsplit_once(':').unwrap();
-    let p = ConnectionProfile { host: host.into(), port: port.parse().unwrap(), user: user.into(), database: String::new(), sslmode: SslMode::Disable, engine, ..ConnectionProfile::new("search") };
+    let p = ConnectionProfile {
+        host: host.into(),
+        port: port.parse().unwrap(),
+        user: user.into(),
+        database: String::new(),
+        sslmode: SslMode::Disable,
+        engine,
+        ..ConnectionProfile::new("search")
+    };
     (p, pw)
 }
 
@@ -55,7 +63,13 @@ fn search_paths(engine: Engine) {
     let Some(c) = connect(&e, p, pw) else { return };
     let idx = format!("dataman_guard_{}", engine.slug());
     let _ = run(&e, &c, "", &format!("DELETE /{idx}"));
-    run(&e, &c, "", &format!("POST /{idx}/_bulk?refresh=true\n{{\"index\": {{\"_id\": \"1\"}}}}\n{{\"n\": 1}}\n{{\"index\": {{\"_id\": \"2\"}}}}\n{{\"n\": 2}}\n")).unwrap();
+    run(
+        &e,
+        &c,
+        "",
+        &format!("POST /{idx}/_bulk?refresh=true\n{{\"index\": {{\"_id\": \"1\"}}}}\n{{\"n\": 1}}\n{{\"index\": {{\"_id\": \"2\"}}}}\n{{\"n\": 2}}\n"),
+    )
+    .unwrap();
     let count = |e: &Env| -> u64 {
         let Ok(Ran { output: Output::Value(v), .. }) = run(e, &c, "", &format!("GET /{idx}/_count")) else { panic!("count") };
         v.to_json()["count"].as_u64().unwrap()

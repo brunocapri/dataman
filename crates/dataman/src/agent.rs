@@ -6,13 +6,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::future::BoxFuture;
-use gpui::{App, AppContext as _, Context, Entity, Task, Window};
 use dataman_core::bounded::{self, Outcome, Stop};
 use dataman_core::result::{ChunkBuilder, ColumnInfo, ErrorInfo, Phase};
 use dataman_core::value::Kind;
 use dataman_core::{Connection, HistoryEntry, ResultSet};
 use dataman_mcp::{Drafted, TabDraft, TabRead, TabWrite, WriteShown};
+use futures_util::future::BoxFuture;
+use gpui::{App, AppContext as _, Context, Entity, Task, Window};
 use tokio::sync::oneshot;
 
 use crate::app::Workspace;
@@ -351,7 +351,11 @@ impl Workspace {
         let Some(rs) = rs.filter(|r| !r.phase().is_finished()) else { return };
         let (affected, ms, outcome, error) = match shown {
             WriteShown::Ran { outcome, note } => {
-                let cols: Vec<ColumnInfo> = outcome.columns.iter().map(|c| ColumnInfo { name: c.name.clone(), type_name: c.type_name.clone(), type_oid: 0, kind: Kind::Text }).collect();
+                let cols: Vec<ColumnInfo> = outcome
+                    .columns
+                    .iter()
+                    .map(|c| ColumnInfo { name: c.name.clone(), type_name: c.type_name.clone(), type_oid: 0, kind: Kind::Text })
+                    .collect();
                 let chunk = (!cols.is_empty()).then(|| {
                     let mut b = ChunkBuilder::new(&cols);
                     for r in &outcome.rows {
@@ -365,15 +369,24 @@ impl Workspace {
                     }
                     b.finish()
                 });
-                let mut messages: Vec<String> = outcome.statements.iter().map(|d| match d.affected {
-                    Some(n) => format!("{} {n}", d.verb),
-                    None => d.verb.clone(),
-                }).collect();
+                let mut messages: Vec<String> = outcome
+                    .statements
+                    .iter()
+                    .map(|d| match d.affected {
+                        Some(n) => format!("{} {n}", d.verb),
+                        None => d.verb.clone(),
+                    })
+                    .collect();
                 messages.extend(note.clone());
                 let affected = Some(outcome.affected());
                 let error = note.map(|n| ErrorInfo { message: n, ..Default::default() });
                 rs.finish_with((!cols.is_empty()).then_some(cols), chunk, affected, messages, error.clone(), outcome.elapsed);
-                (affected, outcome.elapsed.as_secs_f64() * 1e3, if error.is_some() { dataman_core::Outcome::Error } else { dataman_core::Outcome::Ok }, error.map(|e| e.message))
+                (
+                    affected,
+                    outcome.elapsed.as_secs_f64() * 1e3,
+                    if error.is_some() { dataman_core::Outcome::Error } else { dataman_core::Outcome::Ok },
+                    error.map(|e| e.message),
+                )
             }
             WriteShown::Failed(msg) => {
                 rs.finish_with(None, None, None, Vec::new(), Some(ErrorInfo { message: msg.clone(), ..Default::default() }), Duration::ZERO);

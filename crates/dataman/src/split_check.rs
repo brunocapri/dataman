@@ -4,13 +4,13 @@ use std::time::Duration;
 use dataman_core::groups::Pane;
 use dataman_core::session::SessionStore;
 use gpui::{
-    AsyncWindowContext, Bounds, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point,
+    AsyncWindowContext, Bounds, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point,
     ScrollDelta, ScrollWheelEvent, TouchPhase, point,
 };
 
 use crate::app::Workspace;
-use crate::split::DropZone;
 use crate::restore::Sessions;
+use crate::split::DropZone;
 use crate::tab::{ConfirmChoice, QueryTab};
 use crate::theme::{Pt, metrics, px};
 
@@ -61,7 +61,10 @@ fn mouse_move(cx: &mut AsyncWindowContext, p: Point<Pixels>, pressed: bool) {
 }
 
 fn down(cx: &mut AsyncWindowContext, p: Point<Pixels>, click_count: usize) {
-    input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count, first_mouse: false }));
+    input(
+        cx,
+        PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: Modifiers::default(), click_count, first_mouse: false }),
+    );
 }
 
 fn up(cx: &mut AsyncWindowContext, p: Point<Pixels>, click_count: usize) {
@@ -163,7 +166,15 @@ fn strip_scroll(ws: &Entity<Workspace>, pane: Pane, cx: &mut AsyncWindowContext)
 
 fn wheel(cx: &mut AsyncWindowContext, p: Point<Pixels>, dy: f32) {
     mouse_move(cx, p, false);
-    input(cx, PlatformInput::ScrollWheel(ScrollWheelEvent { position: p, delta: ScrollDelta::Pixels(point(px(0.), px(dy))), modifiers: Modifiers::default(), touch_phase: TouchPhase::Moved }));
+    input(
+        cx,
+        PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: p,
+            delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        }),
+    );
 }
 
 fn drag_along(cx: &mut AsyncWindowContext, from: Point<Pixels>, path: &[Point<Pixels>]) {
@@ -253,7 +264,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         all.len() == 2 && copy != first && same && right(ws, cx) == [copy.clone()],
         format!("{} tabs, right {:?}", all.len(), right(ws, cx).len()),
     );
-    report("the copy is in front with the focus; the tab stays as it was", active(ws, cx).as_ref() == Some(&copy) && focused(ws, cx) == Some(Pane::Right) && cx.update(|_, cx| first.read(cx).has_run).unwrap(), format!("{:?}", focused(ws, cx)));
+    report(
+        "the copy is in front with the focus; the tab stays as it was",
+        active(ws, cx).as_ref() == Some(&copy) && focused(ws, cx) == Some(Pane::Right) && cx.update(|_, cx| first.read(cx).has_run).unwrap(),
+        format!("{:?}", focused(ws, cx)),
+    );
     if stage == "split-opening" {
         crate::motion::hold_split(None);
         return ok;
@@ -270,13 +285,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         course.push((want, panes(ws, cx)));
     }
     crate::motion::hold_split(None);
-    let laid = course.iter().all(|&((wl, wr), got)| got.is_some_and(|((_, lw), (rx, rw))| near(lw, wl, 1.5) && near(rw, wr, 1.5) && near(rx + rw, c.right(), 1.5)));
+    let laid =
+        course.iter().all(|&((wl, wr), got)| got.is_some_and(|((_, lw), (rx, rw))| near(lw, wl, 1.5) && near(rw, wr, 1.5) && near(rx + rw, c.right(), 1.5)));
     let grows = course.windows(2).all(|p| p[0].1.zip(p[1].1).is_some_and(|(((_, l0), (_, r0)), ((_, l1), (_, r1)))| r1 > r0 + 1. && l1 < l0 - 1.));
-    report(
-        "the new group grows in from the right while the first narrows",
-        reduced || (moving && laid && grows),
-        format!("{course:?} in {c:?}"),
-    );
+    report("the new group grows in from the right while the first narrows", reduced || (moving && laid && grows), format!("{course:?} in {c:?}"));
     pause(cx, 400).await;
     let open = panes(ws, cx);
     let half = (c.w - crate::split::SEAM) / 2.;
@@ -316,7 +328,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
 
     let editor_y = c.y + metrics::TOOLBAR_H + 60.;
     click(cx, at(c.x + 120., editor_y));
-    report("a press in the left group gives it the focus", focused(ws, cx) == Some(Pane::Left) && active(ws, cx).as_ref() == Some(&first), format!("{:?}", focused(ws, cx)));
+    report(
+        "a press in the left group gives it the focus",
+        focused(ws, cx) == Some(Pane::Left) && active(ws, cx).as_ref() == Some(&first),
+        format!("{:?}", focused(ws, cx)),
+    );
     let (rx, _) = open.map(|(_, r)| r).unwrap_or_default();
     let _ = cx.update(|_, cx| copy.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text("SELECT 'right' AS side, g FROM generate_series(1, 3) g;", cx))));
     click(cx, at(rx + 30., c.y + metrics::TOOLBAR_H / 2.));
@@ -373,12 +389,20 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         focused(ws, cx) == Some(Pane::Left)
     })
     .await;
-    report("the keys landing in the other group give it the focus", focused(ws, cx) == Some(Pane::Left) && active(ws, cx).as_ref() == Some(&first), format!("{:?}", focused(ws, cx)));
+    report(
+        "the keys landing in the other group give it the focus",
+        focused(ws, cx) == Some(Pane::Left) && active(ws, cx).as_ref() == Some(&first),
+        format!("{:?}", focused(ws, cx)),
+    );
 
     key(cx, "cmd-t");
     let third = active(ws, cx).unwrap();
     let left_group = cx.update(|_, cx| ws.read(cx).group(Pane::Left).len()).unwrap();
-    report("⌘T opens a tab in the focused group", left_group == 2 && right(ws, cx) == [copy.clone()] && focused(ws, cx) == Some(Pane::Left), format!("left {left_group}"));
+    report(
+        "⌘T opens a tab in the focused group",
+        left_group == 2 && right(ws, cx) == [copy.clone()] && focused(ws, cx) == Some(Pane::Left),
+        format!("left {left_group}"),
+    );
     key(cx, "ctrl-tab");
     let after_tab = active(ws, cx);
     key(cx, "cmd-1");
@@ -492,7 +516,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     pause(cx, 100).await;
     report(
         "a tab dragged onto the other strip moves into that group, after the tab it passed",
-        right(ws, cx) == [copy.clone(), third.clone()] && active(ws, cx).as_ref() == Some(&third) && focused(ws, cx) == Some(Pane::Right) && tabs(ws, cx).len() == 3,
+        right(ws, cx) == [copy.clone(), third.clone()]
+            && active(ws, cx).as_ref() == Some(&third)
+            && focused(ws, cx) == Some(Pane::Right)
+            && tabs(ws, cx).len() == 3,
         format!("right {:?}", right(ws, cx).iter().map(|t| t.entity_id()).collect::<Vec<_>>()),
     );
 
@@ -504,7 +531,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: alt, click_count: 1, first_mouse: false }));
         input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: alt, click_count: 1 }));
         let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
-        let _ = cx.update(|_, cx| tree.update(cx, |_, cx| cx.emit(crate::tree::TreeEvent::OpenRelation { conn: id, db, schema: "public".into(), name: "orders".into() })));
+        let _ = cx.update(|_, cx| {
+            tree.update(cx, |_, cx| cx.emit(crate::tree::TreeEvent::OpenRelation { conn: id, db, schema: "public".into(), name: "orders".into() }))
+        });
         input(cx, PlatformInput::ModifiersChanged(gpui::ModifiersChangedEvent { modifiers: Modifiers::default(), capslock: Default::default() }));
         draw(cx);
         let opened = active(ws, cx);
@@ -544,7 +573,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         })
         .unwrap()
     };
-    let before = (texts(ws, Pane::Left, cx), texts(ws, Pane::Right, cx), active(ws, cx).map(|t| cx.update(|_, cx| t.read(cx).editor.read(cx).text().to_string()).unwrap()));
+    let before = (
+        texts(ws, Pane::Left, cx),
+        texts(ws, Pane::Right, cx),
+        active(ws, cx).map(|t| cx.update(|_, cx| t.read(cx).editor.read(cx).text().to_string()).unwrap()),
+    );
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.save_session(true, cx)));
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).unwrap();
     let _ = cx.update(|_, cx| {
@@ -556,7 +589,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let ws2 = cx.update(|window, cx| window.replace_root(cx, |window, cx| Workspace::new(core, window, cx))).unwrap();
     pause(cx, 100).await;
     draw(cx);
-    let after = (texts(&ws2, Pane::Left, cx), texts(&ws2, Pane::Right, cx), active(&ws2, cx).map(|t| cx.update(|_, cx| t.read(cx).editor.read(cx).text().to_string()).unwrap()));
+    let after = (
+        texts(&ws2, Pane::Left, cx),
+        texts(&ws2, Pane::Right, cx),
+        active(&ws2, cx).map(|t| cx.update(|_, cx| t.read(cx).editor.read(cx).text().to_string()).unwrap()),
+    );
     let ratio = cx.update(|_, cx| ws2.read(cx).split.as_ref().map(|s| s.ratio)).ok().flatten();
     report(
         "relaunched: the same tabs in the same groups, the focused one in front, the width kept",
@@ -717,7 +754,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     key(cx, "cmd-w");
     report(
         "closing a group's last tab closes the split; the other group's tab is in front",
-        cx.update(|_, cx| ws.read(cx).split.is_none()).unwrap() && tabs(ws, cx).len() == n - 1 && !tabs(ws, cx).contains(&copy3) && active(ws, cx).as_ref() == Some(&copy),
+        cx.update(|_, cx| ws.read(cx).split.is_none()).unwrap()
+            && tabs(ws, cx).len() == n - 1
+            && !tabs(ws, cx).contains(&copy3)
+            && active(ws, cx).as_ref() == Some(&copy),
         format!("{} tabs", tabs(ws, cx).len()),
     );
     pause(cx, 400).await;
@@ -752,7 +792,11 @@ async fn drop_checks(ws: &Entity<Workspace>, reduced: bool, cx: &mut AsyncWindow
     draw(cx);
     let whole = drop_now(ws, cx);
     let glide = cx.update(|_, cx| ws.read(cx).editor_drop_glide.is_some()).unwrap();
-    report("its middle: the whole group, the preview gliding there", whole == Some((Pane::Left, DropZone::Whole)) && (reduced || glide), format!("{whole:?} glide {glide}"));
+    report(
+        "its middle: the whole group, the preview gliding there",
+        whole == Some((Pane::Left, DropZone::Whole)) && (reduced || glide),
+        format!("{whole:?} glide {glide}"),
+    );
     mouse_move(cx, at(c.x + c.w * 0.1, y), true);
     draw(cx);
     report("its left third: its left half", drop_now(ws, cx) == Some((Pane::Left, DropZone::Side(Pane::Left))), format!("{:?}", drop_now(ws, cx)));
@@ -762,7 +806,11 @@ async fn drop_checks(ws: &Entity<Workspace>, reduced: bool, cx: &mut AsyncWindow
     let moving = cx.update(|_, cx| ws.read(cx).split_move.as_ref().map(|m| m.leaving)).ok().flatten();
     report(
         "dropped there: the tab moves into a new right group, which grows in like Open to the Side",
-        right(ws, cx) == [dragged.clone()] && active(ws, cx).as_ref() == Some(&dragged) && focused(ws, cx) == Some(Pane::Right) && tabs(ws, cx).len() == n && (reduced || moving == Some(Pane::Right)),
+        right(ws, cx) == [dragged.clone()]
+            && active(ws, cx).as_ref() == Some(&dragged)
+            && focused(ws, cx) == Some(Pane::Right)
+            && tabs(ws, cx).len() == n
+            && (reduced || moving == Some(Pane::Right)),
         format!("right {} moving {moving:?}", right(ws, cx).len()),
     );
     report("no preview once dropped", drop_now(ws, cx).is_none(), String::new());

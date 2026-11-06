@@ -102,7 +102,8 @@ pub fn frame(view: (f32, f32), slots: [Vec<Vec<Slot>>; 2], sizes: &Sizes) -> Fra
     let (w, h) = view;
     let top = metrics::TITLE_H;
     let body = (h - metrics::STATUS_H).max(top) - top;
-    let cols = slots.map(|d| d.into_iter().map(|c| c.into_iter().filter(|s| s.weight > 1e-3).collect::<Vec<_>>()).filter(|c| !c.is_empty()).collect::<Vec<_>>());
+    let cols =
+        slots.map(|d| d.into_iter().map(|c| c.into_iter().filter(|s| s.weight > 1e-3).collect::<Vec<_>>()).filter(|c| !c.is_empty()).collect::<Vec<_>>());
     let extent = |c: &[Slot]| c.iter().map(|s| s.weight.min(1.) * sizes.of(s.panel)).fold(0., f32::max);
     let full = |c: &[Slot]| c.iter().map(|s| sizes.of(s.panel)).fold(0., f32::max);
     let mut widths = cols.each_ref().map(|d| d.iter().map(|c| extent(c)).collect::<Vec<f32>>());
@@ -315,10 +316,13 @@ impl Workspace {
                         .left(px(x - SEAM_HIT / 2.))
                         .w(px(SEAM_HIT))
                         .cursor_col_resize()
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| {
-                            w.drag = Some(Drag::Dock(d, ci));
-                            cx.stop_propagation();
-                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |w, _, _, cx| {
+                                w.drag = Some(Drag::Dock(d, ci));
+                                cx.stop_propagation();
+                            }),
+                        )
                         .into_any_element(),
                 );
             }

@@ -6,13 +6,7 @@ use crate::ui::{self, Btn, Tipped};
 use crate::updates::{self, State, Step};
 use dataman_core::update::Feed;
 
-actions!(
-    update_ui,
-    [
-        UpdateLater,
-        UpdateInstall,
-    ]
-);
+actions!(update_ui, [UpdateLater, UpdateInstall,]);
 
 const SHEET: &str = "UpdateSheet";
 
@@ -200,12 +194,19 @@ impl Workspace {
                         .flex_row()
                         .gap(px(8.))
                         .line_height(px(18.))
-                        .when(error.is_none(), |d| d.child(div().flex_none().text_color(if checking { t.tx3 } else { t.ok }).child(if checking { "◌" } else { "✓" })).child(div().min_w_0().text_color(t.tx2).child(line.clone())))
+                        .when(error.is_none(), |d| {
+                            d.child(div().flex_none().text_color(if checking { t.tx3 } else { t.ok }).child(if checking { "◌" } else { "✓" }))
+                                .child(div().min_w_0().text_color(t.tx2).child(line.clone()))
+                        })
                         .when(error.is_some(), |d| d.child(ui::error_block(t, "update-check-error", line).flex_1().min_w_0())),
                 )
                 .child(
                     ui::modal_footer(t)
-                        .child(div().id("update-status").flex_1().min_w_0().text_size(px(crate::theme::text::UI)).text_color(t.tx3).children(if checking { Some("Checking…".to_string()) } else { at }))
+                        .child(div().id("update-status").flex_1().min_w_0().text_size(px(crate::theme::text::UI)).text_color(t.tx3).children(if checking {
+                            Some("Checking…".to_string())
+                        } else {
+                            at
+                        }))
                         .child(
                             div()
                                 .flex_none()
@@ -223,7 +224,12 @@ impl Workspace {
                                     )
                                 })
                                 .when(!checking && error.is_some(), |d| {
-                                    d.child(ui::button(t, "check-retry", Btn::Secondary).h(px(28.)).child("Try Again").on_click(cx.listener(|_, _, _, cx| updates::check(true, cx))))
+                                    d.child(
+                                        ui::button(t, "check-retry", Btn::Secondary)
+                                            .h(px(28.))
+                                            .child("Try Again")
+                                            .on_click(cx.listener(|_, _, _, cx| updates::check(true, cx))),
+                                    )
                                 })
                                 .when(!checking, |d| {
                                     d.child(
@@ -414,7 +420,6 @@ mod native {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,7 +439,10 @@ mod tests {
             assets: Default::default(),
         };
         let s = |st: State| status(&st).map(|(s, e)| (s.to_string(), e));
-        assert_eq!(s(State::Working { feed: feed.clone(), step: Step::Downloading { got: 12_000_000, total: 33_000_000 } }), Some(("Downloading… 12 MB of 33 MB".into(), false)));
+        assert_eq!(
+            s(State::Working { feed: feed.clone(), step: Step::Downloading { got: 12_000_000, total: 33_000_000 } }),
+            Some(("Downloading… 12 MB of 33 MB".into(), false))
+        );
         assert_eq!(s(State::Working { feed: feed.clone(), step: Step::Verifying }), Some(("Verifying…".into(), false)));
         assert_eq!(s(State::Failed { feed: feed.clone(), error: "signature mismatch".into() }), Some(("signature mismatch".into(), true)));
         assert_eq!(s(State::Available { feed, blocked: None }), None);

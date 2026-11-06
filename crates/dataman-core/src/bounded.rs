@@ -160,7 +160,10 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     if params > 0 && stmts.len() > 1 {
         return Some("parameters need a single statement".into());
     }
-    if params > 0 && dialect == Dialect::TSql && let Err(why) = crate::params::tsql_bound(&stmts[0], params) {
+    if params > 0
+        && dialect == Dialect::TSql
+        && let Err(why) = crate::params::tsql_bound(&stmts[0], params)
+    {
         return Some(why);
     }
     if mode == Mode::Autocommit && stmts.len() > 1 {
@@ -226,7 +229,9 @@ impl Connection {
         }
         let d = if self.engine() == crate::config::Engine::Sqlite {
             let agent = if ro { lite::Agent::Read } else { lite::Agent::Write };
-            Dedicated::Lite(lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent), kept: Some(self.agent_rules.clone()) }, None).await?)
+            Dedicated::Lite(
+                lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent), kept: Some(self.agent_rules.clone()) }, None).await?,
+            )
         } else {
             self.dedicated(Some(db)).await?
         };
@@ -356,7 +361,9 @@ impl Connection {
             Ok(o) => Ok(o),
             // A cancel at the time limit (57014 in any language): the server's own
             // `statement_timeout` answered first.
-            Err(Stop::Server(e)) if e.class(self.engine()) == ErrorClass::Cancelled && (e.message.contains("timeout") || elapsed >= limits.timeout) => Err(Stop::Timeout(limits.timeout)),
+            Err(Stop::Server(e)) if e.class(self.engine()) == ErrorClass::Cancelled && (e.message.contains("timeout") || elapsed >= limits.timeout) => {
+                Err(Stop::Timeout(limits.timeout))
+            }
             Err(Stop::Server(e)) if e.class(self.engine()) == ErrorClass::Timeout => Err(Stop::Timeout(limits.timeout)),
             Err(e) => Err(e),
         };
@@ -391,7 +398,13 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
 
 /// DuckDB has no statement time limit either: the caller's timer interrupts. A read runs in a
 /// READ ONLY transaction, rolled back.
-async fn duck_in_transaction(c: &Arc<duck::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+async fn duck_in_transaction(
+    c: &Arc<duck::Client>,
+    stmts: &[String],
+    params: &[Option<String>],
+    mode: Mode,
+    limits: &Limits,
+) -> Result<(Outcome, bool), Failed> {
     if mode != Mode::Autocommit {
         let begin = Dialect::DuckDb.begin_for(mode == Mode::Read);
         c.execute(begin).await.map_err(|e| (Stop::Server(duck::error_info_at(&e, begin)), false))?;
@@ -423,7 +436,15 @@ async fn duck_in_transaction(c: &Arc<duck::Client>, stmts: &[String], params: &[
     Ok((out, true))
 }
 
-async fn duck_statement(c: &Arc<duck::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+async fn duck_statement(
+    c: &Arc<duck::Client>,
+    sql: &str,
+    params: &[Option<String>],
+    mode: Mode,
+    more: bool,
+    limits: &Limits,
+    out: &mut Outcome,
+) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::DuckDb).verb;
     let ((cols, _), mut rows) = c.stream(sql, params).await.map_err(|e| Stop::Server(duck::error_info_at(&e, sql)))?;
     let returns_rows = !cols.is_empty();
@@ -451,7 +472,13 @@ async fn duck_statement(c: &Arc<duck::Client>, sql: &str, params: &[Option<Strin
 /// SQLite has no statement time limit: the caller's timer interrupts. A read runs on a
 /// connection that cannot write (opened read-only, `query_only`), inside a transaction that is
 /// rolled back.
-async fn lite_in_transaction(c: &Arc<lite::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+async fn lite_in_transaction(
+    c: &Arc<lite::Client>,
+    stmts: &[String],
+    params: &[Option<String>],
+    mode: Mode,
+    limits: &Limits,
+) -> Result<(Outcome, bool), Failed> {
     if mode != Mode::Autocommit {
         let begin = Dialect::Sqlite.begin();
         c.execute(begin).await.map_err(|e| (Stop::Server(lite::error_info_at(&e, begin)), false))?;
@@ -483,7 +510,15 @@ async fn lite_in_transaction(c: &Arc<lite::Client>, stmts: &[String], params: &[
     Ok((out, true))
 }
 
-async fn lite_statement(c: &Arc<lite::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+async fn lite_statement(
+    c: &Arc<lite::Client>,
+    sql: &str,
+    params: &[Option<String>],
+    mode: Mode,
+    more: bool,
+    limits: &Limits,
+    out: &mut Outcome,
+) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::Sqlite).verb;
     let ((cols, _), mut rows) = c.stream(sql, params, None).await.map_err(|e| Stop::Server(lite::error_info_at(&e, sql)))?;
     let returns_rows = !cols.is_empty();
@@ -550,7 +585,15 @@ async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Opti
     Ok((out, true))
 }
 
-async fn my_statement(c: &Arc<my::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+async fn my_statement(
+    c: &Arc<my::Client>,
+    sql: &str,
+    params: &[Option<String>],
+    mode: Mode,
+    more: bool,
+    limits: &Limits,
+    out: &mut Outcome,
+) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::MySql).verb;
     let (cols, mut rows) = my::query(c, sql, params).await.map_err(|e| Stop::Server(my::error_info_at(&e, sql)))?;
     let returns_rows = !cols.is_empty();
@@ -604,7 +647,16 @@ async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Opti
     Ok((out, true))
 }
 
-async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+async fn ms_statement(
+    c: &Arc<ms::Client>,
+    ix: usize,
+    sql: &str,
+    params: &[Option<String>],
+    mode: Mode,
+    more: bool,
+    limits: &Limits,
+    out: &mut Outcome,
+) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::TSql).verb;
     let (mut cols, mut rows) = ms::query(c, sql, params).await.map_err(|e| Stop::Server(ms::error_info_at(&e, sql, 0)))?;
     let returns_rows = !cols.is_empty();
@@ -761,7 +813,11 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
             }
             return simple(client, sql, verb, mode, more, limits, out).await.map_err(|e2| {
                 let first = error_info(&e);
-                if e2.as_db_error().is_some_and(|d| Some(d.code().code()) == first.code.as_deref()) { Stop::Server(first) } else { Stop::Server(error_info(&e2)) }
+                if e2.as_db_error().is_some_and(|d| Some(d.code().code()) == first.code.as_deref()) {
+                    Stop::Server(first)
+                } else {
+                    Stop::Server(error_info(&e2))
+                }
             });
         }
         Err(e) => return Err(Stop::Server(error_info(&e))),
@@ -1036,7 +1092,11 @@ mod tests {
             }
             ResultSet::from_chunk(sql, cols.clone(), b.finish())
         };
-        let sets = vec![(0, "SELECT a".to_string(), set("SELECT a", 5)), (1, "SELECT b".to_string(), set("SELECT b", 2)), (2, "SELECT c".to_string(), set("SELECT c", 9))];
+        let sets = vec![
+            (0, "SELECT a".to_string(), set("SELECT a", 5)),
+            (1, "SELECT b".to_string(), set("SELECT b", 2)),
+            (2, "SELECT c".to_string(), set("SELECT c", 9)),
+        ];
         let o = outcome_of_parts(&sets, &Limits { max_rows: 3, ..Limits::default() });
         let shape: Vec<(usize, &str, usize, Option<Truncation>)> = o.parts.iter().map(|p| (p.statement, p.sql.as_str(), p.rows.len(), p.truncated)).collect();
         assert_eq!(shape, [(0, "SELECT a", 3, Some(Truncation::Rows)), (1, "SELECT b", 2, None), (2, "SELECT c", 3, Some(Truncation::Rows))]);

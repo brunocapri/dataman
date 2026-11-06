@@ -27,7 +27,13 @@ fn explorer_levels_and_objects() {
     let names: Vec<(&str, RelKind)> = rels.iter().map(|r| (r.name.as_str(), r.kind)).collect();
     assert_eq!(
         names,
-        vec![("customer", RelKind::Table), ("item", RelKind::Table), ("odd_dates", RelKind::Table), ("orders", RelKind::Table), ("v_order_customer", RelKind::View)]
+        vec![
+            ("customer", RelKind::Table),
+            ("item", RelKind::Table),
+            ("odd_dates", RelKind::Table),
+            ("orders", RelKind::Table),
+            ("v_order_customer", RelKind::View)
+        ]
     );
     let cols = e.core.block_on(c.columns(db, db, "customer")).unwrap();
     assert_eq!(cols[0].name, "id");
@@ -90,7 +96,11 @@ fn foreign_keys_and_the_data_view() {
     let l = g.links.iter().find(|l| l.from_table == "item").unwrap();
     assert_eq!((l.from_columns.clone(), l.to_table.as_str(), l.to_columns.clone()), (vec!["order_id".to_string()], "orders", vec!["id".to_string()]));
 
-    let rs = run(&e, &c, "SELECT i.product, i.order_id, o.customer_id, c.name FROM item i JOIN orders o ON o.id = i.order_id JOIN customer c ON c.id = o.customer_id ORDER BY i.order_id, i.line");
+    let rs = run(
+        &e,
+        &c,
+        "SELECT i.product, i.order_id, o.customer_id, c.name FROM item i JOIN orders o ON o.id = i.order_id JOIN customer c ON c.id = o.customer_id ORDER BY i.order_id, i.line",
+    );
     let fk = e.core.block_on(c.foreign_keys(db, &rs)).unwrap();
     assert_eq!(fk.flags(), vec![false, true, true, false]);
     let snap = rs.snapshot();
@@ -187,7 +197,8 @@ fn exports_and_bounded_statements() {
     let db = "dataman_t_mcp";
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("c.csv");
-    let x = c.export_query(Some(db), "SELECT id, name, balance, created, birth_date FROM customer ORDER BY id", &path, ExportOptions::new(ExportFormat::Csv), None);
+    let x =
+        c.export_query(Some(db), "SELECT id, name, balance, created, birth_date FROM customer ORDER BY id", &path, ExportOptions::new(ExportFormat::Csv), None);
     let s = e.core.block_on(x.task).unwrap();
     assert_eq!(s.rows, 5);
     let csv = std::fs::read_to_string(&path).unwrap();
@@ -215,9 +226,29 @@ fn exports_and_bounded_statements() {
     assert!(o.truncated.is_some());
     let r = e.core.block_on(c.bounded(Some(db), "DELETE FROM customer", vec![], Mode::Read, Limits::default(), std::future::pending::<()>()));
     assert!(matches!(r, Err(Stop::Refused(_))));
-    let o = e.core.block_on(c.bounded(Some(db), "UPDATE orders SET notes = ? WHERE id = ?", vec![Some("x".into()), Some("2".into())], Mode::Write, Limits::default(), std::future::pending::<()>())).unwrap();
+    let o = e
+        .core
+        .block_on(c.bounded(
+            Some(db),
+            "UPDATE orders SET notes = ? WHERE id = ?",
+            vec![Some("x".into()), Some("2".into())],
+            Mode::Write,
+            Limits::default(),
+            std::future::pending::<()>(),
+        ))
+        .unwrap();
     assert_eq!(o.statements[0].affected, Some(1));
-    let o = e.core.block_on(c.bounded(Some(db), "SELECT notes FROM orders WHERE id = ?", vec![Some("2".into())], Mode::Read, Limits::default(), std::future::pending::<()>())).unwrap();
+    let o = e
+        .core
+        .block_on(c.bounded(
+            Some(db),
+            "SELECT notes FROM orders WHERE id = ?",
+            vec![Some("2".into())],
+            Mode::Read,
+            Limits::default(),
+            std::future::pending::<()>(),
+        ))
+        .unwrap();
     assert_eq!(o.rows[0][0], serde_json::json!("x"));
     exec_quiet(&e, &c, &["DROP DATABASE dataman_t_mcp"]);
 }

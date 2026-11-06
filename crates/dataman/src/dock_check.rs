@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use dataman_core::layout::{Dock, NavView, PanelId};
-use gpui::{AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
+use gpui::{
+    AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformInput, Point,
+    point,
+};
 
 use crate::app::Workspace;
 use crate::dock::Rect;
@@ -117,14 +120,21 @@ fn view_w(cx: &mut AsyncWindowContext) -> f32 {
 }
 
 fn mark(ws: &Entity<Workspace>, name: &str, cx: &mut AsyncWindowContext) -> Option<Rect> {
-    cx.update(|_, cx| ws.read(cx).title_marks.borrow().get(name).copied()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
+    cx.update(|_, cx| ws.read(cx).title_marks.borrow().get(name).copied()).ok().flatten().map(|b| Rect {
+        x: b.origin.x.pt(),
+        y: b.origin.y.pt(),
+        w: b.size.width.pt(),
+        h: b.size.height.pt(),
+    })
 }
 
 fn rail(ws: &Entity<Workspace>, v: NavView, cx: &mut AsyncWindowContext) -> Option<Rect> {
-    cx.update(|_, cx| ws.read(cx).rail_bounds.borrow().get(&v).copied())
-        .ok()
-        .flatten()
-        .map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
+    cx.update(|_, cx| ws.read(cx).rail_bounds.borrow().get(&v).copied()).ok().flatten().map(|b| Rect {
+        x: b.origin.x.pt(),
+        y: b.origin.y.pt(),
+        w: b.size.width.pt(),
+        h: b.size.height.pt(),
+    })
 }
 
 fn center(r: Rect) -> (f32, f32) {
@@ -159,7 +169,8 @@ pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowConte
     let icons = NavView::ALL.map(|v| rail(ws, v, cx));
     report(
         "the rail: three icons down the window's left edge, inside the sidebar, under the title bar",
-        icons.iter().all(|r| r.is_some_and(|r| r.x >= 0. && r.right() <= metrics::RAIL_W && r.y >= metrics::TITLE_H)) && icons.windows(2).all(|p| p[0].unwrap().y < p[1].unwrap().y),
+        icons.iter().all(|r| r.is_some_and(|r| r.x >= 0. && r.right() <= metrics::RAIL_W && r.y >= metrics::TITLE_H))
+            && icons.windows(2).all(|p| p[0].unwrap().y < p[1].unwrap().y),
         format!("{icons:?}"),
     );
     let toolbar = cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.key == "⌘Y")).unwrap();
@@ -186,7 +197,11 @@ pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowConte
     settle(cx).await;
     let st = state(ws, cx);
     let fav = cx.update(|_, cx| ws.read(cx).history.read(cx).showing_favorites()).unwrap();
-    report("History: its view in the same place", st == (NavView::History, true, true) && !fav && panel(ws, PanelId::Explorer, cx) == Some(explorer), format!("{st:?} {fav}"));
+    report(
+        "History: its view in the same place",
+        st == (NavView::History, true, true) && !fav && panel(ws, PanelId::Explorer, cx) == Some(explorer),
+        format!("{st:?} {fav}"),
+    );
     snap("history", cx);
     if let Some(h) = icons[2] {
         click(cx, center(h));
@@ -194,7 +209,11 @@ pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowConte
     settle(cx).await;
     let st = state(ws, cx);
     let gone = panel(ws, PanelId::Explorer, cx).is_none();
-    report("a click on the icon showing hides the sidebar (the rail too), the focus back in the editor", st == (NavView::History, false, false) && gone, format!("{st:?} {gone}"));
+    report(
+        "a click on the icon showing hides the sidebar (the rail too), the focus back in the editor",
+        st == (NavView::History, false, false) && gone,
+        format!("{st:?} {gone}"),
+    );
     snap("hidden", cx);
     press(cx, "cmd-b");
     settle(cx).await;
@@ -227,7 +246,11 @@ pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowConte
         side = next;
     }
     report("the side panel opens in the right dock", side.is_some_and(|s| (s.right() - view_w(cx)).abs() < 0.5), format!("{side:?}"));
-    report("both docks laid out where the frame says", laid_right(ws, Dock::Left, cx) && laid_right(ws, Dock::Right, cx), format!("{:?}", laid_out(ws, Dock::Right, cx)));
+    report(
+        "both docks laid out where the frame says",
+        laid_right(ws, Dock::Left, cx) && laid_right(ws, Dock::Right, cx),
+        format!("{:?}", laid_out(ws, Dock::Right, cx)),
+    );
 
     // The sidebar stays on the left: a drag from its top edge across the window moves nothing.
     let vw = view_w(cx);
@@ -239,7 +262,8 @@ pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowConte
         e == Some(explorer) && sd.is_some_and(|s| (s.right() - vw).abs() < 0.5),
         format!("{e:?} {sd:?}"),
     );
-    let moves = cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.label.contains("sidebar to the") || i.label.contains("panel layout"))).unwrap();
+    let moves =
+        cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.label.contains("sidebar to the") || i.label.contains("panel layout"))).unwrap();
     report("no command moves the sidebar", !moves, String::new());
 
     // Nothing before the toggle (Windows: its buttons are on the right): it stands on the rail's column.

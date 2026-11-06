@@ -14,21 +14,73 @@ pub enum Target {
     /// The explorer's header (its … button, a right click on it): the explorer as a whole.
     Header,
     /// An explorer folder: `color` is its swatch's index; `first`/`last` its place among them.
-    Folder { id: String, name: String, color: Option<usize>, count: usize, first: bool, last: bool },
+    Folder {
+        id: String,
+        name: String,
+        color: Option<usize>,
+        count: usize,
+        first: bool,
+        last: bool,
+    },
     /// Rows picked together: `conns` is every connection they stand for (a folder, those in it),
     /// `folders` the folders among them, `only_folders` that no connection was picked on its own,
     /// `foldered` that one of `conns` is in a folder.
-    Picked { conns: Vec<(String, ConnPhase)>, folders: Vec<String>, only_folders: bool, foldered: bool },
-    Conn { id: String, name: String, state: ConnPhase },
-    Db { conn: String, db: String, current: bool, ro: bool },
-    Schema { conn: String, db: String, schema: String, ro: bool },
+    Picked {
+        conns: Vec<(String, ConnPhase)>,
+        folders: Vec<String>,
+        only_folders: bool,
+        foldered: bool,
+    },
+    Conn {
+        id: String,
+        name: String,
+        state: ConnPhase,
+    },
+    Db {
+        conn: String,
+        db: String,
+        current: bool,
+        ro: bool,
+    },
+    Schema {
+        conn: String,
+        db: String,
+        schema: String,
+        ro: bool,
+    },
     Group,
-    Rel { conn: String, db: String, schema: String, name: String, kind: RelKind, ro: bool },
-    Column { name: String },
-    Index { name: String, definition: Option<String> },
-    Object { conn: String, db: String, schema: String, name: String, what: Obj },
-    DocDb { conn: String, db: String, ro: bool },
-    Coll { conn: String, db: String, name: String },
+    Rel {
+        conn: String,
+        db: String,
+        schema: String,
+        name: String,
+        kind: RelKind,
+        ro: bool,
+    },
+    Column {
+        name: String,
+    },
+    Index {
+        name: String,
+        definition: Option<String>,
+    },
+    Object {
+        conn: String,
+        db: String,
+        schema: String,
+        name: String,
+        what: Obj,
+    },
+    DocDb {
+        conn: String,
+        db: String,
+        ro: bool,
+    },
+    Coll {
+        conn: String,
+        db: String,
+        name: String,
+    },
     Error,
 }
 
@@ -197,7 +249,9 @@ pub fn entries(t: &Target) -> Vec<Entry> {
     use Entry::{Item as I, Sep};
     let it = Item::new;
     match t {
-        Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")), I(it(Act::NewFolder, "New folder", Icon::Schema))],
+        Target::Empty => {
+            vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")), I(it(Act::NewFolder, "New folder", Icon::Schema))]
+        }
         Target::Header => vec![
             I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")),
             I(it(Act::NewFolder, "New folder", Icon::Schema)),
@@ -266,9 +320,7 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             I(it(Act::ToggleReadOnly, "Read Only", Icon::Lock).checked(*ro)),
             Sep,
             I(it(Act::CreateSchema, "Create schema…", Icon::Schema)),
-            I(it(Act::DropDatabase, "Drop database…", Icon::Trash)
-                .danger()
-                .off(current.then_some("in use"))),
+            I(it(Act::DropDatabase, "Drop database…", Icon::Trash).danger().off(current.then_some("in use"))),
         ],
         Target::Schema { ro, .. } => vec![
             I(it(Act::NewTab, "New query tab", Icon::Tab)),
@@ -419,12 +471,9 @@ fn object_entries(what: &Obj) -> Vec<Entry> {
             Sep,
             copy,
         ],
-        Obj::Role => vec![
-            I(it(Act::ShowDefinition, "Show definition", Icon::Code).key("↩").bold()),
-            I(it(Act::AlterRole, "Alter role…", Icon::Edit)),
-            Sep,
-            copy,
-        ],
+        Obj::Role => {
+            vec![I(it(Act::ShowDefinition, "Show definition", Icon::Code).key("↩").bold()), I(it(Act::AlterRole, "Alter role…", Icon::Edit)), Sep, copy]
+        }
     }
 }
 
@@ -506,7 +555,9 @@ pub fn with_folders(mut es: Vec<Entry>, t: &Target, folders: &[(SharedString, Op
     let mut items: Vec<Item> = folders
         .iter()
         .enumerate()
-        .map(|(i, (name, color))| Item::new(Act::MoveToFolder(i), name.clone(), Icon::Schema).dot(*color).checked(current == Some(i)).off((current == Some(i)).then_some("here")))
+        .map(|(i, (name, color))| {
+            Item::new(Act::MoveToFolder(i), name.clone(), Icon::Schema).dot(*color).checked(current == Some(i)).off((current == Some(i)).then_some("here"))
+        })
         .collect();
     items.push(Item::new(Act::MoveToNewFolder, "New folder…", Icon::Plus));
     items.push(Item::new(Act::RemoveFromFolder, "Remove from folder", Icon::Close).off(top_level.then_some("top level")));
@@ -752,7 +803,17 @@ mod tests {
             sub.iter().map(|i| i.act).collect::<Vec<_>>(),
             [Gen::Select, Gen::Insert, Gen::Update, Gen::Delete, Gen::CreateTable].map(Act::Generate).to_vec()
         );
-        for a in [Act::SelectAll, Act::CountRows, Act::OpenWithoutRunning, Act::CopyName, Act::CopyQualified, Act::Export, Act::ImportData, Act::Privileges, Act::Reload] {
+        for a in [
+            Act::SelectAll,
+            Act::CountRows,
+            Act::OpenWithoutRunning,
+            Act::CopyName,
+            Act::CopyQualified,
+            Act::Export,
+            Act::ImportData,
+            Act::Privileges,
+            Act::Reload,
+        ] {
             assert!(item(&t, a).enabled(), "{a:?}");
         }
         assert!(item(&t, Act::Truncate).danger && item(&t, Act::DropTable).danger);
@@ -766,15 +827,7 @@ mod tests {
         let v = rel(RelKind::View);
         assert_eq!(
             acts(&v),
-            vec![
-                Act::SelectTop,
-                Act::CountRows,
-                Act::CopyName,
-                Act::CopyQualified,
-                Act::ShowDefinition,
-                Act::Generate(Gen::Select),
-                Act::DropView
-            ]
+            vec![Act::SelectTop, Act::CountRows, Act::CopyName, Act::CopyQualified, Act::ShowDefinition, Act::Generate(Gen::Select), Act::DropView]
         );
         assert!(item(&v, Act::ShowDefinition).enabled());
         assert!(item(&v, Act::SelectTop).bold);
@@ -806,7 +859,8 @@ mod tests {
         assert!(flat(&un).contains(&Some(Act::Unpin)) && !flat(&un).contains(&Some(Act::Pin)));
         assert_eq!(default_act(&t), Some(Act::SelectTop));
         let v = rel(RelKind::View);
-        let labels: Vec<String> = with_pin(entries(&v), &v, true).iter().filter_map(|e| if let Entry::Item(i) = e { Some(i.label.to_string()) } else { None }).collect();
+        let labels: Vec<String> =
+            with_pin(entries(&v), &v, true).iter().filter_map(|e| if let Entry::Item(i) = e { Some(i.label.to_string()) } else { None }).collect();
         assert!(labels.iter().any(|l| l == "Unpin view"), "{labels:?}");
         for es in [&es, &un] {
             assert!(!matches!(es.first(), Some(Entry::Sep)) && !matches!(es.last(), Some(Entry::Sep)));
@@ -897,7 +951,11 @@ mod tests {
         assert_eq!(picked_acts(&off), [&[Act::Connect][..], &moves, &[Act::DeleteConnection]].concat());
 
         let mixed = picked(&[Connected, Off, Failed, Connecting], &[], false, false);
-        assert_eq!(picked_acts(&mixed), [&[Act::Connect, Act::Disconnect][..], &moves, &[Act::DeleteConnection]].concat(), "nothing that needs them all connected");
+        assert_eq!(
+            picked_acts(&mixed),
+            [&[Act::Connect, Act::Disconnect][..], &moves, &[Act::DeleteConnection]].concat(),
+            "nothing that needs them all connected"
+        );
         assert_eq!(item(&mixed, Act::Connect).label.as_ref(), "Connect 2 connections");
         assert_eq!(item(&mixed, Act::Disconnect).label.as_ref(), "Disconnect 1 connection");
 
@@ -929,7 +987,11 @@ mod tests {
         let plain = entries(&d);
         assert_eq!(with_conns(plain.clone(), &[]), plain, "an empty folder's menu is as it was");
         let es = with_conns(plain.clone(), &[("a".into(), ConnPhase::Connected), ("b".into(), Off)]);
-        assert!(matches!(&es[0], Entry::Item(i) if i.act == Act::Connect) && matches!(&es[1], Entry::Item(i) if i.act == Act::Disconnect) && matches!(es[2], Entry::Sep));
+        assert!(
+            matches!(&es[0], Entry::Item(i) if i.act == Act::Connect)
+                && matches!(&es[1], Entry::Item(i) if i.act == Act::Disconnect)
+                && matches!(es[2], Entry::Sep)
+        );
         assert_eq!(es[3..], plain[..]);
     }
 

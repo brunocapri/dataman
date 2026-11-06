@@ -5,8 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{AsyncWindowContext, Entity, ExternalPaths, FileDropEvent, Focusable, PlatformInput, point};
 use dataman_core::config::Engine;
+use gpui::{AsyncWindowContext, Entity, ExternalPaths, FileDropEvent, Focusable, PlatformInput, point};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -65,15 +65,22 @@ fn contents(p: &Path, label: &str) -> Result<(), String> {
     let ok = match label {
         "CSV" => lines.first() == Some(&"id,sku,name,price,stock,active") && lines.len() == 11 && lines[1].starts_with("101,AUD-0101,"),
         "TSV" => lines.first() == Some(&"id\tsku\tname\tprice\tstock\tactive") && lines.len() == 11,
-        "JSON" => serde_json::from_slice::<serde_json::Value>(&bytes).ok().and_then(|v| v.as_array().map(|a| a.len() == 10 && a[0]["sku"] == "AUD-0101")).unwrap_or(false),
+        "JSON" => serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| v.as_array().map(|a| a.len() == 10 && a[0]["sku"] == "AUD-0101"))
+            .unwrap_or(false),
         "NDJSON" => lines.len() == 10 && lines.iter().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()),
         "SQL" => {
-            let stmts: Vec<&str> = dataman_core::sql::split(&text).into_iter().map(|s| text[s.range].trim()).filter(|s| !s.is_empty() && !s.starts_with("--")).collect();
+            let stmts: Vec<&str> =
+                dataman_core::sql::split(&text).into_iter().map(|s| text[s.range].trim()).filter(|s| !s.is_empty() && !s.starts_with("--")).collect();
             !stmts.is_empty() && stmts.iter().all(|s| s.starts_with("INSERT INTO")) && text.matches("'AUD-01").count() == 10
         }
         _ => {
             let pv = dataman_core::import::preview(p, None, None).map_err(|e| format!("{e:#}"))?;
-            bytes.starts_with(b"PAR1") && pv.total_rows == Some(10) && pv.columns.len() == 6 && pv.rows.first().and_then(|r| r[1].clone()).as_deref() == Some("AUD-0101")
+            bytes.starts_with(b"PAR1")
+                && pv.total_rows == Some(10)
+                && pv.columns.len() == 6
+                && pv.rows.first().and_then(|r| r[1].clone()).as_deref() == Some("AUD-0101")
         }
     };
     if ok { Ok(()) } else { Err(text.chars().take(300).collect()) }
@@ -143,7 +150,8 @@ pub async fn run_import(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWi
         let got = sql(&core, &pg, &pw, &format!("SELECT count(*), sum(amount)::float8::text, max(name) FROM e2e_import.{table}"), cx).await;
         r.check(
             &format!("PostgreSQL: {file} into a new table, every row and value"),
-            rep.is_some_and(|r| r.0 == 20) && got.as_ref().ok().and_then(|g| g.first().cloned()) == Some(vec![Some("20".into()), Some("315".into()), Some("dee".into())]),
+            rep.is_some_and(|r| r.0 == 20)
+                && got.as_ref().ok().and_then(|g| g.first().cloned()) == Some(vec![Some("20".into()), Some("315".into()), Some("dee".into())]),
             format!("{rep:?} {got:?}"),
         );
     }
@@ -188,13 +196,21 @@ pub async fn run_import(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWi
     let modal = cx.update(|_, cx| ws.read(cx).demo_modal(cx)).unwrap_or_default();
     let rep = import(ws, false, false, cx).await;
     let n = sql1(&core, &pg, &pw, "SELECT count(*) FROM e2e_import.e2e_parquet", cx).await;
-    r.check("a Parquet file dropped on the window imports into the selected schema", exported && dropped && rep.is_some_and(|r| r.0 == 20) && n.as_deref() == Some("20"), format!("exported {exported} sheet {dropped} missed {missed:?} {rep:?} {n:?} modal {modal:?}"));
+    r.check(
+        "a Parquet file dropped on the window imports into the selected schema",
+        exported && dropped && rep.is_some_and(|r| r.0 == 20) && n.as_deref() == Some("20"),
+        format!("exported {exported} sheet {dropped} missed {missed:?} {rep:?} {n:?} modal {modal:?}"),
+    );
 
     let t = target(ws, &pg.id, &pg.database, "e2e_import", Some("e2e_csv"), cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.import_data(t, Some(dir.join("e2e_csv.csv")), window, cx)));
     let rep = import(ws, true, false, cx).await;
     let n = sql1(&core, &pg, &pw, "SELECT count(*) FROM e2e_import.e2e_csv", cx).await;
-    r.check("into an existing table with Truncate (past the guard): replaced, not doubled", rep.is_some() && n.as_deref() == Some("20"), format!("{rep:?} {n:?}"));
+    r.check(
+        "into an existing table with Truncate (past the guard): replaced, not doubled",
+        rep.is_some() && n.as_deref() == Some("20"),
+        format!("{rep:?} {n:?}"),
+    );
 
     let t = target(ws, &pg.id, &pg.database, "e2e_import", None, cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.import_data(t, Some(dir.join("e2e_latin.csv")), window, cx)));
