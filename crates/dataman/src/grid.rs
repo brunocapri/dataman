@@ -1566,6 +1566,12 @@ impl ResultGrid {
                 let r = m.cell_rect;
                 cx.emit(GridEvent::Filter { col: *col, at: (r.0.max(self.geo.bounds.origin.x.pt() + self.geo.gutter), r.1 + r.3 + 2.) });
             }
+            Some(MenuEntry::Item(MenuItem::CopyColumnName(col))) => {
+                if let Some(c) = self.rs.as_ref().and_then(|rs| rs.columns()).as_ref().and_then(|c| c.get(*col)) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(c.name.clone()));
+                    self.mark_copied(cx);
+                }
+            }
             Some(MenuEntry::Item(MenuItem::Hide(col))) => self.hide_column(*col, cx),
             Some(MenuEntry::Item(MenuItem::ShowAll(_))) => self.show_all_columns(cx),
             Some(MenuEntry::Item(MenuItem::DeleteRows { .. })) => {

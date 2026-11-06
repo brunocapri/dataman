@@ -15,6 +15,7 @@ pub enum Item {
     SortAsc(usize),
     SortDesc(usize),
     Filter(usize),
+    CopyColumnName(usize),
     Hide(usize),
     ShowAll(usize),
     DeleteRows { n: usize, restore: bool },
@@ -39,6 +40,7 @@ impl Item {
             Item::SortAsc(_) => (Icon::ChevronUp, "Sort ascending".into(), None),
             Item::SortDesc(_) => (Icon::ChevronDown, "Sort descending".into(), None),
             Item::Filter(_) => (Icon::Filter, "Filter…".into(), None),
+            Item::CopyColumnName(_) => (Icon::Copy, "Copy column name".into(), None),
             Item::Hide(_) => (Icon::Close, "Hide column".into(), None),
             Item::ShowAll(n) => (Icon::View, "Show all columns".into(), Some(format!("{n} hidden").into())),
             Item::DeleteRows { n, restore } => {
@@ -54,9 +56,8 @@ pub fn header_entries(col: usize, table: bool, hidden: usize, can_hide: bool) ->
     if table {
         v.push(Entry::Item(Item::Filter(col)));
     }
-    if can_hide || hidden > 0 {
-        v.push(Entry::Sep);
-    }
+    v.push(Entry::Sep);
+    v.push(Entry::Item(Item::CopyColumnName(col)));
     if can_hide {
         v.push(Entry::Item(Item::Hide(col)));
     }
@@ -214,12 +215,17 @@ mod tests {
         let h = header_entries(2, true, 0, true);
         assert_eq!(h[..3], [Entry::Item(Item::SortAsc(2)), Entry::Item(Item::SortDesc(2)), Entry::Item(Item::Filter(2))]);
         assert_eq!(h[3], Entry::Sep);
-        assert_eq!(h[4], Entry::Item(Item::Hide(2)));
+        assert_eq!(h[4], Entry::Item(Item::CopyColumnName(2)));
+        assert_eq!(h[5], Entry::Item(Item::Hide(2)));
         assert_eq!(
             header_entries(0, false, 3, false),
-            vec![Entry::Item(Item::SortAsc(0)), Entry::Item(Item::SortDesc(0)), Entry::Sep, Entry::Item(Item::ShowAll(3))]
+            vec![Entry::Item(Item::SortAsc(0)), Entry::Item(Item::SortDesc(0)), Entry::Sep, Entry::Item(Item::CopyColumnName(0)), Entry::Item(Item::ShowAll(3))]
         );
-        assert_eq!(header_entries(1, false, 0, false), vec![Entry::Item(Item::SortAsc(1)), Entry::Item(Item::SortDesc(1))]);
+        assert_eq!(
+            header_entries(1, false, 0, false),
+            vec![Entry::Item(Item::SortAsc(1)), Entry::Item(Item::SortDesc(1)), Entry::Sep, Entry::Item(Item::CopyColumnName(1))],
+            "the only column still copies its name"
+        );
         let with = with_filter(entries(vec![j("customer")], true), 1, Some("7".into()));
         assert_eq!(with.len(), 6);
         assert_eq!((&with[1], &with[2], &with[3]), (&Entry::Sep, &Entry::Item(Item::FilterValue(1, Some("7".into()))), &Entry::Sep));
