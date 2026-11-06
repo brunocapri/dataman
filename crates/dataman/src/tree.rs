@@ -2684,6 +2684,7 @@ impl SchemaTree {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_row_point(&self, id: &str) -> Option<gpui::Point<gpui::Pixels>> {
         let ix = self.rows.iter().position(|r| r.id.as_ref() == id)?;
         let (left, top, right) = self.row_rect(ix)?;

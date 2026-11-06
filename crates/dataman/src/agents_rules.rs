@@ -27,6 +27,7 @@ const BODY_TOP: f32 = 24.;
 /// A section of the page brought to its top once laid out (a link to the agent login, a stage).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Jump {
+    #[cfg(feature = "checks")]
     Privacy,
     /// The agent login section, or the card that offers one at the top.
     Login,
@@ -492,6 +493,7 @@ impl AgentsPage {
     fn do_jump(&mut self, card: bool, login: bool, window: &mut Window) {
         let Some(j) = self.jump else { return };
         let ix = match j {
+            #[cfg(feature = "checks")]
             Jump::Privacy => 1 + card as usize,
             Jump::Login if login => 2 + card as usize,
             Jump::Login => 0,

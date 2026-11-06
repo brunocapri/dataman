@@ -407,11 +407,6 @@ pub(crate) async fn orphan(db: &Db, user: &str) -> Result<bool> {
     Ok(r.first().is_some_and(|r| s(&r[0]) != "0"))
 }
 
-/// Dropping a login left without its user.
-pub fn drop_login_sql(user: &str) -> String {
-    format!("DROP LOGIN {};", q(user))
-}
-
 /// Create over a login left without its user and that Dataman no longer knows: dropped first,
 /// in the script the user reviews (its sessions ended, which no transaction can hold).
 pub fn drop_orphan_steps(user: &str) -> Vec<Step> {
