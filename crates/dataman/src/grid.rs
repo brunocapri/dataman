@@ -347,6 +347,9 @@ pub struct ResultGrid {
     table: Option<TableMode>,
     preferred: Option<Vec<f32>>,
     gutter: Option<GutterShare>,
+    /// The rows this frame told the editor about. Rows arrive off the UI thread, so layout can see
+    /// more than render did: the gutter follows this count, or the two dividers part for a frame.
+    said_rows: Option<usize>,
     /// Row numbers as narrow as their digits, for a grid with no editor to line up with.
     tight_gutter: bool,
     auto: Option<AutoScroll>,
@@ -516,6 +519,7 @@ impl ResultGrid {
             table: None,
             preferred: None,
             gutter: None,
+            said_rows: None,
             tight_gutter: false,
             hover: None,
             hover_eye: false,
@@ -2255,7 +2259,7 @@ impl ResultGrid {
             _ => None,
         };
         let offset = self.table.as_ref().map_or(0, |t| t.offset);
-        let need = self.gutter_need(rows);
+        let need = self.gutter_need(self.said_rows.unwrap_or(rows));
         let gutter = self.gutter.as_ref().map_or(need, |g| g.grid(need, window));
         let w = bounds.size.width.pt();
         let h = bounds.size.height.pt();
@@ -2923,9 +2927,12 @@ impl Render for ResultGrid {
         let entity2 = entity.clone();
         let rs = self.rs.clone();
         let find_open = self.find.as_ref().is_some_and(|f| f.open);
+        self.said_rows = None;
         if let (Some(g), Some(rs)) = (&self.gutter, &rs) {
             let virtual_rows = self.decor.as_ref().map_or(0, |d| d.virtual_rows.len());
-            g.say_grid(self.gutter_need(rs.rows() + virtual_rows));
+            let said = rs.rows() + virtual_rows;
+            g.say_grid(self.gutter_need(said));
+            self.said_rows = Some(said);
         }
         let mut root = div()
             .size_full()
