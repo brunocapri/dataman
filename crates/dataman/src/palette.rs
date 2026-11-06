@@ -111,9 +111,10 @@ fn subsequence(q: &[char], chars: &[(usize, char)], lower: &[char], words: bool)
     Some((score, positions))
 }
 
-fn sql_match(query: &str, sql: &str) -> Option<Match> {
+/// `query` as one contiguous piece of `text`: a favorite's SQL, a setting's other words.
+fn contains_match(query: &str, text: &str) -> Option<Match> {
     let q = query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
-    (!q.is_empty() && sql.to_lowercase().contains(&q)).then(|| Match { score: 100, positions: vec![] })
+    (!q.is_empty() && text.to_lowercase().contains(&q)).then(|| Match { score: 100, positions: vec![] })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,16 +125,18 @@ pub enum Scope {
     Tabs,
     Favorites,
     Connections,
+    Settings,
     Goto,
 }
 
-const SCOPES: [(Scope, &str, &str); 6] = [
+const SCOPES: [(Scope, &str, &str); 7] = [
     (Scope::All, "All", ""),
     (Scope::Commands, "Commands", ">"),
     (Scope::Tables, "Tables", "@"),
     (Scope::Tabs, "Tabs", "#"),
     (Scope::Favorites, "Favorites", "*"),
     (Scope::Connections, "Connections", ":"),
+    (Scope::Settings, "Settings", ","),
 ];
 
 impl Scope {
@@ -148,6 +151,7 @@ impl Scope {
             Scope::Tabs => s == Section::Tabs,
             Scope::Favorites => s == Section::Favorites,
             Scope::Connections => s == Section::Connections,
+            Scope::Settings => s == Section::Settings,
             Scope::Goto => matches!(s, Section::Tables | Section::Tabs | Section::Offline),
         }
     }
@@ -159,6 +163,7 @@ pub enum Section {
     Tabs,
     Favorites,
     Commands,
+    Settings,
     Connections,
     Offline,
 }
@@ -170,6 +175,7 @@ impl Section {
             Section::Tabs => "TABS",
             Section::Favorites => "FAVORITES",
             Section::Commands => "COMMANDS",
+            Section::Settings => "SETTINGS",
             Section::Connections => "CONNECTIONS",
             Section::Offline => "NOT CONNECTED",
         }
@@ -180,6 +186,7 @@ impl Section {
             Section::Tabs => 4,
             Section::Favorites => 6,
             Section::Commands => 6,
+            Section::Settings => 6,
             Section::Connections => 4,
             Section::Offline => 3,
         }
@@ -201,6 +208,7 @@ pub enum ItemKind {
     Favorite { id: String },
     Command { action: Box<dyn Action>, target: Target },
     Connection { id: String },
+    Setting { section: &'static str, words: &'static str },
 }
 
 impl Clone for ItemKind {
@@ -211,6 +219,7 @@ impl Clone for ItemKind {
             ItemKind::Favorite { id } => ItemKind::Favorite { id: id.clone() },
             ItemKind::Command { action, target } => ItemKind::Command { action: action.boxed_clone(), target: *target },
             ItemKind::Connection { id } => ItemKind::Connection { id: id.clone() },
+            ItemKind::Setting { section, words } => ItemKind::Setting { section, words },
         }
     }
 }
@@ -234,6 +243,7 @@ pub enum PaletteIcon {
     Favorite,
     Command,
     Connection,
+    Setting,
 }
 
 impl Item {
@@ -273,11 +283,11 @@ struct Hit {
 fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>, usize) {
     let mut groups: Vec<(Section, Vec<Hit>)> = Vec::new();
     let mut hidden = 0;
-    for section in [Section::Tables, Section::Tabs, Section::Favorites, Section::Commands, Section::Connections, Section::Offline] {
+    for section in [Section::Tables, Section::Tabs, Section::Favorites, Section::Commands, Section::Settings, Section::Connections, Section::Offline] {
         if !scope.shows(section) {
             continue;
         }
-        if query.is_empty() && scope == Scope::All && matches!(section, Section::Tables | Section::Favorites | Section::Offline) {
+        if query.is_empty() && scope == Scope::All && matches!(section, Section::Tables | Section::Favorites | Section::Settings | Section::Offline) {
             continue;
         }
         let mut hits: Vec<Hit> = items
@@ -290,9 +300,12 @@ fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>,
                 }
                 let m = fuzzy(query, &it.label).or_else(|| {
                     if section == Section::Favorites {
-                        return sql_match(query, &it.sub);
+                        return contains_match(query, &it.sub);
                     }
-                    fuzzy(query, &it.sub).filter(|m| m.score >= 500 || query.is_empty()).map(|m| Match { score: m.score - 400, positions: vec![] })
+                    fuzzy(query, &it.sub).filter(|m| m.score >= 500 || query.is_empty()).map(|m| Match { score: m.score - 400, positions: vec![] }).or_else(|| match &it.kind {
+                        ItemKind::Setting { words, .. } => contains_match(query, words),
+                        _ => None,
+                    })
                 })?;
                 Some(Hit { item: i, m })
             })
@@ -338,7 +351,7 @@ impl Focusable for Palette {
 
 impl Palette {
     pub fn new(items: Vec<Item>, scope: Scope, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new(cx, "Type a command, a table, a tab…").bare());
+        let input = cx.new(|cx| TextInput::new(cx, "Type a command, a table, a tab, a setting…").bare());
         cx.subscribe(&input, |p: &mut Palette, _, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => p.refilter(cx),
             InputEvent::Submit => p.pick(OpenMode::Open, cx),
@@ -453,6 +466,7 @@ impl Palette {
                 PaletteIcon::Favorite => Icon::Star,
                 PaletteIcon::Command => Icon::Command,
                 PaletteIcon::Connection => Icon::Database,
+                PaletteIcon::Setting => Icon::Gear,
             };
             icon(ic).size(px(15.)).text_color(if sel { t.tx } else { t.tx3 })
         };
@@ -757,11 +771,32 @@ mod tests {
     }
 
     #[test]
+    fn settings_by_name_section_and_other_words() {
+        let setting = |label: &str, section: &'static str, words: &'static str| Item { kind: ItemKind::Setting { section, words }, sub: section.into(), icon: PaletteIcon::Setting, ..item(Section::Settings, label) };
+        let items = vec![
+            Item { sub: String::new(), ..setting("Results grid", "Results grid", "") },
+            setting("Rows fetched ahead", "Results grid", "prefetch fetch"),
+            setting("Theme", "Appearance", "dark light system"),
+            item(Section::Commands, "Run"),
+        ];
+        let found = |q: &str, s: Scope| -> Vec<String> { rank(&items, q, s).0.iter().filter(|g| g.0 == Section::Settings).flat_map(|g| g.1.iter().map(|h| items[h.item].label.clone())).collect() };
+        assert_eq!(found("rows fetched", Scope::All), ["Rows fetched ahead"], "its name");
+        assert_eq!(found("results grid", Scope::All), ["Results grid"], "a section's whole name");
+        assert_eq!(found("results", Scope::All), ["Results grid", "Rows fetched ahead"], "a word of it: the section, then its rows");
+        assert_eq!(found("prefetch", Scope::All), ["Rows fetched ahead"], "another word for it");
+        assert_eq!(found("appearance", Scope::Settings), ["Theme"]);
+        assert!(found("", Scope::All).is_empty(), "not listed before anything is typed");
+        assert_eq!(found("", Scope::Settings).len(), 3);
+        assert!(rank(&items, "theme", Scope::Commands).0.is_empty());
+    }
+
+    #[test]
     fn prefixes_pick_scopes() {
         assert_eq!(Scope::from_prefix('>'), Some(Scope::Commands));
         assert_eq!(Scope::from_prefix('@'), Some(Scope::Tables));
         assert_eq!(Scope::from_prefix('#'), Some(Scope::Tabs));
         assert_eq!(Scope::from_prefix(':'), Some(Scope::Connections));
+        assert_eq!(Scope::from_prefix(','), Some(Scope::Settings));
         assert_eq!(Scope::from_prefix('o'), None);
     }
 
@@ -864,6 +899,7 @@ impl Workspace {
                     t.expand_id(&cid, cx);
                 });
             }
+            ItemKind::Setting { section, .. } => self.open_settings_at(section, window, cx),
         }
         cx.notify();
     }
@@ -945,6 +981,15 @@ impl Workspace {
         }
         items.extend(crate::undo::palette_items(self));
         items.extend(commands(active_conn.as_ref(), cx));
+        items.extend(crate::settings_view::places(&store.core, cx).into_iter().map(|p| Item {
+            kind: ItemKind::Setting { section: p.section, words: p.words },
+            section: Section::Settings,
+            label: p.label.into(),
+            sub: p.sub.into(),
+            key: String::new(),
+            icon: PaletteIcon::Setting,
+            disabled: false,
+        }));
         for p in &store.profiles {
             let state = store.states.get(&p.id);
             let (sub, connected) = match state {

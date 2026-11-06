@@ -127,7 +127,35 @@ const ROWS: [(Row, Section, &str, &str); 25] = [
     (Row::CrashReports, Section::About, "Crash reports", "crash logs panic diagnostics"),
 ];
 
+/// What the palette finds in Settings: a section, or a row of one (then `sub` says which).
+pub(crate) struct Place {
+    pub label: &'static str,
+    pub sub: &'static str,
+    pub section: &'static str,
+    pub words: &'static str,
+}
+
+/// The sections, then the rows that show now.
+pub(crate) fn places(core: &Core, cx: &App) -> Vec<Place> {
+    let settings = core.settings.get();
+    let project = core.project.info(&settings);
+    let sections = SECTIONS.iter().map(|s| Place { label: s.label(), sub: "", section: s.label(), words: "" });
+    let rows = ROWS.iter().filter(|(row, ..)| row.shows(&settings, project.as_ref(), cx)).map(|&(_, section, label, words)| Place { label, sub: section.label(), section: section.label(), words });
+    sections.chain(rows).collect()
+}
+
 impl Row {
+    fn shows(self, s: &Settings, project: Option<&dataman_core::project::Info>, cx: &App) -> bool {
+        match self {
+            Row::McpClaude => s.mcp_enabled,
+            Row::ProjectFolder => s.project_enabled,
+            Row::ProjectShare => project.is_some(),
+            Row::ProjectConnections => project.is_some_and(|i| i.share.connections),
+            Row::UpdateCheck => crate::updates::enabled(cx),
+            _ => true,
+        }
+    }
+
     fn help(self) -> Option<&'static str> {
         Some(match self {
             Row::McpAccess => "Lets AI agents (Claude Code, Claude Desktop, any MCP client) use your connections. Off blocks every agent.",
@@ -378,15 +406,7 @@ impl SettingsView {
     }
 
     fn row_visible(&self, row: Row, cx: &App) -> bool {
-        let open = self.core.project.info(&self.settings);
-        match row {
-            Row::McpClaude => self.settings.mcp_enabled,
-            Row::ProjectFolder => self.settings.project_enabled,
-            Row::ProjectShare => open.is_some(),
-            Row::ProjectConnections => open.is_some_and(|i| i.share.connections),
-            Row::UpdateCheck => crate::updates::enabled(cx),
-            _ => true,
-        }
+        row.shows(&self.settings, self.core.project.info(&self.settings).as_ref(), cx)
     }
 
     fn copy_button(&self, t: &Theme, id: &'static str, label: &'static str, text: Option<String>, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1293,6 +1313,11 @@ impl SettingsView {
     pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         cx.notify();
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_page(&self) -> gpui::Bounds<Pixels> {
+        self.page_scroll.bounds()
     }
 
     #[cfg(feature = "checks")]
