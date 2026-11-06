@@ -144,7 +144,7 @@ fn batches_on_demand_and_fetch_all() {
     eprintln!("sort 1M text rows: {:?}", t.elapsed());
     let snap = rs.snapshot();
     assert!(snap.text(0, 1) >= snap.text(1, 1));
-    let tsv = rs.copy(0..2, &[0, 1], CopyFormat::Tsv, true);
+    let tsv = rs.copy(0..2, &[0, 1], CopyFormat::Tsv, true, |_, _| None);
     assert_eq!(tsv.lines().count(), 3);
 }
 
