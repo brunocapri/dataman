@@ -298,7 +298,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-shift-n");
     let on_nullable = null(&tab, cx);
     key(cx, "cmd-shift-n");
-    check("⌘⇧N does nothing on a NOT NULL column, and sets NULL on a nullable one", on_required == Some(false) && on_nullable == Some(true), format!("{on_required:?} {on_nullable:?}"));
+    let back = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_cell_editor().map(|e| e.read(cx).was_default)).ok().flatten();
+    check("⌘⇧N does nothing on a NOT NULL column; on a nullable one it sets NULL, and again gives the blank back", on_required == Some(false) && on_nullable == Some(true) && back == Some(true), format!("{on_required:?} {on_nullable:?} {back:?}"));
     key(cx, "tab");
     key(cx, "tab");
     pause(cx, 100).await;

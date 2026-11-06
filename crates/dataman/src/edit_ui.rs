@@ -263,7 +263,8 @@ pub struct CellEditor {
     pub null: bool,
     pub was_default: bool,
     nullable: bool,
-    hidden_text: Option<String>,
+    /// What NULL covers, to bring it back: the text, and whether the cell was still blank.
+    hidden: Option<(String, bool)>,
 }
 
 impl EventEmitter<CellEditorEvent> for CellEditor {}
@@ -287,14 +288,14 @@ impl CellEditor {
             InputEvent::Changed => {
                 if e.null {
                     e.null = false;
-                    e.hidden_text = None;
+                    e.hidden = None;
                 }
                 e.was_default = false;
                 cx.notify();
             }
         })
         .detach();
-        CellEditor { input, null, was_default, nullable, hidden_text: None }
+        CellEditor { input, null, was_default, nullable, hidden: None }
     }
 
     pub(crate) fn value(&self, cx: &App) -> Option<CellValue> {
@@ -306,12 +307,13 @@ impl CellEditor {
             return;
         }
         self.null = !self.null;
-        self.was_default = false;
         if self.null {
             let text = self.input.read(cx).text().to_string();
-            self.hidden_text = Some(text);
+            self.hidden = Some((text, self.was_default));
+            self.was_default = false;
             self.input.update(cx, |i, cx| i.set_text("", cx));
-        } else if let Some(t) = self.hidden_text.take() {
+        } else if let Some((t, was_default)) = self.hidden.take() {
+            self.was_default = was_default;
             self.input.update(cx, |i, cx| i.set_text(t, cx));
         }
         cx.notify();

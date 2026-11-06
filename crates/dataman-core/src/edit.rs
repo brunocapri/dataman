@@ -87,10 +87,11 @@ impl EditTarget {
 
     /// The value a new row offers, with its column.
     pub fn new_row_uuid(&self) -> Option<(usize, CellValue)> {
+        let col = self.uuid_key?;
         let id = uuid::Uuid::new_v4().hyphenated();
         let mut buf = uuid::Uuid::encode_buffer();
         let text = if self.uuid_upper { id.encode_upper(&mut buf) } else { id.encode_lower(&mut buf) };
-        self.uuid_key.map(|c| (c, CellValue::text(&*text)))
+        Some((col, CellValue::text(&*text)))
     }
 
     pub fn is_editable(&self, col: usize) -> bool {
