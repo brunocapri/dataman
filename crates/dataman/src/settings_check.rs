@@ -45,6 +45,15 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
             .flatten()
     };
     let at_open = search_focused(cx);
+    let view = cx.update(|_, cx| ws.read(cx).settings_view.clone()).ok().flatten();
+    if let Some(v) = &view {
+        let _ = cx.update(|_, cx| v.update(cx, |v, cx| v.demo_search("nothing like this", cx)));
+        let offered = probed("settings-reset", cx).is_some();
+        click_probe("settings-reset", cx);
+        let (query, theme) = (cx.update(|_, cx| v.read(cx).demo_query(cx)).unwrap_or_default(), probed("th-light", cx).is_some());
+        r.check("a search nothing matches offers Reset filters, which clears it and brings the section back", offered && query.is_empty() && theme && probed("settings-reset", cx).is_none(), format!("{offered} {query:?} {theme}"));
+        let _ = cx.update(|window, cx| window.focus(&v.read(cx).demo_search_handle(cx), cx));
+    }
     click_probe("th-light", cx);
     let after = search_focused(cx);
     r.check(

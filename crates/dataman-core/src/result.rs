@@ -942,7 +942,9 @@ impl ResultSet {
         self.bump();
     }
 
-    pub fn copy(&self, rows: impl IntoIterator<Item = usize>, cols: &[usize], fmt: CopyFormat, header: bool) -> String {
+    /// `over` gives what a cell shows when that is not what is stored (a pending edit, a row not
+    /// inserted yet: the rows past the result have only this).
+    pub fn copy<'a>(&self, rows: impl IntoIterator<Item = usize>, cols: &[usize], fmt: CopyFormat, header: bool, over: impl Fn(usize, usize) -> Option<Option<&'a str>>) -> String {
         let snap = self.snapshot();
         let mut out = String::new();
         let sep = match fmt {
@@ -959,14 +961,15 @@ impl ResultSet {
             out.push('\n');
         }
         for r in rows {
-            if r >= snap.rows() {
-                break;
-            }
             for (i, &c) in cols.iter().enumerate() {
                 if i > 0 {
                     out.push(sep);
                 }
-                push_field(&mut out, snap.text(r, c).as_deref(), fmt);
+                match over(r, c) {
+                    Some(shown) => push_field(&mut out, shown, fmt),
+                    None if r < snap.rows() => push_field(&mut out, snap.text(r, c).as_deref(), fmt),
+                    None => push_field(&mut out, None, fmt),
+                }
             }
             out.push('\n');
         }
@@ -974,13 +977,15 @@ impl ResultSet {
     }
 }
 
+/// The clipboard goes to spreadsheets, chats and editors, so `\\N` has no place in it: that is the
+/// COPY convention, kept for what COPY reads (a TSV export's default, the import). A NULL is an
+/// empty field in TSV, where it cannot be told from `''`; CSV quotes `''` and so keeps them apart.
 fn push_field(out: &mut String, v: Option<&str>, fmt: CopyFormat) {
     match (fmt, v) {
-        (CopyFormat::Tsv, None) => out.push_str("\\N"),
+        (_, None) => {}
         (CopyFormat::Tsv, Some(s)) => {
             for c in s.chars() {
                 match c {
-                    '\\' => out.push_str("\\\\"),
                     '\t' => out.push_str("\\t"),
                     '\n' => out.push_str("\\n"),
                     '\r' => out.push_str("\\r"),
@@ -988,7 +993,6 @@ fn push_field(out: &mut String, v: Option<&str>, fmt: CopyFormat) {
                 }
             }
         }
-        (CopyFormat::Csv, None) => {}
         (CopyFormat::Csv, Some(s)) => {
             if s.is_empty() || s.contains([',', '"', '\n', '\r']) || s.starts_with(' ') || s.ends_with(' ') {
                 out.push('"');
@@ -1055,10 +1059,39 @@ mod tests {
     #[test]
     fn copy_formats() {
         let rs = sample();
-        let tsv = rs.copy(0..4, &[0, 1], CopyFormat::Tsv, true);
-        assert_eq!(tsv, "id\tname\n3\tc\n1\t\\N\n2\t\n4\ta\\tb\n");
-        let csv = rs.copy(0..4, &[1, 2], CopyFormat::Csv, false);
+        let tsv = rs.copy(0..4, &[0, 1], CopyFormat::Tsv, true, |_, _| None);
+        assert_eq!(tsv, "id\tname\n3\tc\n1\t\n2\t\n4\ta\\tb\n");
+        let csv = rs.copy(0..4, &[1, 2], CopyFormat::Csv, false, |_, _| None);
         assert_eq!(csv, "c,10\n,9.5\n\"\",\na\tb,-1\n");
+    }
+
+    #[test]
+    fn a_plain_copy_never_writes_backslash_n() {
+        let rs = sample();
+        assert_eq!(rs.copy(1..2, &[0, 1, 2], CopyFormat::Tsv, false, |_, _| None), "1\t\t9.5\n", "a NULL is an empty field");
+        let rs = ResultSet::new("select");
+        let col = |n: &str| ColumnInfo { name: n.into(), type_name: "text".into(), type_oid: 25, kind: Kind::Text };
+        let cols = vec![col("path"), col("literal")];
+        rs.set_columns(cols.clone());
+        let mut b = ChunkBuilder::new(&cols);
+        b.push_text(0, "C:\\New\tfolder");
+        b.push_text(1, "\\N");
+        b.end_row();
+        rs.push_chunk(b.finish());
+        assert_eq!(rs.copy(0..1, &[0, 1], CopyFormat::Tsv, false, |_, _| None), "C:\\New\\tfolder\t\\N\n", "values keep their backslashes; only a tab or a line break is written out");
+    }
+
+    #[test]
+    fn a_copy_takes_what_the_cell_shows() {
+        let rs = sample();
+        let over = |r: usize, c: usize| match (r, c) {
+            (1, 1) => Some(Some("edited")),
+            (0, 1) => Some(None),
+            (4, 0) => Some(Some("new")),
+            _ => None,
+        };
+        let tsv = rs.copy(0..5, &[0, 1], CopyFormat::Tsv, false, over);
+        assert_eq!(tsv, "3\t\n1\tedited\n2\t\n4\ta\\tb\nnew\t\n", "edits over the stored value, an edit to NULL, a row not inserted yet");
     }
 
     #[test]

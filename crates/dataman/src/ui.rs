@@ -695,6 +695,133 @@ pub fn text_tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut 
     }
 }
 
+/// What an error draws at most: shaping follows the text, and Copy error takes all of it anyway.
+const ERROR_SHOWN: usize = 6_000;
+const ERROR_TIP_W: (f32, f32) = (220., 480.);
+const ERROR_BLOCK_H: f32 = 180.;
+
+/// An error as it reads on screen: the driver's line breaks kept, bounded.
+fn error_shown(full: &str) -> SharedString {
+    let text = full.trim().replace("\r\n", "\n").replace('\t', "    ");
+    match text.char_indices().nth(ERROR_SHOWN) {
+        Some((at, _)) => format!("{}…", &text[..at]).into(),
+        None => text.into(),
+    }
+}
+
+fn error_tip_width(shown: &str) -> f32 {
+    let longest = shown.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    (longest as f32 * TIP_CHAR + 2. * TIP_PAD_X + 2.).clamp(ERROR_TIP_W.0, ERROR_TIP_W.1)
+}
+
+/// The one "Copied" moment an error's button is in; kept here so a view showing an error holds no
+/// state for it.
+struct ErrorCopied {
+    id: SharedString,
+    text: SharedString,
+    at: Instant,
+    reduced: bool,
+    _redraws: gpui::Task<()>,
+}
+
+thread_local! {
+    static ERROR_COPIED: std::cell::RefCell<Option<ErrorCopied>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Copies an error whole, whatever part of it is on screen.
+pub fn copy_error(t: &Theme, id: impl Into<SharedString>, text: impl Into<SharedString>) -> Stateful<Div> {
+    let (id, text): (SharedString, SharedString) = (id.into(), text.into());
+    let copied = ERROR_COPIED.with_borrow(|c| {
+        c.as_ref().filter(|c| c.id == id && c.text == text).and_then(|c| crate::motion::copied(c.at, Instant::now(), c.reduced))
+    });
+    copy_button(t, ElementId::Name(id.clone()), Btn::Ghost, "Copy error", copied).on_click(move |_, window, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
+        let (at, reduced) = (Instant::now(), cx.reduce_motion());
+        let redraws = crate::motion::copied_redraws(reduced);
+        let _redraws = window.spawn(cx, async move |cx| {
+            for step in redraws {
+                cx.background_executor().timer(step.saturating_sub(at.elapsed())).await;
+                if cx.update(|window, _| window.refresh()).is_err() {
+                    return;
+                }
+            }
+        });
+        ERROR_COPIED.set(Some(ErrorCopied { id: id.clone(), text: text.clone(), at, reduced, _redraws }));
+        window.refresh();
+    })
+}
+
+/// An error with room around it: all of it, wrapped, and its copy button beside it.
+pub fn error_block(t: &Theme, id: impl Into<SharedString>, text: impl Into<SharedString>) -> Div {
+    let (id, text): (SharedString, SharedString) = (id.into(), text.into());
+    let body = ElementId::Name(format!("{id}-text").into());
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(12.))
+        .child(div().children(here(&body)).id(body).flex_1().min_w_0().max_h(px(ERROR_BLOCK_H)).overflow_y_scroll().whitespace_normal().text_color(t.err).child(error_shown(&text)))
+        .child(copy_error(t, id, text))
+}
+
+/// An error in one line's room: its first line, the rest in its tooltip.
+pub fn error_line(t: &Theme, id: impl Into<SharedString>, text: impl Into<SharedString>) -> Stateful<Div> {
+    let (id, text): (SharedString, SharedString) = (id.into(), text.into());
+    let first = error_shown(&text).lines().next().unwrap_or("").to_string();
+    let id = ElementId::Name(id);
+    div().children(here(&id)).id(id).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.err).child(first).tip(error_tip(text))
+}
+
+/// The tooltip of anything standing for an error: the error as it reads, scrolling past a bounded
+/// height, and its copy button. It takes the pointer, so what lies under it hears no click.
+struct ErrorTip {
+    full: SharedString,
+    shown: SharedString,
+    width: f32,
+}
+
+impl Render for ErrorTip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme();
+        div()
+            .children(here(&"tooltip".into()))
+            .occlude()
+            .w(px(self.width))
+            .max_h(px(TIP_LINES as f32 * TIP_LINE_H + 52.))
+            .flex()
+            .flex_col()
+            .bg(t.pop)
+            .shadow(t.ring())
+            .font_family(crate::theme::mono())
+            .text_size(px(crate::theme::text::UI))
+            .line_height(px(TIP_LINE_H))
+            .text_color(t.tx)
+            .child(
+                div()
+                    .id("error-tip-text")
+                    .children(here(&"error-tip-text".into()))
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(TIP_PAD_X))
+                    .pt(px(9.))
+                    .pb(px(4.))
+                    .whitespace_normal()
+                    .child(div().children(here(&"error-tip-body".into())).child(self.shown.clone())),
+            )
+            .child(div().flex_none().flex().flex_row().justify_end().px(px(4.)).pb(px(4.)).child(copy_error(&t, "error-tip-copy", self.full.clone())))
+    }
+}
+
+pub fn error_tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let full = text.into();
+    move |_, cx| {
+        let shown = error_shown(&full);
+        let width = error_tip_width(&shown);
+        let full = full.clone();
+        cx.new(|_| ErrorTip { full, shown, width }).into()
+    }
+}
+
 pub fn modal(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
@@ -878,6 +1005,11 @@ pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -
         .children(msg.map(|m| div().text_color(t.tx2).line_height(px(18.)).child(m)))
 }
 
+/// A filtered list left with nothing to show: the banner, and the one action that brings it back.
+pub fn no_match(t: &Theme, id: impl Into<ElementId>, reset: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static) -> Div {
+    empty_state(t, "[ NO MATCH ]", 20., None).child(button(t, id, Btn::Secondary).child("Reset filters").on_click(reset))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1026,17 @@ mod tests {
         let (t, _) = fit_tip(&"line\n".repeat(40));
         assert_eq!(t.lines().count(), TIP_LINES);
         assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn errors_read_as_the_driver_broke_them() {
+        assert_eq!(error_shown("  FATAL: no\r\nDETAIL:\tthat\n"), "FATAL: no\nDETAIL:    that");
+        let huge = "é".repeat(ERROR_SHOWN + 10);
+        let shown = error_shown(&huge);
+        assert_eq!(shown.chars().count(), ERROR_SHOWN + 1);
+        assert!(shown.ends_with('…'));
+        assert_eq!(error_tip_width("short"), ERROR_TIP_W.0);
+        assert_eq!(error_tip_width(&"x".repeat(500)), ERROR_TIP_W.1);
     }
 
     /// A control's tooltip goes through `Tipped::tip`, never gpui's own, which vanishes as the

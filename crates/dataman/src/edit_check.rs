@@ -23,25 +23,39 @@ fn pending(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> usize {
     cx.update(|_, cx| tab.read(cx).edit.read(cx).pending_count()).unwrap_or(0)
 }
 
-/// Clicks the cell, ↩ opens its editor, the text replaces the value, ↩ keeps it.
+/// Clicks the cell, ↩ opens its editor, the text replaces the value, ↩ keeps it. Until the edit is
+/// pending: a commit's re-run can start after the commit looks finished, ↩ only says "Still running"
+/// until it has, and its arrival closes an editor already open.
 async fn edit_cell(tab: &Entity<QueryTab>, id: &str, col: usize, text: Option<&str>, cx: &mut AsyncWindowContext) -> bool {
-    let Some(row) = row_of(tab, id, cx) else { return false };
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-    draw(cx);
-    let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
-    click(cx, p);
-    key(cx, "enter");
-    pause(cx, 50).await;
-    match text {
-        Some(t) => {
-            key(cx, "cmd-a");
-            typ(cx, t);
+    let before = pending(tab, cx);
+    let editing = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).demo_editing()).unwrap_or(false);
+    for _ in 0..15 {
+        let Some(row) = row_of(tab, id, cx) else {
+            pause(cx, 200).await;
+            continue;
+        };
+        draw(cx);
+        let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
+        click(cx, p);
+        key(cx, "enter");
+        if !until(cx, 1, editing).await {
+            continue;
         }
-        None => key(cx, "cmd-shift-n"),
+        match text {
+            Some(t) => {
+                key(cx, "cmd-a");
+                typ(cx, t);
+            }
+            None => key(cx, "cmd-shift-n"),
+        }
+        key(cx, "enter");
+        until(cx, 1, |cx| !editing(cx)).await;
+        if pending(tab, cx) > before {
+            return true;
+        }
     }
-    key(cx, "enter");
-    pause(cx, 50).await;
-    true
+    false
 }
 
 /// The review opens in the side panel as it slides in: its Commit button, clicked once there.
@@ -111,6 +125,18 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     committed(&tab, cx).await;
     let stock = sql1(&core, &pg, &pw, "SELECT coalesce(stock::text, 'null') FROM dataman_scratch.products_edit WHERE id = 104", cx).await;
     r.check("⌘⇧N sets NULL, committed as NULL", stock.as_deref() == Some("null"), format!("{stock:?}"));
+
+    let row = row_of(&tab, "104", cx).unwrap_or(0);
+    let stored = cell(&tab, row, STOCK, cx);
+    edit_cell(&tab, "104", STOCK, Some("7"), cx).await;
+    let _ = cx.update(|window, cx| {
+        grid.update(cx, |g, cx| g.select_cell(row, STOCK, cx));
+        window.focus(&grid.focus_handle(cx), cx);
+    });
+    let one = copied(cx, "7", |cx| key(cx, "cmd-c")).await;
+    let with = copied(cx, "stock\n7\n", |cx| key(cx, "cmd-shift-c")).await;
+    r.check("a NULL with a pending edit copies what the cell shows, never \\N", stored.is_none() && one == "7" && with == "stock\n7\n", format!("{stored:?} {one:?} {with:?}"));
+    key(cx, "cmd-backspace");
 
     edit_cell(&tab, "105", NAME, Some("mine"), cx).await;
     let _ = sql(&core, &pg, &pw, "UPDATE dataman_scratch.products_edit SET name = 'theirs' WHERE id = 105", cx).await;

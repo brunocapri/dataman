@@ -109,7 +109,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let all = tabs(ws, cx);
     r.check("⌘1 and ⌘N go to the first and the Nth tab", first.as_ref() == all.first() && last.as_ref() == all.get(n.min(9) - 1), format!("{n} tabs"));
 
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connection(redis.clone(), true, window, cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(vec![redis.clone()], true, window, cx)));
     pause(cx, 200).await;
     let on_redis = tabs(ws, cx).iter().filter(|t| tab_conn(t, cx).as_deref() == Some(redis.as_str())).count();
     let t5 = new_tab_key(ws, cx);

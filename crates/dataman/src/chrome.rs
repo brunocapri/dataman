@@ -1245,6 +1245,7 @@ impl Workspace {
             }
             _ => (String::new(), false),
         };
+        let note_full = status.as_ref().and_then(|s| s.error.as_ref()).filter(|_| note_err).map(|e| e.to_string());
         let mut actions = self.result_bar_actions(state, rs.as_deref(), t, cx);
         let pager = {
             let tr = tab.read(cx);
@@ -1349,7 +1350,7 @@ impl Workspace {
                     .child(div().text_color(t.tx3).child(k))
                     .child(div().text_color(t.tx).child(v))
             }))
-            .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(if note_err { t.err } else { t.tx3 }).child(note)))
+            .child(div().id("rb-note").children(ui::here(&"rb-note".into())).min_w_0().overflow_hidden().text_ellipsis().text_color(if note_err { t.err } else { t.tx3 }).when_some(note_full, |d, e| d.tip(ui::error_tip(e))).child(note)))
             .children(actions)
             .child(ui::vsep(t, 16.))
             .when(can_insert, |d| {
@@ -1777,7 +1778,13 @@ impl Workspace {
             .children(env)
             .children(read_only)
             .child(div().flex_1())
-            .children(self.flash_notice.as_ref().map(|(m, _)| div().text_color(t.tx2).child(crate::ui::keys_text(m.clone()))))
+            .children(self.flash_notice.as_ref().map(|(m, _, err)| {
+                if *err {
+                    ui::error_line(&t, "notice-error", crate::ui::keys_text(m.clone())).max_w(px(560.)).into_any_element()
+                } else {
+                    div().text_color(t.tx2).child(crate::ui::keys_text(m.clone())).into_any_element()
+                }
+            }))
             .children(self.export.as_ref().filter(|e| !e.read(cx).visible).and_then(|e| e.read(cx).status_line()).map(|l| {
                 div()
                     .id("export-status")
@@ -1909,18 +1916,7 @@ impl Workspace {
                     .flex_wrap()
                     .items_center()
                     .gap(px(10.))
-                    .child(
-                        div()
-                            .h(px(20.))
-                            .px(px(7.))
-                            .flex()
-                            .items_center()
-                            .bg(t.err)
-                            .text_color(t.on_err)
-                            .text_size(px(crate::theme::text::HINT))
-                            .font_weight(FontWeight::BOLD)
-                            .child("✕ ERROR"),
-                    )
+                    .child(ui::status("✕", "ERROR", t.err))
                     .child(div().text_color(t.err).child(code.clone()))
                     .child(div().text_color(t.tx3).child(condition_name(&code)))
                     .child(div().flex_1())
@@ -1955,13 +1951,7 @@ impl Workspace {
                             }
                         }))
                     }))
-                    .child(
-                        ui::button(t, "ev-copy", Btn::Ghost)
-                            .h(px(28.))
-                            .px(px(10.))
-                            .child("Copy error")
-                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(err_copy.clone()))),
-                    ),
+                    .child(ui::copy_error(t, "ev-copy", err_copy)),
             );
         let right = (batch.len() > 1).then(|| {
             let from = failed.unwrap_or(0);
@@ -1994,7 +1984,6 @@ impl Workspace {
                         .flex_row()
                         .items_center()
                         .gap(px(10.))
-                        .when(b.state == ItemState::Failed, |d| d.bg(t.err_s))
                         .child(div().w(px(16.)).text_center().text_color(gc).child(g))
                         .child(div().w(px(14.)).text_color(t.tx3).child((i + 1).to_string()))
                         .child(
@@ -2168,7 +2157,7 @@ impl Workspace {
                 );
             }
             if let Some(e) = &p.error {
-                body.push(div().pt(px(4.)).text_color(t.err).line_height(px(17.)).child(e.clone()).into_any_element());
+                body.push(ui::error_block(&t, "tx-prompt-error", e.clone()).pt(px(4.)).line_height(px(17.)).into_any_element());
             }
             let verb = p.then.verb();
             buttons.push(btn("tx-rollback", Btn::Secondary, format!("Rollback & {verb}").into(), "⌘⌫").on_click(answer(ConfirmChoice::Rollback)).into_any_element());
@@ -2232,12 +2221,7 @@ impl Workspace {
                             .items_center()
                             .gap(px(10.))
                             .child(tx_chip(&t, &tab.tx(), false))
-                            .children(err.map(|e| {
-                                div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.err).child(match e.code {
-                                    Some(c) => format!("{c} {}", e.message),
-                                    None => e.message,
-                                })
-                            }))
+                            .children(err.map(|e| ui::error_block(&t, "tx-failed-error", e.to_string()).flex_1().min_w_0()))
                             .into_any_element(),
                     );
                     buttons.push(btn("tx-rollback", Btn::Secondary, "Rollback".into(), "⌘⌫").on_click(answer(ConfirmChoice::Rollback)).into_any_element());

@@ -456,13 +456,27 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     }
 
     let s = format!("mcp_check_{}", std::process::id());
-    let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int PRIMARY KEY, note text)")}));
+    let (err, out) = call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int PRIMARY KEY, note text)")})).await;
+    check("new objects run on tier full without a question", !err && !sheet_open(cx) && out.contains("\"committed\":true") && !out.contains("approved"), out);
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("ALTER TABLE {s}.t ALTER COLUMN note SET DEFAULT 'n'")}));
     let q = sheet(cx).await;
-    check("DDL waits for Allow, asked before it runs", q.as_ref().is_some_and(|q| q.affected.is_none() && q.reasons.iter().any(|r| r == "CREATE SCHEMA") && q.destructive), format!("{q:?}"));
+    check("DDL on what exists waits for Allow, asked before it runs", q.as_ref().is_some_and(|q| q.affected.is_none() && q.reasons.iter().any(|r| r == "ALTER TABLE") && q.destructive), format!("{q:?}"));
     check("Allow clicked", answer(ws, true, cx), String::new());
     let (err, out) = rx.await.unwrap_or((true, String::new()));
     check("the DDL committed after Allow", !err && out.contains("\"committed\":true") && out.contains("approved"), out);
     check("the sheet closed", !sheet_open(cx), String::new());
+    let prod = edit_profile(ws, id, |p| p.env = dataman_core::Environment::Production, cx).await;
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE TABLE {s}.on_prod (a int)")}));
+    let q = sheet(cx).await;
+    check("on production a new table waits for Allow", prod && q.as_ref().is_some_and(|q| q.reasons.iter().any(|r| r == "CREATE TABLE") && q.reasons.iter().any(|r| r == "production")), format!("{q:?}"));
+    check("Allow clicked", answer(ws, true, cx), String::new());
+    let (err, out) = rx.await.unwrap_or((true, String::new()));
+    check("… and is made after it", !err && out.contains("approved"), out);
+    edit_profile(ws, id, |p| p.env = dataman_core::Environment::Dev, cx).await;
+    let ro = edit_profile(ws, id, |p| p.set_read_only_for(db, true), cx).await;
+    let (err, out) = call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE TABLE {s}.on_ro (a int)")})).await;
+    check("a read-only database refuses a new table", ro && err && !sheet_open(cx) && out.contains("read-only"), out);
+    edit_profile(ws, id, |p| p.set_read_only_for(db, false), cx).await;
     let (err, out) = call(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("INSERT INTO {s}.t VALUES (1, 'a'), (2, 'b'), (3, NULL)")})).await;
     check("a safe INSERT commits without a question", !err && !sheet_open(cx) && out.contains("[\"INSERT\",3]"), out);
     let shown = agent_tabs(ws, cx).into_iter().find(|t| cx.update(|_, cx| t.read(cx).result().is_some_and(|r| r.sql.contains("INSERT INTO"))).unwrap_or(false));
@@ -571,7 +585,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     }
 
     // A sheet that has just appeared takes no Allow: a key pressed for the one before cannot approve it.
-    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE TABLE {s}.quick (a int)")}));
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE OR REPLACE VIEW {s}.quick AS SELECT 1 AS a")}));
     let mut up = false;
     for _ in 0..200 {
         if sheet_open(cx) {

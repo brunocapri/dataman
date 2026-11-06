@@ -7,14 +7,15 @@ mod sql_corpus;
 use dataman_core::guard::{self, WriteClass};
 use dataman_core::sql::Dialect;
 use dataman_core::{Environment, McpAccess};
-use dataman_mcp::policy::{By, Target, Verdict, judge};
+use dataman_mcp::policy::{By, Effect, Target, Verdict, judge};
 use sql_corpus::*;
 
 fn targets(d: Dialect) -> Vec<Target> {
     let mut out = Vec::new();
     for access in [McpAccess::Read, McpAccess::Write, McpAccess::Full] {
         for env in [Environment::Dev, Environment::Production] {
-            out.push(Target { access, env, read_only: false, dialect: d, yolo: false });
+            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: false });
+            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: true });
         }
     }
     out
@@ -44,6 +45,25 @@ fn texts_of(d: Dialect) -> Vec<String> {
     out
 }
 
+/// show_in_dataman navigates: announced so, and nothing it takes could change a setting or carry a
+/// password, nor a statement.
+#[test]
+fn show_in_dataman_takes_nothing_that_changes_state() {
+    let meta = dataman_mcp::builtin::META.iter().find(|m| m.0 == "show_in_dataman").expect("in META");
+    assert!(matches!((meta.1, meta.2), (Effect::Local, None)), "{:?}", (meta.1, meta.2));
+    let reg = dataman_mcp::Registry::standard(None);
+    let tool = reg.find("show_in_dataman").expect("registered");
+    assert_eq!(tool.schema().required(), ["destination"]);
+    let mut props: Vec<&str> = tool.schema().properties().keys().map(String::as_str).collect();
+    props.sort();
+    assert_eq!(props, ["connection", "database", "destination", "engine", "host", "name", "port", "user"]);
+    let destinations = &tool.schema().properties()["destination"]["enum"];
+    assert_eq!(*destinations, serde_json::json!(["new_connection", "connection", "agents_protection", "agent_login", "agents_general", "settings_mcp", "outside_review"]));
+    let engines: Vec<&str> = tool.schema().properties()["engine"]["enum"].as_array().unwrap().iter().filter_map(|e| e.as_str()).collect();
+    assert!(engines.contains(&"postgres") && !engines.contains(&"sqlite") && !engines.contains(&"duckdb"), "a file has no password: {engines:?}");
+    assert_eq!(tool.effect().hints(), (true, false, true));
+}
+
 #[test]
 fn judge_runs_nothing_destructive_outside_the_allowlist() {
     let mut fails = Vec::new();
@@ -59,6 +79,10 @@ fn judge_runs_nothing_destructive_outside_the_allowlist() {
                 if j.verdict == Verdict::Run && t.env.is_production() && class.is_write() {
                     fails.push(format!("[{d:?} {:?} production] {sql:?}: Run without asking, {class:?}", t.access));
                 }
+                // A new object runs unasked on tier full alone, and never where only the user's login can make it.
+                if j.verdict == Verdict::Run && matches!(class, WriteClass::Create { .. }) && (t.access != McpAccess::Full || t.agent_login) {
+                    fails.push(format!("[{d:?} {:?} login={}] {sql:?}: Run, but {class:?}", t.access, t.agent_login));
+                }
                 // With the allowlist: what runs unasked is the entries and what the tier runs anyway.
                 let j = judge(true, t, &sql, &allowed);
                 if j.verdict != Verdict::Run {
@@ -70,6 +94,7 @@ fn judge_runs_nothing_destructive_outside_the_allowlist() {
                 let tier_runs = match rest_class {
                     WriteClass::Read => true,
                     WriteClass::SafeWrite => t.access != McpAccess::Read && !t.env.is_production(),
+                    WriteClass::Create { .. } => t.access == McpAccess::Full && !t.env.is_production() && !t.agent_login,
                     WriteClass::Destructive { .. } => false,
                 };
                 if !tier_runs {

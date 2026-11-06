@@ -282,6 +282,44 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     run_sql(&tab, "SELECT count(*) FROM public.insert_t WHERE name = 'do vazio'", cx).await;
     check("the row from the empty result is in the table", first_cell(&tab, cx) == "1", first_cell(&tab, cx));
 
+    run_sql(&tab, "DROP TABLE IF EXISTS public.insert_u;\nCREATE TABLE public.insert_u (id uuid PRIMARY KEY, name text NOT NULL, note text, qty int NOT NULL DEFAULT 5, on_sale boolean NOT NULL DEFAULT true);\nSELECT * FROM public.insert_u", cx).await;
+    plus(&tab, cx).await;
+    let uuid = new_value(&tab, 0, 0, cx).unwrap_or_default();
+    let v = view(&tab, cx);
+    check("a UUID key without a default comes filled, and the field opens on the next column", uuid.len() == 36 && uuid.matches('-').count() == 4 && v.sel == Some((0, 1)) && v.editing, format!("{uuid:?} sel {:?}", v.sel));
+    let said = cx.update(|_, cx| tab.read(cx).grid.read(cx).demo_new_row(0)).unwrap_or_default();
+    let want = [(Some(uuid.clone()), false), (Some("required".to_string()), true), (None, true), (Some("default".to_string()), true), (Some("default".to_string()), true)];
+    check("each untouched cell says what the INSERT would store: required, NULL, default", said == want, format!("{said:?}"));
+    let null = |tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext| cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_cell_editor().map(|e| e.read(cx).null)).ok().flatten();
+    key(cx, "cmd-shift-n");
+    let on_required = null(&tab, cx);
+    typ(cx, "u1");
+    key(cx, "tab");
+    key(cx, "cmd-shift-n");
+    let on_nullable = null(&tab, cx);
+    key(cx, "cmd-shift-n");
+    let back = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_cell_editor().map(|e| e.read(cx).was_default)).ok().flatten();
+    check("⌘⇧N does nothing on a NOT NULL column; on a nullable one it sets NULL, and again gives the blank back", on_required == Some(false) && on_nullable == Some(true) && back == Some(true), format!("{on_required:?} {on_nullable:?} {back:?}"));
+    key(cx, "tab");
+    key(cx, "tab");
+    pause(cx, 100).await;
+    let opened = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_value_editor().is_some()).unwrap_or(false);
+    key(cx, "cmd-enter");
+    let kept = cx.update(|_, cx| tab.read(cx).edit.read(cx).model.changes.inserted().first().and_then(|r| r.get(4).cloned().flatten())).ok().flatten();
+    check("a boolean's editor left as it opened keeps the server's default", opened && kept.is_none(), format!("{opened} {kept:?}"));
+    commit(&tab, cx).await;
+    let report = cx.update(|_, cx| tab.read(cx).edit.read(cx).report.as_ref().and_then(|r| r.error.clone())).ok().flatten();
+    run_sql(&tab, &format!("SELECT count(*) FROM public.insert_u WHERE id = '{uuid}' AND name = 'u1' AND note IS NULL AND qty = 5 AND on_sale"), cx).await;
+    check("the row goes in with the UUID and the defaults", first_cell(&tab, cx) == "1", format!("{} {report:?}", first_cell(&tab, cx)));
+
+    run_sql(&tab, "DROP TABLE public.insert_u;\nCREATE TABLE public.insert_u (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL);\nSELECT * FROM public.insert_u", cx).await;
+    plus(&tab, cx).await;
+    let v = view(&tab, cx);
+    let said = cx.update(|_, cx| tab.read(cx).grid.read(cx).demo_new_row(0)).unwrap_or_default();
+    check("gen_random_uuid() stays: nothing is filled in", new_value(&tab, 0, 0, cx).is_none() && said.first() == Some(&(Some("default".to_string()), true)) && v.sel == Some((0, 0)), format!("{said:?} sel {:?}", v.sel));
+    discard(&tab, cx);
+    run_sql(&tab, "DROP TABLE public.insert_u", cx).await;
+
     run_sql(&tab, "SELECT 1 AS a, 'x' AS b", cx).await;
     plus(&tab, cx).await;
     let ro = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_read_only()).ok().flatten();

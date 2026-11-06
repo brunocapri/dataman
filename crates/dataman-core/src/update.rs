@@ -873,10 +873,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dataman-appimage-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("Apps")).unwrap();
-        let stand_in = |path: &Path, v: &str| {
-            std::fs::write(path, format!("#!/bin/sh\necho {v}\n")).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        };
+        let stand_in = |path: &Path, v: &str| crate::cloudauth::write_script(path, &format!("echo {v}"));
         let app = dir.join("Apps/Dataman.AppImage");
         stand_in(&app, "0.1.0");
         let new = dir.join("new.AppImage");

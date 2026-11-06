@@ -190,6 +190,8 @@ pub(crate) enum Act {
     OpenTab(usize),
     /// Audit › Clear…: None for everything.
     Clear(Option<dataman_core::audit::Clear>),
+    /// Protection › Copy from…: the connection's id.
+    CopyFrom(String),
 }
 
 pub(crate) struct Menu {
@@ -297,6 +299,8 @@ pub struct AgentsPage {
     /// Audit › Clear…'s sheet, while it asks.
     pub(crate) clear: Option<crate::agents_clear::ClearSheet>,
     pub(crate) clear_focus: FocusHandle,
+    pub(crate) copy: Option<crate::agents_copy::CopySheet>,
+    pub(crate) copy_focus: FocusHandle,
     /// The next read of the log drops agent and connection filters that match nothing left.
     prune_filters: bool,
     /// Protection's agent login: the selected connection's, its sheets.
@@ -643,6 +647,8 @@ impl AgentsPage {
             loading: BTreeSet::new(),
             clear: None,
             clear_focus: cx.focus_handle(),
+            copy: None,
+            copy_focus: cx.focus_handle(),
             prune_filters: false,
             login: Default::default(),
             no_logins: BTreeSet::new(),
@@ -834,6 +840,7 @@ impl AgentsPage {
             }
             Act::OpenTab(i) => self.open_entry(i, cx),
             Act::Clear(what) => self.open_clear(what, window, cx),
+            Act::CopyFrom(id) => self.open_copy(id, window, cx),
         }
         cx.notify();
     }
@@ -1195,14 +1202,7 @@ impl AgentsPage {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
-                .child(div().text_color(t.tx3).child("Nothing matches these filters."))
-                .child(
-                    ui::button(t, "agents-clear-filters", ui::Btn::Secondary)
-                        .h(px(28.))
-                        .child("Clear filters")
-                        .on_click(cx.listener(|v, _, _, cx| v.clear_filters(cx))),
-                )
+                .child(ui::no_match(t, "agents-reset-filters", cx.listener(|v, _, _, cx| v.clear_filters(cx))))
                 .into_any_element()
         } else {
             let theme = t.clone();
@@ -1567,7 +1567,7 @@ impl AgentsPage {
                 .children(e.statement().map(|s| block(&shown_agent_text(s, 20_000))))
                 .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))))
                 .child(grid)
-                .children(error.map(|m| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.err).child(shown_agent_text(&m, 2_000))))
+                .children(error.map(|m| div().flex().flex_row().items_start().gap(px(12.)).text_size(px(crate::theme::text::UI)).line_height(px(17.)).child(div().flex_1().min_w_0().text_color(t.err).child(shown_agent_text(&m, 2_000))).child(ui::copy_error(t, "agents-error-copy", m))))
                 .children(received)
                 .when(e.statement().is_some(), |d| {
                     d.child(
@@ -2194,5 +2194,6 @@ impl Render for AgentsPage {
             .children(self.render_menu(&t, cx))
             .children(self.render_import(&t, cx))
             .children(self.render_clear(&t, cx))
+            .children(self.render_copy(&t, cx))
     }
 }

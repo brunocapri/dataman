@@ -50,7 +50,7 @@ fn rank(c: &WriteClass) -> u8 {
     match c {
         WriteClass::Read => 0,
         WriteClass::SafeWrite => 1,
-        WriteClass::Destructive { .. } => 2,
+        WriteClass::Create { .. } | WriteClass::Destructive { .. } => 2,
     }
 }
 
@@ -58,7 +58,7 @@ fn what(c: &WriteClass) -> String {
     match c {
         WriteClass::Read => "reads".into(),
         WriteClass::SafeWrite => "writes".into(),
-        WriteClass::Destructive { reasons } => reasons.join(", "),
+        WriteClass::Create { what: reasons } | WriteClass::Destructive { reasons } => reasons.join(", "),
     }
 }
 
@@ -600,7 +600,7 @@ pub(crate) fn class(text: &str) -> Result<WriteClass, Failed> {
             let op = first_arg(args).map(|v| mql::op_of(None, vec![(name.clone(), vec![v])]));
             match op {
                 Some(Ok(op)) => match op.class() {
-                    WriteClass::Destructive { reasons: r } => r.into_iter().for_each(|r| push(r, &mut reasons)),
+                    WriteClass::Create { what: r } | WriteClass::Destructive { reasons: r } => r.into_iter().for_each(|r| push(r, &mut reasons)),
                     WriteClass::SafeWrite => safe = true,
                     WriteClass::Read => {}
                 },

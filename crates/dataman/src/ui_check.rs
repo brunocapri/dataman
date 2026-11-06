@@ -638,7 +638,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     async fn settle(script: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
         for _ in 0..200 {
             pause(cx, 50).await;
-            if cx.update(|_, cx| !script.read(cx).is_running() && script.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true) {
+            if cx.update(|_, cx| !script.read(cx).is_running() && !script.read(cx).run_continues() && script.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(true) {
                 break;
             }
         }
@@ -1039,14 +1039,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         grid.update(cx, |g, cx| g.select_cell(0, 0, cx));
         window.focus(&grid.focus_handle(cx), cx);
     });
-    press(cx, "cmd-shift-c");
-    let with = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
-    press(cx, "cmd-alt-c");
-    let csv = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
+    let with = crate::check::copied(cx, "answer\n7\n", |cx| press(cx, "cmd-shift-c")).await;
+    let csv = crate::check::copied(cx, "7\n", |cx| press(cx, "cmd-alt-c")).await;
     if let Some(c) = clip.clone() {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
-    report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.as_deref().map(str::trim_end) == Some("answer\n7") && csv.as_deref().map(str::trim_end) == Some("7"), format!("{with:?} {csv:?}"));
+    report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.trim_end() == "answer\n7" && csv.trim_end() == "7", format!("{with:?} {csv:?}"));
     let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion())).is_some()).unwrap_or(false);
     let copied_now = shown(cx);
     pause(cx, 2100).await;
@@ -1056,16 +1054,21 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let qgrid = cx.update(|_, cx| quoted.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&qgrid.focus_handle(cx), cx));
     press(cx, "cmd-a");
+    let wants = ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\n"];
     let mut copies = Vec::new();
-    for (fmt, header) in [(dataman_core::result::CopyFormat::Csv, true), (dataman_core::result::CopyFormat::Tsv, true)] {
-        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, header, cx)));
-        copies.push(cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten().unwrap_or_default());
+    for (fmt, want) in [(dataman_core::result::CopyFormat::Csv, wants[0]), (dataman_core::result::CopyFormat::Tsv, wants[1])] {
+        copies.push(crate::check::copied(cx, want, |cx| {
+            let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, true, cx)));
+        }).await);
     }
-    report(
-        "Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers escapes as TSV",
-        copies == ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\\N\n"],
-        format!("{copies:?}"),
-    );
+    report("Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers leaves a NULL empty", copies == wants, format!("{copies:?}"));
+    let mut cells = Vec::new();
+    for (col, want) in [(0, "a,b"), (2, "")] {
+        crate::check::set_clipboard("stale", cx);
+        let _ = cx.update(|_, cx| qgrid.update(cx, |g, cx| g.select_cell(0, col, cx)));
+        cells.push(crate::check::copied(cx, want, |cx| press(cx, "cmd-c")).await);
+    }
+    report("⌘C on one cell copies the value alone; on a NULL, nothing", cells == ["a,b", ""], format!("{cells:?}"));
     if let Some(c) = clip {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
@@ -1135,9 +1138,16 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     let tab = run_sql(ws, "SELECT n, n * 2 AS twice FROM generate_series(1, 40) n", cx).await;
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
-    pause(cx, 350).await;
-    draw(cx);
     let bounds = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
+    // Until the side panel has landed: a slow renderer's frames come late, past any fixed pause.
+    let mut last = None;
+    crate::check::until(cx, 3, |cx| {
+        let now = bounds(cx);
+        let landed = now.is_some() && now == last;
+        last = now;
+        landed
+    })
+    .await;
     let zoom = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).zoom_now(&tab, cx)).unwrap_or(-1.);
     let Some(before) = bounds(cx) else {
         report("the result panel is painted", false, String::new());
@@ -1323,7 +1333,7 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     );
     let (fit, w) = crate::ui::fit_tip(&long);
     report(
-        "its tooltip is cut to fit: at most 360 pt wide, 14 lines, an ellipsis at the end",
+        "a plain text tooltip is cut to fit: at most 360 pt wide, 14 lines, an ellipsis at the end",
         w <= crate::ui::TIP_MAX_W && fit.ends_with('…') && fit.lines().count() <= crate::ui::TIP_LINES && fit.starts_with("could not connect"),
         format!("{w} {} lines", fit.lines().count()),
     );

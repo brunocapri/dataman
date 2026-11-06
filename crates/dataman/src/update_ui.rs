@@ -2,7 +2,7 @@ use gpui::{AnyElement, App, Context, FontWeight, MouseButton, PromptLevel, Share
 
 use crate::app::Workspace;
 use crate::theme::{ActiveTheme, Theme, px};
-use crate::ui::{self, Btn};
+use crate::ui::{self, Btn, Tipped};
 use crate::updates::{self, State, Step};
 use dataman_core::update::Feed;
 
@@ -200,8 +200,8 @@ impl Workspace {
                         .flex_row()
                         .gap(px(8.))
                         .line_height(px(18.))
-                        .when(error.is_none(), |d| d.child(div().flex_none().text_color(if checking { t.tx3 } else { t.ok }).child(if checking { "◌" } else { "✓" })))
-                        .child(div().min_w_0().text_color(if error.is_some() { t.err } else { t.tx2 }).child(line)),
+                        .when(error.is_none(), |d| d.child(div().flex_none().text_color(if checking { t.tx3 } else { t.ok }).child(if checking { "◌" } else { "✓" })).child(div().min_w_0().text_color(t.tx2).child(line.clone())))
+                        .when(error.is_some(), |d| d.child(ui::error_block(t, "update-check-error", line).flex_1().min_w_0())),
                 )
                 .child(
                     ui::modal_footer(t)
@@ -295,6 +295,7 @@ impl Workspace {
                             .text_ellipsis()
                             .text_size(px(crate::theme::text::UI))
                             .text_color(if err { t.err } else { t.tx2 })
+                            .when(err, |d| d.tip(ui::error_tip(s.clone())))
                             .child(s)
                     }))
                     .when(status(&state).is_none(), |d| d.child(div().flex_1()))

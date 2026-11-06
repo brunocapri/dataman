@@ -6,6 +6,7 @@ mod login;
 mod nosql;
 mod query;
 pub(crate) mod rules;
+mod show;
 
 use dataman_core::bounded;
 use serde_json::{Map, Value, json};
@@ -21,7 +22,7 @@ pub type Handler =for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolErr
 /// handler runs (None: the handler judges its connection itself). Writes through the tier are
 /// gated for reads: an allowed statement runs in a read tier too, and the tier judges the rest.
 /// run_favorite's connection is the favorite's; update_connection and create_agent_login judge
-/// theirs themselves.
+/// theirs themselves, and show_in_dataman judges the one its destination takes.
 pub const META: &[(&str, Effect, Option<Need>)] = &[
     ("list_connections", Effect::Local, None),
     ("list_schemas", Effect::Read, Some(Need::Read)),
@@ -48,6 +49,7 @@ pub const META: &[(&str, Effect, Option<Need>)] = &[
     ("create_connection", Effect::LocalEdit, None),
     ("update_connection", Effect::LocalEdit, None),
     ("create_agent_login", Effect::LocalEdit, None),
+    ("show_in_dataman", Effect::Local, None),
     ("nosql_query", Effect::Read, Some(Need::Read)),
     ("nosql_execute", Effect::Write, Some(Need::Write)),
 ];
@@ -90,7 +92,7 @@ impl Tool for Builtin {
 }
 
 pub fn register(r: &mut Registry) {
-    for t in catalog::tools().into_iter().chain(query::tools()).chain(activity::tools()).chain(favorites::tools()).chain(connections::tools()).chain(login::tools()).chain(nosql::tools()) {
+    for t in catalog::tools().into_iter().chain(query::tools()).chain(activity::tools()).chain(favorites::tools()).chain(connections::tools()).chain(login::tools()).chain(show::tools()).chain(nosql::tools()) {
         r.register(std::sync::Arc::new(t));
     }
 }
@@ -228,7 +230,7 @@ mod tests {
         for want in [
             "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows", "run_query",
             "open_query", "explain", "explain_analyze", "execute", "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
-            "list_favorites", "run_favorite", "create_connection", "update_connection", "create_agent_login", "nosql_query", "nosql_execute",
+            "list_favorites", "run_favorite", "create_connection", "update_connection", "create_agent_login", "show_in_dataman", "nosql_query", "nosql_execute",
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }

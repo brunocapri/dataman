@@ -412,7 +412,7 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
         .unwrap_or_default()
     };
     let had = kept(cx);
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connection(second.clone(), true, window, cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(vec![second.clone()], true, window, cx)));
     draw(cx);
     let gone = kept(cx);
     focus(ws, Region::Explorer, cx);

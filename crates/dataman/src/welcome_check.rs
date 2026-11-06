@@ -1,5 +1,5 @@
 //! `welcome-check`: the first-run screen's items, clicked or reached with ↓ ↩. `palette-check`:
-//! ⌘K and its scopes (commands, tables, tabs, favorites, connections) and ⌘P.
+//! ⌘K and its scopes (commands, tables, tabs, favorites, connections, settings) and ⌘P.
 
 use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
@@ -135,6 +135,41 @@ pub async fn run_palette(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
     let (label, n) = palette(ws, "cmd-p", "orders", cx).await;
     key(cx, "escape");
     r.check("⌘P (Go to) finds tables and tabs by name", n >= 1 && label.contains("orders"), format!("{label} {n}"));
+
+    let section_of = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.as_ref().map(|v| v.read(cx).demo_section())).ok().flatten();
+    for (query, want, section, why) in [
+        (",rows fetched", "Rows fetched ahead", "Results grid", "a setting's name"),
+        ("prefetch", "Rows fetched ahead", "Results grid", "another word for it, in the All scope"),
+        (",connect on start", "Connect on start", "Connections", "a row of another section"),
+        (",results grid", "Results grid", "Results grid", "a section's name"),
+        (",keyboard", "Keyboard", "Keyboard", "a section with no rows"),
+    ] {
+        let (label, _) = palette(ws, "cmd-k", query, cx).await;
+        key(cx, "enter");
+        draw(cx);
+        let at = section_of(cx);
+        let closed = !palette_open(ws, cx);
+        r.check(&format!("⌘K, {why}: {query:?}, ↩ opens Settings on {section}"), label == want && at == Some(section) && closed, format!("{label:?} {at:?} closed {closed}"));
+        key(cx, "escape");
+    }
+    r.check("esc closes Settings after a jump", section_of(cx).is_none(), format!("{:?}", section_of(cx)));
+
+    let (label, _) = palette(ws, "cmd-k", ",explorer view", cx).await;
+    key(cx, "enter");
+    let in_view = until(cx, 5, |cx| {
+        let page = cx.update(|_, cx| ws.read(cx).settings_view.as_ref().map(|v| v.read(cx).demo_page())).ok().flatten();
+        page.zip(probed("ev-1", cx)).is_some_and(|(page, row)| row.top() >= page.top() && row.bottom() <= page.bottom())
+    })
+    .await;
+    r.check("the last row of the longest section is in view on arrival", label == "Explorer view" && in_view, format!("{label:?} in view {in_view}"));
+    key(cx, "escape");
+
+    let (_, n) = palette(ws, "cmd-k", ",shared in the project", cx).await;
+    key(cx, "escape");
+    r.check("a row that does not show now (no project open) is not offered", n == 0, n);
+    let (_, n) = palette(ws, "cmd-k", ",", cx).await;
+    key(cx, "escape");
+    r.check("\",\" lists the sections and the rows", n >= 9 + 15, n);
 
     let _ = cx.update(|window, cx| {
         if let Some(t) = ws.read(cx).active_tab() {

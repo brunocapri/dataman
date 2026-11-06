@@ -74,14 +74,7 @@ impl Workspace {
                         .items_center()
                         .gap(px(2.))
                         .child(small("crash-show", "Show").on_click(move |_, _, cx| cx.reveal_path(&primary)))
-                        .child(small("crash-copy", if note == Some("copy") { "Copied" } else { "Copy" }).on_click({
-                            let text = text.clone();
-                            cx.listener(move |w, _, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
-                                w.crash_note = Some("copy");
-                                cx.notify();
-                            })
-                        }))
+                        .child(ui::copy_error(&t, "crash-copy", text.clone()))
                         .children(system.map(|s| small("crash-system", "macOS report").on_click(move |_, _, cx| cx.reveal_path(&s))))
                         .when(can_send, |d| {
                             let label = match note {

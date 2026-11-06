@@ -584,6 +584,10 @@ impl ConnDialog {
             copied: Default::default(),
         };
         d.name_follows_host(cx);
+        // Filled in: the string says what the fields say, with the TLS the host decided above.
+        if is_new && !blank {
+            d.rewrite_string(cx);
+        }
         d
     }
 
@@ -628,6 +632,11 @@ impl ConnDialog {
             let _ = this.update(cx, |d, cx| d.set_file(&p, true, cx));
         })
         .detach();
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_asks_password(&self) -> bool {
+        self.password_needed
     }
 
     #[cfg(feature = "checks")]
@@ -1468,7 +1477,8 @@ impl ConnDialog {
     /// Saves with no tier chosen, so the environment's default applies. One that can't save keeps
     /// the tier picked.
     fn skip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let picked = self.mcp.take();
+        // Skip goes back to what the sheet came with: an agent's may start with MCP off.
+        let picked = std::mem::replace(&mut self.mcp, self.profile.mcp.filter(|_| self.profile.agent_made));
         if !self.save(window, cx) {
             self.mcp = picked;
         }
@@ -2181,7 +2191,7 @@ impl ConnDialog {
         let label = method_label(kind, self.user.read(cx).text(), self.password_there(cx));
         let status = self.sign_in[k].line(cli).map(|(glyph, text)| {
             let signed_in = matches!(self.sign_in[k], SignIn::Ok { .. });
-            let why = if let SignIn::Failed { title, body, .. } = &self.sign_in[k] { (!body.is_empty()).then(|| format!("{title}. {body}")) } else { None };
+            let failed = if let SignIn::Failed { title, body, .. } = &self.sign_in[k] { Some(if body.is_empty() { title.clone() } else { format!("{title}\n{body}") }) } else { None };
             div()
                 .id(("auth-status", k))
                 .flex_1()
@@ -2194,7 +2204,10 @@ impl ConnDialog {
                 .text_size(px(crate::theme::text::UI))
                 .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(if signed_in { t.ok } else { t.tx3 }).child(glyph))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if signed_in { t.tx } else { t.tx3 }).child(text.clone()))
-                .tip(ui::text_tooltip(why.unwrap_or(text)))
+                .map(|d| match failed {
+                    Some(full) => d.tip(ui::error_tip(full)),
+                    None => d.tip(ui::text_tooltip(text)),
+                })
         });
         let row = ui::selectable(div().id(("auth-row", k)).h(px(38.)).px(px(8.)).flex().flex_row().items_center().gap(px(12.)).cursor_pointer(), t, on, true)
             .when(!on, |d| d.opacity(0.5).hover(move |s| s.opacity(1.).bg(hov)))
@@ -2315,7 +2328,7 @@ impl ConnDialog {
                     .text_size(px(crate::theme::text::UI))
                     .child(div().text_size(px(crate::theme::text::TINY)).text_color(gc).child(glyph))
                     .child(div().text_color(tc).child(text))
-                    .tip(ui::text_tooltip(tip))
+                    .map(|d| if matches!(state, AgentAdd::Failed(_)) { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
             });
             let add = (r.installed && *state != AgentAdd::Done).then(|| {
                 let id = format!("agent-add-{}", a.id);
@@ -2377,6 +2390,7 @@ impl ConnDialog {
         let shown = |s: String, c: Hsla, lines: usize| div().overflow_hidden().line_clamp(lines).text_ellipsis().text_color(c).child(s);
         let tip = if body.is_empty() { title.clone() } else { format!("{title}\n{body}") };
         let first = body.lines().next().unwrap_or("").to_string();
+        let failed = matches!(self.test, Test::Failed { .. } | Test::Invalid(_));
         Some(
             ui::probe(
                 "dlg-status",
@@ -2390,7 +2404,7 @@ impl ConnDialog {
                     .line_height(px(17.))
                     .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(color).child(glyph))
                     .child(div().flex_1().min_w_0().flex().flex_col().child(shown(title, t.tx, 2)).when(!first.is_empty(), |d| d.child(shown(first, t.tx3, 3))))
-                    .tip(ui::text_tooltip(tip)),
+                    .map(|d| if failed { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) }),
             ),
         )
     }
@@ -2454,7 +2468,13 @@ impl ConnDialog {
             let title: SharedString = if self.password_needed { format!("Password needed · {}", self.profile.name).into() } else { "Edit connection".into() };
             div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).font_weight(FontWeight::MEDIUM).child(title)
         };
-        ui::modal_header_bar(t).child(logo).child(middle).child(ui::modal_close(t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))))
+        ui::modal_header_bar(t)
+            .child(logo)
+            .child(middle)
+            .when(self.profile.agent_made, |d| {
+                d.child(ui::probe("dlg-agent-made", div().flex_none().mx(px(12.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Filled in by an agent")))
+            })
+            .child(ui::modal_close(t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))))
     }
 }
 
@@ -2634,8 +2654,9 @@ pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
         }
         None => {
             let msg = format!("{e:#}");
-            let title = msg.lines().next().unwrap_or(&msg).to_string();
-            (title, hint.unwrap_or_default().to_string(), hint.is_none() && dataman_core::needs_password(e))
+            let (title, rest) = msg.split_once('\n').unwrap_or((&msg, ""));
+            let body = [rest, hint.unwrap_or_default()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+            (title.to_string(), body, hint.is_none() && dataman_core::needs_password(e))
         }
     }
 }

@@ -9,6 +9,7 @@ mod agents;
 #[cfg(feature = "checks")]
 mod agents_check;
 mod agents_clear;
+mod agents_copy;
 mod agents_mcp;
 mod agents_login;
 mod agents_rules;
@@ -54,6 +55,8 @@ mod export_ui;
 mod fades;
 mod find;
 mod fmt;
+#[cfg(feature = "checks")]
+mod errors_check;
 #[cfg(feature = "checks")]
 mod find_check;
 #[cfg(feature = "checks")]

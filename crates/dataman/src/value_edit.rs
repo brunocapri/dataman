@@ -527,7 +527,7 @@ impl ValueEditor {
             .child(ui::segment(t, "json-tree", "Tree", !raw).on_click(cx.listener(|e, _: &ClickEvent, window, cx| e.set_raw(false, window, cx))))
             .child(ui::segment(t, "json-raw", "Raw", raw).on_click(cx.listener(|e, _: &ClickEvent, window, cx| e.set_raw(true, window, cx))));
         let status: gpui::AnyElement = match (&j.error, raw) {
-            (Some(e), _) => div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.clone()).into_any_element(),
+            (Some(e), _) => ui::error_line(t, "json-error", e.clone()).text_size(px(crate::theme::text::SMALL)).into_any_element(),
             (None, true) => div().text_size(px(crate::theme::text::SMALL)).text_color(t.ok).child("valid").into_any_element(),
             (None, false) => div().into_any_element(),
         };

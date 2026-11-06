@@ -19,7 +19,9 @@
 //!    there, which waits for the user's Allow on full and is refused below it.
 //! 6. Production asks for every write.
 //! 7. The tier: read refuses writes, write runs non-destructive ones within the row limit, full
-//!    asks for destructive ones.
+//!    also runs new objects (CREATE TABLE, INDEX, VIEW, SCHEMA) and asks for destructive ones. A
+//!    connection with an agent login asks for new objects too: that login cannot make them, and
+//!    what the user allows runs on the user's login.
 
 use dataman_core::guard::WriteClass;
 use dataman_core::sql::Dialect;
@@ -77,11 +79,12 @@ pub struct Target {
     pub read_only: bool,
     pub dialect: Dialect,
     pub yolo: bool,
+    pub agent_login: bool,
 }
 
 impl Target {
     pub fn of(p: &ConnectionProfile) -> Target {
-        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo_on() }
+        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo_on(), agent_login: p.agent_login.is_some() }
     }
 
     pub fn of_in(p: &ConnectionProfile, database: &str) -> Target {
@@ -130,7 +133,8 @@ pub fn write_verdict(enabled: bool, t: Target, class: &WriteClass) -> Verdict {
         (WriteClass::Read, _) => Verdict::Run,
         (WriteClass::SafeWrite, _) if prod => Verdict::Ask(vec![PRODUCTION.into()]),
         (WriteClass::SafeWrite, _) => Verdict::Run,
-        (WriteClass::Destructive { reasons }, McpAccess::Full) => {
+        (WriteClass::Create { .. }, McpAccess::Full) if !prod && !t.agent_login => Verdict::Run,
+        (WriteClass::Create { what: reasons } | WriteClass::Destructive { reasons }, McpAccess::Full) => {
             let mut r = reasons.clone();
             if prod {
                 r.push(PRODUCTION.into());
@@ -140,6 +144,10 @@ pub fn write_verdict(enabled: bool, t: Target, class: &WriteClass) -> Verdict {
         (WriteClass::Destructive { reasons }, _) => Verdict::Refuse(format!(
             "{} is destructive: it needs the connection's MCP tier full in Dataman and a human's Allow there; this connection allows non-destructive writes only",
             reasons.join(", ")
+        )),
+        (WriteClass::Create { what }, _) => Verdict::Refuse(format!(
+            "{} needs the connection's MCP tier full in Dataman; this connection allows non-destructive writes only",
+            what.join(", ")
         )),
     }
 }
@@ -224,7 +232,7 @@ mod tests {
     use super::*;
 
     fn t(access: McpAccess, env: Environment, read_only: bool) -> Target {
-        Target { access, env, read_only, dialect: Dialect::Postgres, yolo: false }
+        Target { access, env, read_only, dialect: Dialect::Postgres, yolo: false, agent_login: false }
     }
 
     fn safe() -> WriteClass {
@@ -344,6 +352,20 @@ mod tests {
             assert!(matches!(v(McpAccess::Full, Dev, sql), Verdict::Ask(_)), "{sql}");
         }
         assert_eq!(v(McpAccess::Full, Production, "INSERT INTO t VALUES (1)"), Verdict::Ask(vec!["production".into()]));
+        for sql in ["CREATE TABLE t (a int)", "CREATE INDEX i ON t (a)", "CREATE VIEW v AS SELECT 1", "CREATE SCHEMA s", "CREATE TABLE t (a int); INSERT INTO t VALUES (1); DELETE FROM t WHERE a = 1"] {
+            assert_eq!(v(McpAccess::Full, Dev, sql), Verdict::Run, "{sql}");
+            assert!(matches!(v(McpAccess::Write, Dev, sql), Verdict::Refuse(e) if e.contains("tier full")), "{sql}");
+            assert!(matches!(v(McpAccess::Read, Dev, sql), Verdict::Refuse(e) if e.contains("reads only")), "{sql}");
+            assert!(matches!(v(McpAccess::Full, Production, sql), Verdict::Ask(r) if r.iter().any(|x| x == PRODUCTION) && r[0].starts_with("CREATE")), "{sql}");
+            assert!(matches!(write_verdict(true, t(McpAccess::Full, Dev, true), &agent_write_class(sql, Dialect::Postgres)), Verdict::Refuse(e) if e == READ_ONLY), "{sql}");
+            assert!(matches!(write_verdict(true, Target { agent_login: true, ..t(McpAccess::Full, Dev, false) }, &agent_write_class(sql, Dialect::Postgres)), Verdict::Ask(r) if r[0].starts_with("CREATE")), "{sql}");
+            let j = judge(true, t(McpAccess::Full, Dev, false), sql, &[]);
+            assert!(j.row_limit && j.verdict == Verdict::Run && j.by.is_none(), "{j:?}");
+        }
+        for sql in ["CREATE OR REPLACE VIEW v AS SELECT 1", "CREATE TABLE t AS SELECT 1", "CREATE TRIGGER tr BEFORE INSERT ON t EXECUTE FUNCTION f()", "CREATE ROLE r", "CREATE TABLE t (a int); DROP TABLE u"] {
+            assert!(matches!(v(McpAccess::Full, Dev, sql), Verdict::Ask(_)), "{sql}");
+            assert!(matches!(v(McpAccess::Write, Dev, sql), Verdict::Refuse(_)), "{sql}");
+        }
         assert_eq!(v(McpAccess::Full, Production, "DROP TABLE t"), Verdict::Ask(vec!["DROP TABLE".into(), "production".into()]));
         assert!(matches!(v(McpAccess::Read, Dev, "INSERT INTO t VALUES (1)"), Verdict::Refuse(_)));
         assert!(matches!(v(McpAccess::Off, Dev, "SELECT 1"), Verdict::Refuse(_)));

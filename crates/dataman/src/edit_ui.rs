@@ -5,6 +5,7 @@ use gpui::{
 };
 use crate::theme::px;
 use dataman_core::edit::{
+    Blank,
     ApplyReport, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, Outcome, PlannedChange,
 };
 use dataman_core::result::{Phase, ResultSet, Snapshot};
@@ -188,7 +189,7 @@ impl EditModel {
         parts.join(" · ")
     }
 
-    pub fn decorations(&self, editable: &[bool]) -> Decorations {
+    pub fn decorations(&self, blanks: &[Blank]) -> Decorations {
         let mut d = Decorations::default();
         for (row, edits) in self.changes.edited_rows() {
             for (&col, e) in edits {
@@ -210,8 +211,7 @@ impl EditModel {
         for vals in self.changes.inserted() {
             let cells = (0..self.ncols)
                 .map(|c| match vals.get(c).cloned().flatten() {
-                    None if !editable.get(c).copied().unwrap_or(false) => CellDecor { text: Some(Some("—".into())), ghost: true, ..Default::default() },
-                    None => CellDecor { text: Some(Some("default".into())), ghost: true, ..Default::default() },
+                    None => CellDecor { text: Some(blanks.get(c).map_or(Some("—"), |b| blank_text(*b)).map(str::to_string)), ghost: true, ..Default::default() },
                     Some(CellValue::Null) => CellDecor { text: Some(None), ..Default::default() },
                     Some(CellValue::Text(t)) => CellDecor { text: Some(Some(t)), ..Default::default() },
                 })
@@ -233,6 +233,16 @@ pub fn find_display(rows: usize, source_of: impl Fn(usize) -> usize, source: usi
     (0..rows).find(|&d| source_of(d) == source)
 }
 
+/// What a new row's untouched cell says; `None` is NULL.
+fn blank_text(b: Blank) -> Option<&'static str> {
+    match b {
+        Blank::Computed => Some("—"),
+        Blank::Default => Some("default"),
+        Blank::Null => None,
+        Blank::Required => Some("required"),
+    }
+}
+
 pub fn typed_value(text: &str, null: bool, was_default: bool) -> Option<CellValue> {
     if null {
         Some(CellValue::Null)
@@ -252,20 +262,23 @@ pub struct CellEditor {
     pub input: Entity<TextInput>,
     pub null: bool,
     pub was_default: bool,
-    hidden_text: Option<String>,
+    nullable: bool,
+    /// What NULL covers, to bring it back: the text, and whether the cell was still blank.
+    hidden: Option<(String, bool)>,
 }
 
 impl EventEmitter<CellEditorEvent> for CellEditor {}
 
 impl CellEditor {
-    pub(crate) fn new(value: Option<CellValue>, accept: Option<fn(&str) -> bool>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(value: Option<CellValue>, accept: Option<fn(&str) -> bool>, blank: Blank, nullable: bool, cx: &mut Context<Self>) -> Self {
         let (text, null, was_default) = match &value {
             None => (String::new(), false, true),
             Some(CellValue::Null) => (String::new(), true, false),
             Some(CellValue::Text(t)) => (t.clone(), false, false),
         };
         let input = cx.new(|cx| {
-            let mut i = TextInput::new(cx, if was_default { "default" } else { "" }).bare().accepting(accept);
+            let hint = if was_default { blank_text(blank).unwrap_or("NULL") } else { "" };
+            let mut i = TextInput::new(cx, hint).bare().accepting(accept);
             i.set_text(text, cx);
             i.select_all(cx);
             i
@@ -275,14 +288,14 @@ impl CellEditor {
             InputEvent::Changed => {
                 if e.null {
                     e.null = false;
-                    e.hidden_text = None;
+                    e.hidden = None;
                 }
                 e.was_default = false;
                 cx.notify();
             }
         })
         .detach();
-        CellEditor { input, null, was_default, hidden_text: None }
+        CellEditor { input, null, was_default, nullable, hidden: None }
     }
 
     pub(crate) fn value(&self, cx: &App) -> Option<CellValue> {
@@ -290,13 +303,17 @@ impl CellEditor {
     }
 
     fn toggle_null(&mut self, cx: &mut Context<Self>) {
+        if !self.nullable {
+            return;
+        }
         self.null = !self.null;
-        self.was_default = false;
         if self.null {
             let text = self.input.read(cx).text().to_string();
-            self.hidden_text = Some(text);
+            self.hidden = Some((text, self.was_default));
+            self.was_default = false;
             self.input.update(cx, |i, cx| i.set_text("", cx));
-        } else if let Some(t) = self.hidden_text.take() {
+        } else if let Some((t, was_default)) = self.hidden.take() {
+            self.was_default = was_default;
             self.input.update(cx, |i, cx| i.set_text(t, cx));
         }
         cx.notify();
@@ -307,6 +324,7 @@ impl Render for CellEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let null = self.null;
+        let nullable = self.nullable;
         div()
             .key_context(CONTEXT)
             .on_action(cx.listener(|_, _: &CancelCell, _, cx| cx.emit(CellEditorEvent::Cancel)))
@@ -340,22 +358,24 @@ impl Render for CellEditor {
                     .child(self.input.clone())
                     .when(null, |d| d.child(div().absolute().left_0().top_0().bottom_0().flex().items_center().italic().text_color(t.null).child("NULL"))),
             )
-            .child(
-                div()
-                    .id("cell-null")
-                    .flex_none()
-                    .h(px(15.))
-                    .px(px(4.))
-                    .flex()
-                    .items_center()
-                    .text_size(px(9.5))
-                    .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
-                    .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
-                    .cursor_pointer()
-                    .child("NULL")
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(|e, _, _, cx| e.toggle_null(cx))),
-            )
+            .when(nullable, |d| {
+                d.child(
+                    div()
+                        .id("cell-null")
+                        .flex_none()
+                        .h(px(15.))
+                        .px(px(4.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(9.5))
+                        .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
+                        .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
+                        .cursor_pointer()
+                        .child("NULL")
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|e, _, _, cx| e.toggle_null(cx))),
+                )
+            })
     }
 }
 
@@ -386,6 +406,8 @@ struct Editing {
     col: usize,
     orig: CellValue,
     editor: CellEdit,
+    /// What a value editor opened with on a blank cell the server fills: left so, it stays blank.
+    keeps_default: Option<CellValue>,
     at_point: (f32, f32),
     _blur: Subscription,
 }
@@ -675,9 +697,18 @@ impl GridEdit {
             Pending::Insert => {
                 self.commit_cell(Move::Stay, window, cx);
                 let i = self.model.insert();
+                let offered = match &self.target {
+                    TargetState::Ready(t) => t.new_row_uuid(),
+                    _ => None,
+                };
+                let filled = offered.as_ref().map(|(c, _)| *c);
+                if let Some((c, v)) = offered {
+                    self.model.set(RowRef::New(i), c, CellValue::Null, Some(v));
+                }
                 self.refresh(cx);
                 let Some(snap) = self.snapshot() else { return };
-                let first = self.editable_mask().iter().position(|e| *e).unwrap_or(0);
+                let mask = self.editable_mask();
+                let first = (0..mask.len()).find(|c| mask[*c] && Some(*c) != filled).or(filled).unwrap_or(0);
                 self.begin_edit(snap.rows() + i, first, window, cx);
             }
             Pending::Delete(rows) => {
@@ -729,6 +760,7 @@ impl GridEdit {
             cx.notify();
             return;
         }
+        let blank = target.blank(col);
         let at = self.row_ref(&snap, row);
         if let RowRef::Stored(s) = at {
             if self.model.changes.is_deleted(s) {
@@ -745,9 +777,10 @@ impl GridEdit {
         };
         let current = self.model.current(at, col, || orig.clone());
         let text = current.as_ref().and_then(|v| v.as_deref().map(str::to_string));
+        let nullable = self.nullable(col);
         if let Some(mode) = crate::value_edit::mode_for(kind, self.enums.get(&col), text.as_deref()) {
-            let nullable = self.nullable(col);
             let editor = cx.new(|cx| ValueEditor::new(mode, text.as_deref(), nullable, window, cx));
+            let keeps_default = if current.is_none() && blank == Blank::Default { editor.read(cx).value(cx).ok() } else { None };
             cx.subscribe_in(&editor, window, |e, _, ev: &ValueEvent, window, cx| {
                 match ev {
                     ValueEvent::Commit => e.commit_cell(Move::Stay, window, cx),
@@ -765,12 +798,12 @@ impl GridEdit {
             });
             self.grid.update(cx, |g, cx| g.select_cell(row, col, cx));
             let b = self.grid.read(cx).cell_bounds(row, col).unwrap_or_default();
-            self.editing = Some(Editing { at, row_hint: row, col, orig, editor: CellEdit::Value(editor), at_point: (b.0, b.1 + b.3 + 2.), _blur: blur });
+            self.editing = Some(Editing { at, row_hint: row, col, orig, editor: CellEdit::Value(editor), keeps_default, at_point: (b.0, b.1 + b.3 + 2.), _blur: blur });
             cx.notify();
             return;
         }
         let accept = typing_filter(kind, &cols[col].type_name);
-        let editor = cx.new(|cx| CellEditor::new(current, accept, cx));
+        let editor = cx.new(|cx| CellEditor::new(current, accept, blank, nullable, cx));
         cx.subscribe_in(&editor, window, |e, _, ev: &CellEditorEvent, window, cx| match ev {
             CellEditorEvent::Commit(m) => e.commit_cell(*m, window, cx),
             CellEditorEvent::Cancel => e.cancel_cell(window, cx),
@@ -792,7 +825,7 @@ impl GridEdit {
             g.set_overlay(Some(CellOverlay { row: orow, col, min_w: 160., view }), cx);
         });
         window.focus(&focus, cx);
-        self.editing = Some(Editing { at, row_hint: row, col, orig, editor: CellEdit::Text(editor), at_point: (0., 0.), _blur: blur });
+        self.editing = Some(Editing { at, row_hint: row, col, orig, editor: CellEdit::Text(editor), keeps_default: None, at_point: (0., 0.), _blur: blur });
         cx.notify();
     }
 
@@ -800,7 +833,7 @@ impl GridEdit {
         let Some(ed) = self.editing.take() else { return };
         let v = match &ed.editor {
             CellEdit::Text(e) => Some(e.read(cx).value(cx)),
-            CellEdit::Value(e) => e.read(cx).value(cx).ok().map(Some),
+            CellEdit::Value(e) => e.read(cx).value(cx).ok().map(|v| Some(v).filter(|v| ed.keeps_default.as_ref() != Some(v))),
         };
         if let Some(v) = v {
             self.model.set(ed.at, ed.col, ed.orig.clone(), v);
@@ -847,7 +880,11 @@ impl GridEdit {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        let d = self.model.decorations(&self.editable_mask());
+        let blanks: Vec<Blank> = match &self.target {
+            TargetState::Ready(t) => (0..self.ncols()).map(|c| t.blank(c)).collect(),
+            _ => vec![],
+        };
+        let d = self.model.decorations(&blanks);
         let d = (!d.is_empty()).then(|| Arc::new(d));
         self.grid.update(cx, |g, cx| g.set_decorations(d, cx));
         if self.model.pending() == 0 && self.report.is_none() && self.review_open {
@@ -1320,7 +1357,7 @@ impl Render for ReviewPanel {
         let table = e.table_name();
         let pill = match (&report, applying) {
             (_, true) => Some(("committing…", t.acc, t.acc_s)),
-            (Some(r), _) if !r.committed => Some(("rolled back", t.err, t.err_s)),
+            (Some(r), _) if !r.committed => Some(("rolled back", t.err, gpui::transparent_black())),
             _ => None,
         };
         let header = div()
@@ -1392,16 +1429,24 @@ impl Render for ReviewPanel {
                 Outcome::Conflict { kind: ConflictKind::Changed, .. } => Some(()),
                 _ => None,
             });
+            let copied = report_errors(r);
             div()
                 .mx(px(14.))
                 .p(px(12.))
-                .bg(if conflicts > 0 { t.warn_s } else { t.err_s })
                 .border_1()
-                .border_color(if conflicts > 0 { t.warn } else { t.err })
+                .border_color(t.line)
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(div().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
+                        .when(!copied.is_empty(), |d| d.child(ui::copy_error(&t, "rv-error-copy", copied))),
+                )
                 .children(r.error.clone().filter(|e| !r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))).map(|e| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx).child(e)))
                 .children(r.outcomes.iter().map(|o| {
                     let (g, c, what): (&str, Hsla, String) = match &o.outcome {
@@ -1607,7 +1652,7 @@ mod tests {
         let i = m.insert();
         m.set(RowRef::New(i), 1, CellValue::Null, Some(t("Nimbus")));
         m.set(RowRef::New(i), 2, CellValue::Null, Some(CellValue::Null));
-        let d = m.decorations(&[false, true, true]);
+        let d = m.decorations(&[Blank::Computed, Blank::Default, Blank::Default]);
         let c = &d.cells[&(7, 1)];
         assert_eq!(c.text, Some(Some("79.00".into())));
         assert_eq!(c.old, Some(Some("89.00".into())));
@@ -1621,6 +1666,12 @@ mod tests {
         assert_eq!(v.cells[1].text, Some(Some("Nimbus".into())));
         assert_eq!(v.cells[2].text, Some(None));
         assert!(EditModel::new(3).decorations(&[]).is_empty());
+        let mut m = EditModel::new(4);
+        m.insert();
+        let d = m.decorations(&[Blank::Computed, Blank::Default, Blank::Null, Blank::Required]);
+        let said: Vec<_> = d.virtual_rows[0].cells.iter().map(|c| c.text.clone().flatten()).collect();
+        assert_eq!(said, [Some("—".to_string()), Some("default".to_string()), None, Some("required".to_string())], "an untouched cell says what the INSERT would store");
+        assert!(d.virtual_rows[0].cells.iter().all(|c| c.ghost));
     }
 
     #[test]
@@ -1673,4 +1724,13 @@ mod tests {
         assert_eq!(typed_value("", false, false), Some(t("")), "empty text is not NULL");
         assert_eq!(typed_value("42", false, true), Some(t("42")));
     }
+}
+
+/// What a failed apply said, whole: its error and every change's, as Copy error takes them.
+fn report_errors(r: &ApplyReport) -> String {
+    let each = r.outcomes.iter().filter_map(|o| match &o.outcome {
+        Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } => Some(format!("{}: {message}", o.index + 1)),
+        _ => None,
+    });
+    r.error.iter().cloned().chain(each).collect::<Vec<_>>().join("\n")
 }

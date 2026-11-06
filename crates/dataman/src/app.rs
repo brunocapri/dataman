@@ -140,11 +140,11 @@ pub fn bind_keys(cx: &mut App) {
 pub(crate) enum AfterTx {
     CloseTab(Entity<QueryTab>),
     CloseTabs(Vec<Entity<QueryTab>>),
-    Disconnect(String),
-    Reconnect(String),
+    Disconnect(Vec<String>),
+    Reconnect(Vec<String>),
     Retarget { tab: Entity<QueryTab>, conn: Arc<Connection>, db: Option<String>, run: Option<String> },
     SaveConnection(Entity<ConnDialog>),
-    DeleteConnection(String),
+    DeleteConnections(Vec<String>),
     Quit,
 }
 
@@ -156,7 +156,7 @@ impl AfterTx {
             AfterTx::Reconnect(_) => "reconnect",
             AfterTx::Retarget { .. } => "switch",
             AfterTx::SaveConnection(_) => "save",
-            AfterTx::DeleteConnection(_) => "delete",
+            AfterTx::DeleteConnections(_) => "delete",
             AfterTx::Quit => "quit",
         }
     }
@@ -166,9 +166,9 @@ impl AfterTx {
 pub(crate) enum Change<'a, K> {
     CloseTab(K),
     Retarget { tab: K, same_conn: bool, from_db: &'a str, to_db: &'a str },
-    Disconnect(&'a str),
+    Disconnect(&'a [String]),
     Edit { id: &'a str, is_new: bool },
-    Delete(&'a str),
+    Delete(&'a [String]),
     Quit,
 }
 
@@ -176,7 +176,7 @@ pub(crate) fn ends_of<K: Copy>(change: Change<'_, K>) -> Option<Ends<'_, K>> {
     match change {
         Change::CloseTab(k) => Some(Ends::Tab(k)),
         Change::Retarget { tab, same_conn, from_db, to_db } => (!same_conn || from_db != to_db).then_some(Ends::Tab(tab)),
-        Change::Disconnect(id) | Change::Delete(id) => Some(Ends::Conn(id)),
+        Change::Disconnect(ids) | Change::Delete(ids) => Some(Ends::Conns(ids)),
         Change::Edit { id, is_new } => (!is_new).then_some(Ends::Conn(id)),
         Change::Quit => Some(Ends::All),
     }
@@ -194,6 +194,7 @@ pub(crate) enum Ends<'a, K> {
     Tab(K),
     Tabs(&'a [K]),
     Conn(&'a str),
+    Conns(&'a [String]),
     All,
 }
 
@@ -205,6 +206,7 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
                     Ends::Tab(t) => t == *k,
                     Ends::Tabs(ts) => ts.contains(k),
                     Ends::Conn(id) => *conn == Some(id),
+                    Ends::Conns(ids) => conn.is_some_and(|c| ids.iter().any(|i| i == c)),
                     Ends::All => true,
                 }
         })
@@ -417,7 +419,8 @@ pub struct Workspace {
     pub(crate) focus_visible: bool,
     pub(crate) copy_menu: bool,
     pub(crate) cancel_toast_hidden: Option<Instant>,
-    pub(crate) flash_notice: Option<(String, Instant)>,
+    /// What the status bar says for a moment, and whether it is an error.
+    pub(crate) flash_notice: Option<(String, Instant, bool)>,
     file_drag: Option<gpui::ExternalPaths>,
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
     pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
@@ -427,7 +430,7 @@ pub struct Workspace {
     pub(crate) data_import: Option<Entity<crate::data_import::DataImportView>>,
     pub(crate) value_view: Option<Entity<crate::value_view::ValueView>>,
     pub(crate) confirm_focus: FocusHandle,
-    pub(crate) confirm_delete: Option<String>,
+    pub(crate) confirm_delete: Option<Vec<String>>,
     /// The delete sheet also drops the connection's agent login on the server (the default).
     pub(crate) drop_agent_login: bool,
     pub(crate) confirm_delete_focus: FocusHandle,
@@ -751,13 +754,12 @@ impl Workspace {
             TabEvent::TxEnded { result, statements } => {
                 let n = *statements;
                 let what = |verb: &str| format!("{verb} · {n} statement{}", if n == 1 { "" } else { "s" });
-                let msg = match result {
-                    Ok(dataman_core::TxEnd::Committed) => what("Committed"),
-                    Ok(dataman_core::TxEnd::RolledBack) => what("Rolled back"),
-                    Ok(dataman_core::TxEnd::NoTransaction) => "No transaction open".to_string(),
-                    Err(e) => format!("COMMIT failed: {e}"),
-                };
-                w.notice(msg, cx);
+                match result {
+                    Ok(dataman_core::TxEnd::Committed) => w.notice(what("Committed"), cx),
+                    Ok(dataman_core::TxEnd::RolledBack) => w.notice(what("Rolled back"), cx),
+                    Ok(dataman_core::TxEnd::NoTransaction) => w.notice("No transaction open", cx),
+                    Err(e) => w.notice_err(format!("COMMIT failed: {e}"), cx),
+                }
             }
         })
         .detach();
@@ -1205,14 +1207,14 @@ impl Workspace {
                     let tab = self.new_tab(window, cx);
                     tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(&text, cx)));
                 }
-                Err(e) => self.notice(format!("cannot read {}: {e}", path.display()), cx),
+                Err(e) => self.notice_err(format!("cannot read {}: {e}", path.display()), cx),
             }
         }
     }
 
-    pub(crate) fn request_disconnect(&mut self, id: String, reconnect: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let then = if reconnect { AfterTx::Reconnect(id.clone()) } else { AfterTx::Disconnect(id.clone()) };
-        if let Some(what) = ends_of::<EntityId>(Change::Disconnect(&id))
+    pub(crate) fn request_disconnect(&mut self, ids: Vec<String>, reconnect: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let then = if reconnect { AfterTx::Reconnect(ids.clone()) } else { AfterTx::Disconnect(ids.clone()) };
+        if let Some(what) = ends_of::<EntityId>(Change::Disconnect(&ids))
             && self.ask_about_tx(what, then.clone(), window, cx)
         {
             return;
@@ -1228,14 +1230,25 @@ impl Workspace {
                 }
             }
             AfterTx::CloseTabs(tabs) => self.close_tabs_now(tabs, window, cx),
-            AfterTx::Disconnect(id) => self.disconnect(id, cx),
-            AfterTx::Reconnect(id) => {
-                self.disconnect(id.clone(), cx);
-                self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+            AfterTx::Disconnect(ids) => {
+                for id in ids {
+                    self.disconnect(id, cx);
+                }
+            }
+            AfterTx::Reconnect(ids) => {
+                for id in ids {
+                    let tabs: Vec<_> = self.tabs.iter().filter(|t| t.read(cx).connection().is_some_and(|c| c.profile.id == id)).cloned().collect();
+                    self.disconnect(id.clone(), cx);
+                    // A tab with none takes the first to come up, and of several that may not be its own.
+                    for t in tabs {
+                        t.update(cx, |t, _| t.want = Some((id.clone(), None)));
+                    }
+                    self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+                }
             }
             AfterTx::Retarget { tab, conn, db, run } => self.retarget_now(&tab, conn, db, run, window, cx),
             AfterTx::SaveConnection(d) => d.update(cx, |d, cx| d.save_now(cx)),
-            AfterTx::DeleteConnection(id) => self.delete_connection_now(&id, window, cx),
+            AfterTx::DeleteConnections(ids) => self.delete_connections_now(&ids, window, cx),
             AfterTx::Quit => self.quit_now(cx),
         }
     }
@@ -1301,25 +1314,25 @@ impl Workspace {
         d.update(cx, |d, cx| d.save_now(cx));
     }
 
-    pub(crate) fn request_delete_connection(&mut self, id: String, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn request_delete_connections(&mut self, ids: Vec<String>, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !confirmed && self.modal_open(cx) {
             return;
         }
-        if let Some(what) = ends_of::<EntityId>(Change::Delete(&id))
-            && self.ask_about_tx(what, AfterTx::DeleteConnection(id.clone()), window, cx)
+        if let Some(what) = ends_of::<EntityId>(Change::Delete(&ids))
+            && self.ask_about_tx(what, AfterTx::DeleteConnections(ids.clone()), window, cx)
         {
             return;
         }
         if confirmed {
-            self.delete_connection_now(&id, window, cx);
+            self.delete_connections_now(&ids, window, cx);
         } else {
-            self.ask_delete_connection(id, window, cx);
+            self.ask_delete_connections(ids, window, cx);
         }
     }
 
-    fn delete_connection_now(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.delete_connection(id, cx);
-        if self.dialog.as_ref().is_some_and(|d| d.read(cx).profile_id() == id) {
+    fn delete_connections_now(&mut self, ids: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_connections(ids, cx);
+        if self.dialog.as_ref().is_some_and(|d| ids.iter().any(|id| d.read(cx).profile_id() == id)) {
             self.dialog = None;
             self.focus_editor(window, cx);
         }
@@ -1522,7 +1535,7 @@ impl Workspace {
                     w.store.update(cx, |s, cx| s.connect(&id, pw, cx));
                 }
                 DialogEvent::Save => return w.request_save_connection(d.clone(), window, cx),
-                DialogEvent::Delete(id) => return w.request_delete_connection(id.clone(), true, window, cx),
+                DialogEvent::Delete(id) => return w.request_delete_connections(vec![id.clone()], true, window, cx),
             }
             w.dialog = None;
             w.focus_editor(window, cx);
@@ -1531,6 +1544,16 @@ impl Workspace {
         .detach();
         self.dialog = Some(d);
         cx.notify();
+    }
+
+    /// A saved connection's dialog, at its password.
+    pub(crate) fn open_dialog_for_password(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_dialog(Some(id), window, cx);
+        if let Some(d) = self.dialog.clone() {
+            d.update(cx, |d, cx| d.set_password_needed(cx));
+            let f = d.read(cx).password_focus(cx);
+            window.focus(&f, cx);
+        }
     }
 
     pub(crate) fn new_connection_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1648,10 +1671,12 @@ impl Workspace {
             }
             TreeEvent::EditConnection(id) => self.open_dialog(Some(id.clone()), window, cx),
             TreeEvent::NewConnection => self.open_dialog(None, window, cx),
-            TreeEvent::Disconnect(id) => self.request_disconnect(id.clone(), false, window, cx),
+            TreeEvent::Disconnect(id) => self.request_disconnect(vec![id.clone()], false, window, cx),
             TreeEvent::FocusEditor => self.focus_editor(window, cx),
             TreeEvent::RowAction { act, target, alt } => self.on_row_action(*act, target.clone(), *alt, window, cx),
+            TreeEvent::ConnsAction { act, conns } => self.conns_action(*act, conns.clone(), window, cx),
             TreeEvent::Notice(msg) => self.notice(msg.clone(), cx),
+            TreeEvent::Failed(msg) => self.notice_err(msg.clone(), cx),
             TreeEvent::Did(e) => self.undo.push(e.clone()),
         }
         cx.notify();
@@ -1835,12 +1860,7 @@ impl Workspace {
             }
             ConnEvent::Failed { id, needs_password, .. } => {
                 if *needs_password && self.dialog.is_none() {
-                    self.open_dialog(Some(id.clone()), window, cx);
-                    if let Some(d) = self.dialog.clone() {
-                        d.update(cx, |d, cx| d.set_password_needed(cx));
-                        let f = d.read(cx).password_focus(cx);
-                        window.focus(&f, cx);
-                    }
+                    self.open_dialog_for_password(id.clone(), window, cx);
                 }
             }
         }
@@ -1872,12 +1892,21 @@ impl Workspace {
     }
 
     pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.flash(msg.into(), false, Duration::from_secs(4), cx);
+    }
+
+    /// A notice that says what failed: it stays long enough to reach its tooltip and copy it.
+    pub(crate) fn notice_err(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.flash(msg.into(), true, Duration::from_secs(20), cx);
+    }
+
+    fn flash(&mut self, msg: String, err: bool, stays: Duration, cx: &mut Context<Self>) {
         let at = Instant::now();
-        self.flash_notice = Some((msg.into(), at));
+        self.flash_notice = Some((msg, at, err));
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(4)).await;
+            cx.background_executor().timer(stays).await;
             let _ = this.update(cx, |w, cx| {
-                if w.flash_notice.as_ref().is_some_and(|(_, t)| *t == at) {
+                if w.flash_notice.as_ref().is_some_and(|(_, t, _)| *t == at) {
                     w.flash_notice = None;
                     cx.notify();
                 }
@@ -1960,7 +1989,7 @@ impl Workspace {
             let text = match dataman_core::sql::read_script(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    self.notice(format!("cannot read {}: {e}", path.display()), cx);
+                    self.notice_err(format!("cannot read {}: {e}", path.display()), cx);
                     continue;
                 }
             };
@@ -2357,7 +2386,7 @@ impl Workspace {
             Some((id, _)) => match store.update_sql(&id, &sql) {
                 Ok(f) => f,
                 Err(e) => {
-                    self.notice(format!("cannot save the favorite: {e:#}"), cx);
+                    self.notice_err(format!("cannot save the favorite: {e:#}"), cx);
                     return;
                 }
             },
@@ -2381,7 +2410,7 @@ impl Workspace {
                         (f, "added to favorites")
                     }
                     Err(e) => {
-                        self.notice(format!("cannot save the favorite: {e:#}"), cx);
+                        self.notice_err(format!("cannot save the favorite: {e:#}"), cx);
                         return;
                     }
                 }
@@ -2472,7 +2501,7 @@ impl Workspace {
                     tab.update(cx, |t, cx| t.set_title(name.clone(), text, cx));
                     w.notice(format!("Saved {name}"), cx);
                 }
-                Err(e) => w.notice(format!("cannot write {}: {e}", path.display()), cx),
+                Err(e) => w.notice_err(format!("cannot write {}: {e}", path.display()), cx),
             });
         })
         .detach();
@@ -3288,13 +3317,14 @@ mod tests {
         assert_eq!(asked(Change::Edit { id: "prod", is_new: false }), [1, 4]);
         assert!(asked(Change::Edit { id: "prod", is_new: true }).is_empty());
         assert_eq!(asked(Change::Edit { id: "dev", is_new: false }), [3]);
-        assert_eq!(asked(Change::Delete("prod")), [1, 4]);
-        assert!(asked(Change::Delete("staging")).is_empty());
-        assert_eq!(asked(Change::Disconnect("dev")), [3]);
+        assert_eq!(asked(Change::Delete(&["prod".into()])), [1, 4]);
+        assert!(asked(Change::Delete(&["staging".into()])).is_empty());
+        assert_eq!(asked(Change::Disconnect(&["dev".into()])), [3]);
+        assert_eq!(asked(Change::Disconnect(&["prod".into(), "staging".into(), "dev".into()])), [1, 3, 4], "every tab of any of them");
         assert_eq!(asked(Change::CloseTab(4)), [4]);
         assert_eq!(asked(Change::Quit), [1, 3, 4]);
-        assert_eq!(AfterTx::DeleteConnection("prod".into()).verb(), "delete");
-        assert_eq!(AfterTx::Disconnect("prod".into()).verb(), "disconnect");
+        assert_eq!(AfterTx::DeleteConnections(vec!["prod".into()]).verb(), "delete");
+        assert_eq!(AfterTx::Disconnect(vec!["prod".into()]).verb(), "disconnect");
     }
 
     #[test]

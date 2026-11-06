@@ -808,6 +808,33 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("moving {moving}, {during:?} / {after:?}"),
     );
 
+    // Fast clicks arrive with a click count of 2: each one still turns the folder.
+    let t0 = std::time::Instant::now();
+    double_click(cx, folder);
+    let moving = started(false, t0, cx);
+    let after = folded(cx).await;
+    report(
+        &mut ok,
+        "two fast clicks on a shut folder: the first opens it, the second shuts it",
+        moving && after.contains(&"▸ Reports".to_string()) && !after.contains(&"  Orders by day".to_string()),
+        format!("moving {moving}, {after:?}"),
+    );
+    click(cx, folder, MouseButton::Left, Modifiers::default());
+    crate::check::until(cx, 5, |cx| !cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true)).await;
+    let t0 = std::time::Instant::now();
+    double_click(cx, folder);
+    let moving = started(true, t0, cx);
+    let settled = crate::check::until(cx, 5, |cx| !cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true)).await;
+    let after = rows(&history, cx);
+    report(
+        &mut ok,
+        "two fast clicks on an open folder: the first shuts it, the second opens it again",
+        moving && settled && after.contains(&"▾ Reports".to_string()) && after.contains(&"  Orders by day".to_string()),
+        format!("moving {moving}, settled {settled}, {after:?}"),
+    );
+    click(cx, folder, MouseButton::Left, Modifiers::default());
+    let _ = folded(cx).await;
+
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("by day", window, cx)));
     let found = rows(&history, cx);
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("", window, cx)));
@@ -871,13 +898,13 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let before = rows(&history, cx);
     let Some(p) = named_point(&history, "Archive", cx).await else { return false };
     double_click(cx, p);
-    pause(cx, 30).await;
+    crate::check::until(cx, 5, |cx| !cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true)).await;
     let naming = cx.update(|_, cx| history.read(cx).demo_renaming_folder()).unwrap();
     let after = rows(&history, cx);
     report(
         &mut ok,
-        "a double-click on a folder renames nothing, it only opens or shuts it",
-        naming.is_none() && before.contains(&"▾ Archive".to_string()) && after.contains(&"▸ Archive".to_string()),
+        "a double-click on a folder renames nothing: it is two clicks, shut and open again",
+        naming.is_none() && before.contains(&"▾ Archive".to_string()) && after.contains(&"▾ Archive".to_string()),
         format!("naming {naming:?} {before:?} → {after:?}"),
     );
 

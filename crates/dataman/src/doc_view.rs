@@ -994,7 +994,13 @@ impl DocPane {
                 .border_b_1()
                 .border_color(t.pane_line)
                 .child(div().text_size(px(crate::theme::text::UI)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title))
-                .children(self.note.clone().map(|(n, err)| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(if err { t.err } else { t.ok }).child(n)))
+                .children(self.note.clone().map(|(n, err)| {
+                    if err {
+                        ui::error_line(t, "doc-note-error", n).text_size(px(crate::theme::text::SMALL)).into_any_element()
+                    } else {
+                        div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.ok).child(n).into_any_element()
+                    }
+                }))
                 .child(div().flex_1())
                 .children(delete)
                 .children(revert)
@@ -1074,6 +1080,7 @@ impl DocPane {
                     .child(div().text_color(t.tx).child(f.message.clone())),
             )
             .children(place.map(|p| div().pl(px(22.)).text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(p)))
+            .child(div().pl(px(14.)).flex().flex_row().child(ui::copy_error(t, "doc-error-copy", f.message.clone())))
     }
 }
 

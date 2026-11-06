@@ -18,7 +18,7 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check" | "conn-steps-check") || crate::conn_folders_check::is_stage(s)
+    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check" | "conn-steps-check" | "errors-check") || crate::conn_folders_check::is_stage(s)
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -46,6 +46,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         "project-check" => crate::project_check::run(ws, &mut r, cx).await,
         "outside-check" => crate::outside_check::run(ws, &mut r, cx).await,
         "format-check" => crate::format_check::run(ws, &mut r, cx).await,
+        "errors-check" => crate::errors_check::run(ws, &mut r, cx).await,
         "conn-steps-check" => crate::conn_steps_check::run(ws, &mut r, cx).await,
         s if crate::conn_folders_check::is_stage(s) => crate::conn_folders_check::run(ws, s, &mut r, cx).await,
         _ => {
@@ -280,7 +281,7 @@ pub fn tab_conn(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Option<S
 }
 
 pub fn idle(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
-    cx.update(|_, cx| !tab.read(cx).is_running()).unwrap_or(true)
+    cx.update(|_, cx| !tab.read(cx).is_running() && !tab.read(cx).run_continues()).unwrap_or(true)
 }
 
 /// The text into the active tab's editor, focused, then `keys` (⌘↩ runs it).
@@ -363,6 +364,22 @@ pub async fn nosql(core: &Arc<Core>, prof: &ConnectionProfile, pw: &str, db: &st
 
 pub fn clipboard(cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default()).unwrap_or_default()
+}
+
+/// The clipboard once `copy` has written `want`, or what it last held after 2 s. On Windows other
+/// programs (clipboard history) hold the clipboard for some ms after each write, and GPUI opens it
+/// once, with no retry: a write or a read in that moment is lost.
+pub async fn copied(cx: &mut AsyncWindowContext, want: &str, mut copy: impl FnMut(&mut AsyncWindowContext)) -> String {
+    let mut got = String::new();
+    for _ in 0..40 {
+        copy(cx);
+        got = clipboard(cx);
+        if got == want {
+            break;
+        }
+        pause(cx, 50).await;
+    }
+    got
 }
 
 pub fn set_clipboard(text: &str, cx: &mut AsyncWindowContext) {

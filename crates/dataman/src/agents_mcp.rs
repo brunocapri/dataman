@@ -210,9 +210,9 @@ impl AgentsPage {
         cx.notify();
     }
 
-    fn change_row(t: &Theme, k: usize, c: &Change) -> AnyElement {
+    pub(crate) fn change_row(t: &Theme, id: &str, k: usize, c: &Change) -> AnyElement {
         div()
-            .children(ui::here(&SharedString::from(format!("agents-import-change-{k}")).into()))
+            .children(ui::here(&SharedString::from(format!("{id}-{k}")).into()))
             .flex()
             .flex_row()
             .items_center()
@@ -240,7 +240,7 @@ impl AgentsPage {
         if !ok {
             body = body.child(div().text_color(t.err).child("This file can't be imported, so nothing was changed:")).child(
                 div().children(ui::here(&"agents-import-errors".into())).flex().flex_col().gap(px(4.)).children(imp.errors.iter().map(|e| div().text_color(t.tx2).child(format!("· {e}")))),
-            );
+            ).child(div().flex().flex_row().child(ui::copy_error(t, "agents-import-errors-copy", imp.errors.join("\n"))));
         } else if imp.plan.changes() == 0 && imp.plan.conns.iter().all(|c| !c.by_name) {
             body = body.child(div().text_color(t.tx2).child("Nothing to change: these settings are already here."));
         } else {
@@ -262,7 +262,7 @@ impl AgentsPage {
                     .iter()
                     .map(|c| {
                         k += 1;
-                        Self::change_row(t, k - 1, c)
+                        Self::change_row(t, "agents-import-change", k - 1, c)
                     })
                     .collect();
                 body = std::mem::replace(&mut body, div()).child(

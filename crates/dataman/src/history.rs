@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
-use chrono::{Datelike, Local};
+use chrono::{Datelike, Local, NaiveDate};
 use gpui::{
     AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState,
     Pixels, Point, SharedString, Window, actions, div, list, point, prelude::*,
@@ -92,7 +92,7 @@ enum Chip {
 
 #[derive(Debug, PartialEq)]
 enum Item {
-    Day(SharedString),
+    Day { day: NaiveDate, label: SharedString, open: bool },
     Entry(usize),
     Folder { ix: usize, open: bool },
     Fav(usize),
@@ -125,6 +125,43 @@ fn fav_items(folders: &[Folder], favorites: &[Favorite], q: &str, scoped: bool, 
             items.push(Item::Fav(i));
             shown += 1;
         }
+    }
+    (items, shown)
+}
+
+fn day_label(d: NaiveDate, today: NaiveDate) -> String {
+    if d == today {
+        "TODAY".to_string()
+    } else if Some(d) == today.pred_opt() {
+        "YESTERDAY".to_string()
+    } else if d.year() == today.year() {
+        d.format("%a %d %b").to_string().to_uppercase()
+    } else {
+        d.format("%d %b %Y").to_string().to_uppercase()
+    }
+}
+
+/// The history list: each day with a match, then its matches unless it is shut; and how many
+/// matches there are, a shut day's too. One pass over the entries (at most `HISTORY_MAX`, newest
+/// first) when the list changes; drawing only reads the result, for the rows in view.
+fn day_items(entries: &[(String, HistoryEntry)], today: NaiveDate, shut: &HashSet<NaiveDate>, hit: impl Fn(&(String, HistoryEntry)) -> bool) -> (Vec<Item>, usize) {
+    let (mut items, mut shown) = (Vec::new(), 0);
+    let mut day = None;
+    let mut open = true;
+    for (i, e) in entries.iter().enumerate() {
+        if !hit(e) {
+            continue;
+        }
+        let d = e.1.ts.with_timezone(&Local).date_naive();
+        if day != Some(d) {
+            day = Some(d);
+            open = !shut.contains(&d);
+            items.push(Item::Day { day: d, label: day_label(d, today).into(), open });
+        }
+        if open {
+            items.push(Item::Entry(i));
+        }
+        shown += 1;
     }
     (items, shown)
 }
@@ -219,6 +256,12 @@ pub struct HistoryPanel {
     folding: Option<(String, std::time::Instant, bool)>,
     shut_task: Option<gpui::Task<()>>,
     unfold_h: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f32>>>,
+    /// Days shut in History, for as long as the panel lives. By date: "today" shut stays shut as
+    /// "yesterday".
+    shut_days: HashSet<NaiveDate>,
+    /// Days shut under the search that is typed. A search opens every day it matches, whatever
+    /// `shut_days` says; a new search starts over and `shut_days` is there when it is cleared.
+    shut_in_search: HashSet<NaiveDate>,
     items: Vec<Item>,
     shown: usize,
     selected: Option<usize>,
@@ -281,6 +324,8 @@ impl HistoryPanel {
             folding: None,
             shut_task: None,
             unfold_h: Default::default(),
+            shut_days: HashSet::new(),
+            shut_in_search: HashSet::new(),
             items: vec![],
             shown: 0,
             selected: None,
@@ -420,7 +465,7 @@ impl HistoryPanel {
     }
 
     fn keep_selected(&mut self, keep: Option<usize>) {
-        self.selected = keep.filter(|&s| s < self.items.len() && !matches!(self.items[s], Item::Day(_))).or(self.selected);
+        self.selected = keep.filter(|&s| s < self.items.len() && !matches!(self.items[s], Item::Day { .. })).or(self.selected);
     }
 
     fn clear_clicked(&mut self, cx: &mut Context<Self>) {
@@ -771,7 +816,7 @@ impl HistoryPanel {
             at = match it {
                 Item::Folder { ix, .. } => DropAt::Folder(self.folders[*ix].id.clone()),
                 Item::Fav(i) => self.favorites[*i].folder.clone().map_or(DropAt::Top, DropAt::Folder),
-                Item::Day(_) | Item::Entry(_) => return None,
+                Item::Day { .. } | Item::Entry(_) => return None,
             };
             break;
         }
@@ -807,7 +852,7 @@ impl HistoryPanel {
                     Some(d) => at(d)? + 1,
                     None => self.folders.len(),
                 },
-                Item::Day(_) | Item::Entry(_) => return None,
+                Item::Day { .. } | Item::Entry(_) => return None,
             };
             break;
         }
@@ -841,6 +886,23 @@ impl HistoryPanel {
         }
     }
 
+    /// What narrows the list showing now: its search and its own filters.
+    fn filtered(&self) -> bool {
+        !self.query.is_empty() || if self.show_favorites { self.fav_scope.is_some() } else { self.chip != Chip::All || self.scope.is_some() }
+    }
+
+    /// Leaves the other list's search and filters as they are.
+    fn reset_filters(&mut self, cx: &mut Context<Self>) {
+        if self.show_favorites {
+            self.fav_scope = None;
+        } else {
+            self.chip = Chip::All;
+            self.scope = None;
+        }
+        self.filter.update(cx, |f, cx| f.set_text("", cx));
+        self.apply_filter(cx);
+    }
+
     fn matches(&self, (conn, e): &(String, HistoryEntry), q: &str, names: &std::collections::HashMap<String, String>) -> bool {
         let chip = match self.chip {
             Chip::All => true,
@@ -854,42 +916,38 @@ impl HistoryPanel {
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let q = self.filter.read(cx).text().trim().to_lowercase();
-        self.query = q.clone();
-        let mut items = Vec::new();
-        let mut shown = 0;
-        if self.show_favorites {
-            (items, shown) = fav_items(&self.folders, &self.favorites, &q, self.fav_scope.is_some(), |f| self.fav_in_scope(f), |id| self.open_folders.contains(id));
-        } else {
-            let today = Local::now().date_naive();
-            let mut day = None;
-            let names = self.store.read(cx).profiles.iter().map(|p| (p.id.clone(), p.name.to_lowercase())).collect();
-            for (i, e) in self.entries.iter().enumerate() {
-                if !self.matches(e, &q, &names) {
-                    continue;
-                }
-                let d = e.1.ts.with_timezone(&Local).date_naive();
-                if day != Some(d) {
-                    day = Some(d);
-                    let label = if d == today {
-                        "TODAY".to_string()
-                    } else if Some(d) == today.pred_opt() {
-                        "YESTERDAY".to_string()
-                    } else if d.year() == today.year() {
-                        d.format("%a %d %b").to_string().to_uppercase()
-                    } else {
-                        d.format("%d %b %Y").to_string().to_uppercase()
-                    };
-                    items.push(Item::Day(label.into()));
-                }
-                items.push(Item::Entry(i));
-                shown += 1;
-            }
+        if q != self.query {
+            self.shut_in_search.clear();
         }
+        self.query = q.clone();
+        let (items, shown) = if self.show_favorites {
+            fav_items(&self.folders, &self.favorites, &q, self.fav_scope.is_some(), |f| self.fav_in_scope(f), |id| self.open_folders.contains(id))
+        } else {
+            let names = self.store.read(cx).profiles.iter().map(|p| (p.id.clone(), p.name.to_lowercase())).collect();
+            let shut = if q.is_empty() { &self.shut_days } else { &self.shut_in_search };
+            day_items(&self.entries, Local::now().date_naive(), shut, |e| self.matches(e, &q, &names))
+        };
         self.items = items;
         self.shown = shown;
-        self.selected = self.items.iter().position(|i| !matches!(i, Item::Day(_)));
+        // A day's header when every day is shut.
+        self.selected = self.items.iter().position(|i| !matches!(i, Item::Day { .. })).or((!self.items.is_empty()).then_some(0));
         self.list.reset(self.items.len());
         cx.notify();
+    }
+
+    /// Opens or shuts a day, which ends up selected; what is above it stays where it is.
+    fn toggle_day(&mut self, day: NaiveDate, cx: &mut Context<Self>) {
+        let shut = if self.query.is_empty() { &mut self.shut_days } else { &mut self.shut_in_search };
+        if !shut.remove(&day) {
+            shut.insert(day);
+        }
+        let top = self.list.logical_scroll_top();
+        self.apply_filter(cx);
+        self.selected = self.items.iter().position(|it| matches!(it, Item::Day { day: d, .. } if *d == day));
+        self.list.scroll_to(match self.selected {
+            Some(ix) if ix < top.item_ix => gpui::ListOffset { item_ix: ix, offset_in_item: px(0.) },
+            _ => top,
+        });
     }
 
     fn refresh_keeping(&mut self, cx: &mut Context<Self>) {
@@ -904,7 +962,7 @@ impl HistoryPanel {
         self.apply_filter(cx);
         self.list.scroll_to(top);
         let found = keep.and_then(|(id, fav)| if fav { self.fav_item(&id) } else { self.folder_item(&id) });
-        let picks = |i: &Item| !matches!(i, Item::Day(_));
+        let picks = |i: &Item| !matches!(i, Item::Day { .. });
         self.selected = found.or_else(|| {
             let w = was?.min(self.items.len().checked_sub(1)?);
             (w..self.items.len()).chain((0..w).rev()).find(|&i| picks(&self.items[i]))
@@ -913,15 +971,11 @@ impl HistoryPanel {
     }
 
     fn move_sel(&mut self, d: isize, cx: &mut Context<Self>) {
-        let picks: Vec<usize> = (0..self.items.len()).filter(|&i| !matches!(self.items[i], Item::Day(_))).collect();
-        if picks.is_empty() {
-            return;
-        }
-        let cur = self.selected.and_then(|s| picks.iter().position(|&e| e == s)).unwrap_or(0);
-        let next = (cur as isize + d).clamp(0, picks.len() as isize - 1) as usize;
+        let Some(last) = self.items.len().checked_sub(1) else { return };
+        let next = (self.selected.unwrap_or(0) as isize + d).clamp(0, last as isize) as usize;
         self.picked.clear();
-        self.selected = Some(picks[next]);
-        self.list.scroll_to_reveal_item(picks[next]);
+        self.selected = Some(next);
+        self.list.scroll_to_reveal_item(next);
         cx.notify();
     }
 
@@ -930,6 +984,14 @@ impl HistoryPanel {
             Some(&Item::Folder { ix, open: is_open, .. }) if (is_open && !self.shutting(&self.folders[ix].id)) != open => {
                 let id = self.folders[ix].id.clone();
                 self.toggle_folder(&id, cx);
+            }
+            Some(&Item::Day { day, open: is_open, .. }) if is_open != open => self.toggle_day(day, cx),
+            Some(Item::Entry(_)) if !open => {
+                if let Some(ix) = self.selected.and_then(|s| self.items[..s].iter().rposition(|it| matches!(it, Item::Day { .. }))) {
+                    self.selected = Some(ix);
+                    self.list.scroll_to_reveal_item(ix);
+                    cx.notify();
+                }
             }
             Some(Item::Fav(i)) if !open => {
                 if let Some(ix) = self.favorites[*i].folder.clone().and_then(|d| self.folder_item(&d)) {
@@ -949,6 +1011,10 @@ impl HistoryPanel {
             Some(Item::Folder { ix, .. }) => {
                 let id = self.folders[*ix].id.clone();
                 self.toggle_folder(&id, cx);
+                None
+            }
+            Some(&Item::Day { day, .. }) => {
+                self.toggle_day(day, cx);
                 None
             }
             _ => None,
@@ -982,16 +1048,7 @@ impl HistoryPanel {
 
     fn render_item(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         match &self.items[ix] {
-            Item::Day(label) => div()
-                .h(px(28.))
-                .px(px(8.))
-                .pb(px(4.))
-                .flex()
-                .items_end()
-                .text_size(px(crate::theme::text::TINY))
-                .text_color(t.tx3)
-                .child(label.clone())
-                .into_any_element(),
+            &Item::Day { day, ref label, open } => self.render_day(ix, day, label, open, t, focused, cx),
             Item::Entry(i) => self.render_entry(ix, *i, t, focused, cx),
             &Item::Folder { ix: folder_ix, open } => self.render_folder(ix, folder_ix, open, t, focused, cx),
             Item::Fav(i) => {
@@ -999,6 +1056,42 @@ impl HistoryPanel {
                 self.unfolding(ix, *i, row)
             }
         }
+    }
+
+    fn render_day(&self, ix: usize, day: NaiveDate, label: &SharedString, open: bool, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let sel = self.selected == Some(ix);
+        let hov = t.hov;
+        let n = day.num_days_from_ce() as usize;
+        div()
+            .px(px(6.))
+            .child(
+                div()
+                    .id(("hist-day", n))
+                    .h(px(28.))
+                    .pl(px(8.))
+                    .pr(px(8.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_size(px(crate::theme::text::TINY))
+                    .text_color(t.tx3)
+                    .map(|d| ui::selectable(d, t, sel, focused))
+                    .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
+                        if crate::keymap::menu_click(&ev.modifiers()) {
+                            return;
+                        }
+                        window.focus(&h.focus, cx);
+                        if ev.click_count() < 2 {
+                            h.toggle_day(day, cx);
+                        }
+                    }))
+                    .child(div().w(px(10.)).flex_none().flex().justify_center().child(ui::disclosure(("hist-day-chev", n), open, 10., t.tx4)))
+                    .child(label.clone()),
+            )
+            .into_any_element()
     }
 
     fn fold_time(&self, id: &str, opening: bool) -> std::time::Duration {
@@ -1144,7 +1237,7 @@ impl HistoryPanel {
                                 d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3))
                             })
                             .child(div().flex_1())
-                            .child(div().flex_none().text_color(rcolor).child(result)),
+                            .child(div().id(("hist-result", ix)).flex_none().text_color(rcolor).when_some(e.error.clone().filter(|_| e.outcome == Outcome::Error), |d, full| d.tip(ui::error_tip(full))).child(result)),
                     )
                     .child(
                         div()
@@ -1222,9 +1315,6 @@ impl HistoryPanel {
                         h.picked.clear();
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
-                        if ev.click_count() >= 2 {
-                            return cx.notify();
-                        }
                         h.toggle_folder(&click_id, cx);
                     }))
                     // The row is the field's while it is named: the panel would take the focus.
@@ -2010,7 +2100,7 @@ impl HistoryPanel {
         self.items
             .iter()
             .map(|it| match it {
-                Item::Day(d) => d.to_string(),
+                Item::Day { label, open, .. } => format!("{} {label}", if *open { "▾" } else { "▸" }),
                 Item::Entry(_) => "entry".into(),
                 Item::Folder { ix, open } => {
                     let open = *open && !self.shutting(&self.folders[*ix].id);
@@ -2019,6 +2109,11 @@ impl HistoryPanel {
                 Item::Fav(i) => format!("{}{}", if self.favorites[*i].folder.is_some() { "  " } else { "" }, self.favorites[*i].name),
             })
             .collect()
+    }
+
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_selected_row(&self) -> Option<String> {
+        self.demo_rows().get(self.selected?).cloned()
     }
 
     #[cfg(feature = "checks")]
@@ -2260,7 +2355,11 @@ impl Render for HistoryPanel {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(ui::empty_state(&t, "[ CLEAN SLATE ]", 20., None))
+                .child(if self.filtered() {
+                    ui::no_match(&t, "history-reset", cx.listener(|h, _, _, cx| h.reset_filters(cx)))
+                } else {
+                    ui::empty_state(&t, "[ CLEAN SLATE ]", 20., None)
+                })
                 .into_any_element()
         } else {
             let theme = t.clone();
@@ -2388,6 +2487,41 @@ mod tests {
 
     fn folder(id: &str) -> Folder {
         Folder { id: id.into(), name: id.into() }
+    }
+
+    fn ran(d: NaiveDate, sql: &str) -> (String, HistoryEntry) {
+        let ts = d.and_hms_opt(12, 0, 0).unwrap().and_local_timezone(Local).unwrap().with_timezone(&chrono::Utc);
+        ("pg".into(), HistoryEntry { ts, database: "db".into(), sql: sql.into(), duration_ms: 1., rows: None, outcome: Outcome::Ok, error: None, source: None })
+    }
+
+    #[test]
+    fn days_head_their_matches_and_a_shut_one_keeps_its_count() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let yesterday = today.pred_opt().unwrap();
+        let older = NaiveDate::from_ymd_opt(2025, 3, 9).unwrap();
+        let entries = [ran(today, "a"), ran(today, "b"), ran(yesterday, "c"), ran(older, "a")];
+        let day = |d: NaiveDate, label: &str, open: bool| Item::Day { day: d, label: label.to_string().into(), open };
+
+        let (items, shown) = day_items(&entries, today, &HashSet::new(), |_| true);
+        assert_eq!(items, vec![day(today, "TODAY", true), Item::Entry(0), Item::Entry(1), day(yesterday, "YESTERDAY", true), Item::Entry(2), day(older, "09 MAR 2025", true), Item::Entry(3)]);
+        assert_eq!(shown, 4);
+
+        let shut = HashSet::from([today]);
+        let (items, shown) = day_items(&entries, today, &shut, |_| true);
+        assert_eq!(items, vec![day(today, "TODAY", false), day(yesterday, "YESTERDAY", true), Item::Entry(2), day(older, "09 MAR 2025", true), Item::Entry(3)]);
+        assert_eq!(shown, 4);
+
+        // Filtered: a day with no match has no header, a shut one with a match keeps it.
+        let (items, shown) = day_items(&entries, today, &shut, |e| e.1.sql == "a");
+        assert_eq!(items, vec![day(today, "TODAY", false), day(older, "09 MAR 2025", true), Item::Entry(3)]);
+        assert_eq!(shown, 2);
+    }
+
+    #[test]
+    fn a_day_this_year_says_its_weekday_and_another_year_says_so() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        assert_eq!(day_label(NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), today), "MON 02 NOV");
+        assert_eq!(day_label(NaiveDate::from_ymd_opt(2025, 12, 31).unwrap(), today), "31 DEC 2025");
     }
 
     #[test]
