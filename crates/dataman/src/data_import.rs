@@ -38,7 +38,7 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum DataImportEvent {
     Close,
-    Finished(String),
+    Finished { line: String, failed: bool },
     ViewData { conn: String, db: String, schema: String, table: String },
 }
 
@@ -407,7 +407,7 @@ impl DataImportView {
                 job._tick = None;
                 let report = r.unwrap_or_else(|e| failed_report(format!("{e:#}")));
                 if !v.visible {
-                    cx.emit(DataImportEvent::Finished(finished_line(&report, &job.table)));
+                    cx.emit(DataImportEvent::Finished { line: finished_line(&report, &job.table), failed: matches!(report.outcome, Outcome::Failed(_)) });
                 }
                 job.state = JobState::Done(report);
                 cx.notify();
@@ -596,9 +596,8 @@ impl DataImportView {
                             (None, Some((a, b))) => format!("{word}s {}–{} · ", ui_count(a as usize), ui_count(b as usize)),
                             _ => String::new(),
                         };
-                        let code = f.error.code.as_ref().map(|c| format!("{c} ")).unwrap_or_default();
                         let kept = if r.rolled_back || r.rows == 0 { String::new() } else { format!(" · {} rows kept", ui_count(r.rows as usize)) };
-                        (format!("{at}{code}{}{kept}", f.error.message).into(), true)
+                        (format!("{at}{}{kept}", f.error).into(), true)
                     }
                 }
             }
@@ -669,7 +668,8 @@ impl DataImportView {
                     .flex_row()
                     .items_center()
                     .gap(px(8.))
-                    .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(if note_err { t.err } else { t.tx3 }).child(note))
+                    .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(if note_err { t.err } else { t.tx3 }).child(note.clone()))
+                    .when(note_err, |d| d.child(ui::copy_error(t, "di-progress-copy", note)))
                     .children(buttons),
             )
             .into_any_element()
@@ -1000,8 +1000,8 @@ pub fn finished_line(r: &ImportReport, table: &str) -> String {
         Outcome::Cancelled if r.rolled_back => "Import stopped · rolled back".to_string(),
         Outcome::Cancelled => format!("Import stopped · {} rows kept", ui_count(r.rows as usize)),
         Outcome::Failed(f) => match f.line {
-            Some(l) => format!("Import failed at line {}: {}", ui_count(l as usize), f.error.message),
-            None => format!("Import failed: {}", f.error.message),
+            Some(l) => format!("Import failed at line {}: {}", ui_count(l as usize), f.error),
+            None => format!("Import failed: {}", f.error),
         },
     }
 }
@@ -1178,7 +1178,7 @@ impl Render for DataImportView {
                 .border_color(t.line)
                 .bg(t.field)
                 .child(match &self.error {
-                    Some(e) => div().px(px(20.)).text_color(t.err).child(e.clone()),
+                    Some(e) => ui::error_block(&t, "di-error", e.clone()).w_full().px(px(20.)),
                     None => ui::banner(if self.loading { "[ READING ]" } else { "[ NO FILE ]" }, 18., t.tx4),
                 })
                 .into_any_element(),
@@ -1245,7 +1245,7 @@ impl Render for DataImportView {
         let footer: AnyElement = match &self.job {
             Some(j) => self.render_progress(j, &t, cx),
             None => ui::modal_footer(&t)
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.err).children(self.error.clone().filter(|_| self.preview.is_some())))
+                .child(div().flex_1().min_w_0().flex().text_size(px(crate::theme::text::SMALL)).children(self.error.clone().filter(|_| self.preview.is_some()).map(|e| ui::error_line(&t, "di-error-line", e))))
                 .child(ui::button(&t, "di-cancel", Btn::Ghost).h(px(28.)).child("Cancel").on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))))
                 .child(
                     ui::button(&t, "di-start", if ready { Btn::Primary } else { Btn::Ghost })
@@ -1335,7 +1335,7 @@ impl Workspace {
         let target = match target.map(Ok).unwrap_or_else(|| self.import_target(cx)) {
             Ok(t) => t,
             Err(e) => {
-                self.notice(e, cx);
+                self.notice_err(e, cx);
                 return;
             }
         };
@@ -1398,9 +1398,13 @@ impl Workspace {
                 w.give_focus_back(crate::app::Modal::Sheet, window, cx);
                 cx.notify();
             }
-            DataImportEvent::Finished(line) => {
+            DataImportEvent::Finished { line, failed } => {
                 w.data_import = None;
-                w.notice(line.clone(), cx);
+                if *failed {
+                    w.notice_err(line.clone(), cx);
+                } else {
+                    w.notice(line.clone(), cx);
+                }
             }
             DataImportEvent::ViewData { conn, db, schema, table } => {
                 w.data_import = None;

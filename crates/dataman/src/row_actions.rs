@@ -188,7 +188,7 @@ impl Workspace {
                     let _ = this.update_in(cx, |w, window, cx| match r {
                         Ok(Some(sql)) => w.deliver_sql(&conn, &db, sql, alt, window, cx),
                         Ok(None) => w.notice(format!("The server does not report the definition of {q}"), cx),
-                        Err(e) => w.notice(format!("Could not read {q}: {e:#}"), cx),
+                        Err(e) => w.notice_err(format!("Could not read {q}: {e:#}"), cx),
                     });
                 })
                 .detach();
@@ -205,7 +205,7 @@ impl Workspace {
                         Ok(Some((v, true))) => w.notice(format!("{q} · last value {v}"), cx),
                         Ok(Some((v, false))) => w.notice(format!("{q} · unused, starts at {v}"), cx),
                         Ok(None) => w.notice(format!("The server does not report the value of {q}"), cx),
-                        Err(e) => w.notice(format!("Could not read {q}: {e:#}"), cx),
+                        Err(e) => w.notice_err(format!("Could not read {q}: {e:#}"), cx),
                     });
                 })
                 .detach();
@@ -298,7 +298,7 @@ impl Workspace {
         let on = !live.as_ref().map_or_else(|| p.read_only_for(db), |c| c.read_only_for(db));
         p.set_read_only_for(db, on);
         if let Err(e) = self.store.read(cx).core.config.upsert(p.clone()) {
-            self.notice(format!("Could not save the connection: {e:#}"), cx);
+            self.notice_err(format!("Could not save the connection: {e:#}"), cx);
             return;
         }
         let mut conns: Vec<std::sync::Arc<dataman_core::Connection>> = live.into_iter().collect();
@@ -427,7 +427,7 @@ impl Workspace {
             let r = task.await;
             let _ = this.update_in(cx, |w, window, cx| match r {
                 Ok(sql) => w.deliver_sql(&conn, &db, sql, alt, window, cx),
-                Err(e) => w.notice(format!("Could not read {schema}.{name} from the catalog: {e:#}"), cx),
+                Err(e) => w.notice_err(format!("Could not read {schema}.{name} from the catalog: {e:#}"), cx),
             });
         })
         .detach();
@@ -446,7 +446,7 @@ impl Workspace {
             let _ = this.update_in(cx, |w, window, cx| match r {
                 Ok(Some(sql)) => w.deliver_sql(&conn, &db, sql, alt, window, cx),
                 Ok(None) => w.notice(format!("The server does not report the definition of {label}"), cx),
-                Err(e) => w.notice(format!("Could not read {label}: {e:#}"), cx),
+                Err(e) => w.notice_err(format!("Could not read {label}: {e:#}"), cx),
             });
         })
         .detach();
@@ -533,7 +533,11 @@ impl Workspace {
             let sep = if said.is_empty() { "" } else { ". " };
             said.push_str(&format!("{sep}{}", failed.join("; ")));
         }
-        self.notice(said, cx);
+        if failed.is_empty() {
+            self.notice(said, cx);
+        } else {
+            self.notice_err(said, cx);
+        }
         match ops.len() {
             0 => {}
             1 => self.did(format!("Delete connection '{last}'"), ops.remove(0)),
@@ -566,7 +570,7 @@ impl Workspace {
             let r = h.spawn(fut).await.map_err(|e| e.to_string()).and_then(|r| r);
             let _ = w.update(cx, |w, cx| match r {
                 Ok(user) => w.notice(format!("Dropped the agent login {user} on the server"), cx),
-                Err(e) => w.notice(format!("The agent login is still on the server (Dataman forgot it): {e}"), cx),
+                Err(e) => w.notice_err(format!("The agent login is still on the server (Dataman forgot it): {e}"), cx),
             });
         })
         .detach();

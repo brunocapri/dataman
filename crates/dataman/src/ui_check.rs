@@ -1331,7 +1331,7 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     );
     let (fit, w) = crate::ui::fit_tip(&long);
     report(
-        "its tooltip is cut to fit: at most 360 pt wide, 14 lines, an ellipsis at the end",
+        "a plain text tooltip is cut to fit: at most 360 pt wide, 14 lines, an ellipsis at the end",
         w <= crate::ui::TIP_MAX_W && fit.ends_with('…') && fit.lines().count() <= crate::ui::TIP_LINES && fit.starts_with("could not connect"),
         format!("{w} {} lines", fit.lines().count()),
     );

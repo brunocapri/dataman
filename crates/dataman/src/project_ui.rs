@@ -165,7 +165,7 @@ impl Workspace {
                 self.project_synced(s, window, cx);
             }
             Err(e) => {
-                self.notice(format!("{e:#}"), cx);
+                self.notice_err(format!("{e:#}"), cx);
                 self.show_project_review(window, cx);
             }
         }
@@ -302,7 +302,7 @@ impl Workspace {
                     self.notice(format!("Opened the project {name}"), cx);
                 }
             }
-            Err(e) => self.notice(format!("{e:#}"), cx),
+            Err(e) => self.notice_err(format!("{e:#}"), cx),
         }
     }
 

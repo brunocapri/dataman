@@ -130,6 +130,7 @@ const STAGES: &[Stage] = &[
     st("project-check", &[], 120),
     st("outside-check", &[], 120),
     st("format-check", &[Mongo], 120),
+    st("errors-check", &[Pg], 120),
     st("update-check", &[Pg], 300),
 ];
 

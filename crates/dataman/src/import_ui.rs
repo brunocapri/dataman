@@ -190,7 +190,7 @@ impl Render for ImportView {
                 ui::modal_close(&t, "imp-close").on_click(cx.listener(|_, _, _, cx| cx.emit(ImportEvent::Close))),
             ))
             .child(body)
-            .children(self.error.clone().map(|e| div().px(px(20.)).pb(px(8.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(e)))
+            .children(self.error.clone().map(|e| ui::error_block(&t, "imp-error", e).px(px(20.)).pb(px(8.)).text_size(px(crate::theme::text::UI))))
             .child(
                 ui::modal_footer(&t)
                     .child(div().flex_1())

@@ -2289,7 +2289,7 @@ impl ResultGrid {
                     status.error.as_ref().map(|e| format!("{} {}", e.code.clone().unwrap_or_default(), e.message)).unwrap_or_default()
                 ),
                 t.err,
-                t.err_s,
+                gpui::transparent_black(),
             )),
             _ if self.cancelling && data_rows > 0 && !phase.is_finished() => Some(("◌ cancel requested".to_string(), t.warn, t.warn_s)),
             _ => None,

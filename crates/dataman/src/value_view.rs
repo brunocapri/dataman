@@ -471,7 +471,7 @@ impl Render for ValueView {
             .children(empty)
             .children(more);
         let changed = self.edited(cx).is_some();
-        let note = self.error.clone().map(|e| div().mx(px(20.)).mt(px(8.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(format!("Not valid JSON: {e}")));
+        let note = self.error.clone().map(|e| ui::error_block(&t, "value-json-error", format!("Not valid JSON: {e}")).mx(px(20.)).mt(px(8.)).text_size(px(crate::theme::text::UI)));
         let copied = self.copied_at.and_then(|at| crate::motion::copied(at, Instant::now(), cx.reduce_motion()));
         let copy_tip = if text { "The formatted text" } else { "The value as stored" };
         let footer = ui::modal_footer(&t)

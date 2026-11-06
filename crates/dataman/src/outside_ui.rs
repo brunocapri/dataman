@@ -120,7 +120,7 @@ impl Workspace {
         match result {
             Ok(()) => self.notice("Applied the edits made outside Dataman", cx),
             Err(e) => {
-                self.notice(format!("{e:#}"), cx);
+                self.notice_err(format!("{e:#}"), cx);
                 self.check_outside_edits(window, cx);
             }
         }

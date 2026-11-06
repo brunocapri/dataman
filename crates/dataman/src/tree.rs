@@ -163,6 +163,7 @@ pub enum TreeEvent {
     /// Disconnect, Reconnect or Delete on several connections together.
     ConnsAction { act: Act, conns: Vec<String> },
     Notice(String),
+    Failed(String),
     Did(crate::undo::Entry),
 }
 
@@ -277,6 +278,8 @@ struct Row {
     chip: Option<Hsla>,
     chip_dim: bool,
     tip: Option<SharedString>,
+    /// The tip is an error: it can be copied from there.
+    tip_err: bool,
     tunnel: bool,
     logo: Option<dataman_core::Engine>,
     lock: bool,
@@ -303,6 +306,7 @@ impl Row {
             chip: None,
             chip_dim: false,
             tip: None,
+            tip_err: false,
             tunnel: false,
             logo: None,
             lock: false,
@@ -781,6 +785,7 @@ impl SchemaTree {
         r.chip_dim = r.tone == Tone::ConnOff;
         if let Some(ConnState::Failed(e)) = state {
             r.tip = Some(e.clone().into());
+            r.tip_err = true;
         }
         r.tunnel = p.ssh.is_some();
         r.logo = Some(p.engine);
@@ -2527,7 +2532,7 @@ impl SchemaTree {
     fn change_folders(&mut self, label: String, f: impl FnOnce(&mut Vec<dataman_core::ConnFolder>), cx: &mut Context<Self>) {
         let before = self.store.read(cx).folders.clone();
         if let Err(e) = self.store.update(cx, |s, cx| s.edit_folders(f, cx)) {
-            cx.emit(TreeEvent::Notice(format!("Could not save the folders: {e:#}")));
+            cx.emit(TreeEvent::Failed(format!("Could not save the folders: {e:#}")));
         }
         let after = self.store.read(cx).folders.clone();
         if after != before {
@@ -2651,7 +2656,7 @@ impl SchemaTree {
         let before = core.pins.of(&pin.connection);
         let saved = if on { core.pins.pin(pin.clone()) } else { core.pins.unpin(&pin.connection, &pin.database, &pin.schema, &pin.name) };
         if let Err(e) = saved {
-            cx.emit(TreeEvent::Notice(format!("Could not save the pinned tables: {e:#}")));
+            cx.emit(TreeEvent::Failed(format!("Could not save the pinned tables: {e:#}")));
             return;
         }
         let after = core.pins.of(&pin.connection);
@@ -3034,7 +3039,7 @@ impl SchemaTree {
                 self.shut_folders.remove(d);
             }
             if let Err(e) = self.store.update(cx, |s, cx| s.edit_folders(|f| *f = folders.clone(), cx)) {
-                cx.emit(TreeEvent::Notice(format!("Could not save the folders: {e:#}")));
+                cx.emit(TreeEvent::Failed(format!("Could not save the folders: {e:#}")));
             }
             ops.push(crate::undo::Op::ConnFolders { from: old_folders, to: folders });
         }
@@ -3327,7 +3332,7 @@ impl SchemaTree {
                     .children(chevron)
                     .children(r.gutter_icon.map(|(i, c)| icon(i).flex_none().size(px(14.)).text_color(c))),
             )
-            .when_some(r.tip.clone(), |d, tip| d.tip(ui::text_tooltip(tip)))
+            .when_some(r.tip.clone(), |d, tip| if r.tip_err { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
             .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
             .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
             .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
@@ -3714,6 +3719,7 @@ fn error_row(id: &str, depth: usize, e: &str, retry: &str, t: &Theme) -> Row {
         .icon_colored(Icon::Warning, t.err)
         .meta("retry", Meta::Link);
     r.tip = Some(e.to_string().into());
+    r.tip_err = true;
     r
 }
 

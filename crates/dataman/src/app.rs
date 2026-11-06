@@ -419,7 +419,8 @@ pub struct Workspace {
     pub(crate) focus_visible: bool,
     pub(crate) copy_menu: bool,
     pub(crate) cancel_toast_hidden: Option<Instant>,
-    pub(crate) flash_notice: Option<(String, Instant)>,
+    /// What the status bar says for a moment, and whether it is an error.
+    pub(crate) flash_notice: Option<(String, Instant, bool)>,
     file_drag: Option<gpui::ExternalPaths>,
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
     pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
@@ -753,13 +754,12 @@ impl Workspace {
             TabEvent::TxEnded { result, statements } => {
                 let n = *statements;
                 let what = |verb: &str| format!("{verb} · {n} statement{}", if n == 1 { "" } else { "s" });
-                let msg = match result {
-                    Ok(dataman_core::TxEnd::Committed) => what("Committed"),
-                    Ok(dataman_core::TxEnd::RolledBack) => what("Rolled back"),
-                    Ok(dataman_core::TxEnd::NoTransaction) => "No transaction open".to_string(),
-                    Err(e) => format!("COMMIT failed: {e}"),
-                };
-                w.notice(msg, cx);
+                match result {
+                    Ok(dataman_core::TxEnd::Committed) => w.notice(what("Committed"), cx),
+                    Ok(dataman_core::TxEnd::RolledBack) => w.notice(what("Rolled back"), cx),
+                    Ok(dataman_core::TxEnd::NoTransaction) => w.notice("No transaction open", cx),
+                    Err(e) => w.notice_err(format!("COMMIT failed: {e}"), cx),
+                }
             }
         })
         .detach();
@@ -1207,7 +1207,7 @@ impl Workspace {
                     let tab = self.new_tab(window, cx);
                     tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(&text, cx)));
                 }
-                Err(e) => self.notice(format!("cannot read {}: {e}", path.display()), cx),
+                Err(e) => self.notice_err(format!("cannot read {}: {e}", path.display()), cx),
             }
         }
     }
@@ -1666,6 +1666,7 @@ impl Workspace {
             TreeEvent::RowAction { act, target, alt } => self.on_row_action(*act, target.clone(), *alt, window, cx),
             TreeEvent::ConnsAction { act, conns } => self.conns_action(*act, conns.clone(), window, cx),
             TreeEvent::Notice(msg) => self.notice(msg.clone(), cx),
+            TreeEvent::Failed(msg) => self.notice_err(msg.clone(), cx),
             TreeEvent::Did(e) => self.undo.push(e.clone()),
         }
         cx.notify();
@@ -1886,12 +1887,21 @@ impl Workspace {
     }
 
     pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.flash(msg.into(), false, Duration::from_secs(4), cx);
+    }
+
+    /// A notice that says what failed: it stays long enough to reach its tooltip and copy it.
+    pub(crate) fn notice_err(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        self.flash(msg.into(), true, Duration::from_secs(20), cx);
+    }
+
+    fn flash(&mut self, msg: String, err: bool, stays: Duration, cx: &mut Context<Self>) {
         let at = Instant::now();
-        self.flash_notice = Some((msg.into(), at));
+        self.flash_notice = Some((msg, at, err));
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(4)).await;
+            cx.background_executor().timer(stays).await;
             let _ = this.update(cx, |w, cx| {
-                if w.flash_notice.as_ref().is_some_and(|(_, t)| *t == at) {
+                if w.flash_notice.as_ref().is_some_and(|(_, t, _)| *t == at) {
                     w.flash_notice = None;
                     cx.notify();
                 }
@@ -1974,7 +1984,7 @@ impl Workspace {
             let text = match dataman_core::sql::read_script(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    self.notice(format!("cannot read {}: {e}", path.display()), cx);
+                    self.notice_err(format!("cannot read {}: {e}", path.display()), cx);
                     continue;
                 }
             };
@@ -2371,7 +2381,7 @@ impl Workspace {
             Some((id, _)) => match store.update_sql(&id, &sql) {
                 Ok(f) => f,
                 Err(e) => {
-                    self.notice(format!("cannot save the favorite: {e:#}"), cx);
+                    self.notice_err(format!("cannot save the favorite: {e:#}"), cx);
                     return;
                 }
             },
@@ -2395,7 +2405,7 @@ impl Workspace {
                         (f, "added to favorites")
                     }
                     Err(e) => {
-                        self.notice(format!("cannot save the favorite: {e:#}"), cx);
+                        self.notice_err(format!("cannot save the favorite: {e:#}"), cx);
                         return;
                     }
                 }
@@ -2486,7 +2496,7 @@ impl Workspace {
                     tab.update(cx, |t, cx| t.set_title(name.clone(), text, cx));
                     w.notice(format!("Saved {name}"), cx);
                 }
-                Err(e) => w.notice(format!("cannot write {}: {e}", path.display()), cx),
+                Err(e) => w.notice_err(format!("cannot write {}: {e}", path.display()), cx),
             });
         })
         .detach();

@@ -1567,7 +1567,7 @@ impl AgentsPage {
                 .children(e.statement().map(|s| block(&shown_agent_text(s, 20_000))))
                 .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))))
                 .child(grid)
-                .children(error.map(|m| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.err).child(shown_agent_text(&m, 2_000))))
+                .children(error.map(|m| div().flex().flex_row().items_start().gap(px(12.)).text_size(px(crate::theme::text::UI)).line_height(px(17.)).child(div().flex_1().min_w_0().text_color(t.err).child(shown_agent_text(&m, 2_000))).child(ui::copy_error(t, "agents-error-copy", m))))
                 .children(received)
                 .when(e.statement().is_some(), |d| {
                     d.child(

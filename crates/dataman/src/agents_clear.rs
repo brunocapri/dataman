@@ -252,7 +252,7 @@ impl AgentsPage {
             .when(matches!(s.what, Clear::Before(_)), |d| d.child(div().text_color(t.tx2).child("Calls logged before the day you pick go; that day stays.")).child(self.calendar(t, s, cx)))
             .child(div().children(ui::here(&"agents-clear-what".into())).text_color(t.tx).child(what))
             .when(ready, |d| d.child(div().text_color(t.tx3).child("This cannot be undone.")))
-            .children(s.error.clone().map(|e| div().text_color(t.err).child(e)));
+            .children(s.error.clone().map(|e| ui::error_block(t, "agents-clear-error", e)));
         let label = match s.count {
             Some(n) if n > 0 => format!("Delete {}", calls(n)),
             _ => "Delete".to_string(),

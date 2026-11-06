@@ -31,7 +31,7 @@ pub fn failed(e: &anyhow::Error, cx: &mut App) {
     cx.defer(move |cx| {
         for w in cx.windows() {
             if let Some(w) = w.downcast::<crate::app::Workspace>() {
-                let _ = w.update(cx, |w, _, cx| w.notice(msg.clone(), cx));
+                let _ = w.update(cx, |w, _, cx| w.notice_err(msg.clone(), cx));
                 return;
             }
         }

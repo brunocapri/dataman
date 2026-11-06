@@ -135,7 +135,7 @@ impl Render for PrivilegesPanel {
         let body: gpui::AnyElement = match &self.state {
             State::Loading => div().px(px(14.)).py(px(10.)).italic().text_color(t.tx3).child("loading…").into_any_element(),
             State::NotReported => div().px(px(14.)).py(px(12.)).flex().child(ui::not_reported(&t)).into_any_element(),
-            State::Failed(e) => div().px(px(14.)).py(px(10.)).text_color(t.err).child(e.lines().next().unwrap_or("").to_string()).into_any_element(),
+            State::Failed(e) => ui::error_block(&t, "priv-error", e.clone()).px(px(14.)).py(px(10.)).into_any_element(),
             State::Ready(p) => {
                 let cols = p.columns();
                 let cw = if p.schema_level { 60. } else { 30. };
