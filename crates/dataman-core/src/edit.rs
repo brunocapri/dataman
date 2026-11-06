@@ -85,7 +85,6 @@ impl EditTarget {
         }
     }
 
-    /// The value a new row offers, with its column.
     pub fn new_row_uuid(&self) -> Option<(usize, CellValue)> {
         let col = self.uuid_key?;
         let id = uuid::Uuid::new_v4().hyphenated();
@@ -1034,7 +1033,7 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
         let Some(first) = toks.get(i).filter(|t| is_name(t)) else { return Err("the result does not come from a table".into()) };
         let mut table = TableRef { schema: None, name: ident_value(sql, first) };
         i += 1;
-        if toks.get(i).is_some_and(|t| punct(t, ".")) && toks.get(i + 1).is_some_and(|t| is_name(t)) {
+        if toks.get(i).is_some_and(|t| punct(t, ".")) && toks.get(i + 1).is_some_and(is_name) {
             table = TableRef { schema: Some(table.name), name: ident_value(sql, &toks[i + 1]) };
             i += 2;
         }

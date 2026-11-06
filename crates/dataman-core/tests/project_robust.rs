@@ -19,9 +19,6 @@ use dataman_core::project::{self, ProjectFile, ProjectStore, Stores, Synced};
 use dataman_core::secret::MemorySecrets;
 use dataman_core::settings::{SettingsStore, ThemePref, UiFont};
 
-// ---------------------------------------------------------------------------------------------
-// One person's Dataman: its local files and its project store.
-
 struct Machine {
     _dir: Option<tempfile::TempDir>,
     dirs: Dirs,
@@ -129,9 +126,6 @@ fn alternate(ms: &[&Machine], rounds: usize) -> Vec<Vec<Synced>> {
 fn quiet(round: &[Synced]) -> bool {
     round.iter().all(|s| *s == Synced::default())
 }
-
-// ---------------------------------------------------------------------------------------------
-// 1. Huge, deep and odd files.
 
 fn huge_file(n: usize, pad: usize) -> String {
     let name = "n".repeat(pad);
@@ -369,9 +363,6 @@ fn a_personal_favorite_is_never_replaced_by_the_file() {
     assert_eq!((got.connection_id.as_deref(), got.sql.as_str()), (Some(own.id.as_str()), "SELECT 1"));
 }
 
-// ---------------------------------------------------------------------------------------------
-// 2. Two Datamans on one folder.
-
 /// Alice and Bob (each their own local files) syncing one folder in turn settle: after a change
 /// on either side, a round or two, then nobody writes.
 #[test]
@@ -402,7 +393,6 @@ fn two_machines_syncing_in_turn_settle() {
     let log = alternate(&[&alice, &bob], 3);
     assert!(quiet(&log[1]) && quiet(&log[2]), "{log:?}");
 
-    // Agents no longer shared, and Bob keeps his own limit.
     alice.project.edit(alice.st(), |share, _| share.agents = false).unwrap();
     let mut b1 = bob.config.get(&s1.id).unwrap();
     b1.mcp_row_limit = Some(99);
@@ -571,9 +561,6 @@ fn a_torn_base_does_not_resurrect_deleted_favorites() {
     assert!(parsed(&root).favorites.is_empty(), "the deleted favorite is back in the file");
 }
 
-// ---------------------------------------------------------------------------------------------
-// 3. Git while the app runs.
-
 /// A checkout to an older version (a new inode, an mtime that goes backwards) is followed:
 /// what the old version lacks is no longer shared, and the file is not rewritten.
 #[test]
@@ -699,9 +686,6 @@ fn a_change_during_a_sync_is_not_overwritten() {
     assert!(m.config.get("teammate").is_some());
 }
 
-// ---------------------------------------------------------------------------------------------
-// 4. Symlinks.
-
 /// `.dataman` a symlink (a cloned repo can hold one) pointing out of the folder: refused with a
 /// problem; nothing read from or written to where it points.
 #[test]
@@ -779,9 +763,6 @@ fn a_symlinked_root_is_the_real_folder() {
     drop(d);
 }
 
-// ---------------------------------------------------------------------------------------------
-// 5. Permissions.
-
 /// A read-only project.toml (Perforce keeps files read-only until opened for edit) is not
 /// replaced: rename(2) only needs the folder writable, so today it is, and comes back 0644.
 #[test]
@@ -857,9 +838,6 @@ fn local_files_holding_secrets_are_the_owners_only() {
         assert_eq!(mode(&f) & 0o077, 0, "{} is {:o}", f.display(), mode(&f));
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// 6. Each person's own: never in the file, never from it.
 
 #[test]
 fn personal_settings_never_reach_the_file() {
@@ -961,9 +939,6 @@ fn a_hostile_file_cannot_change_personal_settings() {
     let disk = SettingsStore::open(&m.dirs).get();
     assert_eq!(disk.mcp_enabled, before.mcp_enabled);
 }
-
-// ---------------------------------------------------------------------------------------------
-// 7. [share] and version.
 
 /// "Each part left out is neither written nor read" (Share): a file that says it shares no
 /// connections or favorites but lists some brings none of them.

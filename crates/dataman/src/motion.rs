@@ -76,12 +76,10 @@ impl WidthTween {
     }
 }
 
-/// What a section that unrolls draws this frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Rolled {
     Shut,
     Open,
-    /// On its way, clipped to this height.
     At(f32),
 }
 
@@ -392,7 +390,6 @@ pub fn folder_fill(at: Instant, opening: bool) -> Option<f32> {
 }
 
 pub const FOLDER_SHUT: Duration = Duration::from_millis(150);
-/// The simple explorer's rows sliding out from under the node opened, and back.
 pub const TREE_UNFOLD: Duration = Duration::from_millis(240);
 pub const TREE_FOLD: Duration = Duration::from_millis(180);
 pub const TREE_REORDER: Duration = Duration::from_millis(200);

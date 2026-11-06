@@ -12,7 +12,6 @@ const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01
 
 pub const PASSWORD_LEN: usize = 40;
 
-/// `n` random bytes from the system's CSPRNG.
 pub fn random_bytes(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     SystemRandom::new().fill(&mut b).expect("the system's random source");

@@ -81,7 +81,6 @@ pub fn hand_over(socket: &Path, urls: &[String]) -> bool {
     s.write_all(msg.as_bytes()).is_ok()
 }
 
-/// The URLs one launch sent, up to the empty line.
 fn urls_in(lines: impl Iterator<Item = String>) -> Vec<String> {
     let mut urls = Vec::new();
     for line in lines {

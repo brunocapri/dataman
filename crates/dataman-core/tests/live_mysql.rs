@@ -143,7 +143,7 @@ fn streams_pauses_and_fetches_all() {
     });
     let first_pause = t0.elapsed();
     let loaded = rs.rows();
-    assert!(loaded >= PREFETCH && loaded < PREFETCH + 2 * dataman_core::result::CHUNK, "{loaded}");
+    assert!((PREFETCH..PREFETCH + 2 * dataman_core::result::CHUNK).contains(&loaded), "{loaded}");
     rs.fetch_all();
     e.core.block_on(async { tokio::time::timeout(Duration::from_secs(120), rs.wait_finished()).await.expect("timeout") });
     assert_eq!(rs.phase(), Phase::Done, "{:?}", rs.status().error);

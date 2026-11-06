@@ -85,7 +85,6 @@ pub(super) async fn columns(c: &Db, db: &str, schema: &str, table: &str) -> Opti
     )
 }
 
-/// The names inside an index's `( … )`.
 fn index_columns(sql: &str) -> Vec<String> {
     let toks: Vec<_> = tokenize_in(sql, Dialect::DuckDb).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let Some(open) = toks.iter().position(|t| t.text(sql) == "(") else { return Vec::new() };
@@ -167,7 +166,6 @@ pub(crate) fn definition_sql(kind: &str, db: &str, schema: &str, name: &str) -> 
     format!("SELECT sql FROM {f} WHERE database_name = {} AND schema_name = {} AND {col} = {}", cat(db), lit(schema), lit(name))
 }
 
-/// The indexes' own SQL, after a table's.
 pub(crate) fn index_sql(db: &str, schema: &str, table: &str) -> String {
     format!("SELECT sql FROM duckdb_indexes() WHERE database_name = {} AND schema_name = {} AND table_name = {} AND sql IS NOT NULL ORDER BY index_name", cat(db), lit(schema), lit(table))
 }

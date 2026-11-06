@@ -182,10 +182,8 @@ impl Connection {
         }
         let origins = rs.origins().unwrap_or_default();
         let oids: BTreeSet<u32> = origins.iter().filter_map(|o| o.table_oid).collect();
-        if !oids.is_empty() {
-            if let Some(s) = self.sources_from_catalog(db, &origins, &oids).await {
-                return s;
-            }
+        if !oids.is_empty() && let Some(s) = self.sources_from_catalog(db, &origins, &oids).await {
+            return s;
         }
         self.sources_from_sql(db, rs, n).await.unwrap_or_else(|| vec![None; n])
     }

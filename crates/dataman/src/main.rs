@@ -208,7 +208,6 @@ pub(crate) struct MenuCaps(pub dataman_core::Caps);
 
 impl gpui::Global for MenuCaps {}
 
-/// The groups that have items, a separator between each.
 fn sections(groups: Vec<Vec<MenuItem>>) -> Vec<MenuItem> {
     let mut out = Vec::new();
     for g in groups.into_iter().filter(|g| !g.is_empty()) {
@@ -240,7 +239,6 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Quit Dataman", Quit),
         ])),
-        // Groups of what belongs together, a separator between those that show.
         Menu::new("File").items(sections(vec![
             vec![MenuItem::action("New Query Tab", NewTab)],
             vec![

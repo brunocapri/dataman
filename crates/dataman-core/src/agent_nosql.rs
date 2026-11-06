@@ -13,7 +13,6 @@ use crate::Engine;
 use crate::nosql::{console, mql, redis};
 use crate::privacy::{AgentRules, AgentView, Mask, Names, RedisCat, glob, mask_value, sensitive_match};
 
-/// What to do to what comes back.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shaped {
     /// Field names (globs) removed at any depth.
@@ -231,7 +230,6 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     Ok(Shaped { strip: hidden, mask, listing, ..Default::default() })
 }
 
-/// The collections an aggregation stage names, at any depth.
 fn pipeline_targets(v: &Bson, db: &str, out: &mut Vec<(String, String)>) {
     let named = |x: &Bson, key: &str, out: &mut Vec<(String, String)>| match x {
         Bson::String(c) => out.push((db.to_string(), c.clone())),

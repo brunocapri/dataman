@@ -26,8 +26,8 @@ const BODY_TOP: f32 = 24.;
 /// A section of the page brought to its top once laid out (a link to the agent login, a stage).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Jump {
+    #[cfg(feature = "checks")]
     Privacy,
-    /// The agent login section, or the card that offers one at the top.
     Login,
 }
 
@@ -87,7 +87,6 @@ fn vis_tip(e: Engine) -> Tip {
         .note("Functions, copies of the data in other tables and statements Dataman can't read are refused or not covered. Only database permissions block everything.")
 }
 
-/// What the engine calls a table, one and many.
 pub(crate) fn nouns(e: Engine) -> (&'static str, &'static str) {
     let n = e.nouns();
     (n.one, n.many)
@@ -116,7 +115,6 @@ fn placeholder(e: Engine) -> String {
     }
 }
 
-/// What a table's parts are called: columns, or a document's fields.
 fn part(e: Engine) -> &'static str {
     if e.is_sql() { "column" } else { "field" }
 }
@@ -144,7 +142,6 @@ fn count_label(n: u64) -> String {
     out
 }
 
-/// Where the connection is, as the pane's header says it.
 fn place(p: &ConnectionProfile) -> String {
     match () {
         _ if p.engine.is_file() => p.summary(),
@@ -182,7 +179,6 @@ pub(crate) fn flat_section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div
         .child(div().flex().flex_col().children(subs.into_iter().enumerate().map(|(k, s)| s.py(px(18.)).when(k == 0, |d| d.pt(px(6.))).when(k > 0, |d| d.border_t_1().border_color(t.line)))))
 }
 
-/// A subsection: its title and `?`, the control below.
 pub(crate) fn sub(head: impl IntoElement) -> gpui::Div {
     div().flex().flex_col().gap(px(10.)).child(head)
 }
@@ -191,7 +187,6 @@ pub(crate) fn sub_title(t: &Theme, tip_id: &str, title: &str, tip: Tip) -> gpui:
     div().flex().flex_row().items_center().gap(px(7.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title.to_string()).child(qmark(t, tip_id, tip).font_weight(FontWeight::NORMAL))
 }
 
-/// A bordered table: rows divided by faint lines.
 fn table(t: &Theme, rows: Vec<AnyElement>) -> gpui::Div {
     let faint = t.grid_line;
     div().border_1().border_color(t.line).rounded(px(2.)).flex().flex_col().children(rows.into_iter().enumerate().map(move |(k, r)| div().when(k > 0, |d| d.border_t_1().border_color(faint)).child(r)))
@@ -210,14 +205,12 @@ fn grow(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: bool) -> AnyElem
         .into_any_element()
 }
 
-/// A row on its way out: it shrinks to nothing and fades.
 fn shrink(row: gpui::Stateful<gpui::Div>, h: f32, key: &str) -> AnyElement {
     row.overflow_hidden()
         .with_animation(SharedString::from(format!("agents-out-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| d.h(px(h * (1. - k))).opacity(1. - k))
         .into_any_element()
 }
 
-/// A row that just appeared grows in, one that is being removed shrinks away.
 fn motion(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: &HashSet<String>, leaving: &HashSet<String>) -> AnyElement {
     if leaving.contains(key) { shrink(row, h, key) } else { grow(row, h, key, new.contains(key)) }
 }
@@ -232,7 +225,6 @@ fn dim(el: gpui::Div, id: &'static str, masked: bool, fading: bool) -> AnyElemen
         .into_any_element()
 }
 
-/// A row's × (remove), shown while the row is hovered.
 /// Add or Hide with nothing typed: drawn, not clickable.
 fn off_button(t: &Theme, id: &'static str, label: &'static str) -> AnyElement {
     div().children(ui::here(&id.into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_size(px(crate::theme::text::BODY)).text_color(t.tx4).child(label).into_any_element()
@@ -312,7 +304,6 @@ enum Fit {
     Fill,
 }
 
-/// A closed popup button: its value and a chevron.
 fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool, fit: Fit) -> gpui::Div {
     let min = match fit {
         Fit::Alone => 180.,
@@ -322,7 +313,6 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
     div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(crate::agents::select_box(t, id, label, enabled, open))
 }
 
-/// How Redacted reads in the page's examples.
 pub(crate) const REDACTED: &str = "‹redacted›";
 
 /// What an agent gets for a value of `field`: a made-up one of its kind, masked as `how` says.
@@ -377,7 +367,6 @@ impl AgentsPage {
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .children(crate::assets::small_logo(p.engine, 14.))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
-                // Agents connect here as a login of their own.
                 .when(login, |d| d.child(div().children(ui::here(&SharedString::from(format!("agents-conn-key-{}", p.name)).into())).flex_none().child(icon(Icon::Key).size(px(12.)).text_color(t.ok))))
                 .child(div().flex_1())
                 .child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
@@ -440,15 +429,12 @@ impl AgentsPage {
         }
     }
 
-    /// A popup button whose menu sets one value (an `Act` each).
-    #[allow(clippy::too_many_arguments)]
     fn pick(&self, t: &Theme, id: &str, label: &str, enabled: bool, fit: Fit, width: f32, items: Vec<(SharedString, bool, Act)>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let sid = SharedString::from(id.to_string());
         let el = div().id(SharedString::from(format!("{id}-btn"))).flex().when(fit == Fit::Fill, |d| d.w_full()).child(select(t, self, sid.clone(), label, enabled, fit));
         if enabled { el.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(sid.clone(), width, items.clone(), cx))) } else { el }
     }
 
-    /// Protection: how agents reach the connection, Access, Privacy, and its agent login last.
     pub(crate) fn render_protection(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(p) = self.selected_profile(cx) else { return self.no_conns(t, cx) };
         self.login_sync(&p, cx);
@@ -490,6 +476,7 @@ impl AgentsPage {
     fn do_jump(&mut self, card: bool, login: bool, window: &mut Window) {
         let Some(j) = self.jump else { return };
         let ix = match j {
+            #[cfg(feature = "checks")]
             Jump::Privacy => 1 + card as usize,
             Jump::Login if login => 2 + card as usize,
             Jump::Login => 0,
@@ -504,8 +491,6 @@ impl AgentsPage {
             _ => window.on_next_frame(|window, _| window.refresh()),
         }
     }
-
-    // ---- Access ----
 
     fn access_section(&mut self, t: &Theme, p: &ConnectionProfile, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let r = &p.mcp_rules;
@@ -675,8 +660,6 @@ impl AgentsPage {
             .into_any_element()
     }
 
-    // ---- Privacy ----
-
     /// The rows (by key) that appeared since this connection's page was last drawn: added,
     /// scanned or taken from a suggestion. None on its first showing.
     fn arrivals(&mut self, conn: &str, keys: Vec<String>, reduced: bool) -> HashSet<String> {
@@ -767,7 +750,6 @@ impl AgentsPage {
         for (g, ks) in groups {
             let label = if g.is_empty() { format!("Any {one}") } else { g.clone() };
             let key = format!("g:{g}");
-            // The header goes with its last column.
             let mut going = HashSet::new();
             if ks.iter().all(|k| self.rows_leaving.contains(&format!("s:{}", r.sensitive[*k].col))) {
                 going.insert(key.clone());

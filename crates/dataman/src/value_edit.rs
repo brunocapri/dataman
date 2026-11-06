@@ -599,7 +599,7 @@ impl ValueEditor {
                         .flex_row()
                         .items_center()
                         .gap(px(6.))
-                        .map(|d| ui::selectable(d, &t, on, true))
+                        .map(|d| ui::selectable(d, t, on, true))
                         .when(!on, |d| d.hover(move |s| s.bg(hov)))
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {

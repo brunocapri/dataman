@@ -13,7 +13,6 @@ pub struct ConnSpec {
     pub encrypt: Option<String>,
     pub trust_cert: Option<bool>,
     pub options: std::collections::BTreeMap<String, String>,
-    /// A file database's file.
     pub path: Option<String>,
     pub read_only: bool,
 }

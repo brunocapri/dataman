@@ -117,7 +117,7 @@ fn batches_on_demand_and_fetch_all() {
     assert_eq!(h.len(), 1);
     assert!(h[0].rows.unwrap() >= PREFETCH as u64);
     let loaded = rs.rows();
-    assert!(loaded >= PREFETCH && loaded < PREFETCH + 2 * dataman_core::result::CHUNK, "{loaded}");
+    assert!((PREFETCH..PREFETCH + 2 * dataman_core::result::CHUNK).contains(&loaded), "{loaded}");
     assert!(rs.status().first_row.is_some());
     std::thread::sleep(std::time::Duration::from_millis(400));
     assert!(rs.status().paused_time() >= std::time::Duration::from_millis(400), "{:?}", rs.status().paused_time());

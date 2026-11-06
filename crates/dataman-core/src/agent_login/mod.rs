@@ -36,7 +36,6 @@ pub const MARK: &str = "dataman-managed v1";
 
 pub const PREFIX: &str = "dataman_agent_";
 
-/// The mark Dataman puts on a login (or the place of its views) for connection `conn`.
 pub fn mark_for(conn: &str) -> String {
     format!("{MARK} conn={conn}")
 }
@@ -59,14 +58,10 @@ pub fn caps_sessions(e: Engine) -> bool {
     matches!(e, Engine::Postgres | Engine::MySql)
 }
 
-/// A server that speaks PostgreSQL's protocol but is another engine (MotherDuck, DuckDB or a
-/// server of its own behind the wire): no logins to make one among.
 pub const NO_LOGINS_NOTE: &str = "This server speaks PostgreSQL's protocol but has no logins of its own (no pg_roles), so Dataman can't create one here: agents use your login, held to the rules above.";
 
-/// MotherDuck's own way to narrow what its connection may do.
 pub const MOTHERDUCK_NOTE: &str = "On MotherDuck, a read-only token made in MotherDuck's settings can be saved as this connection's password to limit it.";
 
-/// Why the option is not there for a file database.
 pub const FILE_NOTE: &str = "SQLite and DuckDB have no logins. Dataman already opens them read-only for read agents and checks each statement inside the engine (SQLite's authorizer), so there is nothing to create.";
 
 /// `dataman_agent_` and eight letters or digits of the connection's id (another id, another
@@ -86,7 +81,6 @@ pub fn space_of(user: &str) -> String {
     format!("{user}_views")
 }
 
-/// The Keychain account of the agent login's password.
 pub fn secret_account(conn_id: &str) -> String {
     format!("agent:{conn_id}")
 }
@@ -137,7 +131,6 @@ pub struct AgentLogin {
     /// hides them by view): Dataman sends their reads there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<ViewMap>,
-    /// Counts for the card: tables granted, views, not grantable.
     #[serde(default)]
     pub granted: usize,
     #[serde(default)]
@@ -164,14 +157,12 @@ impl AgentLogin {
     }
 }
 
-/// A table and the view agents read it through.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewMap {
     pub schema: String,
     pub table: String,
     /// As the engine writes it, quoted (`dataman_agent_x."public__users"`).
     pub view: String,
-    /// Columns the view masks, and how.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masked: Vec<(String, Mask)>,
 }
@@ -182,7 +173,6 @@ pub struct ViewMap {
 pub struct Options {
     pub rotate_days: Option<u32>,
     pub conn_limit: Option<u32>,
-    /// [`AgentLogin::auto_sync`].
     pub auto_sync: bool,
 }
 
@@ -198,11 +188,9 @@ impl Default for Options {
     }
 }
 
-/// The rules as the database can hold them, engine-neutral.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spec {
     pub engine: Engine,
-    /// The connection's id, in the mark.
     pub conn: String,
     pub user: String,
     /// Where Dataman's views go: a schema (PostgreSQL, SQL Server), a database (MySQL) or a
@@ -230,7 +218,6 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// Rows may be written in `database`.
     pub fn write_in(&self, database: &str) -> bool {
         self.tier >= McpAccess::Write && self.rows && !crate::config::read_only_in(self.read_only, &self.read_only_dbs, self.engine, database)
     }
@@ -287,7 +274,6 @@ pub fn rules_hash(p: &ConnectionProfile, database: &str) -> String {
     hash::sha256_hex(text.as_bytes())[..16].to_string()
 }
 
-/// A table, collection, index or key pattern on the server now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Obj {
     pub schema: String,
@@ -321,7 +307,6 @@ impl Col {
     }
 }
 
-/// What is on the server, as the user's login sees it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inventory {
     pub objects: Vec<Obj>,
@@ -332,7 +317,6 @@ pub struct Inventory {
     pub open_roles: Vec<String>,
 }
 
-/// A table every login may read, or some of its columns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Open {
     pub schema: String,
@@ -397,13 +381,11 @@ pub(crate) fn with_exposed(mut plan: Plan, exposed: Vec<NotGranted>) -> Plan {
     plan
 }
 
-/// One table's (collection's, index's) access, from the rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Access {
     pub schema: String,
     pub name: String,
     pub kind: ObjKind,
-    /// Readable as they are, from the table itself.
     pub plain: Vec<String>,
     pub hidden: Vec<String>,
     pub masked: Vec<(String, Mask)>,
@@ -540,15 +522,11 @@ pub(crate) fn line(rule: impl Into<String>, how: impl Into<String>, who: Who) ->
     RuleLine { rule: rule.into(), how: how.into(), who }
 }
 
-/// What one step runs, as the engine takes it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Sql(String),
-    /// A command on a MongoDB database.
     Mongo { db: String, cmd: serde_json::Value },
-    /// A Redis command's arguments.
     Redis(Vec<String>),
-    /// An HTTP call on Elasticsearch or OpenSearch.
     Http { method: String, path: String, body: Option<serde_json::Value> },
     /// A comment in the script, nothing run.
     Note,
@@ -562,7 +540,6 @@ pub struct Step {
     /// As "Copy SQL" gives it: runnable. Holds the password's hash where the engine takes
     /// one, the password itself only where it cannot (MongoDB).
     pub copy: String,
-    /// The comment over its group in the script.
     pub group: String,
 }
 
@@ -580,7 +557,6 @@ impl Step {
     }
 }
 
-/// An object agents may use that the user's login cannot grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotGranted {
     pub object: String,
@@ -605,14 +581,10 @@ pub enum Manual {
 /// What the user's login could do, before the plan.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Probe {
-    /// The user's login as the server names it.
     pub login: String,
     pub version: String,
-    /// The user's login can create the agent login.
     pub can_create: bool,
-    /// Short lines for the card, each good or a warning.
     pub checks: Vec<(bool, String)>,
-    /// What the login lacks to create it (empty when it can).
     pub lacks: Vec<String>,
     pub manual: Option<Manual>,
     /// A login named as Dataman's already exists: Some(true) marked as Dataman's (this
@@ -688,7 +660,6 @@ pub struct Plan {
     /// Run first, outside the transaction (what a transaction can't hold: ending sessions).
     pub before: Vec<Step>,
     pub steps: Vec<Step>,
-    /// Run as one transaction.
     pub one_tx: bool,
     pub rules: Vec<RuleLine>,
     pub not_granted: Vec<NotGranted>,
@@ -702,17 +673,14 @@ pub struct Plan {
     pub hidden: Vec<String>,
     pub manual: Option<Manual>,
     pub hash: String,
-    /// The grants as lines, for the diff with what the server has.
     pub lines: Vec<String>,
 }
 
 impl Plan {
-    /// The script as the review shows it, grouped by purpose.
     pub fn shown(&self) -> String {
         self.text(Text::Shown)
     }
 
-    /// The script as "Copy SQL" gives it.
     pub fn copy(&self) -> String {
         self.text(Text::Copy)
     }
@@ -846,7 +814,6 @@ pub struct Change {
     pub line: String,
 }
 
-/// The lines of `want` against what the server has.
 pub fn diff(have: &[String], want: &[String]) -> Vec<Change> {
     let mut out: Vec<Change> = have.iter().filter(|l| !want.contains(l)).map(|l| Change { add: false, line: l.clone() }).collect();
     out.extend(want.iter().filter(|l| !have.contains(l)).map(|l| Change { add: true, line: l.clone() }));
@@ -876,7 +843,6 @@ pub(crate) fn time_label(s: u64) -> String {
     if s < 60 { format!("{s} s per call") } else { format!("{} min per call", s / 60) }
 }
 
-/// The label for hidden objects in the rules list.
 pub(crate) fn hidden_label(hidden: &[String]) -> String {
     let names: Vec<&str> = hidden.iter().take(3).map(String::as_str).collect();
     let more = hidden.len().saturating_sub(3);
@@ -901,7 +867,6 @@ pub(crate) fn view_name(schema: &str, table: &str, default_schema: &str, max: us
     format!("{keep}_{h}")
 }
 
-/// Hidden and masked columns, for the rules list.
 pub(crate) fn column_lines(acc: &[Access], hidden_how: (&str, Who), masked_how: (&str, Who), rows: bool) -> Vec<RuleLine> {
     let mut v = Vec::new();
     let hid: Vec<String> = acc.iter().flat_map(|a| a.hidden.iter().map(move |c| format!("{}.{c}", a.name))).collect();
@@ -921,7 +886,6 @@ pub fn short_list(v: &[String]) -> String {
     if more > 0 { format!("{head} +{more}") } else { head }
 }
 
-/// An agent login record for tests.
 #[cfg(test)]
 pub(crate) fn test_login(user: &str, p: &ConnectionProfile) -> AgentLogin {
     let now = Utc::now();

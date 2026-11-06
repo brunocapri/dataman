@@ -5,11 +5,9 @@ use serde_json::Value;
 
 use crate::config::Engine;
 
-/// Past this width a statement is broken up.
 const WIDTH: usize = 80;
 const IN: &str = "  ";
 
-/// One step of the plan, laid out for its engine.
 pub(crate) fn step(engine: Option<Engine>, text: &str) -> String {
     match engine {
         Some(Engine::MongoDb) => lines(text, mongo),
@@ -28,8 +26,6 @@ fn lines(text: &str, f: impl Fn(&str) -> String) -> String {
 fn width(s: &str) -> usize {
     s.chars().count()
 }
-
-// ---- JSON (MongoDB's commands, the search engines' bodies) ----
 
 /// `v` starting at column `col` of a line indented by `indent`: whole when it fits, else one
 /// member a line.
@@ -110,8 +106,6 @@ fn search(text: &str) -> String {
     out
 }
 
-// ---- Redis ----
-
 /// `ACL SETUSER`: its rules a kind a line (the login, keys and channels, categories, commands,
 /// each selector).
 fn redis(line: &str) -> String {
@@ -142,7 +136,6 @@ fn redis(line: &str) -> String {
     out.join("\n")
 }
 
-/// Space-separated words, a double-quoted one whole.
 fn words(line: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut open = false;
@@ -161,8 +154,6 @@ fn words(line: &str) -> Vec<String> {
     }
     out
 }
-
-// ---- SQL ----
 
 fn sql(line: &str, ms: bool) -> String {
     if width(line) <= WIDTH || line.starts_with("--") {

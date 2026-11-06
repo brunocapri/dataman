@@ -252,13 +252,13 @@ impl Workspace {
         let size = if feed.size > 0 { format!(" · {}", mb(feed.size)) } else { String::new() };
         let bounds = self.update_button_bounds.clone();
         let later = |w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>| w.close_update_sheet(true, window, cx);
-        ui::modal(&t, "update-card")
+        ui::modal(t, "update-card")
             .w(px(440.))
             .child(ui::modal_header(
-                &t,
+                t,
                 None,
                 format!("Dataman {}", feed.version),
-                ui::modal_close(&t, "update-close").on_click(cx.listener(move |w, _, window, cx| later(w, window, cx))),
+                ui::modal_close(t, "update-close").on_click(cx.listener(move |w, _, window, cx| later(w, window, cx))),
             ))
             .child(
                 div()
@@ -284,8 +284,8 @@ impl Workspace {
                     }),
             )
             .child(
-                ui::modal_footer(&t)
-                    .children(status(&state).map(|(s, err)| {
+                ui::modal_footer(t)
+                    .children(status(state).map(|(s, err)| {
                         div()
                             .id("update-status")
                             .flex_1()
@@ -298,7 +298,7 @@ impl Workspace {
                             .when(err, |d| d.tip(ui::error_tip(s.clone())))
                             .child(s)
                     }))
-                    .when(status(&state).is_none(), |d| d.child(div().flex_1()))
+                    .when(status(state).is_none(), |d| d.child(div().flex_1()))
                     .child({
                         let bounds = bounds.clone();
                         div()
@@ -308,7 +308,7 @@ impl Workspace {
                             .gap(px(8.))
                             .on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b)
                             .child(
-                                ui::button(&t, "update-later", Btn::Secondary)
+                                ui::button(t, "update-later", Btn::Secondary)
                                     .h(px(28.))
                                     .child(if working { "Hide" } else { "Later" })
                                     .child(ui::key_hint("esc"))
@@ -316,7 +316,7 @@ impl Workspace {
                             )
                             .when(!working, |d| {
                                 d.child(
-                                    ui::button(&t, "update-install", Btn::Primary)
+                                    ui::button(t, "update-install", Btn::Primary)
                                         .h(px(28.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .child(primary)
@@ -338,7 +338,7 @@ pub(crate) fn alert_in_window(window: &mut Window, cx: &mut App) {
         return;
     }
     let level = if err { PromptLevel::Warning } else { PromptLevel::Info };
-    let _ = window.prompt(level, &msg, Some(&detail), &["OK"], cx);
+    drop(window.prompt(level, &msg, Some(&detail), &["OK"], cx));
 }
 
 pub(crate) fn alert_without_window(cx: &mut App) {

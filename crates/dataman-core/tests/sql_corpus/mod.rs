@@ -6,7 +6,6 @@ use dataman_core::sql::{Dialect, TokenKind, tokenize_in};
 
 pub const DIALECTS: [Dialect; 5] = [Dialect::Postgres, Dialect::MySql, Dialect::TSql, Dialect::Sqlite, Dialect::DuckDb];
 
-/// Texts with no statement at all.
 pub const EMPTY: &[&str] = &["", "   ", "\n\t", ";", ";;", " ; ; ", "-- only a comment", "/* only */", "/* a */ ; -- b"];
 
 pub const POSTGRES: &[&str] = &[
@@ -351,7 +350,6 @@ pub fn corpus(d: Dialect) -> &'static [&'static str] {
     }
 }
 
-/// Every text of a dialect: its statements, the empty ones and its scripts.
 pub fn texts(d: Dialect) -> Vec<String> {
     let mut out: Vec<String> = corpus(d).iter().chain(EMPTY).map(|s| s.to_string()).collect();
     out.extend(SCRIPTS.iter().filter(|(x, _)| *x == d).map(|(_, s)| s.to_string()));
@@ -363,7 +361,7 @@ pub fn texts(d: Dialect) -> Vec<String> {
 fn spaces(src: &str, d: Dialect) -> Vec<std::ops::Range<usize>> {
     let toks = tokenize_in(src, d);
     let owns_line = |line: &str| {
-        let w = line.trim().split_whitespace().next().unwrap_or("");
+        let w = line.split_whitespace().next().unwrap_or("");
         w.eq_ignore_ascii_case("GO") || w.eq_ignore_ascii_case("DELIMITER")
     };
     toks.iter()

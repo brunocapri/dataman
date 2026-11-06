@@ -32,7 +32,6 @@ pub fn parse_release(text: &str) -> (u32, u32, u32) {
 }
 
 impl ServerInfo {
-    /// The label and the release read from `raw` (the server's own version text).
     pub fn of(engine: Engine, flavor: Flavor, label: String, raw: &str) -> ServerInfo {
         ServerInfo { version: label, engine, flavor, release: parse_release(raw), ..Default::default() }
     }

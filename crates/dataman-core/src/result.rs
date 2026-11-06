@@ -81,7 +81,6 @@ pub enum Cell<'a> {
 }
 
 impl ColChunk {
-    /// The same cells as text, as `kind` shows them.
     fn to_text(&self, kind: Kind, rows: usize) -> ColChunk {
         if matches!(self.data, ColData::Text { .. }) {
             return self.clone();
@@ -181,7 +180,7 @@ impl ChunkBuilder {
     fn mark(&mut self, col: usize, null: bool) {
         let c = &mut self.cols[col];
         let r = self.rows;
-        if r % 64 == 0 {
+        if r.is_multiple_of(64) {
             c.nulls.push(0);
         }
         if null {
@@ -324,7 +323,6 @@ pub enum ErrorClass {
 }
 
 impl ErrorClass {
-    /// Errors of these classes quote the row or the values that failed.
     pub fn carries_values(self) -> bool {
         matches!(self, ErrorClass::Unique | ErrorClass::NotNull | ErrorClass::Fk | ErrorClass::Check | ErrorClass::Data)
     }

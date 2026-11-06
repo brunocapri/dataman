@@ -72,7 +72,6 @@ impl AgentsPage {
         cx.notify();
     }
 
-    /// The type as the editor holds it now.
     pub(crate) fn drafted(&self, cx: &App) -> CustomType {
         let e = &self.editor;
         let mut c = CustomType::new(e.name.read(cx).text(), e.regex.read(cx).text(), e.mask);
@@ -100,7 +99,6 @@ impl AgentsPage {
         (t.problem.clone(), t.tested.clone())
     }
 
-    /// The editor's mask saved, and kept open on it.
     pub(crate) fn save_type(&mut self, cx: &mut Context<Self>) {
         let c = self.drafted(cx);
         if c.name.is_empty() || privacy::check_pattern(&c.pattern).is_err() {
@@ -122,7 +120,6 @@ impl AgentsPage {
         self.select_type(&id, cx);
     }
 
-    /// Selects a mask in the list and opens it in the editor.
     pub(crate) fn select_type(&mut self, id: &str, cx: &mut Context<Self>) {
         self.type_sel = self.type_rows().iter().position(|r| r.id == id);
         self.edit_type(self.type_sel.is_some().then_some(id), cx);
@@ -522,7 +519,6 @@ impl AgentsPage {
     }
 }
 
-/// How a type is found, as its `?` shows it.
 fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip {
     let tip = Tip::new(format!("How {name} is found"));
     let tip = if custom {

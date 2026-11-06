@@ -480,7 +480,7 @@ impl Palette {
             .flex_row()
             .items_center()
             .gap(px(10.))
-            .map(|d| ui::selectable(d, &t, sel, true))
+            .map(|d| ui::selectable(d, t, sel, true))
             .when(sel, |d| d.text_color(t.tx))
             .when(!sel, |d| d.text_color(if it.disabled { t.tx4 } else { t.tx2 }).hover(move |s| s.bg(hov)))
             .child(icon_el)

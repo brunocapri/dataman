@@ -648,7 +648,7 @@ fn format_offset(secs: i32, out: &mut String) {
     let sign = if secs < 0 { '-' } else { '+' };
     let s = secs.unsigned_abs();
     let _ = write!(out, "{sign}{:02}", s / 3600);
-    if s % 3600 != 0 {
+    if !s.is_multiple_of(3600) {
         let _ = write!(out, ":{:02}", (s / 60) % 60);
     }
 }

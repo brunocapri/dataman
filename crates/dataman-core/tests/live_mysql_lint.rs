@@ -110,7 +110,7 @@ fn lint_valid_statements() {
     let mut known = std::collections::HashSet::new();
     let mut bad = Vec::new();
     for src in VALID {
-        let l = lint(src, &LintContext { schema: Some(&snap), known: Some(&known), ..Default::default() });
+        let l = lint(src, &LintContext { schema: Some(&snap), known: Some(&known) });
         for x in l.iter().filter(|x| matches!(x.severity, Severity::Error)) {
             bad.push(format!("{src}\n    -> {} @ {:?}", x.message, &src[x.range.clone()]));
         }
@@ -131,10 +131,8 @@ fn reads_are_reads() {
         if read && !writes_inside && f.is_write() {
             bad.push(format!("{src} -> {:?} {}", f.effect, f.verb));
         }
-        if read && !writes_inside {
-            if let Some(why) = dataman_core::guard::read_only_refusal_in(src, Dialect::MySql) {
-                bad.push(format!("{src} refused: {why}"));
-            }
+        if read && !writes_inside && let Some(why) = dataman_core::guard::read_only_refusal_in(src, Dialect::MySql) {
+            bad.push(format!("{src} refused: {why}"));
         }
     }
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));

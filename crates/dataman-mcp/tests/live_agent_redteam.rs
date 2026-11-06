@@ -102,7 +102,6 @@ fn exec(core: &dataman_core::Core, c: &Arc<dataman_core::Connection>, sql: &str)
     (0..snap.rows()).map(|r| (0..snap.columns.len()).map(|k| snap.text(r, k).map(|t| t.into_owned())).collect()).collect()
 }
 
-/// Backends of `user` on the server now.
 fn pids_of(core: &dataman_core::Core, root: &Arc<dataman_core::Connection>, user: &str) -> Vec<String> {
     exec(core, root, &format!("SELECT pid::text FROM pg_stat_activity WHERE usename = '{user}' ORDER BY 1")).into_iter().filter_map(|r| r[0].clone()).collect()
 }

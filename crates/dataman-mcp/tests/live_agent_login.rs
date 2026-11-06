@@ -114,7 +114,6 @@ impl Env {
     }
 }
 
-/// The connection saved with the user's password, then its agent login made by the user's login.
 fn setup(e: &Env, mut p: ConnectionProfile, password: &str, seed: &[&str]) -> (ConnectionProfile, String) {
     let core = &e.hub().core;
     core.save_connection(p.clone(), Some(password), None).unwrap();
@@ -212,7 +211,6 @@ fn round(engine: Engine, id: &str, seed: &[&str], extra: impl Fn(&Env, &Connecti
     let core = &e.hub().core;
     let mine = core.block_on(core.connect(ConnectionProfile { agent_login: None, ..p.clone() }, None)).unwrap();
     assert_ne!(mine.info.user, user);
-    // A reconnect.
     e.hub().close_all();
     assert_eq!(whoami(&e, id, engine, None).unwrap(), user, "after a reconnect");
     // A new password: the server's, then the Keychain's; the next call connects with it.
@@ -281,7 +279,6 @@ fn postgres() {
     }
     round(Engine::Postgres, "aumcppg01", &seed, |e, p, user| {
         let id = p.id.as_str();
-        // Every tool, and another database of the same server.
         let r = e.ok("list_tables", json!({"connection": id}));
         assert!(r.to_string().contains("au_t"), "{r}");
         e.ok("describe_table", json!({"connection": id, "table": "au_t"}));

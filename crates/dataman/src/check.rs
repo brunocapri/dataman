@@ -156,7 +156,6 @@ pub fn probed(id: &str, cx: &mut AsyncWindowContext) -> Option<Bounds<Pixels>> {
     crate::ui::probed(id)
 }
 
-/// A new connection's sheet walked to its last step with its Continue button.
 pub async fn sheet_to_last_step(d: &Entity<crate::conn_dialog::ConnDialog>, cx: &mut AsyncWindowContext) -> bool {
     for _ in 0..4 {
         if cx.update(|_, cx| d.read(cx).step()).ok() == Some(crate::conn_dialog::Step::Mcp) {
@@ -340,7 +339,6 @@ pub async fn sql(core: &Arc<Core>, prof: &ConnectionProfile, pw: &str, stmt: &st
         .await
 }
 
-/// The first value of the first row (or None).
 pub async fn sql1(core: &Arc<Core>, prof: &ConnectionProfile, pw: &str, stmt: &str, cx: &mut AsyncWindowContext) -> Option<String> {
     match sql(core, prof, pw, stmt, cx).await {
         Ok(rows) => rows.first().and_then(|r| r.first().cloned()).flatten(),
@@ -351,7 +349,6 @@ pub async fn sql1(core: &Arc<Core>, prof: &ConnectionProfile, pw: &str, stmt: &s
     }
 }
 
-/// A NoSQL statement on a connection of the check's own.
 pub async fn nosql(core: &Arc<Core>, prof: &ConnectionProfile, pw: &str, db: &str, stmt: &str, cx: &mut AsyncWindowContext) -> Result<Output, String> {
     let (core, prof, pw, db, stmt) = (core.clone(), prof.clone(), pw.to_string(), db.to_string(), stmt.to_string());
     cx.background_executor()

@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(b.iter().map(|b| b.repeat).collect::<Vec<_>>(), vec![1, 1, 3, 1]);
         let units: Vec<&str> = batches_in(src, d).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(units[2], "SELECT 1\nGO 3");
-        assert_eq!(go_batches(&units[2])[0].repeat, 3);
+        assert_eq!(go_batches(units[2])[0].repeat, 3);
         assert_eq!(batches_in("select 1; select 2", Dialect::Postgres).len(), 2);
         let src = "IF 1 = 1 BEGIN SELECT 1; SELECT 2; END; SELECT 3\nGO\nCREATE PROCEDURE p AS SELECT 1; SELECT 2;\nGO\nBEGIN TRAN; UPDATE t SET a = 1; COMMIT\nBEGIN TRY SELECT 1/0; END TRY BEGIN CATCH SELECT CASE WHEN 1 = 1 THEN 1 END; END CATCH";
         let s: Vec<&str> = split_in(src, d).into_iter().map(|s| &src[s.range]).collect();

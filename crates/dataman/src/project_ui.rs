@@ -26,7 +26,6 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([crate::keymap::kb("escape", ReviewKeep, c), crate::keymap::kb("enter", ReviewKeep, c), crate::keymap::kb("cmd-enter", ReviewApply, c)]);
 }
 
-/// Whether File › Open Project is on, and the open project's folder name.
 #[derive(Clone, Default, PartialEq)]
 pub struct Projects {
     pub enabled: bool,
@@ -79,7 +78,6 @@ impl Workspace {
         .detach();
     }
 
-    /// What the project changed on this side, shown.
     pub(crate) fn project_synced(&mut self, s: Synced, window: &mut Window, cx: &mut Context<Self>) {
         let core = self.store.read(cx).core.clone();
         if s.connections {
@@ -337,7 +335,6 @@ pub(crate) fn change_row(t: &Theme, prefix: &str, k: usize, c: &Change) -> AnyEl
         .into_any_element()
 }
 
-/// A folder from the open panel.
 pub fn pick_folder(cx: &App) -> tokio::sync::oneshot::Receiver<Option<PathBuf>> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     if let Some(p) = crate::sql_picker::take_test_paths() {

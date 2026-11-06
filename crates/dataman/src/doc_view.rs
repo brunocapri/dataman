@@ -134,7 +134,6 @@ enum SearchEdit {
     Deleted { id: Body, index: Option<String> },
 }
 
-/// Where the document `id` (of `index`, for a search) sits on this page.
 fn find_doc(docs: &[nosql::Doc], id: &Body, index: Option<&str>) -> Option<usize> {
     docs.iter().position(|d| d.id.as_ref() == Some(id) && (index.is_none() || d.index.as_deref() == index))
 }

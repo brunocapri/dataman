@@ -31,7 +31,6 @@ pub(crate) struct ClearSheet {
     opened: chrono::DateTime<Local>,
     /// The calls that go; None while counting.
     pub(crate) count: Option<usize>,
-    /// The calendar's month (its first day).
     pub(crate) month: NaiveDate,
     busy: bool,
     error: Option<String>,
@@ -59,7 +58,6 @@ fn calls(n: usize) -> String {
     if n == 1 { "1 call".into() } else { format!("{} calls", crate::grid::ui_count(n)) }
 }
 
-/// The Clear… menu's items.
 pub(crate) fn menu_items() -> Vec<(SharedString, bool, Act)> {
     let keep = |r: Recent| match r {
         Recent::Days30 => "Keep Only the Last 30 Days…",
@@ -134,7 +132,6 @@ impl AgentsPage {
         cx.notify();
     }
 
-    /// Clears what the sheet counted, then reads the log again.
     pub(crate) fn confirm_clear(&mut self, cx: &mut Context<Self>) {
         let Some(s) = self.clear.as_mut().filter(|s| !s.busy && s.count.is_some_and(|n| n > 0)) else { return };
         s.busy = true;

@@ -425,7 +425,7 @@ fn catalog_and_ddl_round_trip() {
         };
     }
     c.schema.invalidate(None);
-    run!(c.preload(&db));
+    run!(c.preload(&db)).unwrap();
     let rels = run!(c.relations(&db, a)).unwrap();
     eprintln!("relations: {:?}", rels.iter().map(|r| format!("{}:{:?}", r.name, r.kind)).collect::<Vec<_>>());
     let n = run!(c.object_counts(&db, a)).unwrap();
@@ -624,7 +624,7 @@ fn lint_quiet_on_valid_queries() {
         }
         let snap = c.schema.snapshot(&db);
         let known: std::collections::HashSet<String> = ["sweep_tmp", "sweep_l_new", "sweep_l_new2"].iter().map(|s| s.to_string()).collect();
-        let l = lint(q, &LintContext { schema: Some(&snap), known: Some(&known), ..Default::default() });
+        let l = lint(q, &LintContext { schema: Some(&snap), known: Some(&known) });
         for x in l.iter().filter(|x| x.severity == Severity::Error) {
             failures.push(format!("LINT {q}: {:?} {}", &q[x.range.clone()], x.message));
         }

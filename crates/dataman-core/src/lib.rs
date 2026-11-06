@@ -336,7 +336,6 @@ impl Core {
         })
     }
 
-    /// The local files an open project syncs with.
     pub fn stores(&self) -> project::Stores<'_> {
         project::Stores { config: &self.config, settings: &self.settings, favorites: &self.favorites, secrets: &*self.secrets }
     }

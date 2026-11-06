@@ -19,7 +19,6 @@ fn status(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| d.read(cx).demo_status(cx).0).unwrap_or_default()
 }
 
-/// Clicks Test and waits for its verdict.
 async fn test(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
     // A method rolling up or down moves what is under it.
     until(cx, 3, |cx| cx.update(|_, cx| d.read(cx).demo_still()).unwrap_or(true)).await;
@@ -28,7 +27,6 @@ async fn test(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
     status(d, cx)
 }
 
-/// Clicks a text field of the sheet and types over what it holds.
 pub(crate) fn fill(probe: &str, text: &str, cx: &mut AsyncWindowContext) -> bool {
     if !click_probe(&format!("field-{probe}"), cx) {
         return false;

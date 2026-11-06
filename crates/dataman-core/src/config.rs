@@ -85,12 +85,10 @@ impl Engine {
         crate::sql::Dialect::of(self)
     }
 
-    /// A database in a file on this machine: no server, host, user or password.
     pub fn is_file(self) -> bool {
         self.spec().caps.file
     }
 
-    /// The extensions its files usually have, the first one for new files.
     pub fn file_extensions(self) -> &'static [&'static str] {
         self.spec().file_exts
     }
@@ -240,7 +238,6 @@ impl Auth {
         *self == Auth::Password
     }
 
-    /// A cloud token, minted for each new connection.
     pub fn is_token(&self) -> bool {
         !self.is_password()
     }
@@ -264,7 +261,6 @@ impl Auth {
         }
     }
 
-    /// The method and its fields, as reviews and the MCP tools show them.
     pub fn describe(&self) -> String {
         let extra: Vec<String> = match self {
             Auth::Password => Vec::new(),
@@ -277,7 +273,6 @@ impl Auth {
 }
 
 impl Engine {
-    /// The sign-in methods this engine takes; a password always.
     pub fn auth_kinds(self) -> &'static [AuthKind] {
         match self {
             Engine::Postgres | Engine::MySql => &AuthKind::ALL,
@@ -598,7 +593,6 @@ impl ConnectionProfile {
         }
     }
 
-    /// A file database: no host, port, user, TLS or tunnel. The name is the file's.
     /// Painted production's red: production, and no colour of this person's own.
     pub fn prod_red(&self) -> bool {
         self.env.is_production() && !self.color_picked
@@ -787,7 +781,6 @@ pub fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-/// The path with this user's home shown as `~`.
 pub fn tilde(path: &str) -> String {
     let expanded = expand_home(path);
     match crate::os::home() {
@@ -844,7 +837,6 @@ impl ConnFolder {
     }
 }
 
-/// The folder holding `conn`, if any.
 pub fn folder_of<'a>(folders: &'a [ConnFolder], conn: &str) -> Option<&'a ConnFolder> {
     folders.iter().find(|d| d.holds(conn))
 }
@@ -944,7 +936,6 @@ struct Inner {
     /// As they apply: the file's, with the approved protections where it loosens them.
     connections: Vec<ConnectionProfile>,
     held: Vec<ConnReview>,
-    /// As the file has them.
     file: Vec<ConnectionProfile>,
     kept: Kept<Vec<ConnectionProfile>>,
     /// Entries this version cannot read (an engine from a newer Dataman): kept as they are, and
@@ -1170,7 +1161,6 @@ impl ConfigStore {
         })
     }
 
-    /// Several connections changed in one write.
     pub fn edit_all(&self, f: impl FnOnce(&mut Vec<ConnectionProfile>)) -> Result<()> {
         self.change(f)
     }
@@ -1183,7 +1173,6 @@ impl ConfigStore {
         self.change(|g| g.sort_by_key(|c| ids.iter().position(|i| *i == c.id).unwrap_or(usize::MAX)))
     }
 
-    /// The explorer's folders, in their order.
     pub fn folders(&self) -> Vec<ConnFolder> {
         self.inner.lock().folders.clone()
     }
@@ -1207,7 +1196,6 @@ impl ConfigStore {
     }
 }
 
-/// Writes atomically: a temporary file in the same directory, then `rename`.
 fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table], folders: &[ConnFolder]) -> Result<()> {
     let dir = path.parent().context("config path has no parent")?;
     std::fs::create_dir_all(dir)?;
@@ -1397,7 +1385,6 @@ mod tests {
         assert!(store.folders()[1].connections.is_empty());
         store.remove(&b.id).unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().folders()[0].connections, vec!["a".to_string()]);
-        // Saving the connections keeps the folders.
         store.reorder(&["a".into()]).unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().folders().len(), 2);
 

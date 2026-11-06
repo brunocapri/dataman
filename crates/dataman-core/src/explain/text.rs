@@ -67,7 +67,7 @@ fn node_line(text: &str) -> (String, Map<String, Value>) {
     let rest = &text[cut..];
     let field = |s: &str, k: &str| -> Option<String> {
         let i = s.find(k)? + k.len();
-        Some(s[i..].split(|c: char| c == ' ' || c == ')').next().unwrap_or("").to_string())
+        Some(s[i..].split([' ', ')']).next().unwrap_or("").to_string())
     };
     if let Some(i) = rest.find("(cost=") {
         let s = &rest[i..];

@@ -281,7 +281,7 @@ fn postgres_values_stay_kept() {
     for f in [
         format!("SELECT table_to_xml('{s}.users', true, false, '')"),
         format!("SELECT schema_to_xml('{s}', true, false, '')"),
-        format!("SELECT database_to_xml(true, false, '')"),
+        "SELECT database_to_xml(true, false, '')".to_string(),
     ] {
         refused(&f, q(f.clone()), "is not available to agents on pp");
     }
@@ -360,7 +360,6 @@ fn postgres_values_stay_kept() {
     let r = q(format!("SELECT * FROM {s}.users")).unwrap();
     assert!(!r.to_string().contains("password_hash"), "{r}");
 
-    // The catalog tools, the schema resource and favorites.
     for (tool, args) in [
         ("describe_table", json!({"table": format!("{s}.users"), "include_ddl": true})),
         ("get_ddl", json!({"object": format!("{s}.users")})),
@@ -672,9 +671,6 @@ fn redis_values_stay_kept() {
     e.done();
 }
 
-/// User tools (mcp-tools.toml) run for agents: the connection's rules and dialect apply to them.
-/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
-/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
 /// Two connections with one name: a call on the Masked one by its id is masked as that
 /// connection's, never looked up again by the name (which is both).
 #[test]
@@ -696,6 +692,8 @@ fn a_shared_name_does_not_unmask_a_reply() {
     e.done();
 }
 
+/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
+/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
 /// any level; writes stop at read and on a read-only connection.
 #[test]
 fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
@@ -892,9 +890,7 @@ fn user_tools_follow_the_rules() {
         return;
     }
     let s = format!("mcp_tools_{}", std::process::id());
-    let rules = format!(
-        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"*tax_id*\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"users.password_hash\", kind = \"column\" }}]\n"
-    );
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"*tax_id*\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.password_hash\", kind = \"column\" }]\n".to_string();
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", Some(&tools.replace("{s}", &s)));
     e.admin(
         "execute",
@@ -944,7 +940,7 @@ fn rules_have_one_precedence() {
     use McpAccess::*;
     let del = "DELETE FROM t";
     let upd = "UPDATE t SET a = 1 WHERE id = 2";
-    let allowed = vec![upd.to_string(), del.to_string()];
+    let allowed = [upd.to_string(), del.to_string()];
     for env in Environment::ALL {
         for access in [Off, Read, Write, Full] {
             for ro in [false, true] {

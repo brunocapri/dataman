@@ -731,12 +731,10 @@ impl GridEdit {
                     return;
                 }
                 let at = self.row_ref(&snap, row);
-                if let RowRef::Stored(s) = at {
-                    if self.model.changes.is_deleted(s) {
-                        self.card = Some(Card::Note("Marked for deletion".into()));
-                        cx.notify();
-                        return;
-                    }
+                if let RowRef::Stored(s) = at && self.model.changes.is_deleted(s) {
+                    self.card = Some(Card::Note("Marked for deletion".into()));
+                    cx.notify();
+                    return;
                 }
                 let orig = match at {
                     RowRef::Stored(s) => CellValue::from_cell(snap.columns[col].kind, snap.source_cell(s, col)),
@@ -762,12 +760,10 @@ impl GridEdit {
         }
         let blank = target.blank(col);
         let at = self.row_ref(&snap, row);
-        if let RowRef::Stored(s) = at {
-            if self.model.changes.is_deleted(s) {
-                self.card = Some(Card::Note("Marked for deletion".into()));
-                cx.notify();
-                return;
-            }
+        if let RowRef::Stored(s) = at && self.model.changes.is_deleted(s) {
+            self.card = Some(Card::Note("Marked for deletion".into()));
+            cx.notify();
+            return;
         }
         self.commit_cell(Move::Stay, window, cx);
         let kind = cols[col].kind;
@@ -1202,7 +1198,6 @@ impl GridEdit {
         self.request(Pending::Edit(row, col), window, cx);
     }
 
-    /// The last commit's conflicts, when it left any.
     #[cfg(feature = "checks")]
     pub fn demo_conflicts(&self) -> usize {
         self.report.as_ref().map_or(0, |r| r.outcomes.iter().filter(|o| matches!(o.outcome, Outcome::Conflict { .. })).count())
@@ -1590,6 +1585,15 @@ impl Render for ReviewPanel {
 #[action(namespace = review, no_json)]
 pub struct OpenSqlInTab(pub String);
 
+/// What a failed apply said, whole: its error and every change's, as Copy error takes them.
+fn report_errors(r: &ApplyReport) -> String {
+    let each = r.outcomes.iter().filter_map(|o| match &o.outcome {
+        Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } => Some(format!("{}: {message}", o.index + 1)),
+        _ => None,
+    });
+    r.error.iter().cloned().chain(each).collect::<Vec<_>>().join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1724,13 +1728,4 @@ mod tests {
         assert_eq!(typed_value("", false, false), Some(t("")), "empty text is not NULL");
         assert_eq!(typed_value("42", false, true), Some(t("42")));
     }
-}
-
-/// What a failed apply said, whole: its error and every change's, as Copy error takes them.
-fn report_errors(r: &ApplyReport) -> String {
-    let each = r.outcomes.iter().filter_map(|o| match &o.outcome {
-        Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } => Some(format!("{}: {message}", o.index + 1)),
-        _ => None,
-    });
-    r.error.iter().cloned().chain(each).collect::<Vec<_>>().join("\n")
 }

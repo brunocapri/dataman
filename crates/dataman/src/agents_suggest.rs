@@ -300,7 +300,6 @@ impl AgentsPage {
         out.into_iter().take(MAX).map(|(_, c)| c).collect()
     }
 
-    /// Fetches something the suggestions need once, then lists again.
     fn load(&mut self, conn: &str, what: &str, cx: &mut Context<Self>, fut: impl std::future::Future<Output = anyhow::Result<()>> + 'static) {
         let key = format!("{conn}\u{0}{what}");
         if !self.loading.insert(key.clone()) {
@@ -328,7 +327,6 @@ impl AgentsPage {
         }
     }
 
-    /// The field with its suggestions under it (while it has the focus).
     pub(crate) fn suggest_field(&self, t: &Theme, w: Which, field: gpui::Div, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let focused = self.input_of(w).read(cx).focus_handle(cx).is_focused(window);
         let open = focused && self.suggest.which == Some(w) && !self.suggest.items.is_empty();

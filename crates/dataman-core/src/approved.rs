@@ -228,7 +228,6 @@ pub(crate) fn review(approved: Option<&ConnectionProfile>, next: &ConnectionProf
     (moved || changes.iter().any(|c| c.loosens)).then(|| review(false, moved, changes))
 }
 
-/// The connections as they apply, and those held for review.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Resolved {
     pub connections: Vec<ConnectionProfile>,
@@ -258,7 +257,6 @@ pub(crate) fn resolve(file: &[ConnectionProfile], approved: Option<&[ConnectionP
     out
 }
 
-/// The settings' part of the rules for agents.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingsRules {
     pub agent_access: bool,
@@ -615,7 +613,6 @@ mod tests {
             assert!(d.held().iter().any(|h| h.id == "twin" && h.changes.iter().any(|c| c.what == "Agent login" && c.loosens)), "{host} {refused}: {:?}", d.held());
             assert!(d.get("twin").is_none(), "not used meanwhile");
         }
-        // This machine by any name.
         let m = Mac::new();
         let mut a = ConnectionProfile { host: "localhost".into(), ..conn("a") };
         a.agent_login = Some(crate::agent_login::test_login("dataman_agent_a", &a));

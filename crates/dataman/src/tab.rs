@@ -611,7 +611,6 @@ impl QueryTab {
         .detach();
     }
 
-    /// Whether the tab still points at `conn`'s `db`, for a read that comes back late.
     fn still_on(&self, conn: &Arc<Connection>, db: &str) -> bool {
         self.conn.as_ref().is_some_and(|c| Arc::ptr_eq(c, conn)) && self.database() == db
     }
@@ -659,7 +658,7 @@ impl QueryTab {
         if db == self.database() {
             return;
         }
-        let _ = conn.preload(&db);
+        drop(conn.preload(&db));
         self.release_session();
         self.database = Some(db.clone());
         self.schema_version = 0;
@@ -1323,11 +1322,11 @@ impl QueryTab {
             }
         }
         if let Some(conn) = &self.conn {
-            let first = rs.sql.trim_start().split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+            let first = rs.sql.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
             if matches!(first.as_str(), "CREATE" | "DROP" | "ALTER") {
                 let db = self.database().to_string();
                 conn.schema.invalidate(Some(&db));
-                let _ = conn.preload(&db);
+                drop(conn.preload(&db));
                 self.catalog_asked.remove(&db);
             }
         }

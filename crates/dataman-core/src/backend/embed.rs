@@ -17,7 +17,6 @@ use crate::value::{Kind, Storage};
 
 pub(crate) const IN_FLIGHT: usize = 1024;
 
-/// A cell as the engine stores it, before it meets its column's kind.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Val {
     Null,
@@ -140,7 +139,6 @@ pub(crate) type Columns = (Vec<ColumnInfo>, Vec<Option<NamedOrigin>>);
 
 pub(crate) enum Msg<E> {
     Row(Vec<Val>),
-    /// The next statement's result set.
     Set(Columns),
     Done(Option<u64>),
     Fail(E),
@@ -204,7 +202,6 @@ pub(crate) struct Rows<E> {
     affected: Option<u64>,
     ended: bool,
     next_set: Option<Columns>,
-    /// The result shown, whose column turns to text with the builder's.
     rs: Option<Arc<ResultSet>>,
     closed: fn() -> E,
 }

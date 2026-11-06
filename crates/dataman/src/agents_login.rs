@@ -20,10 +20,8 @@ use crate::agents_rules::{BODY_W, Jump, sub, sub_title};
 use crate::theme::{Theme, mix, mono, px};
 use crate::ui;
 
-/// The section's state for the selected connection.
 #[derive(Default)]
 pub(crate) struct LoginUi {
-    /// The connection the rest is about.
     pub(crate) conn: Option<String>,
     pub(crate) busy: Option<String>,
     /// The last action's outcome: good or not, and what to say.
@@ -35,9 +33,7 @@ pub(crate) struct LoginUi {
     /// The rules (their hash) the drift was read for: read again when they change.
     drift_rules: Option<String>,
     pub(crate) sheet: Option<Sheet>,
-    /// The sheet's WHAT RUNS, scrolled both ways.
     pub(crate) sql_scroll: gpui::ScrollHandle,
-    /// WHAT RUNS as last laid out and coloured.
     what: RefCell<Option<WhatRuns>>,
 }
 
@@ -62,7 +58,6 @@ pub(crate) enum Sheet {
     Remove { plan: Option<Result<Plan, String>>, confirm: bool, busy: bool, error: Option<String> },
     /// The drift: what changes on the login, and what runs for it.
     Changes,
-    /// The last check's lines, by category.
     Checks,
 }
 
@@ -636,14 +631,11 @@ impl AgentsPage {
         self.login.note = Some((true, "Agents use your login here again, within Dataman's rules".into()));
     }
 
-    /// Protection on a connection, at its agent login (deep links to it).
     pub(crate) fn show_login(&mut self, id: &str, cx: &mut Context<Self>) {
         self.conn = Some(id.to_string());
         self.show(Page::Protection, cx);
         self.jump = Some(Jump::Login);
     }
-
-    // ---- Render ----
 
     /// Above Access while agents use the user's own login: how they reach the database, and the
     /// way to give them one of their own (or why there is none to give).
@@ -951,7 +943,6 @@ impl AgentsPage {
         Some(crate::agents_rules::flat_section(t, "agents-login-section", "Agent login", vec![login, password, leave]).into_any_element())
     }
 
-    /// Where the login stands against its rules, for the dot and the word beside it.
     fn login_state(&self, p: &ConnectionProfile, l: &agent_login::AgentLogin, drifted: bool) -> SyncState {
         let hash = agent_login::rules_hash(p, &l.database);
         let failed = l.auto_sync && self.login_auto.get(&p.id).is_some_and(|a| !a.running && a.hash == hash);
@@ -1046,7 +1037,6 @@ impl AgentsPage {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create_sheet(&self, t: &Theme, p: &ConnectionProfile, review: Option<&Result<live::Review, String>>, opts: Options, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
         let user = agent_login::login_name(&p.id);
         let title = format!("Create {user} on {}", p.name);
@@ -1234,7 +1224,6 @@ impl AgentsPage {
         Some((format!("Changes to {user}"), body, ui::modal_footer(t).child(say).child(close).child(apply).into_any_element()))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn remove_sheet(&self, t: &Theme, p: &ConnectionProfile, plan: Option<&Result<Plan, String>>, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
         let title = format!("Remove {user} from {}", p.name);
@@ -1352,7 +1341,6 @@ impl AgentsPage {
         self.login = LoginUi { conn: Some(p.id.clone()), drift: Some(Ok(drift)), drift_rules: Some(now), ..Default::default() };
     }
 
-    /// The demo's View changes, open.
     pub(crate) fn demo_changes(&mut self) {
         self.login.sheet = Some(Sheet::Changes);
     }
@@ -1429,11 +1417,9 @@ fn status_dot(color: Hsla, pulse: Option<u64>, id: &'static str) -> AnyElement {
     wrap.child(ring).child(dot).into_any_element()
 }
 
-/// Under Auto sync in the Login section.
 const AUTO_ON: &str = "Rule changes in Access and Privacy are applied to the login as you make them, with your login.";
 const AUTO_OFF: &str = "Auto sync is off: rule changes wait for Apply.";
 
-/// Under the option, in the review.
 const AUTO_SUB: &str = "When Access or Privacy change, Dataman updates its grants with your login. Off, the changes wait for Apply";
 
 /// Lines laid out above and below WHAT RUNS's view, so a fast scroll doesn't show a blank edge.
@@ -1445,7 +1431,6 @@ enum Verified {
     Checked(Vec<live::Check>, Option<Plan>),
 }
 
-/// Said once Dataman put the login back in its database made again.
 fn back_text(p: &ConnectionProfile) -> String {
     let (user, db) = p.agent_login.as_ref().map(|l| (l.user.clone(), live::database_for(p, Some(l)))).unwrap_or_default();
     format!("{db} was made again (restored or recreated) and {user} had lost its user there: Dataman put it back, with its grants")
@@ -1461,7 +1446,6 @@ fn check_mark(t: &Theme, c: &live::Check) -> gpui::Div {
     }
 }
 
-/// A Copy button for `text`.
 fn prod_tag(t: &Theme) -> gpui::Div {
     div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn).bg(t.warn_s).child("PRODUCTION")
 }

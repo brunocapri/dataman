@@ -375,8 +375,6 @@ pub fn rotate_step(user: &str, password: &str, mariadb: bool) -> Step {
     Step::secret_sql("a new password", sql, format!("ALTER USER {} IDENTIFIED WITH caching_sha2_password AS '$A$005$…'", account(user)))
 }
 
-// ---- Live ----
-
 fn s(v: &Option<String>) -> String {
     v.clone().unwrap_or_default()
 }

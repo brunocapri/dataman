@@ -136,12 +136,10 @@ fn access_over_globs_and_generated_columns() {
     let users = acc.iter().find(|a| a.name == "users").unwrap();
     assert_eq!(users.hidden, ["secret_key", "secret_len", "name_upper"], "a generated column in a table that keeps something is kept too");
     assert!(!acc.iter().any(|a| a.schema.starts_with(PREFIX)), "Dataman's own views are never granted as tables");
-    // Only these: the rest is hidden.
     p.mcp_rules.visible = Visible { mode: VisibleMode::Only, items: vec![VisibleItem { name: "orders".into(), kind: ItemKind::Table }] };
     let (acc, hidden) = access(&compile(&p, "", &opts()), &inv_sql("public"));
     assert_eq!(acc.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["orders"]);
     assert_eq!(hidden.len(), 3);
-    // Every column hidden: the table is hidden whole.
     p.mcp_rules.visible = Visible { mode: VisibleMode::Except, items: vec![VisibleItem { name: "orders.*".into(), kind: ItemKind::Column }] };
     let (acc, hidden) = access(&compile(&p, "", &opts()), &inv_sql("public"));
     assert!(!acc.iter().any(|a| a.name == "orders") && hidden.iter().any(|h| h.contains("every column hidden")), "{hidden:?}");
@@ -412,7 +410,6 @@ fn diff_and_sync() {
     assert!(text.contains("CREATE VIEW \"dataman_agent_a1b2c3d4_views\".\"orders\""));
     assert!(text.contains("GRANT SELECT (\"id\") ON \"public\".\"orders\""), "the columns granted again after the table's revoke");
     assert!(text.find("REVOKE").unwrap() < text.find("GRANT").unwrap(), "revoked first: never wider in between");
-    // In sync: nothing to run.
     let now = pg::desired(&s, &inv, &probe);
     let views: Vec<(String, String)> = now.views.iter().map(|v| (v.name.clone(), v.hash.clone())).collect();
     assert!(pg::sync_plan(&s, &inv, &probe, &now.grants, &views, true, false).steps_run().next().is_none());
@@ -520,8 +517,6 @@ fn plan_hash_is_stable_and_moves_with_the_grants() {
     assert_ne!(pg::create_plan(&s, &inv, &probe_sql(), "x", false).hash, a.hash);
 }
 
-// ---- Red team ----
-
 #[test]
 fn a_mark_names_exactly_one_connection() {
     // Ids that share their first letters share the login's name: the mark tells them apart.
@@ -598,7 +593,6 @@ fn what_every_login_reads_is_said_not_claimed() {
         // Not run: the user's to decide.
         assert!(!plan.steps_run().any(|s| s.shown.contains("REVOKE SELECT")), "{engine:?}");
     }
-    // Nothing open: nothing said.
     assert!(pg::create_plan(&s, &inv_sql("public"), &probe_sql(), "pw", false).exposed.is_empty());
     // MySQL: roles every account gets.
     let mut minv = inv_sql("shop");
@@ -667,7 +661,6 @@ fn postgres_protocol_without_logins() {
     assert!(!pg::no_roles(None, "connection closed"));
     assert!(!pg::no_roles(Some("57014"), "canceling statement due to statement timeout"));
     assert!(!pg::no_roles(Some(""), "relation \"orders\" does not exist"));
-    // MotherDuck, by its hosts.
     let mut p = conn(Engine::Postgres);
     assert!(!pg::motherduck(&p));
     p.host = "pg.us-east-1-aws.motherduck.com".into();

@@ -8,7 +8,6 @@ use crate::app::Workspace;
 use crate::check::*;
 use crate::tab::QueryTab;
 
-/// Engine, document view, the editor's document language.
 fn view(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (Option<Engine>, bool, Option<Engine>) {
     cx.update(|_, cx| (tab.read(cx).connection().map(|c| c.engine()), tab.read(cx).doc.is_some(), tab.read(cx).editor.read(cx).doc_lang())).unwrap_or_default()
 }
