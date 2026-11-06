@@ -28,22 +28,28 @@ fn edges_drawn(window: &Window) -> bool {
     !cfg!(windows) && drawn(window)
 }
 
+/// GPUI's own `window_handle` is another thing: raw-window-handle's, by its trait.
+#[cfg(windows)]
+fn hwnd(window: &Window) -> Option<windows_sys::Win32::Foundation::HWND> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Win32(w) => Some(w.hwnd.get() as _),
+        _ => None,
+    }
+}
+
 /// The title bar starts moving the window: Windows' own move loop there (GPUI's is a no-op).
 /// Posted, not sent: the loop is modal and would run inside this mouse event, with the app still
 /// borrowed, so a key pressed mid-drag (Esc's drag-cancel interceptor) would borrow it again.
 pub fn start_move(window: &Window) {
     #[cfg(windows)]
     {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
         use windows_sys::Win32::UI::WindowsAndMessaging::{HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN};
-        // GPUI's own `window_handle` is another thing: raw-window-handle's, by its trait.
-        if let Ok(h) = HasWindowHandle::window_handle(window)
-            && let RawWindowHandle::Win32(w) = h.as_raw()
-        {
+        if let Some(hwnd) = hwnd(window) {
             unsafe {
                 ReleaseCapture();
-                PostMessageW(w.hwnd.get() as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
             }
         }
     }
@@ -51,17 +57,105 @@ pub fn start_move(window: &Window) {
     window.start_window_move();
 }
 
+/// GPUI redraws the whole window for every `WM_MOVE`, up to the mouse's rate, though a window that
+/// moves shows the same picture: on Windows that makes the compositor miss frames (DAT-33). Inside
+/// Windows' move loop the message waits here, and GPUI learns the last position as the loop ends.
+#[cfg(windows)]
+pub fn quiet_moves(window: &Window) {
+    use std::cell::Cell;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, GWLP_WNDPROC, SetWindowLongPtrW, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVE, WM_NCDESTROY, WM_SIZE, WNDPROC,
+    };
+
+    thread_local! {
+        static NEXT: Cell<WNDPROC> = const { Cell::new(None) };
+        static LOOP: Cell<bool> = const { Cell::new(false) };
+        static HELD: Cell<Option<LPARAM>> = const { Cell::new(None) };
+    }
+
+    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        let next = NEXT.get();
+        // SAFETY: `next` is the window procedure this one replaced, called as it would have been.
+        let pass = |msg, wparam, lparam| unsafe { CallWindowProcW(next, hwnd, msg, wparam, lparam) };
+        match msg {
+            WM_ENTERSIZEMOVE => LOOP.set(true),
+            WM_MOVE if LOOP.get() => {
+                HELD.set(Some(lparam));
+                return 0;
+            }
+            // Resizing by a left or top edge moves the window too, and redraws anyway.
+            WM_SIZE => {
+                if let Some(held) = HELD.take() {
+                    pass(WM_MOVE, 0, held);
+                }
+            }
+            WM_EXITSIZEMOVE => {
+                LOOP.set(false);
+                if let Some(held) = HELD.take() {
+                    pass(WM_MOVE, 0, held);
+                }
+            }
+            WM_NCDESTROY => {
+                // SAFETY: the window is alive during this message; the procedure goes back first.
+                unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, next.map_or(0, |f| f as usize as isize)) };
+            }
+            _ => {}
+        }
+        pass(msg, wparam, lparam)
+    }
+
+    if let Some(hwnd) = hwnd(window) {
+        // SAFETY: on the thread that owns the window; `proc` has the WNDPROC signature, and what
+        // SetWindowLongPtrW returns is the procedure it replaced (GPUI's, never null).
+        unsafe {
+            let old = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as *const () as usize as isize);
+            NEXT.set(std::mem::transmute::<isize, WNDPROC>(old));
+        }
+    }
+}
+
+/// A move inside the loop leaves GPUI's position alone, and the loop's end delivers it. The
+/// messages are sent outside any `cx.update`: GPUI's move callback borrows the app.
+#[cfg(all(windows, feature = "checks"))]
+pub async fn check_quiet_moves(cx: &mut gpui::AsyncWindowContext) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetWindowPos, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE};
+
+    let origin = |cx: &mut gpui::AsyncWindowContext| cx.update(|window, _| window.bounds().origin).map_err(|e| e.to_string());
+    let (hwnd, scale) = cx.update(|window, _| (hwnd(window), window.scale_factor())).map_err(|e| e.to_string())?;
+    let hwnd = hwnd.ok_or("no window handle")?;
+    let from = origin(cx)?;
+    const DX: i32 = 60;
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    // SAFETY: a live window on its own thread; the message is sent with no pointers in it.
+    let moved = unsafe {
+        GetWindowRect(hwnd, &mut r);
+        SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+        SetWindowPos(hwnd, std::ptr::null_mut(), r.left + DX, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) != 0
+    };
+    let held = origin(cx)?;
+    // SAFETY: as above.
+    unsafe { SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0) };
+    let after = origin(cx)?;
+    // SAFETY: as above.
+    unsafe { SetWindowPos(hwnd, std::ptr::null_mut(), r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
+    let want = f32::from(from.x) + DX as f32 / scale;
+    if moved && held == from && (f32::from(after.x) - want).abs() < 1. {
+        Ok(())
+    } else {
+        Err(format!("moved {moved}, from {from:?}, during the loop {held:?}, after it {after:?}, wanted x {want}"))
+    }
+}
+
 /// The maximize button and a double click on the title bar: maximize, or restore a maximized
 /// window. GPUI's Windows `zoom` only ever maximizes, so the restore is ours there.
 pub fn toggle_maximize(window: &Window) {
     #[cfg(windows)]
     if window.is_maximized() {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, ShowWindowAsync};
-        if let Ok(h) = HasWindowHandle::window_handle(window)
-            && let RawWindowHandle::Win32(w) = h.as_raw()
-        {
-            unsafe { ShowWindowAsync(w.hwnd.get() as _, SW_RESTORE) };
+        if let Some(hwnd) = hwnd(window) {
+            unsafe { ShowWindowAsync(hwnd, SW_RESTORE) };
         }
         return;
     }

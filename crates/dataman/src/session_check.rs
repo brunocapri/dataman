@@ -224,6 +224,11 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let ws3 = relaunch(&ws2, cx);
     let fresh = cx.update(|_, cx| ws3.read(cx).tabs.len() == 1 && ws3.read(cx).tabs[0].read(cx).editor.read(cx).text().is_empty()).unwrap_or(false);
     report("a damaged session file opens a fresh workspace", fresh, String::new());
+    #[cfg(windows)]
+    {
+        let quiet = crate::csd::check_quiet_moves(cx).await;
+        report("a window being moved tells GPUI only as the move ends", quiet.is_ok(), quiet.err().unwrap_or_default());
+    }
     let _ = cx.update(|_, cx| cx.set_global(Sessions(None)));
     let _ = std::fs::remove_dir_all(&dir);
     ok
