@@ -36,6 +36,19 @@ pub struct LexRules {
     pub backslash_quotes: bool,
     /// `{name:Type}` is a parameter (ClickHouse).
     pub brace_params: bool,
+    /// `//` starts a line comment (ClickHouse).
+    pub slash_comments: bool,
+    /// Only `# ` and `#!` start a comment, not any `#` (ClickHouse).
+    pub hash_needs_mark: bool,
+    /// More characters read as whitespace, past `\v` and the ASCII ones.
+    pub extra_spaces: &'static [char],
+    /// `‘…’` is a string and `“…”` a quoted name, with nothing escaped inside (ClickHouse).
+    pub typographic_quotes: bool,
+    /// A bare word is ASCII: any other character ends it (ClickHouse).
+    pub ascii_words: bool,
+    /// `$tag$…$tag$` is a string only if it closes, and the tag may start with a digit; otherwise
+    /// `$tag$` is a word (ClickHouse).
+    pub heredocs: bool,
 }
 
 impl LexRules {
@@ -55,6 +68,12 @@ impl LexRules {
         backtick_names: false,
         backslash_quotes: false,
         brace_params: false,
+        slash_comments: false,
+        hash_needs_mark: false,
+        extra_spaces: &[],
+        typographic_quotes: false,
+        ascii_words: false,
+        heredocs: false,
     };
     pub const MYSQL: LexRules = LexRules {
         dollar: false,
@@ -72,6 +91,12 @@ impl LexRules {
         backtick_names: false,
         backslash_quotes: false,
         brace_params: false,
+        slash_comments: false,
+        hash_needs_mark: false,
+        extra_spaces: &[],
+        typographic_quotes: false,
+        ascii_words: false,
+        heredocs: false,
     };
     pub const TSQL: LexRules = LexRules {
         dollar: false,
@@ -89,6 +114,12 @@ impl LexRules {
         backtick_names: false,
         backslash_quotes: false,
         brace_params: false,
+        slash_comments: false,
+        hash_needs_mark: false,
+        extra_spaces: &[],
+        typographic_quotes: false,
+        ascii_words: false,
+        heredocs: false,
     };
     /// SQLite's tokenizer: `"x"`, `[x]` and `` `x` `` are names, `X'..'` a blob, `?`, `?N`, `:x`,
     /// `@x` and `$x` parameters; comments do not nest and `--` ends at `\n`.
@@ -108,13 +139,19 @@ impl LexRules {
         backtick_names: true,
         backslash_quotes: false,
         brace_params: false,
+        slash_comments: false,
+        hash_needs_mark: false,
+        extra_spaces: &[],
+        typographic_quotes: false,
+        ascii_words: false,
+        heredocs: false,
     };
     /// PostgreSQL's rules (`$$`, `E''`, `::`, `$1`) plus `?` parameters.
     pub const DUCKDB: LexRules = LexRules { qmark_params: true, ..LexRules::POSTGRES };
-    /// Probed on 25.8: comments nest, `--` needs no space and ends at `\n` only, `#!` and `# ` are
-    /// comments, `$tag$…$tag$` is a string, and a backslash escapes in `'…'`, `"…"` and `` `…` ``.
+    /// Probed on 25.8: comments nest, `--` needs no space and ends at `\n` only, `//`, `#!` and `# `
+    /// are comments, and a backslash escapes in `'…'`, `"…"` and `` `…` ``.
     pub const CLICKHOUSE: LexRules = LexRules {
-        dollar: true,
+        dollar: false,
         escape_strings: false,
         nested_comments: true,
         double_colon: true,
@@ -129,6 +166,15 @@ impl LexRules {
         backtick_names: true,
         backslash_quotes: true,
         brace_params: true,
+        slash_comments: true,
+        hash_needs_mark: true,
+        extra_spaces: &[
+            '\u{85}', '\u{a0}', '\u{180e}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}', '\u{200a}', '\u{200b}',
+            '\u{200c}', '\u{200d}', '\u{2028}', '\u{2029}', '\u{202f}', '\u{205f}', '\u{2060}', '\u{3000}', '\u{feff}',
+        ],
+        typographic_quotes: true,
+        ascii_words: true,
+        heredocs: true,
     };
 }
 

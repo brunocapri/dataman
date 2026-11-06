@@ -194,6 +194,9 @@ pub fn push_value_literal_in(d: Dialect, out: &mut String, kind: Kind, v: Option
             _ => push_quoted(d, out, s),
         },
         Kind::Int if is_integer(t) => out.push_str(t),
+        // ClickHouse reads a number past 64 bits as a float, so a compare with it misses its row
+        // (or finds another): a string is converted to the column's type, exactly.
+        Kind::Numeric if d == Dialect::ClickHouse && is_decimal(t) && !t.contains(['e', 'E']) => push_quoted(d, out, t),
         Kind::Float | Kind::Float4 | Kind::Numeric if is_decimal(t) => out.push_str(t),
         Kind::Bytes if hex_bytes(t).and_then(|h| bytes_literal(d, h)).is_some() => out.push_str(&hex_bytes(t).and_then(|h| bytes_literal(d, h)).unwrap_or_default()),
         Kind::Bytes if ms && hex_bytes(t).is_some() => {

@@ -206,6 +206,9 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
 
 pub const SYSTEM_COLUMNS: &[&str] = &["ctid", "xmin", "xmax", "cmin", "cmax", "tableoid", "oid"];
 
+/// ClickHouse's words around a join's kind, in any order (`GLOBAL ANY LEFT JOIN`, `ALL INNER JOIN`).
+const CLICKHOUSE_JOIN_WORDS: &[&str] = &["GLOBAL", "LOCAL", "ALL", "ANY", "ASOF", "SEMI", "ANTI", "PASTE", "LEFT", "RIGHT", "FULL", "INNER", "OUTER", "CROSS"];
+
 const CLAUSE_WORDS: &[&str] = &[
     "FROM", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT",
     "EXCEPT", "RETURNING", "INTO", "ON", "USING", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "SET",
@@ -431,7 +434,9 @@ impl<'a> P<'a> {
                     "INTO" | "INSERT"
                         if (w == "INTO" && self.any_word(i.wrapping_sub(1), &["INSERT", "REPLACE", "IGNORE", "LOW_PRIORITY", "HIGH_PRIORITY", "DELAYED"])) || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
                     {
-                        i = self.insert_target(i + 1, hi, id);
+                        // ClickHouse's `INSERT INTO TABLE t`.
+                        let at = if self.dialect == Dialect::ClickHouse && self.word(i + 1, "TABLE") { i + 2 } else { i + 1 };
+                        i = self.insert_target(at, hi, id);
                         if i < hi && self.starts_query(i) {
                             let end = (i..hi).find(|&k| self.word(k, "ON") && self.word(k + 1, "CONFLICT") || self.word(k, "RETURNING")).unwrap_or(hi);
                             let end = self.depth0(i, end, hi);
@@ -859,12 +864,32 @@ impl<'a> P<'a> {
             }
             let start = i;
             let mut k = i;
+            let clickhouse = self.dialect == Dialect::ClickHouse;
+            // `ARRAY JOIN x AS y` names no table: its expressions are read, whatever comes next.
+            let array = if self.word(k, "LEFT") && self.word(k + 1, "ARRAY") { k + 1 } else { k };
+            if clickhouse && self.word(array, "ARRAY") && self.word(array + 1, "JOIN") {
+                let mut e = array + 2;
+                while e < hi && !self.word(e, "JOIN") && !self.is_join_start(e) && !self.is_clause_end_strict(e) && !self.any_word(e, CLICKHOUSE_JOIN_WORDS) {
+                    if self.punct(e, "(") {
+                        e = self.close[e] + 1;
+                        continue;
+                    }
+                    e += 1;
+                }
+                let e = e.min(hi);
+                self.expr(array + 2, e, id, Clause::From, false);
+                i = e;
+                continue;
+            }
+            while clickhouse && self.any_word(k, CLICKHOUSE_JOIN_WORDS) {
+                k += 1;
+            }
             let natural = self.word(k, "NATURAL");
             if natural {
                 k += 1;
             }
-            let cross = self.word(k, "CROSS");
-            if cross {
+            let cross = self.word(k, "CROSS") || (clickhouse && self.word(k.wrapping_sub(1), "CROSS"));
+            if self.word(k, "CROSS") {
                 k += 1;
             }
             if self.any_word(k, &["LEFT", "RIGHT", "FULL"]) {
@@ -906,6 +931,16 @@ impl<'a> P<'a> {
                 let cols = self.name_list(i + 2, j);
                 self.a.scopes[id].using.extend(cols);
                 i = j + 1;
+            } else if clickhouse && self.word(i, "USING") {
+                // Without parentheses: names up to the next join or clause.
+                let mut e = i + 1;
+                while e < hi && !self.is_join_start(e) && !self.is_clause_end_strict(e) && !self.any_word(e, CLICKHOUSE_JOIN_WORDS) {
+                    e += 1;
+                }
+                let e = e.min(hi);
+                let cols = self.name_list(i + 1, e);
+                self.a.scopes[id].using.extend(cols);
+                i = e;
             } else if after > k + usize::from(lateral) {
                 let end = self.t.get(after - 1).map_or(self.src.len(), |t| t.end);
                 self.a.missing_on.push(self.t[start].start..end);
@@ -1015,6 +1050,24 @@ impl<'a> P<'a> {
                 name_range: self.t[start].start..name_end,
                 alias_columns,
             });
+        }
+        if self.dialect == Dialect::ClickHouse {
+            if self.word(i, "FINAL") {
+                i += 1;
+            }
+            // `SAMPLE 1/10 OFFSET 1/2`.
+            let fraction = |a: &Self, mut k: usize| {
+                while a.t.get(k).is_some_and(|t| t.kind == TokenKind::Number || t.text(a.src) == "/") {
+                    k += 1;
+                }
+                k
+            };
+            if self.word(i, "SAMPLE") {
+                i = fraction(self, i + 1);
+                if self.word(i, "OFFSET") {
+                    i = fraction(self, i + 1);
+                }
+            }
         }
         if self.word(i, "TABLESAMPLE") {
             i += 2;

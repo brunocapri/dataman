@@ -239,7 +239,7 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 
 **Off.** The connection still appears in the agent's list, showing only its name, environment and engine. Nothing runs on it, its favorites are hidden, and agents cannot edit it.
 
-**Read.** Every read runs in a read-only transaction that is always rolled back. ClickHouse has no transactions: there a read runs on a connection the server itself holds read-only.
+**Read.** Every read runs in a read-only transaction that is always rolled back. ClickHouse has no transactions: there a read runs on a connection the server itself holds read-only, where a statement cannot change settings (`SET`, `SETTINGS`).
 
 - **Runs:** `SELECT`, `WITH … SELECT`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN`, plus MySQL `DESCRIBE`, the DuckDB `DESCRIBE` / `SUMMARIZE` / `PIVOT` forms, ClickHouse `DESCRIBE` and `EXISTS`, and report-only `PRAGMA`s.
 - **Refused:**

@@ -172,10 +172,27 @@ fn statements(t: &Toks) -> Vec<std::ops::Range<usize>> {
         let to = t.t.partition_point(|x| x.end <= s.range.end);
         if t.dialect == Dialect::TSql {
             out.extend(tsql_pieces(&t.sub(from..to)).into_iter().map(|r| from + r.start..from + r.end));
+        } else if t.dialect == Dialect::ClickHouse {
+            out.extend(parallel_pieces(&t.sub(from..to)).into_iter().map(|r| from + r.start..from + r.end));
         } else {
             out.push(from..to);
         }
     }
+    out
+}
+
+/// `a PARALLEL WITH b` runs both at once, and one being refused does not hold the other back
+/// (probed on 25.8: `SELECT 1 PARALLEL WITH DROP TABLE t` answers an error, and drops the table).
+fn parallel_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in t.top() {
+        if t.is(i, "PARALLEL") && t.is(i + 1, "WITH") && i > start && !matches!(t.word(i + 2).as_deref(), Some("TOTALS" | "ROLLUP" | "CUBE" | "FILL" | "TIES")) {
+            out.push(start..i);
+            start = i + 2;
+        }
+    }
+    out.push(start..t.t.len());
     out
 }
 
@@ -1115,6 +1132,10 @@ pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     if f.is_write() {
         return Some(format!("read-only connection: {} is not run", f.verb));
     }
+    // ClickHouse's `readonly` setting does not stop it.
+    if dialect == Dialect::ClickHouse && f.verb == "KILL" {
+        return Some("read-only connection: KILL is not run".into());
+    }
     if dialect == Dialect::TSql { tsql_read_only_refusal(sql) } else { None }
 }
 
@@ -1230,7 +1251,6 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
     for piece in agent_pieces(sql, dialect) {
         let all = significant(&piece, dialect);
         let t = Toks { src: &piece, t: &all, dialect };
-        let f = classify_in(&piece, dialect);
         // A prepared statement is what it prepares (`PREPARE w AS COPY … TO …`, run by EXECUTE).
         if dialect == Dialect::DuckDb
             && t.is(0, "PREPARE")
@@ -1239,9 +1259,13 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         {
             return Some(e);
         }
-        if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO" | "BACKUP" | "RESTORE") {
-            return Some(format!("{} reaches files outside the database", f.verb));
+        for r in statements(&t).into_iter().filter(|r| !r.is_empty()) {
+            let verb = classify_in(&piece[all[r.start].start..all[r.end - 1].end], dialect).verb;
+            if matches!(verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO" | "BACKUP" | "RESTORE") {
+                return Some(format!("{verb} reaches files outside the database"));
+            }
         }
+        let f = classify_in(&piece, dialect);
         if dialect == Dialect::ClickHouse && (0..all.len()).any(|i| t.is(i, "OUTFILE") || t.is(i, "INFILE")) {
             return Some("INTO OUTFILE and FROM INFILE reach files outside the database".into());
         }
@@ -1322,14 +1346,18 @@ fn file_access_in(t: &Toks) -> Option<String> {
         if !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
             continue;
         }
-        let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
         if t.dialect == Dialect::ClickHouse {
-            // Every `dictGet…` reads a dictionary, loaded from wherever it was made to.
-            if t.punct(i + 1, "(") && (functions::is(&name, list) || name.starts_with("dictget") || name == "dicthas") {
+            // The name as the server reads it (`` `fi\x6Ce` `` is `file`). Every `dictGet…` reads a
+            // dictionary, loaded from wherever it was made to. An engine needs no parentheses
+            // (`ENGINE = Filesystem`).
+            let name = crate::sql::ident_value_in(t.src, &t.t[i], t.dialect).to_ascii_lowercase();
+            let engine = i > 0 && (t.is(i - 1, "ENGINE") || (i > 1 && t.op(i - 1, "=") && t.is(i - 2, "ENGINE")));
+            if (t.punct(i + 1, "(") || engine) && (functions::is(&name, list) || name.starts_with("dictget") || name == "dicthas") {
                 return Some(format!("{name}() reaches files, other servers or tables past the agents' rules"));
             }
             continue;
         }
+        let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
         // DuckDB's `duckdb_…` functions are views too (`FROM duckdb_logs`).
         if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && functions::is(&name, list) {
             return Some(format!("{name}() reaches files or code outside the database"));

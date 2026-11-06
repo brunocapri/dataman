@@ -967,6 +967,8 @@ pub fn clean_error(msg: &str) -> Cow<'_, str> {
             (r"(The duplicate key value is )\((?s:.*?)\)(\.|$)", "$1(‹value›)$2"),
             (r"(Conversion failed when converting (?:the )?(?:[a-z]+ )?value )'(?:[^']|'')*'", "$1'‹value›'"),
             (r"(Error converting data type [^\n]*? )'(?:[^']|'')*'", "$1'‹value›'"),
+            // ClickHouse: a scalar subquery compared with another type answers with its value.
+            (r"(Cannot (?:convert|parse) string )'(?:[^'\\]|\\.)*'", "$1'‹value›'"),
             // MongoDB
             (r"(dup key: )\{(?s:.*?)\}", "$1{ ‹value› }"),
             // Elasticsearch / OpenSearch
@@ -1932,6 +1934,7 @@ mod tests {
             ("new row for relation \"t\" violates check constraint \"c\"\nFailing row contains (1, ana, 123).", "Failing row contains (‹value›)."),
             ("invalid input syntax for type integer: \"12a\"", "invalid input syntax for type integer: \"‹value›\""),
             ("Duplicate entry 'ana@acme.com' for key 'users.email'", "Duplicate entry '‹value›' for key 'users.email'"),
+            (r"Cannot convert string 'it\'s' to type UInt8: In scope", "Cannot convert string '‹value›' to type UInt8: In scope"),
             ("Cannot insert duplicate key row in object 'dbo.users' with unique index 'ix'. The duplicate key value is (ana@acme.com).", "The duplicate key value is (‹value›)."),
             ("Conversion failed when converting the varchar value 'abc' to data type int.", "Conversion failed when converting the varchar value '‹value›' to data type int."),
             ("E11000 duplicate key error collection: shop.users index: email_1 dup key: { email: \"ana@acme.com\" }", "dup key: { ‹value› }"),

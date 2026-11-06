@@ -207,9 +207,9 @@ impl Client {
             q.push(("http_write_exception_in_output_format", "0"));
         }
         if self.read_only {
-            // 2, not 1: a statement's own harmless settings stay allowed; the server refuses
-            // `SETTINGS readonly = 0` either way.
-            q.push(("readonly", "2"));
+            // 1, not 2: at 2 the server still runs `INSERT INTO FUNCTION file(…)`, and writes the file.
+            // Its price is no `SET` and no `SETTINGS` of a statement's own on this connection.
+            q.push(("readonly", "1"));
         }
         if let Some(id) = id {
             q.push(("query_id", id));
@@ -345,7 +345,11 @@ fn used_database(sql: &str) -> Option<String> {
     if !toks.first()?.text(sql).eq_ignore_ascii_case("USE") {
         return None;
     }
-    let name = if toks.get(1)?.text(sql).eq_ignore_ascii_case("DATABASE") { toks.get(2)? } else { toks.get(1)? };
+    // `USE database` is a database of that name.
+    let name = match toks.get(2).filter(|t| t.text(sql) != ";") {
+        Some(n) if toks[1].text(sql).eq_ignore_ascii_case("DATABASE") => n,
+        _ => toks.get(1)?,
+    };
     Some(ident_value_in(sql, name, d))
 }
 
@@ -713,8 +717,9 @@ fn push_cell(b: &mut ChunkBuilder, i: usize, kind: Kind, cell: &[u8], scratch: &
             None => return false,
         },
         // An array's, tuple's or map's text is a literal with its own quoting, as the server wrote
-        // it: undoing escapes would make `['a\',\'b']` read as two elements.
-        Kind::Other => push_text_cell(b, i, cell, scratch, false),
+        // it: undoing escapes would make `['a\',\'b']` read as two elements. A `Variant`'s or a
+        // `Dynamic`'s scalar is written as any cell.
+        Kind::Other => push_text_cell(b, i, cell, scratch, !matches!(cell.first(), Some(b'[' | b'(' | b'{'))),
         _ => push_text_cell(b, i, cell, scratch, true),
     }
     true
@@ -817,7 +822,9 @@ pub(crate) fn kind_of(type_name: &str) -> Kind {
         "Float32" => Kind::Float4,
         "Float64" => Kind::Float,
         h if h.starts_with("Decimal") => Kind::Numeric,
-        "String" | "FixedString" | "UUID" | "IPv4" | "IPv6" | "Enum" | "Enum8" | "Enum16" | "Nothing" | "Time" | "Time64" => Kind::Text,
+        "String" | "FixedString" | "Enum" | "Enum8" | "Enum16" | "Nothing" => Kind::Text,
+        // Text to read, but the server's `LIKE` refuses them: a filter casts what is no text.
+        "UUID" | "IPv4" | "IPv6" | "Time" | "Time64" => Kind::Other,
         "Date" | "Date32" => Kind::Date,
         "DateTime" => Kind::Timestamp,
         // Past microseconds the digits would be lost: text.
@@ -884,6 +891,10 @@ mod tests {
         assert_eq!(kind_of("DateTime64(9)"), Kind::Text, "nanoseconds do not fit");
         assert_eq!(kind_of("Array(Nullable(Int32))"), Kind::Other);
         assert_eq!(kind_of("Enum8('a' = 1)"), Kind::Text);
+        // Text to read, none to the server's `LIKE`: a filter casts them.
+        for t in ["UUID", "IPv4", "IPv6", "Nullable(UUID)", "LowCardinality(IPv4)", "Time", "Time64(3)"] {
+            assert_eq!(kind_of(t), Kind::Other, "{t}");
+        }
     }
 
     #[test]
@@ -926,6 +937,9 @@ mod tests {
         assert_eq!(used_database("USE system").as_deref(), Some("system"));
         assert_eq!(used_database("/* x */ use `a b` ;").as_deref(), Some("a b"));
         assert_eq!(used_database("USE DATABASE d").as_deref(), Some("d"));
+        assert_eq!(used_database("USE database").as_deref(), Some("database"), "a database named so");
+        assert_eq!(used_database("USE database;").as_deref(), Some("database"));
+        assert_eq!(used_database(r"USE `a\x62`").as_deref(), Some("ab"), "as the server reads the name");
         assert_eq!(used_database("SELECT 1"), None);
     }
 

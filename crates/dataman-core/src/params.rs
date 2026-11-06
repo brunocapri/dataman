@@ -53,7 +53,8 @@ pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
 pub(crate) fn brace_names(sql: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for t in tokenize_in(sql, Dialect::ClickHouse).iter().filter(|t| t.kind == TokenKind::Param && t.text(sql).starts_with('{')) {
-        let name = t.text(sql)[1..].split(':').next().unwrap_or_default();
+        let body = &t.text(sql)[1..];
+        let name = tokenize_in(body, Dialect::ClickHouse).into_iter().find(|n| !n.kind.is_trivia()).map_or("", |n| n.text(body));
         if !out.iter().any(|n| n == name) {
             out.push(name.to_string());
         }

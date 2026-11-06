@@ -44,6 +44,11 @@ pub struct Checked {
     pub masked: Vec<(String, Mask)>,
 }
 
+/// A statement that acts on the tables it names without a query to read them from.
+fn names_its_tables(f: &guard::Facts) -> bool {
+    f.effect == Effect::Ddl || matches!(f.verb.as_str(), "TRUNCATE" | "OPTIMIZE" | "CHECK")
+}
+
 const CATALOG_SCHEMAS: &[&str] = &["information_schema", "pg_catalog", "sys", "mysql", "performance_schema", "pg_toast"];
 
 /// Statements that run SQL from a string; the functions that do, or read tables and files
@@ -85,14 +90,83 @@ const ACTIVITY: &[&str] = &[
     "sp_who2",
 ];
 
+/// ClickHouse's `system` tables that show what is running and what ran: other sessions' statements
+/// and values.
+const CLICKHOUSE_ACTIVITY: &[&str] = &[
+    "asynchronous_insert_log", "merges", "mutations", "part_log", "processes", "processors_profile_log", "query_log", "query_metric_log", "query_thread_log", "query_views_log",
+    "replication_queue", "session_log", "stack_trace", "text_log", "trace_log",
+];
+
+/// The functions that are `IN` by name: their second argument may be a table.
+const CLICKHOUSE_IN_FUNCTIONS: &[&str] = &[
+    "NOTIN", "NULLIN", "NOTNULLIN", "GLOBALIN", "GLOBALNOTIN", "GLOBALNULLIN", "GLOBALNOTNULLIN", "INIGNORESET", "NOTINIGNORESET", "NULLINIGNORESET", "NOTNULLINIGNORESET",
+    "GLOBALINIGNORESET", "GLOBALNOTINIGNORESET", "GLOBALNULLINIGNORESET", "GLOBALNOTNULLINIGNORESET",
+];
+
+/// ClickHouse reads a table on the right of `IN` with no FROM for the analysis to follow: `x IN t`,
+/// `x IN (db.t)`, `in(x, t)`, `globalNotIn(x, t)`. The last thing in the parentheses is what a call
+/// would take as its set; a list that ends in a bare name means nothing else to the server.
+fn clickhouse_in_table(sql: &str, toks: &[Token]) -> bool {
+    let punct = |i: usize, p: &str| toks.get(i).is_some_and(|t| t.kind == TokenKind::Punct && t.text(sql) == p);
+    let name = |i: usize| toks.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword));
+    // Whether what starts at `i` and ends before `to` is `a` or `a.b`, in any number of parentheses.
+    let bare = |mut i: usize, mut to: usize| {
+        while punct(i, "(") && to > i + 1 && punct(to - 1, ")") {
+            i += 1;
+            to -= 1;
+        }
+        name(i) && toks.get(i).and_then(|t| word(sql, t)).is_none_or(|w| w != "SELECT" && w != "WITH") && {
+            let mut k = i + 1;
+            while punct(k, ".") && name(k + 1) {
+                k += 2;
+            }
+            k == to
+        }
+    };
+    toks.iter().enumerate().any(|(i, t)| {
+        let Some(w) = word(sql, t) else { return false };
+        if CLICKHOUSE_IN_FUNCTIONS.contains(&w.as_str()) {
+            return punct(i + 1, "(");
+        }
+        if w != "IN" {
+            return false;
+        }
+        if !punct(i + 1, "(") {
+            return name(i + 1) && {
+                let mut k = i + 2;
+                while punct(k, ".") && name(k + 1) {
+                    k += 2;
+                }
+                !punct(k, "(")
+            };
+        }
+        let (mut depth, mut last, mut close) = (0usize, i + 2, None);
+        for (k, t) in toks.iter().enumerate().skip(i + 1) {
+            match (t.kind, t.text(sql)) {
+                (TokenKind::Punct, "(") => depth += 1,
+                (TokenKind::Punct, ")") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(k);
+                        break;
+                    }
+                }
+                (TokenKind::Punct, ",") if depth == 1 => last = k + 1,
+                _ => {}
+            }
+        }
+        bare(last, close.unwrap_or(toks.len()))
+    })
+}
+
 /// The tables a statement names, to be looked up before `check` (schema as written, name).
 pub fn tables_named(sql: &str, dialect: Dialect) -> Vec<(Option<String>, String)> {
     let mut out = Vec::new();
     for_each_statement(sql, dialect, |text, range, toks| {
         // DDL names its tables anywhere (ALTER TABLE t, CREATE INDEX … ON t, a macro's body):
         // every name in it is looked up.
-        if guard::classify_in(&text[range], dialect).effect == Effect::Ddl {
-            for n in ddl_names(text, toks) {
+        if names_its_tables(&guard::classify_in(&text[range], dialect)) {
+            for n in ddl_names(text, toks, dialect) {
                 if !out.contains(&n) {
                     out.push(n);
                 }
@@ -128,8 +202,10 @@ fn for_each_statement(sql: &str, dialect: Dialect, mut f: impl FnMut(&str, std::
 }
 
 /// The names in a statement, `a` or `s.a`, as `(schema, name)`.
-fn ddl_names(sql: &str, toks: &[Token]) -> Vec<(Option<String>, String)> {
-    let name = |t: &Token| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword).then(|| t.text(sql).trim_matches(['"', '`', '[', ']']).to_string());
+fn ddl_names(sql: &str, toks: &[Token], d: Dialect) -> Vec<(Option<String>, String)> {
+    let name = |t: &Token| {
+        matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword).then(|| if d == Dialect::ClickHouse { crate::sql::ident_value_in(sql, t, d) } else { t.text(sql).trim_matches(['"', '`', '[', ']']).to_string() })
+    };
     let mut out = Vec::new();
     for (i, t) in toks.iter().enumerate() {
         let Some(n) = name(t) else { continue };
@@ -233,7 +309,10 @@ fn statement(
         });
         let called = a.calls.iter().map(|(_, n, _)| n.as_str());
         let shows = verb == "SHOW" && (has("PROCESSLIST") || has("STATUS") || has("ENGINE"));
-        if shows || named.chain(called).any(activity_name) || words.iter().flatten().any(|w| matches!(w.as_str(), "SP_WHO" | "SP_WHO2")) {
+        // Only under `system`: elsewhere a table may just be named so.
+        let system_table = d == Dialect::ClickHouse
+            && a.scopes.iter().flat_map(|s| &s.sources).any(|s| matches!(&s.kind, SourceKind::Table { schema: Some(x), name } if x.eq_ignore_ascii_case("system") && CLICKHOUSE_ACTIVITY.contains(&name.to_ascii_lowercase().as_str())));
+        if shows || system_table || named.chain(called).any(activity_name) || words.iter().flatten().any(|w| matches!(w.as_str(), "SP_WHO" | "SP_WHO2")) {
             return Err(format!("server activity is off for agents on {conn} (Dataman › Agents › Permissions)"));
         }
     }
@@ -247,11 +326,20 @@ fn statement(
     if a.unsure {
         return Err(format!("Dataman could not follow this statement, and {conn} keeps some data from agents: write it more plainly"));
     }
+    if d == Dialect::ClickHouse {
+        // Names that only the values say: nothing here could check them.
+        if toks.iter().any(|t| t.kind == TokenKind::Param && t.text(sql).contains("Identifier")) {
+            return Err(format!("{{name:Identifier}} parameters are not available to agents on {conn} while some data is kept from them: write the names in the statement"));
+        }
+        if clickhouse_in_table(sql, toks) {
+            return Err(format!("IN with a table is not available to agents on {conn} while some data is kept from them: write IN (SELECT … FROM …)"));
+        }
+    }
     // Renaming, dropping or rebuilding what is kept (a hidden table, a hidden or masked column)
     // would take it out from under the rules, which go by name.
-    if facts.effect == Effect::Ddl {
+    if names_its_tables(&facts) {
         let names = Names::Qualified;
-        let found = ddl_names(sql, toks);
+        let found = ddl_names(sql, toks, d);
         for (schema, name) in &found {
             let Some(t) = (cx.tables)(schema.as_deref(), name) else { continue };
             if !rules.visible.table_visible(Some(&t.schema), &t.name, names) {
@@ -368,7 +456,7 @@ fn statement(
             if star_inside || whole_row(&a, &n.table, &eq) {
                 return Err(format!("whole rows of {} are not available to agents on {conn}: some columns are hidden; name the columns", n.table.name));
             }
-            if let Some(c) = unfollowed(&a, sql, toks, &n.hidden, &eq) {
+            if let Some(c) = unfollowed(&a, sql, toks, &n.hidden, &eq, d) {
                 return Err(format!("{}.{c} is hidden from agents on {conn}", n.table.name));
             }
         }
@@ -457,7 +545,7 @@ fn statement(
                 None => masked.push((col.clone(), *how)),
             }
         }
-        if let Some(c) = unfollowed(&a, sql, toks, &cols, &eq) {
+        if let Some(c) = unfollowed(&a, sql, toks, &cols, &eq, d) {
             return Err(format!("{}.{c} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed", n.table.name));
         }
         // Whole rows carry every column: `SELECT u`, `row_to_json(u)`, `to_jsonb(u.*)`, and so do
@@ -472,6 +560,17 @@ fn statement(
     }
     if d == Dialect::TSql && toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("FOR") && ["JSON", "XML"].iter().any(|x| w[1].text(sql).eq_ignore_ascii_case(x))) {
         return Err(format!("FOR JSON and FOR XML are not available to agents in Masked data on {conn}: masked columns come back masked only as columns"));
+    }
+    if d == Dialect::ClickHouse {
+        // A statement's own format comes back as lines of text in one column, under no column's name.
+        let ends = |i: usize| toks.get(i).is_none_or(|t| t.text(sql) == ";" || word(sql, t).as_deref() == Some("SETTINGS"));
+        if toks.iter().enumerate().any(|(i, t)| word(sql, t).as_deref() == Some("FORMAT") && toks.get(i + 1).is_some_and(|n| matches!(n.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword | TokenKind::Param | TokenKind::String)) && ends(i + 2)) {
+            return Err(format!("FORMAT is not available to agents in Masked data on {conn}: masked columns come back masked only as columns"));
+        }
+        // EXPLAIN runs a scalar subquery and prints what it answered.
+        if verb == "EXPLAIN" && a.scopes.len() > 1 {
+            return Err(format!("EXPLAIN of a statement with subqueries is not available to agents in Masked data on {conn}: the plan shows what they answer"));
+        }
     }
     Ok(())
 }
@@ -615,13 +714,13 @@ fn compared(sql: &str, toks: &[Token], r: std::ops::Range<usize>, calls: &[std::
 
 /// Identifiers that name one of `cols` where the analysis recorded no reference: inside
 /// `substring(x FROM …)`, `JSON_OBJECT(…)`, `extract(…)` and the like.
-fn unfollowed(a: &Analysis, sql: &str, toks: &[Token], cols: &[String], eq: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+fn unfollowed(a: &Analysis, sql: &str, toks: &[Token], cols: &[String], eq: &dyn Fn(&str, &str) -> bool, d: Dialect) -> Option<String> {
     for (i, t) in toks.iter().enumerate() {
         if !matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent) {
             continue;
         }
-        let v = t.text(sql).trim_matches(['"', '`', '[', ']']);
-        let Some(c) = cols.iter().find(|c| eq(c, v)) else { continue };
+        let v = if d == Dialect::ClickHouse { crate::sql::ident_value_in(sql, t, d) } else { t.text(sql).trim_matches(['"', '`', '[', ']']).to_string() };
+        let Some(c) = cols.iter().find(|c| eq(c, &v)) else { continue };
         let known = a.refs.iter().any(|r| r.name_range == t.range())
             || a.targets.iter().any(|x| x.range == t.range())
             || a.refs.iter().any(|r| r.range.start <= t.start && t.end <= r.range.end)
@@ -813,12 +912,132 @@ mod tests {
         let r = rules();
         let routines = HashSet::new();
         let cx = |dialect| Context { rules: &r, connection: "ch", dialect, tables: &tables, routines: &routines, views: &[] };
-        for sql in ["SELECT * FROM system.columns", "SELECT query FROM SYSTEM.query_log"] {
+        for sql in ["SELECT * FROM system.columns", "SELECT name FROM SYSTEM.tables"] {
             assert!(check(sql, false, &cx(Dialect::ClickHouse)).unwrap_err().contains("system catalog"), "{sql}");
         }
         assert!(check("DESCRIBE TABLE payments", false, &cx(Dialect::ClickHouse)).is_err());
         assert!(check("SELECT id FROM orders", false, &cx(Dialect::ClickHouse)).is_ok());
         assert!(!check("SELECT id FROM system.orders", false, &cx(Dialect::Postgres)).is_err_and(|e| e.contains("system catalog")), "elsewhere a schema may be named so");
+    }
+
+    #[test]
+    fn clickhouse_reads_what_it_names_in_its_own_syntax() {
+        let r = rules();
+        let routines = HashSet::new();
+        let cx = Context { rules: &r, connection: "ch", dialect: Dialect::ClickHouse, tables: &tables, routines: &routines, views: &[] };
+        let refused = [
+            // The right of IN is a table, with no FROM to follow (answers rows on 25.8).
+            "SELECT id FROM orders WHERE id IN payments",
+            "SELECT id FROM orders WHERE id IN public.payments",
+            "SELECT id FROM orders WHERE id GLOBAL NOT IN payments",
+            "SELECT id FROM orders WHERE id IN (payments)",
+            "SELECT id FROM orders WHERE id IN ((public.payments))",
+            "SELECT in(id, payments) FROM orders",
+            "SELECT id FROM orders WHERE in(id, public.payments)",
+            "SELECT globalNotIn(id, payments) FROM orders",
+            "SELECT id FROM orders WHERE NOT in(id, payments)",
+            "SELECT id FROM orders QUALIFY in(lower(notes), public.payments)",
+            "SELECT id FROM orders WHERE id IN system.one",
+            // Names that only the parameters' values say.
+            "SELECT * FROM {t:Identifier}",
+            "SELECT {c:Identifier} FROM users",
+            "SELECT id FROM orders WHERE id IN {t:Identifier}",
+            // Every way to write a join reaches the table.
+            "SELECT 1 FROM orders ALL INNER JOIN payments ON 1",
+            "SELECT 1 FROM orders ANY LEFT JOIN payments USING id",
+            "SELECT 1 FROM orders GLOBAL ANY LEFT JOIN payments ON 1",
+            "SELECT 1 FROM orders LEFT ANTI JOIN payments USING id",
+            "SELECT 1 FROM orders ASOF JOIN payments USING id",
+            "SELECT 1 FROM orders GLOBAL CROSS JOIN payments",
+            "SELECT 1 FROM orders PASTE JOIN payments",
+            "SELECT 1 FROM orders FINAL JOIN payments ON 1",
+            "SELECT 1 FROM orders SAMPLE 1/10 OFFSET 1/2 JOIN payments ON 1",
+            "SELECT 1 FROM orders ARRAY JOIN [1] AS x JOIN payments ON 1",
+            "SELECT 1 FROM orders LEFT ARRAY JOIN [1] AS x JOIN payments ON 1",
+            // Names as the server reads them.
+            "SELECT id FROM `pay\\x6Dents`",
+            "SELECT id FROM `pay\\Nments`",
+            "SELECT id FROM “payments”",
+            "SELECT id FROM `sys\\x74em`.`one`",
+            "SELECT id FROM “system”.“one”",
+            "SELECT u.`password\\x5Fhash` FROM users u",
+            "SELECT id FROM users WHERE `password\\x5Fhash` = 'x'",
+        ];
+        for sql in refused {
+            assert!(check(sql, false, &cx).is_err(), "{sql}");
+        }
+        // Acting on what is kept: nothing reads it, and it is gone all the same.
+        for sql in ["TRUNCATE TABLE payments", "TRUNCATE payments", "OPTIMIZE TABLE payments FINAL", "CHECK TABLE payments", "INSERT INTO TABLE payments VALUES (1)"] {
+            assert!(check(sql, true, &cx).is_err(), "{sql}");
+        }
+        for sql in [
+            "SELECT id FROM orders WHERE id IN (1, 2)",
+            "SELECT id FROM orders WHERE id NOT IN (SELECT id FROM orders)",
+            "SELECT id FROM orders WHERE id IN (WITH 1 AS x SELECT x)",
+            "SELECT id FROM orders WHERE (id) IN (1)",
+            "SELECT id FROM orders WHERE id IN [1, 2]",
+            "SELECT id FROM orders WHERE id IN (toUInt64(1))",
+            "SELECT id FROM orders WHERE date IN ('2024-01-01')",
+            "SELECT id FROM orders WHERE id NOT IN (1, 2)",
+            "SELECT id FROM orders WHERE (id, 1) IN ((1, 1), (2, 1))",
+            "SELECT id FROM orders WHERE lower(notes) IN (lower('A'), 'b')",
+            "SELECT id FROM orders WHERE id IN {v:Array(UInt8)}",
+            "SELECT id FROM orders WHERE id = {v:UInt64}",
+            "SELECT o.id FROM orders o ANY LEFT JOIN users u USING id",
+            "SELECT o.id FROM orders o ALL INNER JOIN users u ON o.id = u.id",
+            "SELECT id FROM orders FINAL SAMPLE 0.1",
+            "SELECT id FROM orders ARRAY JOIN [1] AS x",
+        ] {
+            assert!(check(sql, false, &cx).is_ok(), "{sql}: {:?}", check(sql, false, &cx));
+        }
+        assert!(check("INSERT INTO TABLE orders (id) VALUES (1)", true, &cx).is_ok());
+    }
+
+    #[test]
+    fn clickhouse_keeps_masked_values_in_their_columns() {
+        let mut r = AgentRules { view: AgentView::Masked, ..Default::default() };
+        r.sensitive.push(SensitiveCol { col: "customers.email".into(), how: Mask::PARTIAL, on: true });
+        let routines = HashSet::new();
+        let cx = Context { rules: &r, connection: "ch", dialect: Dialect::ClickHouse, tables: &tables, routines: &routines, views: &[] };
+        for sql in [
+            // A format of its own comes back as lines under `result`: nothing masks that by name.
+            "SELECT email FROM customers FORMAT CSV",
+            "SELECT * FROM customers FORMAT JSONEachRow",
+            "SELECT id FROM customers FORMAT `Vertical`",
+            // EXPLAIN runs a scalar subquery and prints what it answered (probed on 25.8).
+            "EXPLAIN PLAN actions = 1 SELECT id FROM customers WHERE (SELECT email FROM customers LIMIT 1) = name",
+            "EXPLAIN QUERY TREE SELECT id FROM orders WHERE (SELECT email FROM customers LIMIT 1) = notes",
+            // Renamed or computed, however the name is written.
+            "SELECT `em\\x61il` AS e FROM customers",
+            "SELECT upper(`em\\x61il`) FROM customers",
+            "SELECT “email” AS e FROM customers",
+            "SELECT {c:Identifier} AS e FROM customers",
+            "SELECT id FROM customers PREWHERE upper(email) = 'A'",
+            "SELECT id FROM customers LIMIT 1 BY email",
+            "SELECT x FROM customers ARRAY JOIN [email] AS x",
+            "SELECT 1 FROM customers ANY LEFT JOIN orders ON upper(email) = 'a'",
+        ] {
+            assert!(check(sql, false, &cx).is_err(), "{sql}");
+        }
+        assert_eq!(check("SELECT id, email FROM customers", false, &cx).unwrap().masked.len(), 1);
+        assert!(check("SELECT email FROM customers WHERE email = {v:String}", false, &cx).is_ok());
+        assert!(check("SELECT format FROM orders", false, &cx).is_ok(), "a column named so");
+        assert!(check("SELECT format, email FROM customers WHERE format = 'x'", false, &cx).is_ok(), "a column of the masked table too");
+        assert!(check("EXPLAIN SELECT id FROM customers", false, &cx).is_ok());
+    }
+
+    #[test]
+    fn clickhouse_server_activity_is_an_agent_s_only_when_on() {
+        let routines = HashSet::new();
+        let on = |rules: AgentRules, sql: &str| check(sql, false, &Context { rules: &rules, connection: "ch", dialect: Dialect::ClickHouse, tables: &tables, routines: &routines, views: &[] });
+        let off = || AgentRules { activity: false, ..Default::default() };
+        for sql in ["SELECT query FROM system.processes", "SELECT query FROM system.query_log", "SELECT 1 FROM `system`.`query_views_log`", "SHOW PROCESSLIST"] {
+            assert!(on(off(), sql).unwrap_err().contains("server activity"), "{sql}");
+        }
+        assert!(on(off(), "SELECT id FROM processes").is_ok(), "only under system: a table may be named so");
+        assert!(on(off(), "SELECT name FROM system.tables").is_ok());
+        assert!(on(AgentRules::default(), "SELECT query FROM system.processes").is_ok());
+        assert!(on(rules(), "SELECT query FROM system.query_log").unwrap_err().contains("server activity"), "off while anything is kept");
     }
 
     #[test]

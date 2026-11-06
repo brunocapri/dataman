@@ -7,7 +7,7 @@ use anyhow::Result;
 use super::{Column, FuncSig, Index, RelKind, RelStats, Relation};
 use crate::backend::Db;
 use crate::conn::first_ok;
-use crate::sql::Dialect;
+use crate::sql::{Dialect, Token, TokenKind, tokenize_in};
 
 pub(crate) fn lit(s: &str) -> String {
     Dialect::ClickHouse.quote_literal(s)
@@ -70,13 +70,43 @@ pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Col
     )
 }
 
+/// A key as the server writes it, cut at its own commas: not those inside a call, a string or a
+/// quoted name (`toYYYYMM(c), concat(b, 'x, y'), \`p, q\``). A quoted name alone is that name.
+fn key_parts(key: &str) -> Vec<String> {
+    let d = Dialect::ClickHouse;
+    let toks: Vec<Token> = tokenize_in(key, d);
+    let mut out = Vec::new();
+    let (mut depth, mut from) = (0usize, 0);
+    let mut part = |from: usize, to: usize| {
+        let text = key[from..to].trim();
+        let inner: Vec<&Token> = toks.iter().filter(|t| t.start >= from && t.end <= to && !t.kind.is_trivia()).collect();
+        out.push(match inner.as_slice() {
+            [one] if one.kind == TokenKind::QuotedIdent => crate::sql::ident_value_in(key, one, d),
+            _ => text.to_string(),
+        });
+    };
+    for t in toks.iter().filter(|t| t.kind == TokenKind::Punct) {
+        match t.text(key) {
+            "(" | "[" => depth += 1,
+            ")" | "]" => depth = depth.saturating_sub(1),
+            "," if depth == 0 => {
+                part(from, t.start);
+                from = t.end;
+            }
+            _ => {}
+        }
+    }
+    part(from, key.len());
+    out
+}
+
 /// The primary key (never unique here: it sorts the data) and the data skipping indexes.
 pub(super) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Index>> {
     let (s, t) = (lit(schema), lit(table));
     let mut out = Vec::new();
     let q = format!("SELECT primary_key FROM system.tables WHERE database = {s} AND name = {t}");
     if let Some(key) = first_ok(c, &[&q]).await?.first().and_then(|r| get(r, 0)).filter(|k| !k.is_empty()) {
-        out.push(Index { name: "PRIMARY KEY".into(), columns: key.split(", ").map(str::to_string).collect(), unique: false, primary: true, definition: None });
+        out.push(Index { name: "PRIMARY KEY".into(), columns: key_parts(&key), unique: false, primary: true, definition: None });
     }
     let q = format!("SELECT name, expr, type_full, granularity FROM system.data_skipping_indices WHERE database = {s} AND table = {t} ORDER BY name");
     for r in first_ok(c, &[&q]).await? {
@@ -142,5 +172,8 @@ mod tests {
         assert_eq!(lit("a\\'b"), "'a\\\\''b'");
         assert_eq!(rel_kind("MaterializedView"), RelKind::MaterializedView);
         assert_eq!(rel_kind("ReplacingMergeTree"), RelKind::Table);
+        assert_eq!(key_parts("id, day"), ["id", "day"]);
+        assert_eq!(key_parts(r"toYYYYMM(c), intHash32(a), concat(b, \'x, y\')".replace('\\', "").as_str()), ["toYYYYMM(c)", "intHash32(a)", "concat(b, 'x, y')"]);
+        assert_eq!(key_parts("`p, q`"), ["p, q"]);
     }
 }
