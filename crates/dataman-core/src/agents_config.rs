@@ -521,6 +521,30 @@ fn set_agent(p: &mut ConnectionProfile, a: Agent) {
     (p.mcp, p.mcp_row_limit, p.mcp_allowed, p.mcp_yolo, p.mcp_rules) = a;
 }
 
+/// Writes `c`'s rules to the connection (the rest of the profile stays).
+pub fn write_rules(p: &mut ConnectionProfile, c: &ConnRules) {
+    set_agent(p, (c.mcp, c.row_limit, c.allowed.clone(), c.yolo, c.rules.clone()));
+}
+
+/// `p`'s rules once copied from `from`, a connection of its engine. Rules go by name, so what
+/// names nothing on `p`'s server is copied as it is. Not copied, because they are `p`'s own: its
+/// agent login (a user and credentials on one server, and whether agents are refused without
+/// it) and YOLO (turning it on asks on production). Allowed statements only when the page shows
+/// them: a list nobody sees would come in unreviewed.
+pub fn copied(p: &ConnectionProfile, from: &ConnectionProfile) -> ConnRules {
+    ConnRules {
+        id: p.id.clone(),
+        name: p.name.clone(),
+        engine: p.engine,
+        database: p.database.clone(),
+        mcp: from.mcp,
+        row_limit: from.mcp_row_limit,
+        allowed: if crate::config::MCP_ADVANCED { from.mcp_allowed.clone() } else { p.mcp_allowed.clone() },
+        yolo: p.mcp_yolo,
+        rules: from.mcp_rules.clone(),
+    }
+}
+
 /// Writes the file's rules; returns each touched connection's id, its part before and after.
 fn apply_conns(profiles: &mut [ConnectionProfile], f: &AgentsFile) -> Vec<(String, Agent, Agent)> {
     let ids: Vec<(usize, usize)> = f.connections.iter().enumerate().filter_map(|(i, c)| find(c, profiles).ok().and_then(|(p, _)| profiles.iter().position(|x| x.id == p.id)).map(|at| (i, at))).collect();
@@ -528,7 +552,7 @@ fn apply_conns(profiles: &mut [ConnectionProfile], f: &AgentsFile) -> Vec<(Strin
     for (i, at) in ids {
         let (c, p) = (&f.connections[i], &mut profiles[at]);
         let before = agent_of(p);
-        set_agent(p, (c.mcp, c.row_limit, c.allowed.clone(), c.yolo, c.rules.clone()));
+        write_rules(p, c);
         touched.push((p.id.clone(), before, agent_of(p)));
     }
     touched
@@ -614,6 +638,71 @@ fn import_with(config: &ConfigStore, settings: &SettingsStore, f: &AgentsFile, r
 mod tests {
     use super::*;
     use crate::privacy::{CustomType, SensitiveCol, VisibleItem};
+
+    #[test]
+    fn a_copy_takes_the_rules_and_leaves_what_is_one_servers() {
+        let login = |user: &str, p: &ConnectionProfile| crate::agent_login::AgentLogin {
+            user: user.into(),
+            server: String::new(),
+            created: chrono::Utc::now(),
+            synced: chrono::Utc::now(),
+            verified: None,
+            rules: "x".into(),
+            plan: String::new(),
+            rotate_days: None,
+            rotated: None,
+            conn_limit: None,
+            auto_sync: false,
+            database: p.database.clone(),
+            made: Vec::new(),
+            views: Vec::new(),
+            granted: 0,
+            not_granted: 0,
+        };
+        let mut from = ConnectionProfile::new("from");
+        from.host = "from.example".into();
+        from.env = crate::config::Environment::Dev;
+        from.read_only = true;
+        (from.mcp, from.mcp_row_limit, from.mcp_yolo) = (Some(McpAccess::Full), Some(1000), true);
+        from.mcp_allowed = vec!["DELETE FROM t WHERE id = ?".into()];
+        from.mcp_rules.view = AgentView::Masked;
+        from.mcp_rules.structure = false;
+        from.mcp_rules.time_limit_s = Some(30);
+        from.mcp_rules.visible.items.push(VisibleItem { name: "only_on_from".into(), kind: ItemKind::Table });
+        from.mcp_rules.sensitive.push(SensitiveCol { col: "only_on_from.c".into(), how: Mask::Hidden, on: true });
+        from.agent_login = Some(login("from_agent", &from));
+
+        let mut p = ConnectionProfile::new("to");
+        p.host = "to.example".into();
+        p.env = crate::config::Environment::Production;
+        p.agents_refused = true;
+        p.agent_login = Some(login("to_agent", &p));
+        p.mcp_allowed = vec!["UPDATE t SET a = ? WHERE id = ?".into()];
+        let before = p.clone();
+
+        let c = copied(&p, &from);
+        let changes = conn_changes(&p, &c);
+        assert!(changes.iter().any(|x| x.what == "MCP tier" && x.loosens), "{changes:?}");
+        assert!(changes.iter().any(|x| x.what == "The agent sees"), "{changes:?}");
+        assert!(!changes.iter().any(|x| x.what == "YOLO"), "{changes:?}");
+        write_rules(&mut p, &c);
+
+        // The whole profile: nothing but the rules moves, and those are the source's to the letter.
+        let allowed = if crate::config::MCP_ADVANCED { from.mcp_allowed.clone() } else { before.mcp_allowed.clone() };
+        let want = ConnectionProfile { mcp: from.mcp, mcp_row_limit: from.mcp_row_limit, mcp_allowed: allowed, mcp_rules: from.mcp_rules.clone(), ..before.clone() };
+        assert_eq!(p, want);
+        assert_eq!(p.agent_login.as_ref().map(|l| l.user.as_str()), Some("to_agent"));
+        assert!(!p.mcp_yolo && p.agents_refused && p.env.is_production());
+        assert!(conn_changes(&p, &copied(&p, &from)).is_empty(), "copied again: nothing left");
+
+        // A source with no login leaves the target's, and with no tier set the target follows its own default.
+        let mut plain = ConnectionProfile::new("plain");
+        plain.mcp_rules.view = AgentView::Masked;
+        let c = copied(&p, &plain);
+        write_rules(&mut p, &c);
+        assert_eq!(p.agent_login.as_ref().map(|l| l.user.as_str()), Some("to_agent"));
+        assert_eq!((p.mcp, p.mcp_access()), (None, McpAccess::Off));
+    }
 
     fn setup() -> (tempfile::TempDir, crate::Dirs, ConfigStore, SettingsStore) {
         let dir = tempfile::tempdir().unwrap();

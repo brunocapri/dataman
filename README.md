@@ -215,6 +215,8 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 
 **Connect an agent.** Shows the stdio command to give your MCP client, with a Copy button.
 
+**Copy from…**, at the top of Protection, takes the tier, limits and privacy rules of another connection of the same engine. A sheet lists what changes and flags what gives agents more before anything is written. The connection keeps its own agent login.
+
 **Settings file: Export… / Import…** saves every agent rule to a `dataman-agents.toml` file, or loads one.
 
 - **Included:** agent access, sensitive data types, and per connection its tier, row limit and all its Privacy and Permissions rules.

@@ -190,6 +190,8 @@ pub(crate) enum Act {
     OpenTab(usize),
     /// Audit › Clear…: None for everything.
     Clear(Option<dataman_core::audit::Clear>),
+    /// Protection › Copy from…: the connection's id.
+    CopyFrom(String),
 }
 
 pub(crate) struct Menu {
@@ -297,6 +299,8 @@ pub struct AgentsPage {
     /// Audit › Clear…'s sheet, while it asks.
     pub(crate) clear: Option<crate::agents_clear::ClearSheet>,
     pub(crate) clear_focus: FocusHandle,
+    pub(crate) copy: Option<crate::agents_copy::CopySheet>,
+    pub(crate) copy_focus: FocusHandle,
     /// The next read of the log drops agent and connection filters that match nothing left.
     prune_filters: bool,
     /// Protection's agent login: the selected connection's, its sheets.
@@ -643,6 +647,8 @@ impl AgentsPage {
             loading: BTreeSet::new(),
             clear: None,
             clear_focus: cx.focus_handle(),
+            copy: None,
+            copy_focus: cx.focus_handle(),
             prune_filters: false,
             login: Default::default(),
             no_logins: BTreeSet::new(),
@@ -834,6 +840,7 @@ impl AgentsPage {
             }
             Act::OpenTab(i) => self.open_entry(i, cx),
             Act::Clear(what) => self.open_clear(what, window, cx),
+            Act::CopyFrom(id) => self.open_copy(id, window, cx),
         }
         cx.notify();
     }
@@ -2194,5 +2201,6 @@ impl Render for AgentsPage {
             .children(self.render_menu(&t, cx))
             .children(self.render_import(&t, cx))
             .children(self.render_clear(&t, cx))
+            .children(self.render_copy(&t, cx))
     }
 }
