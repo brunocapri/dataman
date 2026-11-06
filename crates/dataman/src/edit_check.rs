@@ -112,6 +112,20 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let stock = sql1(&core, &pg, &pw, "SELECT coalesce(stock::text, 'null') FROM dataman_scratch.products_edit WHERE id = 104", cx).await;
     r.check("⌘⇧N sets NULL, committed as NULL", stock.as_deref() == Some("null"), format!("{stock:?}"));
 
+    let row = row_of(&tab, "104", cx).unwrap_or(0);
+    let stored = cell(&tab, row, STOCK, cx);
+    edit_cell(&tab, "104", STOCK, Some("7"), cx).await;
+    let _ = cx.update(|window, cx| {
+        grid.update(cx, |g, cx| g.select_cell(row, STOCK, cx));
+        window.focus(&grid.focus_handle(cx), cx);
+    });
+    key(cx, "cmd-c");
+    let one = clipboard(cx);
+    key(cx, "cmd-shift-c");
+    let with = clipboard(cx);
+    r.check("a NULL with a pending edit copies what the cell shows, never \\N", stored.is_none() && one == "7" && with == "stock\n7\n", format!("{stored:?} {one:?} {with:?}"));
+    key(cx, "cmd-backspace");
+
     edit_cell(&tab, "105", NAME, Some("mine"), cx).await;
     let _ = sql(&core, &pg, &pw, "UPDATE dataman_scratch.products_edit SET name = 'theirs' WHERE id = 105", cx).await;
     key(cx, "cmd-s");

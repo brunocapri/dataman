@@ -208,7 +208,7 @@ pub(crate) fn push_value(b: &mut ChunkBuilder, i: usize, kind: Kind, v: &ColumnD
             value::Storage::Text => b.push_text_with(i, |s| {
                 text_into(v, s);
             }),
-            _ => b.push_null(i),
+            _ => b.push_undecoded(i, format!("{kind:?}: {v:?}")),
         },
     }
 }
@@ -255,6 +255,15 @@ mod tests {
         b.end_row();
         let chunk = b.finish();
         format_cell(kind, chunk.cell(0, 0)).map(|s| s.into_owned())
+    }
+
+    #[test]
+    fn a_value_the_kind_cannot_hold_is_counted_not_a_silent_null() {
+        let mut b = ChunkBuilder::new(&[col(Kind::Date)]);
+        push_value(&mut b, 0, Kind::Date, &ColumnData::String(Some("2024-01-01".into())));
+        b.end_row();
+        let chunk = b.finish();
+        assert_eq!(chunk.undecoded, 1);
     }
 
     #[test]

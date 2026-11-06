@@ -313,8 +313,14 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-a");
     key(cx, "cmd-shift-c");
     let clip = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten().unwrap_or_default();
+    key(cx, "cmd-alt-c");
+    let csv = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten().unwrap_or_default();
     snap("unicode", cx);
-    check("unicode names and values copy as they are, NULL apart from ''", phase == Some(Phase::Done) && clip.trim_end_matches('\n') == "名前 🙂\tn\te\ncafé 😀👍🏽 日本\t\\N\t", format!("{phase:?} {err} {clip:?}"));
+    check(
+        "unicode names and values copy as they are; CSV keeps NULL apart from ''",
+        phase == Some(Phase::Done) && clip.trim_end_matches('\n') == "名前 🙂\tn\te\ncafé 😀👍🏽 日本\t\t" && csv.trim_end_matches('\n') == "café 😀👍🏽 日本,,\"\"",
+        format!("{phase:?} {err} {clip:?} {csv:?}"),
+    );
 
     let wide = format!("SELECT {}", (1..=600).map(|i| format!("{i} AS column_number_{i}")).collect::<Vec<_>>().join(", "));
     editor_text(ws, &wide, cx);

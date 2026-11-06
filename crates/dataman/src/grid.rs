@@ -1551,10 +1551,7 @@ impl ResultGrid {
         match ix.and_then(|i| m.entries.get(i)) {
             Some(MenuEntry::Item(MenuItem::Go(j))) => cx.emit(GridEvent::FollowFk(j.clone())),
             Some(MenuEntry::Item(MenuItem::CopyValue)) => {
-                if let Some(rs) = &self.rs
-                    && m.cell.row < rs.rows()
-                {
-                    let text = rs.snapshot().text(m.cell.row, self.rc(m.cell.col)).map(|v| v.into_owned()).unwrap_or_default();
+                if let Some(text) = self.value_text(m.cell.row, self.rc(m.cell.col)) {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             }
@@ -1785,11 +1782,42 @@ impl ResultGrid {
         ((self.geo.body_h / ROW_H) as isize - 1).max(1)
     }
 
+    /// What a cell shows when it is not what the result holds: a pending edit, or a new row's
+    /// cell, whose grey placeholder is no value.
+    fn pending_text<'a>(decor: Option<&'a Decorations>, snap: &Snapshot, row: usize, col: usize) -> Option<Option<&'a str>> {
+        let d = decor?;
+        let real = snap.rows();
+        if row < real {
+            return d.cells.get(&(snap.source_row(row), col))?.text.as_ref().map(|t| t.as_deref());
+        }
+        let cell = d.virtual_rows.get(row - real)?.cells.get(col)?;
+        if cell.ghost { Some(None) } else { cell.text.as_ref().map(|t| t.as_deref()) }
+    }
+
+    /// One cell as it is, for pasting anywhere: nothing escaped, and a NULL is nothing.
+    fn value_text(&self, row: usize, col: usize) -> Option<String> {
+        let snap = self.rs.as_ref()?.snapshot();
+        let text = match Self::pending_text(self.decor.as_deref(), &snap, row, col) {
+            Some(shown) => shown.map(str::to_string),
+            None if row < snap.rows() => snap.text(row, col).map(|v| v.into_owned()),
+            None => return None,
+        };
+        Some(text.unwrap_or_default())
+    }
+
     pub fn copy(&mut self, fmt: CopyFormat, header: bool, cx: &mut Context<Self>) {
         let (Some(rs), Some(sel)) = (self.rs.as_ref(), self.sel) else { return };
         let cols: Vec<usize> = sel.cols(self.dcols()).map(|d| self.rc(d)).collect();
-        let real = rs.rows();
-        let text = rs.copy(sel.rows().filter(|r| *r < real), &cols, fmt, header);
+        let total = self.rows();
+        let rows = sel.rows().filter(|r| *r < total);
+        let text = if fmt == CopyFormat::Tsv && !header && cols.len() == 1 && rows.clone().take(2).count() == 1 {
+            rows.clone().next().and_then(|r| self.value_text(r, cols[0]))
+        } else {
+            let snap = rs.snapshot();
+            let decor = self.decor.as_deref();
+            Some(rs.copy(rows, &cols, fmt, header, |r, c| Self::pending_text(decor, &snap, r, c)))
+        };
+        let Some(text) = text else { return };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.mark_copied(cx);
     }
