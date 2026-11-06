@@ -54,9 +54,46 @@ pub struct EditTarget {
     pub not_null: Vec<bool>,
     pub dialect: Dialect,
     pub generated: Vec<bool>,
+    /// The server fills it when an INSERT leaves it out: a default, an identity, a rowid.
+    pub has_default: Vec<bool>,
+    /// The column a new row gets a generated UUID in: the whole key, which nothing fills and no
+    /// other table's row decides.
+    pub uuid_key: Option<usize>,
+    pub uuid_upper: bool,
+}
+
+/// What an INSERT that leaves a column out stores: what a new row's untouched cell says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blank {
+    Computed,
+    Default,
+    Null,
+    /// Left out, the INSERT fails.
+    Required,
 }
 
 impl EditTarget {
+    pub fn blank(&self, col: usize) -> Blank {
+        if !self.is_editable(col) {
+            Blank::Computed
+        } else if self.has_default.get(col).copied().unwrap_or(false) {
+            Blank::Default
+        } else if self.nullable(col) {
+            Blank::Null
+        } else {
+            Blank::Required
+        }
+    }
+
+    /// The value a new row offers, with its column.
+    pub fn new_row_uuid(&self) -> Option<(usize, CellValue)> {
+        let col = self.uuid_key?;
+        let id = uuid::Uuid::new_v4().hyphenated();
+        let mut buf = uuid::Uuid::encode_buffer();
+        let text = if self.uuid_upper { id.encode_upper(&mut buf) } else { id.encode_lower(&mut buf) };
+        Some((col, CellValue::text(&*text)))
+    }
+
     pub fn is_editable(&self, col: usize) -> bool {
         self.columns.get(col).is_some_and(|c| c.is_some()) && !self.generated.get(col).copied().unwrap_or(false)
     }
@@ -572,7 +609,8 @@ impl Connection {
             return ro("the result mixes columns of several tables (a join): edit the tables one at a time");
         }
         let mut generated = vec![false; cols.len()];
-        let (table, columns, oid, not_null) = if let Some(&oid) = oids.iter().next() {
+        let caps = self.caps();
+        let (table, columns, oid, not_null, has_default, declared) = if let Some(&oid) = oids.iter().next() {
             let rel = first_ok(
                 &client,
                 &[&format!(
@@ -595,7 +633,16 @@ impl Connection {
             let atts = first_ok(
                 &client,
                 &[
-                    &format!("SELECT attnum, attname, attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = {oid} AND attnum > 0"),
+                    // A domain's NOT NULL and default are its own, not the column's (and a domain
+                    // over a domain has copied them). `attidentity` is PostgreSQL 10.
+                    &format!(
+                        "SELECT a.attnum, a.attname, a.attnotnull OR t.typnotnull, a.atthasdef OR a.attidentity <> '' OR t.typdefault IS NOT NULL \
+                         FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid = a.atttypid WHERE a.attrelid = {oid} AND a.attnum > 0"
+                    ),
+                    &format!(
+                        "SELECT a.attnum, a.attname, a.attnotnull OR t.typnotnull, a.atthasdef OR t.typdefault IS NOT NULL \
+                         FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid = a.atttypid WHERE a.attrelid = {oid} AND a.attnum > 0"
+                    ),
                     &format!("SELECT attnum, attname FROM pg_catalog.pg_attribute WHERE attrelid = {oid} AND attnum > 0"),
                 ],
             )
@@ -607,8 +654,10 @@ impl Connection {
             };
             let columns: Vec<Option<String>> = (0..cols.len()).map(|i| att(i).and_then(|a| a.get(1).cloned().flatten())).collect();
             let not_null: Vec<bool> = (0..cols.len()).map(|i| att(i).and_then(|a| a.get(2).cloned().flatten()).as_deref() == Some("t")).collect();
+            // A catalog that does not say keeps the column's blank as the server's to decide.
+            let has_default: Vec<bool> = (0..cols.len()).map(|i| att(i).and_then(|a| a.get(3).cloned().flatten()).is_none_or(|d| d == "t")).collect();
             let table = TableRef { schema: r.first().cloned().flatten(), name: r.get(1).cloned().flatten().unwrap_or_default() };
-            (table, columns, Some(oid), not_null)
+            (table, columns, Some(oid), not_null, has_default, type_names.clone())
         } else {
             // A table created since its schema was read (DDL in a tab, another client) is not in
             // the cache yet: one more read before it counts as missing.
@@ -675,7 +724,14 @@ impl Connection {
                 .iter()
                 .map(|c| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n)).is_some_and(|t| t.nullable == Some(false)))
                 .collect();
-            (TableRef { schema: Some(schema), name: rel.name.clone() }, columns, rel.oid, not_null)
+            let of = |c: &Option<String>| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n));
+            let single_key = tcols_full.iter().filter(|t| t.primary_key).count() == 1;
+            let has_default = columns
+                .iter()
+                .map(|c| of(c).is_some_and(|t| t.default.is_some() || (caps.rowid_key && single_key && t.primary_key && t.type_name.eq_ignore_ascii_case("integer"))))
+                .collect();
+            let declared = columns.iter().map(|c| of(c).map_or(String::new(), |t| t.type_name.clone())).collect();
+            (TableRef { schema: Some(schema), name: rel.name.clone() }, columns, rel.oid, not_null, has_default, declared)
         };
         let mut columns = columns;
         let mut seen = BTreeSet::new();
@@ -744,7 +800,27 @@ impl Connection {
                 None => return Ok(Editability::ReadOnly(format!("key column {n} is not in the result: add it to the SELECT to edit"))),
             }
         }
-        Ok(Editability::Editable(EditTarget { table, key, key_source: source, columns, kinds, type_names, not_null, dialect: self.dialect(), generated }))
+        let is_uuid = |name: &String| crate::value::type_shape(self.engine(), name) == crate::value::TypeShape::Uuid;
+        let uuid_key = match key.as_slice() {
+            [k] if !generated[k.result_col] && !has_default[k.result_col] && (is_uuid(&type_names[k.result_col]) || is_uuid(&declared[k.result_col])) => {
+                self.key_is_its_own(db, &table, &k.name).await.then_some(k.result_col)
+            }
+            _ => None,
+        };
+        Ok(Editability::Editable(EditTarget { table, key, key_source: source, columns, kinds, type_names, not_null, dialect: self.dialect(), generated, has_default, uuid_key, uuid_upper: caps.uuid_upper }))
+    }
+
+    /// A key that references another table's row (a one-to-one table) takes that row's value.
+    async fn key_is_its_own(self: &Arc<Self>, db: &str, table: &TableRef, column: &str) -> bool {
+        let schema = table.schema.as_deref().unwrap_or_default();
+        let d = self.dialect();
+        match self.relationships(db, schema).await {
+            Ok(g) => !g.links.iter().any(|l| same_name(d, &l.from_schema, schema) && same_name(d, &l.from_table, &table.name) && l.from_columns.iter().any(|f| same_name(d, f, column))),
+            Err(e) => {
+                log::debug!("no UUID offered for {}: its foreign keys could not be read: {e:#}", table.name);
+                false
+            }
+        }
     }
 }
 
@@ -1296,6 +1372,9 @@ mod tests {
             kinds: cols.iter().map(|c| c.kind).collect(),
             type_names: cols.iter().map(|c| c.type_name.clone()).collect(),
             not_null: vec![true, false, false, false],
+            has_default: vec![false; 4],
+            uuid_key: None,
+            uuid_upper: false,
             dialect: Dialect::Postgres,
             generated: vec![false; 4],
         };

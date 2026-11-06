@@ -327,6 +327,18 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
             format!("ordered {ordered}, nulls last {nulls_last}, first {:?}", vals.first()),
         );
     }
+    crate::check::set_clipboard("stale", cx);
+    let name = cx.update(|_, cx| grid.read(cx).result().and_then(|r| r.columns()).map(|c| c[1].name.clone())).ok().flatten().unwrap_or_default();
+    let labels = cx.update(|window, cx| {
+        grid.update(cx, |g, cx| {
+            g.demo_header_menu(1, window, cx);
+            let labels = g.demo_menu().map(|m| m.1).unwrap_or_default();
+            g.demo_menu_run("Copy column name", window, cx);
+            labels
+        })
+    });
+    let copied = crate::check::clipboard(cx);
+    report("the header menu's Copy column name puts the column's name on the clipboard", !name.is_empty() && copied == name, format!("{name:?} -> {copied:?}, menu {labels:?}"));
     let before = cx.update(|_, cx| (grid.read(cx).display_order(), grid.read(cx).result().and_then(|r| r.sort_state()))).unwrap();
     let m = Modifiers::default();
     let p = header(0, cx);

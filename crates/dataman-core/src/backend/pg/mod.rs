@@ -841,11 +841,11 @@ fn push_text_row(b: &mut ChunkBuilder, row: &tokio_postgres::SimpleQueryRow, sto
                 Storage::Text => b.push_text(i, v),
                 Storage::I64 => match v.parse::<i64>() {
                     Ok(n) => b.push_i64(i, n),
-                    Err(_) => b.push_null(i),
+                    Err(e) => b.push_undecoded(i, format!("{v}: {e}")),
                 },
                 Storage::F64 => match v.parse::<f64>() {
                     Ok(n) => b.push_f64(i, n),
-                    Err(_) => b.push_null(i),
+                    Err(e) => b.push_undecoded(i, format!("{v}: {e}")),
                 },
                 Storage::Bool => b.push_bool(i, matches!(v, "t" | "true")),
             },
@@ -938,8 +938,12 @@ pub(crate) fn push_row(b: &mut ChunkBuilder, row: &tokio_postgres::Row, types: &
     for (i, ty) in types.iter().enumerate() {
         let raw = match row.try_get::<_, RawCell>(i) {
             Ok(RawCell(Some(raw))) => raw,
-            _ => {
+            Ok(RawCell(None)) => {
                 b.push_null(i);
+                continue;
+            }
+            Err(e) => {
+                b.push_undecoded(i, format!("{ty}: {e}"));
                 continue;
             }
         };

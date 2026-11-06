@@ -1062,10 +1062,18 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         copies.push(cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten().unwrap_or_default());
     }
     report(
-        "Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers escapes as TSV",
-        copies == ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\\N\n"],
+        "Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers leaves a NULL empty",
+        copies == ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\n"],
         format!("{copies:?}"),
     );
+    let mut cells = Vec::new();
+    for col in [0, 2] {
+        crate::check::set_clipboard("stale", cx);
+        let _ = cx.update(|_, cx| qgrid.update(cx, |g, cx| g.select_cell(0, col, cx)));
+        press(cx, "cmd-c");
+        cells.push(crate::check::clipboard(cx));
+    }
+    report("⌘C on one cell copies the value alone; on a NULL, nothing", cells == ["a,b", ""], format!("{cells:?}"));
     if let Some(c) = clip {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }

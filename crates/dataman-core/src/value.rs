@@ -38,8 +38,7 @@ pub fn type_shape(engine: crate::config::Engine, type_name: &str) -> TypeShape {
     let t = type_name.trim().to_ascii_lowercase();
     match engine {
         Engine::Postgres | Engine::DuckDb if t.starts_with('_') || t.ends_with(']') => TypeShape::Array,
-        Engine::Postgres | Engine::DuckDb if t == "uuid" => TypeShape::Uuid,
-        Engine::SqlServer if t == "uniqueidentifier" => TypeShape::Uuid,
+        _ if engine.caps().uuid_types.contains(&t.as_str()) => TypeShape::Uuid,
         Engine::MySql if t == "enum" || t.starts_with("enum(") => TypeShape::Enum,
         Engine::DuckDb if t.starts_with("enum") => TypeShape::Enum,
         _ => TypeShape::Plain,
