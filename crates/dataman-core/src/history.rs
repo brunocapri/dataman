@@ -111,7 +111,7 @@ impl History {
         for id in connection_ids {
             all.extend(self.load(id, limit)?.into_iter().map(|e| (id.clone(), e)));
         }
-        all.sort_by(|a, b| b.1.ts.cmp(&a.1.ts));
+        all.sort_by_key(|a| std::cmp::Reverse(a.1.ts));
         all.truncate(limit);
         Ok(all)
     }

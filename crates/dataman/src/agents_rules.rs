@@ -444,7 +444,6 @@ impl AgentsPage {
     }
 
     /// A popup button whose menu sets one value (an `Act` each).
-    #[allow(clippy::too_many_arguments)]
     fn pick(&self, t: &Theme, id: &str, label: &str, enabled: bool, fit: Fit, width: f32, items: Vec<(SharedString, bool, Act)>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let sid = SharedString::from(id.to_string());
         let el = div().id(SharedString::from(format!("{id}-btn"))).flex().when(fit == Fit::Fill, |d| d.w_full()).child(select(t, self, sid.clone(), label, enabled, fit));

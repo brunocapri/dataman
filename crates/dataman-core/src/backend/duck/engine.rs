@@ -40,6 +40,7 @@ macro_rules! api {
         const COUNT: usize = [$(stringify!($n)),*].len();
 
         /// The struct, from the engine's table in the list's order.
+        #[allow(clippy::missing_transmute_annotations)] // The target is each field's type, which the macro does not name.
         unsafe fn api(t: &[*const c_void; COUNT]) -> ffi::duckdb_ext_api_v1 {
             let mut i = 0;
             // SAFETY: each entry is the engine's own function of that name, the field's type.

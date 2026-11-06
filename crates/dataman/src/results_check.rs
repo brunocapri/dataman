@@ -133,7 +133,7 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let rows = first.1.unwrap_or(0);
     report(
         "the first result paused before the next statement: it keeps one prefetch window",
-        first.0 == Some(State::Partial) && rows >= PREFETCH && rows < 1_000_000,
+        first.0 == Some(State::Partial) && (PREFETCH..1_000_000).contains(&rows),
         format!("{:?} {rows}", first.0),
     );
 
@@ -355,7 +355,7 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let mut label = String::new();
     for _ in 0..200 {
         pause(cx, 50).await;
-        let got = cx.update(|_, cx| tab.read(cx).result().filter(|r| r.phase() == Phase::Paused && r.estimate_known()).map(|r| crate::chrome::fetch_all_label(Some(&r)).to_string())).ok().flatten();
+        let got = cx.update(|_, cx| tab.read(cx).result().filter(|r| r.phase() == Phase::Paused && r.estimate_known()).map(|r| crate::chrome::fetch_all_label(Some(r)).to_string())).ok().flatten();
         if let Some(l) = got {
             label = l;
             break;

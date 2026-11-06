@@ -117,7 +117,6 @@ fn write_report(p: &std::panic::PanicHookInfo) {
     let _ = f.sync_all();
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn write_to(
     w: &mut impl std::io::Write,
     version: &str,

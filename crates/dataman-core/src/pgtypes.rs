@@ -59,10 +59,10 @@ pub(crate) fn format_special(ty: &Type, raw: &[u8], out: &mut String) -> Option<
     }
     Some(match ty.name() {
         "bit" | "varbit" => bits(raw, out),
-        "point" => (|| {
+        "point" => {
             let mut c = Cur(raw);
             point(&mut c, out)
-        })(),
+        }
         "line" => (|| {
             let mut c = Cur(raw);
             out.push('{');

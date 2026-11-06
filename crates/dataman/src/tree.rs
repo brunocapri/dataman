@@ -106,7 +106,7 @@ impl Slide {
     /// Row `ix`'s offset and opacity in this frame, if it moved.
     fn at(&self, ix: usize) -> Option<(f32, f32)> {
         let from = *self.from.get(ix)?;
-        (from != 0.).then(|| (from * self.now, 1. - 2.2 * self.now * (1. - self.now)))
+        (from != 0.).then_some((from * self.now, 1. - 2.2 * self.now * (1. - self.now)))
     }
 }
 
@@ -1211,7 +1211,6 @@ impl SchemaTree {
 
     /// A schema's tables, then its views, without an extension's (PostGIS's spatial_ref_sys…)
     /// or their sizes; an open one lists its columns.
-    #[allow(clippy::too_many_arguments)]
     fn push_tables(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
         let Some(rels) = conn.schema.cached_relations(db, s) else {
             rows.push(loading_row(&sid(c, db, s), d));
@@ -1238,7 +1237,6 @@ impl SchemaTree {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn push_schema(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, conn: &Arc<Connection>, t: &Theme, d0: usize) {
         let cache = &conn.schema;
         let Some(rels) = cache.cached_relations(db, s) else {
@@ -1313,7 +1311,6 @@ impl SchemaTree {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn push_rel(&self, rows: &mut Vec<Row>, base: &str, c: &str, db: &str, s: &str, name: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
         let cols_id = format!("{base}/cols");
         let idx_id = format!("{base}/idx");
@@ -3250,7 +3247,7 @@ impl SchemaTree {
             .flex_row()
             .items_center()
             .gap(px(5.))
-            .map(|d| ui::selectable(d, &t, sel && !dropping, focused))
+            .map(|d| ui::selectable(d, t, sel && !dropping, focused))
             .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
             .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
             .when(!is_naming, |d| d.cursor_pointer())
@@ -3639,7 +3636,6 @@ fn role_row(c: &str, r: &dataman_core::schema::Role, depth: usize) -> Row {
         .meta(flags.join(" · "), Meta::Plain)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn menu_row(
     t: &Theme,
     id: impl Into<gpui::ElementId>,

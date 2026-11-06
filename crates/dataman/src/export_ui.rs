@@ -246,8 +246,7 @@ impl ExportView {
             _quit: cx.on_app_quit(|v: &mut ExportView, cx| {
                 let wait = v.is_running();
                 v.stop(cx);
-                let timer = cx.background_executor().timer(Duration::from_millis(if wait { 400 } else { 0 }));
-                async move { timer.await }
+                cx.background_executor().timer(Duration::from_millis(if wait { 400 } else { 0 }))
             }),
         };
         v.path = v.default_path(&name);

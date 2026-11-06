@@ -486,7 +486,7 @@ pub(crate) fn agents_of(entries: &[Entry]) -> Vec<AgentCard> {
         };
         card.last = card.last.max(e.ts);
     }
-    out.sort_by(|a, b| b.last.cmp(&a.last));
+    out.sort_by_key(|a| std::cmp::Reverse(a.last));
     out
 }
 
@@ -1767,7 +1767,8 @@ pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::Resul
         let names = cols.iter().map(|c| c.get(0).and_then(Value::as_str).or(c.as_str()).unwrap_or("").to_string()).collect();
         let types = cols.iter().map(|c| c.get(1).and_then(Value::as_str).unwrap_or("").to_string()).collect();
         (names, types, rows.iter().map(|r| r.as_array().cloned().unwrap_or_default()).collect())
-    } else if let Some(docs) = result.get("documents").and_then(Value::as_array) {
+    } else {
+        let docs = result.get("documents").and_then(Value::as_array)?;
         let mut names: Vec<String> = Vec::new();
         for d in docs {
             match d.as_object() {
@@ -1779,8 +1780,6 @@ pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::Resul
         names.truncate(64);
         let rows = docs.iter().map(|d| names.iter().map(|n| d.as_object().map_or_else(|| d.clone(), |m| m.get(n).cloned().unwrap_or(Value::Null))).collect()).collect();
         (names.clone(), vec![String::new(); names.len()], rows)
-    } else {
-        return None;
     };
     let kind_of = |k: usize| {
         let vals: Vec<&Value> = rows.iter().filter_map(|r| r.get(k)).filter(|x| !x.is_null()).collect();

@@ -29,7 +29,7 @@ fn qual(schema: &str, name: &str) -> String {
 /// The grant as the statement says it, without `GRANT`/`TO`.
 pub fn text(g: &Grant) -> String {
     match g {
-        Grant::Database(p) => format!("{p}"),
+        Grant::Database(p) => p.to_string(),
         Grant::Schema { schema, privilege } => format!("{privilege} ON SCHEMA {}", q(schema)),
         Grant::Table { schema, name, privilege } => format!("{privilege} ON {}", qual(schema, name)),
         Grant::Column { schema, name, column, privilege } => format!("{privilege} ({}) ON {}", q(column), qual(schema, name)),

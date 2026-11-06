@@ -461,7 +461,7 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let r = try_sql(top0(e, "1", &qual(s, n))).await;
         out.push(check(G::Privacy, "Can't read hidden tables", name, TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden table".into())));
     }
-    let probe_table = format!("dataman_probe_{}", &hash::hex(&hash::random_bytes(4)));
+    let probe_table = format!("dataman_probe_{}", hash::hex(&hash::random_bytes(4)));
     let schema = match e {
         Engine::Postgres => "public".to_string(),
         Engine::SqlServer => "dbo".to_string(),

@@ -402,6 +402,7 @@ impl Buffer {
         s.chars().count() + s.bytes().filter(|&b| b >= 0xf0).count()
     }
 
+    #[allow(clippy::wrong_self_convention)] // Maps an offset back through this buffer.
     pub(crate) fn from_utf16(&self, offset: usize) -> usize {
         if self.non_ascii == 0 {
             return offset.min(self.text.len());
@@ -910,7 +911,7 @@ fn token_color(t: &Theme, kind: TokenKind, word: &str, next_is_paren: bool) -> H
 }
 
 pub(crate) fn highlighted_lines(t: &Theme, sql: &str) -> Vec<(SharedString, Vec<TextRun>)> {
-    lines_of(t, sql, |s| tokenize(s))
+    lines_of(t, sql, tokenize)
 }
 
 /// [`highlighted_lines`] in an engine's own language: its SQL dialect, or the MongoDB shell,
@@ -3324,7 +3325,7 @@ impl CodeEditor {
     fn fold_here(&mut self, on: bool, cx: &mut Context<Self>) {
         let l = self.buf.line_of(self.cursor());
         let around = |r: &&FoldRegion| self.buf.line_of(r.open) <= l && l < self.buf.line_of(r.close);
-        let pick = self.regions.iter().filter(around).filter(|r| self.is_folded(r.open) != on).map(|r| r.open).last();
+        let pick = self.regions.iter().filter(around).filter(|r| self.is_folded(r.open) != on).map(|r| r.open).next_back();
         if let Some(open) = pick {
             self.set_fold(open, on);
             self.folds_changed(cx);

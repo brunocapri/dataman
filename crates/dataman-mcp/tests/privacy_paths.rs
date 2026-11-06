@@ -281,7 +281,7 @@ fn postgres_values_stay_kept() {
     for f in [
         format!("SELECT table_to_xml('{s}.users', true, false, '')"),
         format!("SELECT schema_to_xml('{s}', true, false, '')"),
-        format!("SELECT database_to_xml(true, false, '')"),
+        "SELECT database_to_xml(true, false, '')".to_string(),
     ] {
         refused(&f, q(f.clone()), "is not available to agents on pp");
     }
@@ -854,9 +854,7 @@ fn user_tools_follow_the_rules() {
         return;
     }
     let s = format!("mcp_tools_{}", std::process::id());
-    let rules = format!(
-        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"*tax_id*\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"users.password_hash\", kind = \"column\" }}]\n"
-    );
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"*tax_id*\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.password_hash\", kind = \"column\" }]\n".to_string();
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", Some(&tools.replace("{s}", &s)));
     e.admin(
         "execute",
@@ -906,7 +904,7 @@ fn rules_have_one_precedence() {
     use McpAccess::*;
     let del = "DELETE FROM t";
     let upd = "UPDATE t SET a = 1 WHERE id = 2";
-    let allowed = vec![upd.to_string(), del.to_string()];
+    let allowed = [upd.to_string(), del.to_string()];
     for env in Environment::ALL {
         for access in [Off, Read, Write, Full] {
             for ro in [false, true] {

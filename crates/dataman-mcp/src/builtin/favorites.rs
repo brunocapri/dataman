@@ -296,7 +296,7 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
         // What the agent reads back with list_favorites: the user says which files leave their Mac.
         let what: Vec<String> = files.iter().map(|(p, m)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(m.size() as i64))).collect();
         let why = if files.len() == 1 { format!("reads a file on {}", dataman_core::os::THIS_MACHINE) } else { format!("reads files on {}", dataman_core::os::THIS_MACHINE) };
-        cx.ask_local("Import favorites", &what.join("\n"), vec![why.into()]).await?;
+        cx.ask_local("Import favorites", &what.join("\n"), vec![why]).await?;
         let mut added = Vec::new();
         for (path, before) in &files {
             let sql = read_same(path, before).map_err(|e| ToolError::Invalid(format!("{:?}: {e}", path.display().to_string())))?;

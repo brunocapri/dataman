@@ -408,6 +408,7 @@ impl TextInput {
         if self.masked { self.content[..o].chars().count() * '•'.len_utf8() } else { o }
     }
 
+    #[allow(clippy::wrong_self_convention)] // Maps an offset back through this input.
     fn from_display(&self, o: usize) -> usize {
         if self.masked {
             let n = o / '•'.len_utf8();

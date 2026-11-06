@@ -67,7 +67,7 @@ fn connects_and_decodes_types() {
     assert!(!c.caps().schemas && !c.caps().drop_database && !c.caps().truncate && c.caps().explain);
 
     let s = c.session(None);
-    let rs = ok(&e, &s, "SELECT id, name, balance, active, profile, photo, created_at, label, 1 + 1 AS two, 0.5 AS half, NULL AS empty FROM customer ORDER BY id");
+    let rs = ok(e, &s, "SELECT id, name, balance, active, profile, photo, created_at, label, 1 + 1 AS two, 0.5 AS half, NULL AS empty FROM customer ORDER BY id");
     let kinds: Vec<Kind> = rs.columns().unwrap().iter().map(|c| c.kind).collect();
     assert_eq!(kinds, [Kind::Int, Kind::Text, Kind::Numeric, Kind::Bool, Kind::Json, Kind::Bytes, Kind::Text, Kind::Text, Kind::Int, Kind::Float, Kind::Other]);
     let r0 = texts(&rs, 0);
@@ -85,9 +85,9 @@ fn connects_and_decodes_types() {
 fn mixed_storage_classes_show_as_stored() {
     let d = open(false); let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
-    ok(&e, &s, "CREATE TABLE m (n INTEGER, r REAL, b BOOLEAN, x BLOB)");
-    ok(&e, &s, "INSERT INTO m VALUES (1, 1.5, 1, X'00'), ('abc', 'zz', 7, 'text'), (1.5, 2, 0, NULL), (NULL, NULL, NULL, NULL)");
-    let rs = ok(&e, &s, "SELECT n, r, b, x FROM m");
+    ok(e, &s, "CREATE TABLE m (n INTEGER, r REAL, b BOOLEAN, x BLOB)");
+    ok(e, &s, "INSERT INTO m VALUES (1, 1.5, 1, X'00'), ('abc', 'zz', 7, 'text'), (1.5, 2, 0, NULL), (NULL, NULL, NULL, NULL)");
+    let rs = ok(e, &s, "SELECT n, r, b, x FROM m");
     assert_eq!(col(&rs, 0), [Some("1".into()), Some("abc".into()), Some("1.5".into()), None]);
     assert_eq!(col(&rs, 1), [Some("1.5".into()), Some("zz".into()), Some("2".into()), None]);
     assert_eq!(col(&rs, 2), [Some("1".into()), Some("7".into()), Some("0".into()), None]);
@@ -95,17 +95,17 @@ fn mixed_storage_classes_show_as_stored() {
     let kinds: Vec<Kind> = rs.columns().unwrap().iter().map(|c| c.kind).collect();
     assert_eq!(kinds, [Kind::Text, Kind::Text, Kind::Text, Kind::Text], "each column turned to text");
     // Late in a long result too: the earlier chunks are rewritten.
-    ok(&e, &s, "CREATE TABLE big (n INTEGER)");
-    ok(&e, &s, "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 5000) INSERT INTO big SELECT i FROM c");
-    ok(&e, &s, "INSERT INTO big VALUES ('late')");
-    let rs = ok(&e, &s, "SELECT n FROM big ORDER BY rowid");
+    ok(e, &s, "CREATE TABLE big (n INTEGER)");
+    ok(e, &s, "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 5000) INSERT INTO big SELECT i FROM c");
+    ok(e, &s, "INSERT INTO big VALUES ('late')");
+    let rs = ok(e, &s, "SELECT n FROM big ORDER BY rowid");
     let all = col(&rs, 0);
     assert_eq!((all.len(), all[0].as_deref(), all[4999].as_deref(), all[5000].as_deref()), (5001, Some("1"), Some("5000"), Some("late")));
     // STRICT tables hold their types.
-    ok(&e, &s, "CREATE TABLE st (i INTEGER, t TEXT, r REAL, a ANY) STRICT");
-    assert_eq!(run(&e, &s, "INSERT INTO st VALUES ('x', 1, 2, 3)").phase(), Phase::Failed);
-    ok(&e, &s, "INSERT INTO st VALUES (1, 'a', 2.5, 'any')");
-    let rs = ok(&e, &s, "SELECT * FROM st");
+    ok(e, &s, "CREATE TABLE st (i INTEGER, t TEXT, r REAL, a ANY) STRICT");
+    assert_eq!(run(e, &s, "INSERT INTO st VALUES ('x', 1, 2, 3)").phase(), Phase::Failed);
+    ok(e, &s, "INSERT INTO st VALUES (1, 'a', 2.5, 'any')");
+    let rs = ok(e, &s, "SELECT * FROM st");
     assert_eq!(texts(&rs, 0), [Some("1".into()), Some("a".into()), Some("2.5".into()), Some("any".into())]);
 }
 
@@ -114,22 +114,22 @@ fn transactions_are_watched() {
     let d = open(true); let (e, c) = (&d.e, d.c.clone());
     let s = c.session(None);
     assert_eq!(s.tx().status, TxStatus::Idle);
-    ok(&e, &s, "BEGIN");
+    ok(e, &s, "BEGIN");
     assert_eq!(s.tx().status, TxStatus::Open);
-    ok(&e, &s, "DELETE FROM note");
-    ok(&e, &s, "ROLLBACK");
+    ok(e, &s, "DELETE FROM note");
+    ok(e, &s, "ROLLBACK");
     assert_eq!(s.tx().status, TxStatus::Idle);
-    assert_eq!(col(&ok(&e, &s, "SELECT count(*) FROM note"), 0), [Some("2".into())]);
-    ok(&e, &s, "BEGIN IMMEDIATE; INSERT INTO note VALUES ('x');");
+    assert_eq!(col(&ok(e, &s, "SELECT count(*) FROM note"), 0), [Some("2".into())]);
+    ok(e, &s, "BEGIN IMMEDIATE; INSERT INTO note VALUES ('x');");
     assert_eq!(s.tx().status, TxStatus::Open);
     let end = e.core.block_on(s.end_transaction(true)).unwrap();
     assert_eq!(end, dataman_core::TxEnd::Committed);
     assert_eq!(s.tx().status, TxStatus::Idle);
-    assert_eq!(col(&ok(&e, &s, "SELECT count(*) FROM note"), 0), [Some("3".into())]);
+    assert_eq!(col(&ok(e, &s, "SELECT count(*) FROM note"), 0), [Some("3".into())]);
     // A rolled-back statement (Explain Analyze, an agent's read) leaves no trace.
     let rs = s.execute_opts("DELETE FROM note", Vec::new(), true);
     e.core.block_on(rs.wait_finished());
-    assert_eq!(col(&ok(&e, &s, "SELECT count(*) FROM note"), 0), [Some("3".into())]);
+    assert_eq!(col(&ok(e, &s, "SELECT count(*) FROM note"), 0), [Some("3".into())]);
     // Parameters bind by position, numbers as numbers.
     let rs = s.execute_with("SELECT name FROM customer WHERE id = ?1 OR email = ?2 LIMIT ?3", vec![Some("2".into()), Some("ana@example.com".into()), Some("5".into())]);
     rs.fetch_all();
@@ -146,7 +146,7 @@ fn an_endless_query_is_interrupted() {
     s.cancel();
     e.core.block_on(async { tokio::time::timeout(Duration::from_secs(10), rs.wait_finished()).await.expect("the interrupt ends it") });
     assert_eq!(rs.phase(), Phase::Cancelled, "{:?}", rs.status().error);
-    assert_eq!(col(&ok(&e, &s, "SELECT 42"), 0), [Some("42".into())], "the connection still works");
+    assert_eq!(col(&ok(e, &s, "SELECT 42"), 0), [Some("42".into())], "the connection still works");
 }
 
 #[test]
@@ -221,23 +221,23 @@ fn the_data_view_and_explain() {
     let mut v = TableView::new("main", "customer", vec!["id".into()], 2);
     v.dialect = Dialect::Sqlite;
     v.page = 1;
-    assert_eq!(texts(&ok(&e, &s, &v.sql()), 0)[0].as_deref(), Some("3"));
+    assert_eq!(texts(&ok(e, &s, &v.sql()), 0)[0].as_deref(), Some("3"));
     v.page = 0;
     v.filters.push(Filter::new("tier", Kind::Text, Op::In, "silver, bronze"));
     v.filters.push(Filter::new("name", Kind::Text, Op::Contains, "o'n"));
     v.filters.push(Filter::new("email", Kind::Text, Op::IsNull, ""));
-    let f = ok(&e, &s, &v.sql());
+    let f = ok(e, &s, &v.sql());
     assert_eq!((f.rows(), texts(&f, 0)[1].as_deref()), (1, Some("Diego O'Neil")));
     let pct = Filter::new("name", Kind::Text, Op::Contains, "50%").sql_in(Dialect::Sqlite);
-    assert_eq!(ok(&e, &s, &format!("SELECT count(*) FROM customer WHERE {pct}")).rows(), 1);
-    assert_eq!(col(&ok(&e, &s, &format!("SELECT count(*) FROM customer WHERE {pct}")), 0), [Some("0".into())], "% is escaped");
+    assert_eq!(ok(e, &s, &format!("SELECT count(*) FROM customer WHERE {pct}")).rows(), 1);
+    assert_eq!(col(&ok(e, &s, &format!("SELECT count(*) FROM customer WHERE {pct}")), 0), [Some("0".into())], "% is escaped");
     let n = e.core.block_on(c.count_rows("main", v.count_sql()).task).unwrap();
     assert_eq!(n, 1);
 
     let t = dataman_core::explain::Target::of(&c.info);
     let sql = dataman_core::explain::sql("SELECT * FROM orders WHERE status = 'paid'", true, t);
     assert_eq!(sql, "EXPLAIN QUERY PLAN SELECT * FROM orders WHERE status = 'paid'");
-    let rs = ok(&e, &s, &sql);
+    let rs = ok(e, &s, &sql);
     let names: Vec<String> = rs.columns().unwrap().iter().map(|c| c.name.clone()).collect();
     let snap = rs.snapshot();
     let rows: Vec<Vec<Option<String>>> = (0..snap.rows()).map(|r| texts(&rs, r)).collect();
@@ -251,7 +251,7 @@ fn edits_by_key() {
     let s = c.session(None);
     let db = "main";
     let edit = |sql: &str, row: usize, column: &str, to: &str| -> (KeySource, Vec<Outcome>) {
-        let rs = ok(&e, &s, sql);
+        let rs = ok(e, &s, sql);
         let t = match e.core.block_on(c.edit_target(db, &rs, None)).unwrap() {
             Editability::Editable(t) => t,
             Editability::ReadOnly(why) => panic!("{sql}: {why}"),
@@ -267,28 +267,28 @@ fn edits_by_key() {
     };
     let (src, out) = edit("SELECT * FROM Customer ORDER BY id", 1, "name", "Bruno C.");
     assert_eq!((src, out), (KeySource::PrimaryKey, vec![Outcome::Applied { rows: 1 }]));
-    let rs = ok(&e, &s, "SELECT email, name FROM customer ORDER BY id");
+    let rs = ok(e, &s, "SELECT email, name FROM customer ORDER BY id");
     assert!(matches!(e.core.block_on(c.edit_target(db, &rs, None)).unwrap(), Editability::ReadOnly(_)), "email is unique but nullable: no key");
-    ok(&e, &s, "CREATE TABLE tag (code TEXT NOT NULL UNIQUE, label TEXT); INSERT INTO tag VALUES ('a', 'A'), ('b', 'B')");
+    ok(e, &s, "CREATE TABLE tag (code TEXT NOT NULL UNIQUE, label TEXT); INSERT INTO tag VALUES ('a', 'A'), ('b', 'B')");
     let (src, out) = edit("SELECT code, label FROM tag ORDER BY code", 1, "label", "Bee");
     assert_eq!((src, out), (KeySource::UniqueIndex, vec![Outcome::Applied { rows: 1 }]));
     edit("SELECT * FROM customer ORDER BY id", 0, "name", "Ana L.");
     let (_, out) = edit("SELECT * FROM item ORDER BY order_id, line", 2, "qty", "9");
     assert_eq!(out, vec![Outcome::Applied { rows: 1 }], "a composite key on a WITHOUT ROWID table");
-    assert_eq!(col(&ok(&e, &s, "SELECT name FROM customer ORDER BY id"), 0)[..2], [Some("Ana L.".into()), Some("Bruno C.".into())]);
+    assert_eq!(col(&ok(e, &s, "SELECT name FROM customer ORDER BY id"), 0)[..2], [Some("Ana L.".into()), Some("Bruno C.".into())]);
     let (_, out) = edit("SELECT id, balance, photo FROM customer ORDER BY id", 0, "photo", "\\xbeef");
     assert_eq!(out, vec![Outcome::Applied { rows: 1 }]);
-    assert_eq!(col(&ok(&e, &s, "SELECT hex(photo) FROM customer WHERE id = 1"), 0), [Some("BEEF".into())]);
+    assert_eq!(col(&ok(e, &s, "SELECT hex(photo) FROM customer WHERE id = 1"), 0), [Some("BEEF".into())]);
 
-    let rs = ok(&e, &s, "SELECT * FROM note");
+    let rs = ok(e, &s, "SELECT * FROM note");
     assert!(matches!(e.core.block_on(c.edit_target(db, &rs, None)).unwrap(), Editability::ReadOnly(_)), "no key, no rowid fallback");
-    let rs = ok(&e, &s, "SELECT * FROM v_order_customer");
+    let rs = ok(e, &s, "SELECT * FROM v_order_customer");
     assert!(matches!(e.core.block_on(c.edit_target(db, &rs, None)).unwrap(), Editability::ReadOnly(_)));
-    let rs = ok(&e, &s, "SELECT id, label FROM customer");
+    let rs = ok(e, &s, "SELECT id, label FROM customer");
     let Editability::Editable(t) = e.core.block_on(c.edit_target(db, &rs, None)).unwrap() else { panic!() };
     assert!(t.generated[1] && !t.generated[0], "the generated column is read-only");
     // A constraint's error is explained.
-    let rs = ok(&e, &s, "SELECT id, email FROM customer ORDER BY id");
+    let rs = ok(e, &s, "SELECT id, email FROM customer ORDER BY id");
     let Editability::Editable(t) = e.core.block_on(c.edit_target(db, &rs, None)).unwrap() else { panic!() };
     let snap = rs.snapshot();
     let mut cs = ChangeSet::new();
@@ -302,17 +302,17 @@ fn a_write_lock_makes_others_wait_then_fail() {
     let d = open(true); let (e, c) = (&d.e, d.c.clone());
     let a = c.session(None);
     let b = c.session(None);
-    ok(&e, &a, "BEGIN IMMEDIATE");
-    ok(&e, &a, "INSERT INTO note VALUES ('a')");
+    ok(e, &a, "BEGIN IMMEDIATE");
+    ok(e, &a, "INSERT INTO note VALUES ('a')");
     let t0 = Instant::now();
-    let rs = run(&e, &b, "INSERT INTO note VALUES ('b')");
+    let rs = run(e, &b, "INSERT INTO note VALUES ('b')");
     assert_eq!(rs.phase(), Phase::Failed);
     assert!(t0.elapsed() >= Duration::from_secs(4), "busy_timeout waits first");
     let err = rs.status().error.unwrap();
     assert_eq!(err.code.as_deref(), Some("SQLITE_BUSY"));
     assert!(dataman_core::edit::explain_error_in(&err, dataman_core::Engine::Sqlite).starts_with("The database is locked"));
-    ok(&e, &a, "COMMIT");
-    ok(&e, &b, "INSERT INTO note VALUES ('b')");
+    ok(e, &a, "COMMIT");
+    ok(e, &b, "INSERT INTO note VALUES ('b')");
 }
 
 #[test]

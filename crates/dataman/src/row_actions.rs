@@ -153,7 +153,6 @@ impl Workspace {
         cx.notify();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn object_action(&mut self, act: Act, conn: &str, db: &str, schema: &str, name: &str, what: Obj, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.store.read(cx).connection(conn) else {
             self.notice("Connect first", cx);
@@ -266,7 +265,6 @@ impl Workspace {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn rel_action(&mut self, act: Act, conn: &str, db: &str, schema: &str, name: &str, kind: RelKind, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
         let run = |w: &mut Self, sql: String, window: &mut Window, cx: &mut Context<Self>| {
             w.open_sql_tab(conn, Some(db), &sql, true, window, cx);
@@ -394,7 +392,6 @@ impl Workspace {
         self.open_sql_tab(conn, Some(db), &sql, false, window, cx);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn generate_sql(&mut self, conn: &str, db: &str, schema: &str, name: &str, g: Gen, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.store.read(cx).connection(conn) else {
             self.notice("Connect first", cx);
@@ -433,7 +430,6 @@ impl Workspace {
         .detach();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn show_view_definition(&mut self, conn: &str, db: &str, schema: &str, name: &str, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.store.read(cx).connection(conn) else {
             self.notice("Connect first", cx);

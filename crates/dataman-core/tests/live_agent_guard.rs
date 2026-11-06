@@ -64,7 +64,7 @@ fn postgres_one_statement_per_prepare() {
     exec(&e, &c, &["DROP TABLE IF EXISTS guard_probe", "CREATE TABLE guard_probe (n int)", "INSERT INTO guard_probe VALUES (1)"]);
     // A string setting changed inside the call reaches the next statement of the same call.
     let sql = r"SELECT set_config('standard_conforming_strings', 'off', true); INSERT INTO guard_probe VALUES (length('\'')); DELETE FROM guard_probe; --'))";
-    let ran = agent_run(&e, &c, &c.database().to_string(), sql);
+    let ran = agent_run(&e, &c, c.database(), sql);
     let rs = query(&e, &c, "SELECT COUNT(*) FROM guard_probe WHERE n = 1");
     assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("1"), "{ran:?}");
     exec(&e, &c, &["DROP TABLE guard_probe"]);

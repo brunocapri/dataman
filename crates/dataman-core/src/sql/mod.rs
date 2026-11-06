@@ -111,57 +111,9 @@ pub fn statement_verb(sql: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn script_files_decode() {
-        assert_eq!(decode_script(b"SELECT 1"), "SELECT 1");
-        assert_eq!(decode_script(b"\xef\xbb\xbfUSE [x]\nGO"), "USE [x]\nGO");
-        let u16le: Vec<u8> = [0xff, 0xfe].into_iter().chain("SELECT 'é'".encode_utf16().flat_map(u16::to_le_bytes)).collect();
-        assert_eq!(decode_script(&u16le), "SELECT 'é'");
-        let u16be: Vec<u8> = [0xfe, 0xff].into_iter().chain("SELECT 'é'".encode_utf16().flat_map(u16::to_be_bytes)).collect();
-        assert_eq!(decode_script(&u16be), "SELECT 'é'");
-        assert_eq!(decode_script(b"SELECT 'caf\xe9'"), "SELECT 'café'");
-    }
-
-    #[test]
-    fn tables_and_verbs() {
-        assert_eq!(first_table("select * from public.\"Orders\" o").as_deref(), Some("Orders"));
-        assert_eq!(first_table("select 1"), None);
-        assert_eq!(first_table("SELECT * FROM [dbo].[Orders]").as_deref(), Some("Orders"));
-        assert_eq!(first_table("SELECT [1, 2] AS l FROM t").as_deref(), Some("t"), "a DuckDB list is no T-SQL name");
-        assert_eq!(first_table_in("SELECT * FROM `a b`", Dialect::Sqlite).as_deref(), Some("a b"));
-        assert_eq!(first_table("select * from generate_series(1, 3)"), None);
-        assert_eq!(statement_verb("-- c\ncreate table t (x int);"), "CREATE TABLE");
-        assert_eq!(statement_verb("update t set x = 1"), "UPDATE");
-        assert_eq!(statement_verb("CREATE TEMP TABLE IF NOT EXISTS t AS SELECT 1"), "CREATE TABLE");
-        assert_eq!(statement_verb("create or replace view v as select 1"), "CREATE VIEW");
-        assert_eq!(statement_verb("CREATE UNIQUE INDEX i ON t (x)"), "CREATE INDEX");
-        assert_eq!(statement_verb("   "), "DONE");
-    }
-
-    #[test]
-    fn quoting() {
-        assert_eq!(quote_ident("orders"), "orders");
-        assert_eq!(quote_ident("Orders"), "\"Orders\"");
-        assert_eq!(quote_ident("select"), "\"select\"");
-        assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
-        assert_eq!(quote_ident("1x"), "\"1x\"");
-    }
-
-    #[test]
-    fn unicode_ident() {
-        let src = "U&\"d\\0061t\\+000061\"";
-        let t = tokenize(src)[0];
-        assert_eq!(ident_value(src, &t), "data");
-    }
-}
-
 pub fn decode_script(bytes: &[u8]) -> String {
     let utf16 = |b: &[u8], le: bool| {
-        let units: Vec<u16> = b.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> = b.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
         String::from_utf16_lossy(&units)
     };
     match bytes {
@@ -217,4 +169,52 @@ fn open_exec_comments(sql: &str, dialect: Dialect, skip_versioned: bool) -> std:
         }
     }
     std::borrow::Cow::Owned(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_files_decode() {
+        assert_eq!(decode_script(b"SELECT 1"), "SELECT 1");
+        assert_eq!(decode_script(b"\xef\xbb\xbfUSE [x]\nGO"), "USE [x]\nGO");
+        let u16le: Vec<u8> = [0xff, 0xfe].into_iter().chain("SELECT 'é'".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(decode_script(&u16le), "SELECT 'é'");
+        let u16be: Vec<u8> = [0xfe, 0xff].into_iter().chain("SELECT 'é'".encode_utf16().flat_map(u16::to_be_bytes)).collect();
+        assert_eq!(decode_script(&u16be), "SELECT 'é'");
+        assert_eq!(decode_script(b"SELECT 'caf\xe9'"), "SELECT 'café'");
+    }
+
+    #[test]
+    fn tables_and_verbs() {
+        assert_eq!(first_table("select * from public.\"Orders\" o").as_deref(), Some("Orders"));
+        assert_eq!(first_table("select 1"), None);
+        assert_eq!(first_table("SELECT * FROM [dbo].[Orders]").as_deref(), Some("Orders"));
+        assert_eq!(first_table("SELECT [1, 2] AS l FROM t").as_deref(), Some("t"), "a DuckDB list is no T-SQL name");
+        assert_eq!(first_table_in("SELECT * FROM `a b`", Dialect::Sqlite).as_deref(), Some("a b"));
+        assert_eq!(first_table("select * from generate_series(1, 3)"), None);
+        assert_eq!(statement_verb("-- c\ncreate table t (x int);"), "CREATE TABLE");
+        assert_eq!(statement_verb("update t set x = 1"), "UPDATE");
+        assert_eq!(statement_verb("CREATE TEMP TABLE IF NOT EXISTS t AS SELECT 1"), "CREATE TABLE");
+        assert_eq!(statement_verb("create or replace view v as select 1"), "CREATE VIEW");
+        assert_eq!(statement_verb("CREATE UNIQUE INDEX i ON t (x)"), "CREATE INDEX");
+        assert_eq!(statement_verb("   "), "DONE");
+    }
+
+    #[test]
+    fn quoting() {
+        assert_eq!(quote_ident("orders"), "orders");
+        assert_eq!(quote_ident("Orders"), "\"Orders\"");
+        assert_eq!(quote_ident("select"), "\"select\"");
+        assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_ident("1x"), "\"1x\"");
+    }
+
+    #[test]
+    fn unicode_ident() {
+        let src = "U&\"d\\0061t\\+000061\"";
+        let t = tokenize(src)[0];
+        assert_eq!(ident_value(src, &t), "data");
+    }
 }

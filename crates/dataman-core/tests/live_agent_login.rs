@@ -836,7 +836,7 @@ fn postgres_redteam() {
 
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     let exposed: Vec<&str> = rv.plan.exposed.iter().map(|x| x.object.as_str()).collect();
-    assert!(exposed.iter().any(|o| *o == "public.pub_leak") && exposed.iter().any(|o| o.contains("cols_leak.pw")), "what PUBLIC reads is said: {exposed:?}");
+    assert!(exposed.contains(&"public.pub_leak") && exposed.iter().any(|o| o.contains("cols_leak.pw")), "what PUBLIC reads is said: {exposed:?}");
     assert!(rv.plan.copy().contains("REVOKE SELECT ON \"public\".\"pub_leak\" FROM PUBLIC;"), "{}", rv.plan.copy());
     assert!(rv.plan.notes.iter().any(|n| n.contains("public.leak_secrets") && n.contains("SECURITY DEFINER")), "{:?}", rv.plan.notes);
     assert!(rv.plan.rules.iter().any(|l| l.rule.contains("readable by every login") && l.who == agent_login::Who::Dataman), "{:?}", rv.plan.rules);

@@ -158,34 +158,33 @@ impl<R: BufRead> Reader<R> {
     }
 }
 
+#[allow(clippy::result_unit_err)] // The caller only counts a bad field; there is no reason to report.
 pub fn decode_field(raw: &[u8], quoted: bool, d: &CsvDialect, out: &mut String) -> Result<bool, ()> {
     out.clear();
     if !quoted && raw == d.null_text.as_bytes() {
         return Ok(false);
     }
-    if d.escapes {
-        if raw.contains(&b'\\') {
-            let mut tmp = Vec::with_capacity(raw.len());
-            let mut it = raw.iter().copied();
-            while let Some(c) = it.next() {
-                if c != b'\\' {
-                    tmp.push(c);
-                    continue;
-                }
-                match it.next() {
-                    Some(b'n') => tmp.push(b'\n'),
-                    Some(b't') => tmp.push(b'\t'),
-                    Some(b'r') => tmp.push(b'\r'),
-                    Some(b'b') => tmp.push(8),
-                    Some(b'f') => tmp.push(12),
-                    Some(b'v') => tmp.push(11),
-                    Some(o) => tmp.push(o),
-                    None => tmp.push(b'\\'),
-                }
+    if d.escapes && raw.contains(&b'\\') {
+        let mut tmp = Vec::with_capacity(raw.len());
+        let mut it = raw.iter().copied();
+        while let Some(c) = it.next() {
+            if c != b'\\' {
+                tmp.push(c);
+                continue;
             }
-            decode(&tmp, d.encoding, out)?;
-            return Ok(true);
+            match it.next() {
+                Some(b'n') => tmp.push(b'\n'),
+                Some(b't') => tmp.push(b'\t'),
+                Some(b'r') => tmp.push(b'\r'),
+                Some(b'b') => tmp.push(8),
+                Some(b'f') => tmp.push(12),
+                Some(b'v') => tmp.push(11),
+                Some(o) => tmp.push(o),
+                None => tmp.push(b'\\'),
+            }
         }
+        decode(&tmp, d.encoding, out)?;
+        return Ok(true);
     }
     decode(raw, d.encoding, out)?;
     Ok(true)
@@ -196,6 +195,7 @@ const CP1252: [char; 32] = [
     '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
 ];
 
+#[allow(clippy::result_unit_err)] // As decode_field.
 pub fn decode(raw: &[u8], enc: Encoding, out: &mut String) -> Result<(), ()> {
     match enc {
         Encoding::Utf8 => out.push_str(std::str::from_utf8(raw).map_err(|_| ())?),
@@ -233,7 +233,7 @@ pub fn records(sample: &[u8], delim: u8, quote: Option<u8>, limit: usize) -> Vec
 
 pub fn sniff_delimiter(sample: &[u8], quote: Option<u8>) -> u8 {
     let mut best = (b',', 0.0f64, 0usize);
-    for d in [b',', b';', b'\t', b'|'] {
+    for d in *b",;\t|" {
         let recs = records(sample, d, quote, 200);
         if recs.is_empty() {
             continue;

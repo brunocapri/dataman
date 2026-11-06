@@ -149,7 +149,7 @@ impl ConnStore {
                     Ok(c) => {
                         let db = c.database().to_string();
                         // (Dropping the task handle does not stop the work.)
-                        let _ = c.preload(&db);
+                        drop(c.preload(&db));
                         s.states.insert(id.clone(), ConnState::Connected(c));
                         if s.quiet.remove(&id) {
                             cx.emit(ConnEvent::Arrived(id));

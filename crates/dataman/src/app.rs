@@ -1482,10 +1482,8 @@ impl Workspace {
         let tab = self.new_tab(window, cx);
         tab.update(cx, |t, cx| {
             t.set_connection(conn, cx);
-            if has_conn {
-                if let Some(db) = database {
-                    t.set_database(db, cx);
-                }
+            if has_conn && let Some(db) = database {
+                t.set_database(db, cx);
             }
         });
         Some(tab)
@@ -1698,7 +1696,7 @@ impl Workspace {
         let (schema, name) = (schema.to_string(), name.to_string());
         cx.spawn_in(window, async move |_, cx| {
             let key: Vec<String> = task.await.unwrap_or_default();
-            let _ = tab.update(cx, |t, cx| t.open_table(dataman_core::dataview::TableView::new(schema, name, key, page), cx));
+            tab.update(cx, |t, cx| t.open_table(dataman_core::dataview::TableView::new(schema, name, key, page), cx));
         })
         .detach();
     }

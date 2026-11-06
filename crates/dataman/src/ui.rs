@@ -1018,7 +1018,7 @@ mod tests {
     fn text_tips_fit() {
         let (t, w) = fit_tip("connection refused");
         assert_eq!(t, "connection refused");
-        assert!(w < 200. && w >= 60., "{w}");
+        assert!((60. ..200.).contains(&w), "{w}");
         let huge = format!("FATAL: {}\nDETAIL: {}\n{}", "x".repeat(900), "y ".repeat(300), "z\n".repeat(50));
         let (t, w) = fit_tip(&huge);
         assert!(w > 340. && w <= TIP_MAX_W, "{w}");

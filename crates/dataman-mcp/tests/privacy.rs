@@ -243,7 +243,7 @@ fn rules_hold_without_a_database() {
 
     // Agents cannot loosen the rules: update_connection keeps them as they are.
     let r = e.call("update_connection", json!({"connection": "prod-pg", "env": "staging"}));
-    let saved = dataman_core::ConfigStore::open(&Dirs::at(&e.dir.path().join("dataman"))).unwrap().connections();
+    let saved = dataman_core::ConfigStore::open(&Dirs::at(e.dir.path().join("dataman"))).unwrap().connections();
     let p = saved.iter().find(|p| p.id == "prod-pg").unwrap();
     assert_eq!(p.mcp_rules.view, dataman_core::privacy::AgentView::Masked, "{r:?}");
     assert!(!p.mcp_rules.visible.is_open() && !p.mcp_rules.structure);

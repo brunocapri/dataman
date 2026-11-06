@@ -278,7 +278,6 @@ impl Workspace {
         DockViews { left, right }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_slot(&self, d: Dock, i: usize, n: usize, s: Slot, r: Rect, full: f32, content: AnyElement, side_rest: f32, t: &Theme) -> AnyElement {
         let last = i + 1 == n;
         let inner = match d {

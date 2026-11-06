@@ -48,9 +48,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let db = root.join("shop.sqlite");
     let _ = dataman_core::import::create_database(Engine::Sqlite, &db);
     // What a teammate committed: the database file relative to the folder, no password.
-    let teammate = format!(
-        "version = 1\n\n[editor]\nkeyword_case = \"lower\"\nindent = 4\nconfirm_commit = true\n\n[[connection]]\nid = \"team-shop\"\nname = \"Team shop\"\nengine = \"sqlite\"\npath = \"shop.sqlite\"\n\n[[favorite]]\nid = \"team-fav\"\nname = \"Team orders\"\nsql = \"SELECT 1\"\nconnection_id = \"team-shop\"\n"
-    );
+    let teammate = "version = 1\n\n[editor]\nkeyword_case = \"lower\"\nindent = 4\nconfirm_commit = true\n\n[[connection]]\nid = \"team-shop\"\nname = \"Team shop\"\nengine = \"sqlite\"\npath = \"shop.sqlite\"\n\n[[favorite]]\nid = \"team-fav\"\nname = \"Team orders\"\nsql = \"SELECT 1\"\nconnection_id = \"team-shop\"\n".to_string();
     std::fs::write(project::file_in(&root), teammate).unwrap();
     let core = core(ws, cx);
 

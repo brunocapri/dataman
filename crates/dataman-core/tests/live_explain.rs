@@ -47,7 +47,7 @@ fn explain_and_analyze_on_postgres() {
     let t0 = Instant::now();
     let rs = run(&e, &s, &explain::sql(JOIN, true, t));
     assert!(rs.sql.starts_with("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS, WAL)"));
-    assert!(rs.rolled_back() == false, "a plain session run");
+    assert!(!rs.rolled_back(), "a plain session run");
     let p = plan_of(&rs);
     eprintln!("explain analyze: {} nodes in {:?}, execution {:?} ms", p.nodes.len(), t0.elapsed(), p.totals.execution_ms);
     assert!(p.analyzed);

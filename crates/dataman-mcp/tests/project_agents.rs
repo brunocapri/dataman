@@ -517,11 +517,7 @@ fn server_files_and_programs_need_a_human_at_every_level() {
                 let allowed = [sql.clone()];
                 for list in [&[][..], &allowed[..]] {
                     let j = policy::judge(true, target(*d, access, yolo), sql, list);
-                    let ok = match (&j.verdict, access) {
-                        (Verdict::Ask(_), McpAccess::Full) => true,
-                        (Verdict::Refuse(_), _) => true,
-                        _ => false,
-                    };
+                    let ok = matches!((&j.verdict, access), (Verdict::Ask(_), McpAccess::Full) | (Verdict::Refuse(_), _));
                     assert!(ok, "{d:?} {access:?} yolo={yolo} allowed={}: {sql}: {:?}", !list.is_empty(), j.verdict);
                 }
             }

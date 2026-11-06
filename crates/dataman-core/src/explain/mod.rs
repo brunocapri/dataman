@@ -950,7 +950,7 @@ mod tests {
             let kids = if depth == 0 {
                 String::new()
             } else {
-                format!(r#","Plans":[{},{}]"#, node(depth - 1, i * 2).replace("\"Outer\"", "\"Outer\""), node(depth - 1, i * 2 + 1).replace("\"Parent Relationship\":\"Outer\"", "\"Parent Relationship\":\"Inner\""))
+                format!(r#","Plans":[{},{}]"#, node(depth - 1, i * 2), node(depth - 1, i * 2 + 1).replace("\"Parent Relationship\":\"Outer\"", "\"Parent Relationship\":\"Inner\""))
             };
             format!(
                 r#"{{"Node Type":"{}","Parent Relationship":"Outer","Relation Name":"t{i}","Startup Cost":0.0,"Total Cost":{}.0,"Plan Rows":100,"Plan Width":8,"Actual Startup Time":0.01,"Actual Total Time":{}.0,"Actual Rows":100.0,"Actual Loops":1,"Filter":"(x = {i})","Rows Removed by Filter":10{kids}}}"#,

@@ -76,7 +76,7 @@ impl Workspace {
                 .await;
             for (tab, (items, file, shown, closed)) in tabs.into_iter().zip(read) {
                 let (Some(tab), Some(items)) = (tab.upgrade(), items) else { continue };
-                let _ = tab.update(cx, |t, cx| t.restore_results(items, shown, closed, Some(file), cx));
+                tab.update(cx, |t, cx| t.restore_results(items, shown, closed, Some(file), cx));
             }
         })
         .detach();

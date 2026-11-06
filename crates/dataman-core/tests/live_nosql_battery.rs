@@ -417,13 +417,9 @@ fn search_battery(engine: Engine) {
     b.ok("analyze", "GET _analyze\n{\"analyzer\": \"standard\", \"text\": \"Ada Lovelace\"}");
     b.ok("field caps", &format!("GET /{ix}/_field_caps?fields=*"));
     let sql = if os { "POST _plugins/_sql\n{\"query\": \"SELECT status, count(*) FROM dataman_battery GROUP BY status\"}" } else { "POST _sql?format=json\n{\"query\": \"SELECT status, count(*) FROM dataman_battery GROUP BY status\"}" };
-    match b.c.engine() {
-        _ => {
-            let class = dataman_core::nosql::classify(engine, sql);
-            if !matches!(class, Ok(dataman_core::guard::WriteClass::Read)) {
-                b.failures.push(format!("SQL is a read: classified {class:?}"));
-            }
-        }
+    let class = dataman_core::nosql::classify(engine, sql);
+    if !matches!(class, Ok(dataman_core::guard::WriteClass::Read)) {
+        b.failures.push(format!("SQL is a read: classified {class:?}"));
     }
     b.expect("SQL", sql, |o| text_has(o, "paid"));
     if os {

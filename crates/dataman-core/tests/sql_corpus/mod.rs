@@ -363,7 +363,7 @@ pub fn texts(d: Dialect) -> Vec<String> {
 fn spaces(src: &str, d: Dialect) -> Vec<std::ops::Range<usize>> {
     let toks = tokenize_in(src, d);
     let owns_line = |line: &str| {
-        let w = line.trim().split_whitespace().next().unwrap_or("");
+        let w = line.split_whitespace().next().unwrap_or("");
         w.eq_ignore_ascii_case("GO") || w.eq_ignore_ascii_case("DELIMITER")
     };
     toks.iter()

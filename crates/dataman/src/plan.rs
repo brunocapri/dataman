@@ -371,7 +371,7 @@ impl PlanView {
             .flex_row()
             .items_center()
             .text_size(px(crate::theme::text::BODY))
-            .map(|d| ui::selectable(d, &t, sel, focused))
+            .map(|d| ui::selectable(d, t, sel, focused))
             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |v, ev: &MouseDownEvent, window, cx| {

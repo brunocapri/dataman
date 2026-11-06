@@ -1046,7 +1046,6 @@ impl AgentsPage {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create_sheet(&self, t: &Theme, p: &ConnectionProfile, review: Option<&Result<live::Review, String>>, opts: Options, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
         let user = agent_login::login_name(&p.id);
         let title = format!("Create {user} on {}", p.name);
@@ -1234,7 +1233,6 @@ impl AgentsPage {
         Some((format!("Changes to {user}"), body, ui::modal_footer(t).child(say).child(close).child(apply).into_any_element()))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn remove_sheet(&self, t: &Theme, p: &ConnectionProfile, plan: Option<&Result<Plan, String>>, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
         let title = format!("Remove {user} from {}", p.name);

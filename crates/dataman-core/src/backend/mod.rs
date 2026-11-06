@@ -676,6 +676,7 @@ pub(crate) async fn pump<S: RowSource>(
     }
 }
 
+#[allow(clippy::enum_variant_names)] // "never ran" is the outcome, not a repeat of the type.
 pub(crate) enum Ran {
     NeverRan { settle: bool },
     Done(Option<u64>),

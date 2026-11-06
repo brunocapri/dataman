@@ -47,9 +47,7 @@ fn replies_hold_only_what_the_agent_received() {
     let cfg = dir.path().join("dataman");
     std::fs::create_dir_all(&cfg).unwrap();
     let conn = |id: &str, extra: &str| format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{h}\"\nport = {p}\nuser = \"postgres\"\ndatabase = \"dataman\"\nsslmode = \"disable\"\n{extra}\n");
-    let rules = format!(
-        "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"people.email\", how = \"partial\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"people.secret\", kind = \"column\" }}]\n"
-    );
+    let rules = "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"people.email\", how = \"partial\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"people.secret\", kind = \"column\" }]\n".to_string();
     std::fs::write(cfg.join("connections.toml"), [conn("admin", "mcp = \"full\""), conn("agent", &rules)].concat()).unwrap();
     let pgpass = dir.path().join("pgpass");
     std::fs::write(&pgpass, format!("{h}:{p}:*:postgres:dataman\n")).unwrap();

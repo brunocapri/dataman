@@ -106,7 +106,7 @@ impl Connection {
         let limits = Limits { max_rows: 100_000, max_bytes: 32 * 1024 * 1024, max_cell: 64 * 1024, ..Limits::default() };
         let mut by_expression = by_expression;
         let mut cancel = std::pin::pin!(cancel);
-        let out = match self.bounded(Some(db), sql, vec![], Mode::Read, limits.clone(), cancel.as_mut()).await {
+        let out = match self.bounded(Some(db), sql, vec![], Mode::Read, limits, cancel.as_mut()).await {
             // Refused the dependencies (229, no VIEW DEFINITION): the expressions, erring on more.
             Err(e) if engine == Engine::SqlServer && e.to_string().contains("[229]") => {
                 by_expression = true;

@@ -174,6 +174,7 @@ impl Shared {
     }
 }
 
+#[derive(Default)]
 pub struct McpHost {
     shared: Option<Arc<Shared>>,
     ipc: Option<dataman_mcp::ipc::IpcServer>,
@@ -187,19 +188,6 @@ pub struct McpHost {
 
 impl Global for McpHost {}
 
-impl Default for McpHost {
-    fn default() -> Self {
-        McpHost {
-            shared: None,
-            ipc: None,
-            ipc_starting: false,
-            pending: VecDeque::new(),
-            workspace: None,
-            #[cfg(feature = "checks")]
-            forward: 0,
-        }
-    }
-}
 
 pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
     cx.default_global::<McpHost>().workspace = Some((ws, window));

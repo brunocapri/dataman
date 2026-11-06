@@ -152,7 +152,6 @@ fn sql_server() {
         [Blank::Computed, Blank::Computed, Blank::Computed, Blank::Required, Blank::Required, Blank::Default, Blank::Default, Blank::Null, Blank::Required],
     );
     assert_eq!(case.offered("nr_seq"), None);
-    drop(case);
     drop(c);
     mssql_drop(&e, db);
 }

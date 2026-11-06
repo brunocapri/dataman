@@ -1267,11 +1267,11 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
             }
             _ => {}
         }
-        for i in 0..all.len() {
-            if !matches!(all[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+        for (i, tok) in all.iter().enumerate() {
+            if !matches!(tok.kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
                 continue;
             }
-            let name = all[i].text(&piece).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+            let name = tok.text(&piece).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
             // T-SQL runs a procedure without parentheses (`EXEC master..xp_cmdshell 'x'`).
             if functions::is(&name, functions::SERVER_FILE) && (t.punct(i + 1, "(") || dialect == Dialect::TSql) {
                 return Some(format!("{name} reaches files or programs on the database server"));
@@ -2089,7 +2089,7 @@ mod tests {
         assert_eq!(classify("drop materialized view mv").verb, "DROP MATERIALIZED VIEW");
         let f = classify("DROP INDEX CONCURRENTLY IF EXISTS ix");
         assert_eq!((f.verb.as_str(), f.target.as_deref(), f.outside_tx), ("DROP INDEX", Some("ix"), true));
-        assert_eq!(classify("CREATE UNIQUE INDEX CONCURRENTLY i ON t (x)").outside_tx, true);
+        assert!(classify("CREATE UNIQUE INDEX CONCURRENTLY i ON t (x)").outside_tx);
         assert_eq!(classify("CREATE TEMP TABLE IF NOT EXISTS x (a int)").verb, "CREATE TABLE");
         assert_eq!(classify("INSERT INTO s.t (a) VALUES (1)").target.as_deref(), Some("s.t"));
         assert_eq!(classify("SELECT a INTO TEMP fresh FROM t").effect, Effect::Ddl);
@@ -2101,7 +2101,7 @@ mod tests {
         let f = classify("EXPLAIN (ANALYZE, BUFFERS) DELETE FROM t");
         assert_eq!((f.verb.as_str(), f.no_where), ("DELETE", true), "EXPLAIN ANALYZE runs the statement");
         assert!(!classify("EXPLAIN DELETE FROM t").no_where);
-        assert_eq!(classify("VACUUM ANALYZE t").outside_tx, true);
+        assert!(classify("VACUUM ANALYZE t").outside_tx);
         assert_eq!(classify("SET search_path = x").effect, Effect::Other);
         assert_eq!(classify("  ").verb, "");
         assert_eq!(classify("CALL refresh()").effect, Effect::Write);
@@ -2118,7 +2118,7 @@ mod tests {
         assert_eq!(classify("ALTER TABLE t ADD COLUMN drop_me int").alter_drop, None);
         let f = classify("ALTER TABLE ONLY public.t RENAME TO u");
         assert_eq!((f.verb.as_str(), f.target.as_deref()), ("ALTER TABLE", Some("public.t")));
-        assert_eq!(classify("ALTER SYSTEM SET work_mem = '64MB'").outside_tx, true);
+        assert!(classify("ALTER SYSTEM SET work_mem = '64MB'").outside_tx);
     }
 
     #[test]
@@ -2226,7 +2226,7 @@ mod tests {
         assert_eq!(c("DECLARE k CURSOR FOR SELECT a FROM t FOR UPDATE").effect, Effect::Read);
         assert_eq!(c("GRANT SELECT, UPDATE ON t TO u").verb, "GRANT");
         assert_eq!(c("WITH c AS (SELECT 1 AS a) DELETE FROM t WHERE a IN (SELECT a FROM c)").verb, "DELETE");
-        assert_eq!(c("INSERT INTO t VALUES (1) SELECT 1 DELETE FROM t").no_where, true);
+        assert!(c("INSERT INTO t VALUES (1) SELECT 1 DELETE FROM t").no_where);
         let f = c("CREATE PROCEDURE p AS BEGIN DELETE FROM t; DROP TABLE u; END");
         assert_eq!((f.verb.as_str(), f.no_where), ("CREATE PROCEDURE", false));
         assert_eq!(c("CREATE OR ALTER VIEW v AS SELECT * FROM t").verb, "CREATE VIEW");

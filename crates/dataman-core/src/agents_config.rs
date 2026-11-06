@@ -976,7 +976,7 @@ mod tests {
             assert!(errs.iter().any(|e| e.contains(word)), "{word}: {errs:?}");
         }
         assert!(parse("[general]\nagent_access = true\n").unwrap_err()[0].contains("version"));
-        assert!(parse(&format!("version = 1\n[[connection]]\nid = \"a\"\nname = \"a\\u0000b\"\nengine = \"postgres\"\n")).is_err(), "a NUL in a name");
+        assert!(parse("version = 1\n[[connection]]\nid = \"a\"\nname = \"a\\u0000b\"\nengine = \"postgres\"\n").is_err(), "a NUL in a name");
     }
 
     #[test]

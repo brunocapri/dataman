@@ -197,7 +197,6 @@ pub fn check(sql: &str, write: bool, cx: &Context) -> Result<Checked, String> {
     Ok(Checked { sql: out, rewritten: true, masked })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn statement(
     sql: &str,
     range: std::ops::Range<usize>,

@@ -181,7 +181,7 @@ impl ChunkBuilder {
     fn mark(&mut self, col: usize, null: bool) {
         let c = &mut self.cols[col];
         let r = self.rows;
-        if r % 64 == 0 {
+        if r.is_multiple_of(64) {
             c.nulls.push(0);
         }
         if null {

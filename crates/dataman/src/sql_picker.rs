@@ -99,7 +99,7 @@ pub fn picked<T, E>(answer: Result<anyhow::Result<Option<T>>, E>, cx: &mut gpui:
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             log::warn!("file chooser: {e:#}");
-            let _ = cx.update(|cx| no_chooser(&e, cx));
+            cx.update(|cx| no_chooser(&e, cx));
             None
         }
         Err(_) => None,
@@ -110,7 +110,7 @@ fn no_chooser(e: &anyhow::Error, cx: &mut App) {
     let Some(window) = cx.windows().into_iter().next() else { return };
     let detail = format!("{e}\n\nInstall xdg-desktop-portal with a backend for your desktop (xdg-desktop-portal-gnome, -kde or -gtk), then try again.");
     let _ = window.update(cx, |_, window, cx| {
-        let _ = window.prompt(gpui::PromptLevel::Warning, "No file chooser", Some(&detail), &["OK"], cx);
+        drop(window.prompt(gpui::PromptLevel::Warning, "No file chooser", Some(&detail), &["OK"], cx));
     });
 }
 

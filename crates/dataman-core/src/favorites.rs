@@ -359,8 +359,8 @@ fn distance(a: &str, b: &str) -> usize {
     for (i, row) in d.iter_mut().enumerate() {
         row[0] = i;
     }
-    for j in 0..=b.len() {
-        d[0][j] = j;
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
     }
     for i in 1..=a.len() {
         for j in 1..=b.len() {
@@ -691,7 +691,7 @@ mod tests {
         store.add_folder("Aaa").unwrap();
         assert_eq!(folder_names(&other), ["Billing", "Zzz", "Charts", "Aaa"]);
         store.remove_folder(&b.id).unwrap();
-        store.reorder_folders(&[c.id.clone()]).unwrap();
+        store.reorder_folders(std::slice::from_ref(&c.id)).unwrap();
         assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Charts", "Zzz", "Aaa"]);
     }
 

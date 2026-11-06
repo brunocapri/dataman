@@ -854,6 +854,7 @@ impl<'a> P<'a> {
         (schema, name, k)
     }
 
+    #[allow(clippy::wrong_self_convention)] // Parses SQL's FROM list.
     fn from_list(&mut self, mut i: usize, hi: usize, id: usize) -> usize {
         i = self.source(i, hi, id);
         loop {

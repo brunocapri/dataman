@@ -1696,7 +1696,7 @@ impl ConnDialog {
             let r = cx.background_executor().spawn(async move { core.save_connection(saved, typed.as_deref(), ssh_secret.as_deref()) }).await;
             // Saved: the list follows even if the dialog is gone by now.
             if r.is_ok() {
-                let _ = store.update(cx, |s, cx| {
+                store.update(cx, |s, cx| {
                     s.disconnect(&p.id, cx);
                     s.reload(cx);
                 });
@@ -1750,6 +1750,7 @@ impl ConnDialog {
     }
 
     /// Both came from the string, and neither was typed over.
+    #[allow(clippy::wrong_self_convention)] // "From string": asks about the fields, converts nothing.
     fn from_string_note(&self, cx: &App) -> bool {
         let same = |said: &Option<String>, i: &Entity<TextInput>| said.as_deref().is_some_and(|s| s == i.read(cx).text().trim());
         self.auth == AuthKind::Password && same(&self.str_user, &self.user) && same(&self.str_pw, &self.password)
