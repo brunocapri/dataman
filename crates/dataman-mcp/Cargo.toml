@@ -6,6 +6,9 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "dataman-mcp"
 path = "src/main.rs"

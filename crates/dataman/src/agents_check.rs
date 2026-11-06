@@ -3,6 +3,8 @@
 //! connection and settings. The `agents-*` demo stages show its pages for screenshots.
 
 
+use std::sync::Arc;
+
 use dataman_core::config::Engine;
 use dataman_core::privacy::{AgentView, CustomType, ItemKind, Mask, ReadFrom, SensitiveCol, VisibleItem};
 use dataman_core::{ConnectionProfile, Core, Environment, McpAccess};
@@ -23,7 +25,6 @@ fn profile(name: &str, engine: Engine, env: Environment, tier: McpAccess) -> Con
     p
 }
 
-/// The connections, rules and types of the mockups.
 fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
@@ -75,7 +76,6 @@ fn seed_profiles(core: &Core) {
     });
 }
 
-/// The calls of the mockups, newest first, at their distances from now.
 fn seed_audit(core: &Core) {
     let now = chrono::Utc::now();
     let note = |d: Decision, reasons: &[&str]| Some(ApprovalNote { decision: d, by: Some("bruno".into()), reasons: reasons.iter().map(|s| s.to_string()).collect(), rows: None });
@@ -129,7 +129,6 @@ fn seed_audit(core: &Core) {
     }
 }
 
-/// What the agent received in some of the mockups' calls, as the server sent it.
 fn demo_reply(ago: i64) -> Option<serde_json::Value> {
     use serde_json::json;
     Some(match ago {
@@ -623,7 +622,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     r.check("… and ↑ the one before", sel(cx) == Some(9.min(all - 2)), format!("{:?}", sel(cx)));
 
-    // Protection, on the PostgreSQL connection the check saved.
     tap(&a, "agents-nav-protection", cx).await;
     pause(cx, 100).await;
     r.check("the nav opens Protection", page(cx) == Page::Protection, format!("{:?}", page(cx)));
@@ -805,7 +803,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
     pause(cx, 50).await;
 
-    // Privacy.
     tap(&a, &format!("agents-conn-{}", pg.name), cx).await;
     pause(cx, 50).await;
     key(cx, "home");
@@ -871,7 +868,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         items.iter().any(|i| i.name == "public.payments" && i.kind == ItemKind::Table) && items.iter().any(|i| i.name == "users.password_hash" && i.kind == ItemKind::Column),
         format!("{items:?}"),
     );
-    // Suggestions under the fields, from the connection's schema.
     tap(&a, "agents-field-visible", cx).await;
     typ(cx, "pub");
     let listed = until(cx, 5, |cx| cx.update(|_, cx| !a.read(cx).suggest.items.is_empty()).unwrap_or(false)).await;
@@ -907,6 +903,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("Esc closes the suggestions", cx.update(|_, cx| a.read(cx).suggest.which.is_none()).unwrap_or(false), "");
     key(cx, "cmd-a");
     key(cx, "backspace");
+    check_scan(&core, &a, &pg, &pw, r, cx).await;
     tap(&a, "agents-field-sensitive", cx).await;
     typ(cx, "customer.email");
     tap(&a, "agents-sens-add", cx).await;
@@ -958,7 +955,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "escape");
     pause(cx, 50).await;
 
-    // Masks.
     click_probe("agents-nav-masks", cx);
     pause(cx, 100).await;
     r.check("Masks lists the built-in and custom ones, then + to add one", cx.update(|_, cx| a.read(cx).type_rows().len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2 && probed("agents-type-add", cx).is_some(), "");
@@ -981,7 +977,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         opened.as_ref().is_some_and(|(id, name, re)| id.as_deref() == Some("email") && name == "E-mail" && Some(re) == email.as_ref()) && probed("agents-editor-title", cx).is_some(),
         format!("{opened:?}"),
     );
-    // A built-in mask changed, then reset to its default.
     click_probe("agents-type-row-jwt", cx);
     pause(cx, 50).await;
     let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.editor.name.update(cx, |i, cx| i.set_text("JWT token", cx))));
@@ -1066,7 +1061,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let tip = dataman_core::privacy::builtin("phone").map(|b| (b.rule, b.example)).unwrap_or_default();
     r.check("Phone reads US numbers", tip.0.contains("(555) 123-4567") && tip.1.starts_with("(555) 123-4567"), format!("{tip:?}"));
 
-    // General: the server's own page.
     click_probe("agents-nav-general", cx);
     pause(cx, 100).await;
     r.check("Agents › General: agent access and the command that connects Claude Code", page(cx) == Page::General && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access", cx).is_some(), "");
@@ -1219,7 +1213,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     check_login(ws, &a, &pg, &pw, r, cx).await;
 }
 
-/// A shot of the window as it is now, where `DATAMAN_SHOT_DIR` says (screenshots builds).
 fn shoot(name: &str, cx: &mut AsyncWindowContext) {
     let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
     let path = format!("{dir}/{name}.png");
@@ -1239,6 +1232,64 @@ fn login_ui<T>(a: &Entity<AgentsPage>, cx: &mut AsyncWindowContext, f: impl FnOn
 /// identity as the in-app hub connects, Verify,
 /// Rotate (the old password refused), Remove with its SQL (agents refused after), then a
 /// connection deleted with its login dropped on the server.
+/// Scan again on capitalized columns: a name with nothing behind it is not suggested, and what is
+/// there stands in any spelling. The connection's rules are as they were afterwards.
+async fn check_scan(core: &Arc<Core>, a: &Entity<AgentsPage>, pg: &ConnectionProfile, pw: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let drop = r#"DROP TABLE IF EXISTS public."ScanBlank", public."ScanFilled""#;
+    let _ = crate::check::sql(core, pg, pw, drop, cx).await;
+    for stmt in [
+        r#"CREATE TABLE public."ScanBlank" (id int, "Phone" text, "Token" text, "TokenHash" text, "ApiKey" text, "UserPassword" text)"#,
+        r#"CREATE TABLE public."ScanFilled" (id int, "Phone" text, "Mobile" text, "Token" text)"#,
+        r#"INSERT INTO public."ScanFilled" VALUES (1, '(11) 91234-5678', '415-555-0132', 'abc123deadbeefcafe')"#,
+    ] {
+        let made = crate::check::sql(core, pg, pw, stmt, cx).await;
+        r.check("Scan again's tables are made", made.is_ok(), format!("{made:?}"));
+    }
+    let before = rules(core, &pg.id);
+    let scan = async |a: &Entity<AgentsPage>, cx: &mut AsyncWindowContext| {
+        let _ = cx.update(|_, cx| a.update(cx, |v, _| v.scan_note = None));
+        tap(a, "agents-scan", cx).await;
+        until(cx, 40, |cx| cx.update(|_, cx| a.read(cx).scan_note.as_deref().is_some_and(|n| n != "Scanning…")).unwrap_or(false)).await;
+        cx.update(|_, cx| a.read(cx).scan_note.clone()).ok().flatten().unwrap_or_default()
+    };
+    let note = scan(a, cx).await;
+    let after = rules(core, &pg.id).sensitive;
+    let listed = |t: &str, c: &str| after.iter().find(|s| s.col == format!("{t}.{c}") && s.on).map(|s| s.how);
+    r.check(
+        "Scan again, empty columns: ApiKey and UserPassword by their names; not Phone, Token or TokenHash",
+        listed("ScanBlank", "ApiKey") == Some(Mask::Hidden) && listed("ScanBlank", "UserPassword") == Some(Mask::Hidden) && ["Phone", "Token", "TokenHash"].iter().all(|c| listed("ScanBlank", c).is_none()),
+        format!("{note}: {after:?}"),
+    );
+    r.check(
+        "Scan again, columns with values: Phone and Token, which no Mask would catch; not Mobile, which the Phone mask does",
+        listed("ScanFilled", "Phone") == Some(Mask::PARTIAL) && listed("ScanFilled", "Token") == Some(Mask::Hidden) && listed("ScanFilled", "Mobile").is_none(),
+        format!("{note}: {after:?}"),
+    );
+    let note = scan(a, cx).await;
+    r.check("Scan again a second time adds nothing", note == "Nothing new found." && rules(core, &pg.id).sensitive == after, &note);
+    // An entry in other spellings is the column's decision: Scan again doesn't add it back.
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp_rules.sensitive = after.iter().filter(|s| !s.col.starts_with("ScanFilled.") && s.col != "ScanBlank.ApiKey").cloned().collect();
+        for col in ["SCANFILLED.PHONE", "public.scanfilled.token", "*apikey*"] {
+            p.mcp_rules.sensitive.push(SensitiveCol { col: col.into(), how: Mask::Hidden, on: true });
+        }
+        let _ = core.config.upsert(p);
+    }
+    let spelled = rules(core, &pg.id).sensitive;
+    let _ = cx.update(|_, cx| a.update(cx, |v, cx| v.store.update(cx, |s, cx| s.reload(cx))));
+    let note = scan(a, cx).await;
+    r.check("…nor a column an entry names in another case, with its schema or by a pattern", note == "Nothing new found." && rules(core, &pg.id).sensitive == spelled, format!("{note}: {:?}", rules(core, &pg.id).sensitive));
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp_rules = before;
+        let _ = core.config.upsert(p);
+    }
+    let _ = cx.update(|_, cx| a.update(cx, |v, cx| {
+        v.scan_note = None;
+        v.store.update(cx, |s, cx| s.reload(cx));
+    }));
+    let _ = crate::check::sql(core, pg, pw, drop, cx).await;
+}
+
 async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &ConnectionProfile, pw: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     use dataman_core::agent_login::{self, live};
     use crate::agents_login::Sheet;
@@ -1658,7 +1709,6 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     let gone = until(cx, 5, |cx| sheet(cx).is_none() && !has(cx, "old-45")).await;
     r.check("⌘⌫ deletes them; the day's later calls stay", gone && !on_disk("old-60") && !on_disk("old-45") && on_disk("old-10"), format!("{:?}", ids(cx)));
     r.check("… and the selection, its call gone, moves to the first left under the filter", sel(cx).as_deref() == Some("old-10") && filter(cx).as_deref() == Some("Old Agent"), format!("{:?} {:?}", sel(cx), filter(cx)));
-    // Everything.
     let all = dataman_core::audit::count_before(&log, chrono::Utc::now());
     click_probe("agents-clear", cx);
     pause(cx, 50).await;

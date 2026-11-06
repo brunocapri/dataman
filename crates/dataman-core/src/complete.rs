@@ -152,15 +152,15 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
     match ctx {
         Ctx::Qualified { schema: qs, name } => {
             let mut done = false;
-            if qs.is_none() && !no_scopes {
-                if let Some((s, i)) = analysis.find_source(scope_id, &name)
-                    && let Some(cols) = analysis.source_columns(s, &analysis.scopes[s].sources[i], schema)
-                {
-                    for (n, t) in cols {
-                        push(column(d, &n, &t), 0);
-                    }
-                    done = true;
+            if qs.is_none()
+                && !no_scopes
+                && let Some((s, i)) = analysis.find_source(scope_id, &name)
+                && let Some(cols) = analysis.source_columns(s, &analysis.scopes[s].sources[i], schema)
+            {
+                for (n, t) in cols {
+                    push(column(d, &n, &t), 0);
                 }
+                done = true;
             }
             if !done && let Some(rel) = schema.resolve(qs.as_deref(), &name) {
                 for c in schema.columns_of(rel) {

@@ -17,19 +17,16 @@ mod hook {
     pub(super) static SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
 }
 
-/// The next open panel (files or a folder) answers `paths`.
 #[cfg(feature = "checks")]
 pub fn set_test_paths(paths: Vec<PathBuf>) {
     *hook::OPEN.lock().unwrap() = Some(paths);
 }
 
-/// The next save panel answers `path`.
 #[cfg(feature = "checks")]
 pub fn set_test_save_path(path: PathBuf) {
     *hook::SAVE.lock().unwrap() = Some(path);
 }
 
-/// What a check stage set for the next open panel to answer.
 pub fn take_test_paths() -> Option<Vec<PathBuf>> {
     #[cfg(feature = "checks")]
     return hook::OPEN.lock().unwrap().take();
@@ -37,7 +34,6 @@ pub fn take_test_paths() -> Option<Vec<PathBuf>> {
     None
 }
 
-/// What a check stage set for the next save panel to answer.
 pub fn take_test_save_path() -> Option<PathBuf> {
     #[cfg(feature = "checks")]
     return hook::SAVE.lock().unwrap().take();
@@ -99,7 +95,7 @@ pub fn picked<T, E>(answer: Result<anyhow::Result<Option<T>>, E>, cx: &mut gpui:
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             log::warn!("file chooser: {e:#}");
-            let _ = cx.update(|cx| no_chooser(&e, cx));
+            cx.update(|cx| no_chooser(&e, cx));
             None
         }
         Err(_) => None,
@@ -110,7 +106,7 @@ fn no_chooser(e: &anyhow::Error, cx: &mut App) {
     let Some(window) = cx.windows().into_iter().next() else { return };
     let detail = format!("{e}\n\nInstall xdg-desktop-portal with a backend for your desktop (xdg-desktop-portal-gnome, -kde or -gtk), then try again.");
     let _ = window.update(cx, |_, window, cx| {
-        let _ = window.prompt(gpui::PromptLevel::Warning, "No file chooser", Some(&detail), &["OK"], cx);
+        drop(window.prompt(gpui::PromptLevel::Warning, "No file chooser", Some(&detail), &["OK"], cx));
     });
 }
 

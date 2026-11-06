@@ -33,7 +33,6 @@ impl Default for General {
     }
 }
 
-/// One connection's rules, found here by its id, else by its name and engine.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConnRules {
     pub id: String,
@@ -91,7 +90,6 @@ fn too_large() -> String {
     format!("Larger than {} MB: not a Dataman agents file.", MAX_FILE / (1024 * 1024))
 }
 
-/// Reads an agents file, refusing one too large before reading it.
 pub fn read_file(path: &std::path::Path) -> std::io::Result<String> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
@@ -266,7 +264,6 @@ pub fn parse(text: &str) -> Result<AgentsFile, Vec<String>> {
     if errs.is_empty() { Ok(f) } else { Err(errs) }
 }
 
-/// One line of the summary: what changes, from what to what, and whether agents get more.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub what: String,
@@ -330,7 +327,6 @@ fn shielding(v: AgentView) -> u8 {
     }
 }
 
-/// A limit as the change list shows it: ∞ for none.
 fn limit(n: u64, unit: &str) -> String {
     if n == privacy::UNLIMITED { "∞".into() } else { format!("{n}{unit}") }
 }
@@ -510,7 +506,6 @@ pub fn plan(settings: &Settings, profiles: &[ConnectionProfile], f: &AgentsFile)
     plan
 }
 
-/// A connection's part the import writes.
 type Agent = (Option<McpAccess>, Option<u64>, Vec<String>, bool, AgentRules);
 
 fn agent_of(p: &ConnectionProfile) -> Agent {
@@ -521,7 +516,6 @@ fn set_agent(p: &mut ConnectionProfile, a: Agent) {
     (p.mcp, p.mcp_row_limit, p.mcp_allowed, p.mcp_yolo, p.mcp_rules) = a;
 }
 
-/// Writes `c`'s rules to the connection (the rest of the profile stays).
 pub fn write_rules(p: &mut ConnectionProfile, c: &ConnRules) {
     set_agent(p, (c.mcp, c.row_limit, c.allowed.clone(), c.yolo, c.rules.clone()));
 }
@@ -976,7 +970,7 @@ mod tests {
             assert!(errs.iter().any(|e| e.contains(word)), "{word}: {errs:?}");
         }
         assert!(parse("[general]\nagent_access = true\n").unwrap_err()[0].contains("version"));
-        assert!(parse(&format!("version = 1\n[[connection]]\nid = \"a\"\nname = \"a\\u0000b\"\nengine = \"postgres\"\n")).is_err(), "a NUL in a name");
+        assert!(parse("version = 1\n[[connection]]\nid = \"a\"\nname = \"a\\u0000b\"\nengine = \"postgres\"\n").is_err(), "a NUL in a name");
     }
 
     #[test]

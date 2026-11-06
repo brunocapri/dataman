@@ -246,7 +246,6 @@ impl Dialect {
         }
     }
 
-    /// An expression that orders rows at random (`ORDER BY random()`).
     pub fn random_order(self) -> &'static str {
         match self {
             Dialect::MySql => "RAND()",

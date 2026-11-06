@@ -86,7 +86,6 @@ fn state(cx: &mut AsyncWindowContext) -> State {
 const APP: &str = "Dataman.AppImage";
 #[cfg(target_os = "macos")]
 const APP: &str = "Dataman.app";
-/// The folder the installer fills.
 #[cfg(windows)]
 const APP: &str = "Dataman";
 

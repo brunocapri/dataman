@@ -37,7 +37,6 @@ impl AgentsPage {
         )
     }
 
-    /// The rules a copy would write now, and what they change, from the saved profiles.
     fn copy_plan(&self, to: &str, from: &str) -> Option<(ConnRules, Vec<Change>, String)> {
         let (p, source) = (self.core.config.get(to)?, self.core.config.get(from)?);
         let c = agents_config::copied(&p, &source);

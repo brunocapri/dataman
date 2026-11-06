@@ -81,7 +81,7 @@ fn profile(route: Route, mode: SslMode) -> Option<ConnectionProfile> {
         user: "postgres".into(),
         database: "postgres".into(),
         sslmode: mode,
-        ..ConnectionProfile::new(&format!("tls-{route:?}-{}", mode.label()))
+        ..ConnectionProfile::new(format!("tls-{route:?}-{}", mode.label()))
     };
     match route {
         Route::Direct => s.direct.clone().map(|(h, p)| base(h, p)),

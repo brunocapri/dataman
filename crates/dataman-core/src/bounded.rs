@@ -275,7 +275,6 @@ impl Connection {
         self.bounded_held(database, sql, params, mode, limits, cancel, None).await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn bounded_held(
         &self,
         database: Option<&str>,
@@ -605,7 +604,6 @@ async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Opti
     Ok((out, true))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::TSql).verb;
     let (mut cols, mut rows) = ms::query(c, sql, params).await.map_err(|e| Stop::Server(ms::error_info_at(&e, sql, 0)))?;

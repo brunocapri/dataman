@@ -347,8 +347,6 @@ pub fn rotate_step(user: &str, password: &str, azure: bool) -> Step {
     Step::secret_sql("a new password", sql.replace("{}", &hash::mssql_hash(password)), sql.replace("{}", "0x0200…"))
 }
 
-// ---- Live ----
-
 fn s(v: &Option<String>) -> String {
     v.clone().unwrap_or_default()
 }
@@ -405,11 +403,6 @@ pub(crate) async fn orphan(db: &Db, user: &str) -> Result<bool> {
     )
     .await?;
     Ok(r.first().is_some_and(|r| s(&r[0]) != "0"))
-}
-
-/// Dropping a login left without its user.
-pub fn drop_login_sql(user: &str) -> String {
-    format!("DROP LOGIN {};", q(user))
 }
 
 /// Create over a login left without its user and that Dataman no longer knows: dropped first,

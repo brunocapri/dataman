@@ -95,7 +95,6 @@ impl Default for Share {
     }
 }
 
-/// Settings › Editor's SQL format and the review before a commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorPrefs {
@@ -161,8 +160,6 @@ impl ProjectFile {
         format!("{HEADER}{text}")
     }
 
-    /// The file, or why it is not used: another version, too large, or ids that are not
-    /// unique or not plain.
     pub fn parse(text: &str) -> Result<ProjectFile> {
         anyhow::ensure!(text.len() <= MAX_BYTES, "the file is {} KB, {} KB at most", text.len() / 1024, MAX_BYTES / 1024);
         let mut f: ProjectFile = toml::from_str(text)?;
@@ -245,7 +242,6 @@ fn de_conns<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<C
         .collect())
 }
 
-/// This person's side: what the local files hold.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Local {
     pub connections: Vec<ConnectionProfile>,
@@ -254,7 +250,6 @@ pub struct Local {
     pub folders: Vec<Folder>,
 }
 
-/// The local files a project syncs with.
 #[derive(Clone, Copy)]
 pub struct Stores<'a> {
     pub config: &'a ConfigStore,
@@ -601,7 +596,6 @@ pub fn export(local: &Local, share: Share, members: &BTreeSet<String>, root: &Pa
     }
 }
 
-/// What the project's file changes on this person's side.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Changes {
     pub connections: Vec<ConnectionProfile>,
@@ -617,7 +611,6 @@ pub struct Changes {
     pub review_settings: Vec<Change>,
 }
 
-/// A connection the file adds or changes in a way that loosens protection or moves it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnReview {
     pub id: String,
@@ -629,7 +622,6 @@ pub struct ConnReview {
     pub changes: Vec<Change>,
 }
 
-/// A file that loosens protection or moves a connection, held until this person accepts it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Review {
     pub file: ProjectFile,
@@ -784,14 +776,12 @@ impl Changes {
     }
 }
 
-/// What a sync changed: on this person's side (to show), and whether the file was written.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Synced {
     pub connections: bool,
     pub settings: bool,
     pub favorites: bool,
     pub written: bool,
-    /// A new review waits (see [`ProjectStore::review`]).
     pub review: bool,
 }
 
@@ -801,7 +791,6 @@ impl Synced {
     }
 }
 
-/// The open project as Settings shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Info {
     pub root: PathBuf,
@@ -990,7 +979,6 @@ impl ProjectStore {
         })
     }
 
-    /// The file waiting for this person's review, if any.
     pub fn review(&self) -> Option<Review> {
         self.state.lock().review.clone()
     }
@@ -1006,7 +994,6 @@ impl ProjectStore {
         self.sync(st)
     }
 
-    /// Kept held without asking again, until the file changes.
     pub fn decline(&self) {
         if let Some(r) = self.state.lock().review.as_mut() {
             r.declined = true;
@@ -1017,7 +1004,6 @@ impl ProjectStore {
         self.run(st, |_, _| {})
     }
 
-    /// Changes what the project shares (Settings › Project), then syncs.
     pub fn edit(&self, st: Stores, f: impl FnOnce(&mut Share, &mut BTreeSet<String>)) -> Result<Synced> {
         self.run(st, f)
     }
@@ -1229,7 +1215,6 @@ mod tests {
         assert_eq!(local.connections[1].name, "personal");
         assert_eq!((local.settings.keyword_case, local.settings.indent, local.settings.confirm_commit), (KeywordCase::Lower, 2, false));
         assert!(plan(&local, &theirs, Some(&theirs), root).is_empty(), "applied: nothing left to change");
-        // Editor not shared: the local format is left alone.
         let quiet = ProjectFile { editor: None, share: Share { editor: false, ..theirs.share }, ..theirs.clone() };
         local.settings.indent = 4;
         assert_eq!(plan(&local, &quiet, None, root).editor, None);
@@ -1328,7 +1313,6 @@ mod tests {
         assert!(text.contains("shop.db.internal") && !text.contains("personal") && !text.contains("by-agent") && text.contains("orders"), "{text}");
         assert!(!alice.sync().written, "nothing changed, nothing written");
 
-        // Bob opens the same folder: he gets the project's settings over his own.
         let bob = Machine::new();
         bob.settings.update(|s| s.indent = 4).unwrap();
         let (created, synced) = bob.project.open_project(&root, bob.st()).unwrap();
@@ -1347,13 +1331,11 @@ mod tests {
         assert_eq!(alice.config.get(&shop.id).unwrap().port, shop.port, "held");
         assert!(alice.project.accept(alice.st(), &alice.project.review().unwrap()).unwrap().connections);
         assert_eq!(alice.config.get(&shop.id).unwrap().port, 6543);
-        // Alice deletes the favorite; after Bob's sync it is gone there too.
         alice.favorites.remove(&fav.id).unwrap();
         assert!(alice.sync().written);
         assert!(bob.sync().favorites);
         assert!(bob.favorites.list().is_empty());
 
-        // Settings › Project: Alice shares her personal connection and stops sharing the format.
         alice.project.edit(alice.st(), |share, members| {
             share.editor = false;
             members.insert(personal.id.clone());
@@ -1583,12 +1565,10 @@ mod tests {
         let local = Local { connections: vec![off.clone()], ..Local::default() };
         let file = |p: ConnectionProfile| ProjectFile { connections: vec![p], ..export(&Local::default(), Share::default(), &BTreeSet::new(), &root) };
         let held = |p: ConnectionProfile| plan(&local, &file(p), None, &root).review;
-        // A plain new connection, a new SQLite file inside the folder: no review.
         assert!(held(conn("plain")).is_empty());
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(root.join("data/shop.sqlite"), b"").unwrap();
         assert!(held(ConnectionProfile::new_file(Engine::Sqlite, "data/shop.sqlite")).is_empty());
-        // More than a new connection gets.
         let mut full = conn("wide");
         (full.mcp, full.mcp_yolo) = (Some(McpAccess::Full), true);
         assert!(!held(full).is_empty(), "full + YOLO");
@@ -1597,15 +1577,12 @@ mod tests {
         (twin.host, twin.port, twin.user) = (off.host.clone(), off.port, off.user.clone());
         let r = held(twin);
         assert!(r.first().is_some_and(|r| r.changes.iter().any(|c| c.what == "Reaches")), "{r:?}");
-        // Named like this person's connection.
         let mut named = conn("x");
         named.name = "VAULT ".into();
         assert!(!held(named).is_empty());
-        // TLS off to a remote server.
         let mut clear = conn("clear");
         clear.sslmode = SslMode::Disable;
         assert!(!held(clear).is_empty());
-        // Files outside the folder: absolute, ~, .., through a symlink.
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("chat.db");
         std::fs::write(&secret, b"").unwrap();
@@ -1614,7 +1591,6 @@ mod tests {
             let r = held(ConnectionProfile::new_file(Engine::Sqlite, path.clone()));
             assert!(r.first().is_some_and(|r| r.changes.iter().any(|c| c.what == "File" && c.loosens)), "{path}: {r:?}");
         }
-        // An id that is one of this person's names; a local socket.
         let mut by_id = conn("y");
         by_id.id = "Vault".into();
         assert!(held(by_id).first().is_some_and(|r| r.changes.iter().any(|c| c.what == "Id")));
@@ -1667,7 +1643,6 @@ mod tests {
         (gcp.host, gcp.auth) = ("34.1.2.3".into(), Auth::GoogleIam { account: None });
         assert!(!held(gcp).is_empty());
 
-        // Personal fields stay out of the file and stay mine.
         let mut rds = conn("rds");
         (rds.host, rds.auth) = ("db.abc.eu-west-1.rds.amazonaws.com".into(), Auth::AwsIam { profile: Some("bruno-dev".into()), region: Some("eu-west-1".into()) });
         let shared = shareable(&rds, true, &root);
@@ -1677,7 +1652,6 @@ mod tests {
         let back = merged(Some(&rds), &shared, true, &root);
         assert_eq!(back.auth, rds.auth);
         assert!(!moves(&rds, &back, &root));
-        // The file switching it to another method moves it.
         let mut switched = shared.clone();
         switched.auth = Auth::EntraId { tenant: None };
         assert!(moves(&rds, &merged(Some(&rds), &switched, true, &root), &root));

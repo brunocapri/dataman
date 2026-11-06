@@ -288,8 +288,6 @@ fn camel_to_upper(s: &str) -> String {
     out
 }
 
-// ---- Live ----
-
 pub(crate) fn doc(v: &Value) -> Result<Document> {
     crate::nosql::bson::to_document(v).map_err(|e| anyhow!("{e}"))
 }
@@ -371,7 +369,6 @@ pub(crate) async fn inventory(c: &Client) -> Result<Inventory> {
     Ok(out)
 }
 
-/// The role's privileges as lines, and Dataman's views with their pipelines' hashes.
 pub(crate) async fn have(c: &Client, user: &str, space: &str) -> Result<(Vec<String>, Vec<(String, String, String)>)> {
     let r = run(c, "admin", &json!({ "rolesInfo": { "role": user, "db": "admin" }, "showPrivileges": true })).await?;
     let v: Value = Bson::Document(r).into_relaxed_extjson();

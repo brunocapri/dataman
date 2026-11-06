@@ -208,7 +208,6 @@ pub enum EditorEvent {
 pub(crate) struct Buffer {
     text: String,
     lines: Vec<usize>,
-    /// The folded brackets' offsets, kept in step with the edits.
     folded: Vec<usize>,
     tokens: Vec<Token>,
     dialect: Dialect,
@@ -402,6 +401,7 @@ impl Buffer {
         s.chars().count() + s.bytes().filter(|&b| b >= 0xf0).count()
     }
 
+    #[allow(clippy::wrong_self_convention)] // Maps an offset back through this buffer.
     pub(crate) fn from_utf16(&self, offset: usize) -> usize {
         if self.non_ascii == 0 {
             return offset.min(self.text.len());
@@ -910,7 +910,7 @@ fn token_color(t: &Theme, kind: TokenKind, word: &str, next_is_paren: bool) -> H
 }
 
 pub(crate) fn highlighted_lines(t: &Theme, sql: &str) -> Vec<(SharedString, Vec<TextRun>)> {
-    lines_of(t, sql, |s| tokenize(s))
+    lines_of(t, sql, tokenize)
 }
 
 /// [`highlighted_lines`] in an engine's own language: its SQL dialect, or the MongoDB shell,
@@ -2175,7 +2175,6 @@ impl CodeEditor {
         self.geo.map(|g| (g.bounds.left() + g.gutter_w - px(1.)).as_f32())
     }
 
-    /// Where the line between the numbers and the text was painted, from the editor's left.
     pub fn gutter_line(&self) -> Option<Pixels> {
         self.geo.map(|g| g.gutter_w - px(1.))
     }
@@ -3195,7 +3194,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// The folded brackets, to fold the same text the same way again (`set_folds`).
     pub fn folds(&self) -> Vec<usize> {
         self.buf.folded.clone()
     }
@@ -3260,7 +3258,6 @@ impl CodeEditor {
         if self.rows.is_empty() { row } else { self.rows[row.min(self.rows.len() - 1)] }
     }
 
-    /// A hidden line's row is its fold's.
     fn row_of(&self, line: usize) -> usize {
         if self.rows.is_empty() { line } else { self.rows.partition_point(|&l| l <= line).saturating_sub(1) }
     }
@@ -3269,7 +3266,6 @@ impl CodeEditor {
         !self.rows.is_empty() && self.line_at(self.row_of(line)) != line
     }
 
-    /// The fold that starts on `line` (its first bracket there).
     fn region_on(&self, line: usize) -> Option<FoldRegion> {
         let (ls, le) = (self.buf.line_start(line), self.buf.line_end(line));
         let i = self.regions.partition_point(|r| r.open < ls);
@@ -3324,7 +3320,7 @@ impl CodeEditor {
     fn fold_here(&mut self, on: bool, cx: &mut Context<Self>) {
         let l = self.buf.line_of(self.cursor());
         let around = |r: &&FoldRegion| self.buf.line_of(r.open) <= l && l < self.buf.line_of(r.close);
-        let pick = self.regions.iter().filter(around).filter(|r| self.is_folded(r.open) != on).map(|r| r.open).last();
+        let pick = self.regions.iter().filter(around).filter(|r| self.is_folded(r.open) != on).map(|r| r.open).next_back();
         if let Some(open) = pick {
             self.set_fold(open, on);
             self.folds_changed(cx);
@@ -3370,7 +3366,6 @@ impl CodeEditor {
         (0..self.row_count()).map(|r| self.line_at(r)).collect()
     }
 
-    /// A click on the chevron of `line`, with ⌥ or not.
     #[cfg(feature = "checks")]
     pub fn demo_toggle_fold(&mut self, line: usize, deep: bool, cx: &mut Context<Self>) {
         if let Some(r) = self.region_on(line) {
@@ -3582,7 +3577,6 @@ struct Prepainted {
     marks: Vec<(Point<Pixels>, ShapedLine)>,
     lens: Option<(Point<Pixels>, ShapedLine)>,
     backgrounds: Vec<PaintQuad>,
-    /// The ⋯ of folded lines.
     fold_marks: Vec<(Point<Pixels>, ShapedLine)>,
     fold_boxes: Vec<Hitbox>,
     cursor: Option<PaintQuad>,

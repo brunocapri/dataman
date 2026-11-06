@@ -1025,7 +1025,7 @@ impl ActivityView {
                 },
             }
         };
-        let tabs = (offered.len() > 0).then(|| {
+        let tabs = (!offered.is_empty()).then(|| {
             ui::segmented(t).flex_none().h(px(28.)).children(offered.iter().map(|&s| {
                 let on = self.section == s;
                 let warn = s == Section::Locks && self.tree.iter().any(|r| r.depth > 0);

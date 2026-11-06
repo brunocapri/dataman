@@ -85,7 +85,7 @@ impl Field {
 
     fn get(self, d: &CsvDialect) -> usize {
         match self {
-            Field::Delimiter => [b',', b';', b'\t', b'|'].iter().position(|c| *c == d.delimiter).unwrap_or(0),
+            Field::Delimiter => b",;\t|".iter().position(|c| *c == d.delimiter).unwrap_or(0),
             Field::Quote => match d.quote {
                 Some(b'\'') => 1,
                 None => 2,
@@ -99,7 +99,7 @@ impl Field {
 
     fn set(self, d: &mut CsvDialect, ix: usize) {
         match self {
-            Field::Delimiter => d.delimiter = [b',', b';', b'\t', b'|'][ix.min(3)],
+            Field::Delimiter => d.delimiter = b",;\t|"[ix.min(3)],
             Field::Quote => d.quote = [Some(b'"'), Some(b'\''), None][ix.min(2)],
             Field::Header => d.header = ix == 0,
             Field::Encoding => d.encoding = Encoding::ALL[ix.min(2)],
@@ -201,8 +201,7 @@ impl DataImportView {
             _quit: cx.on_app_quit(|v: &mut DataImportView, cx| {
                 let wait = v.is_running();
                 v.stop(cx);
-                let timer = cx.background_executor().timer(Duration::from_millis(if wait { 400 } else { 0 }));
-                async move { timer.await }
+                cx.background_executor().timer(Duration::from_millis(if wait { 400 } else { 0 }))
             }),
         };
         if let Some(t) = v.target.table.clone() {
@@ -497,7 +496,6 @@ impl DataImportView {
         cx.notify();
     }
 
-    /// The finished import: rows written, rows skipped, rolled back.
     #[cfg(feature = "checks")]
     pub fn demo_report(&self) -> Option<(u64, u64, bool)> {
         match &self.job.as_ref()?.state {

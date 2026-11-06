@@ -55,7 +55,6 @@ pub struct Asset {
     pub ed25519: String,
 }
 
-/// This build's key in the feed's `assets`.
 pub fn platform() -> String {
     let os = if cfg!(target_os = "macos") { "macos" } else { std::env::consts::OS };
     format!("{os}-{}", std::env::consts::ARCH)
@@ -742,7 +741,6 @@ fn installer_args(dir: &Path, all_users: bool, log: &Path) -> String {
     format!(r#"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS {scope} /DIR="{}" /LOG="{}""#, dir.display(), log.display())
 }
 
-/// The installer that runs once the app has quit, with its arguments.
 #[cfg(windows)]
 static PENDING: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::new(None);
 

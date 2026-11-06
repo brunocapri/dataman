@@ -281,7 +281,7 @@ fn postgres_values_stay_kept() {
     for f in [
         format!("SELECT table_to_xml('{s}.users', true, false, '')"),
         format!("SELECT schema_to_xml('{s}', true, false, '')"),
-        format!("SELECT database_to_xml(true, false, '')"),
+        "SELECT database_to_xml(true, false, '')".to_string(),
     ] {
         refused(&f, q(f.clone()), "is not available to agents on pp");
     }
@@ -360,7 +360,6 @@ fn postgres_values_stay_kept() {
     let r = q(format!("SELECT * FROM {s}.users")).unwrap();
     assert!(!r.to_string().contains("password_hash"), "{r}");
 
-    // The catalog tools, the schema resource and favorites.
     for (tool, args) in [
         ("describe_table", json!({"table": format!("{s}.users"), "include_ddl": true})),
         ("get_ddl", json!({"object": format!("{s}.users")})),
@@ -463,6 +462,44 @@ fn mysql_and_sql_server_values_stay_kept() {
         e.nothing_kept_logged();
         e.done();
     }
+}
+
+/// DAT-36: what an agent gets on SQL Server. A rule holds whatever the case of the rule, the
+/// catalog and the statement. Values of a known key shape are masked with no rule at all, while
+/// a key of no known shape gets through without one: why Scan again keeps a column named `ApiKey`.
+#[test]
+fn mssql_rules_and_masks_for_scanned_names() {
+    if !up(MS) {
+        return;
+    }
+    let s = "mcp_scan_dat36";
+    let (shaped, unshaped) = ("sk_live_abcdefghij012345", "abc123deadbeefcafe");
+    // Spelled unlike the catalog (`Token`, `lowered`, `ApiKey2`), as a hand-written rule may be.
+    let rules = format!(
+        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{}_ACCTS.TOKEN\", how = \"hidden\" }}, {{ col = \"{s}_accts.Lowered\", how = \"hidden\" }}, {{ col = \"{s}_accts.apikey2\", how = \"hidden\" }}]\n",
+        s.to_uppercase()
+    );
+    let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules)], "", None);
+    e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE IF EXISTS dbo.{s}_accts; CREATE TABLE dbo.{s}_accts (Id int, Token varchar(50), lowered varchar(50), Notes varchar(50), ApiKey varchar(50), ApiKey2 varchar(50))")})));
+    e.admin("execute", with("msadmin", json!({"sql": format!("INSERT INTO dbo.{s}_accts VALUES (1, 'taken-token-value', 'taken-lower-value', '{shaped}', '{unshaped}', '{unshaped}')")})));
+    let q = |sql: String| e.ok("run_query", with("ss", json!({"sql": sql}))).to_string();
+    let t = format!("dbo.{s}_accts");
+    let upper = format!("dbo.{}_ACCTS", s.to_uppercase());
+    for (names, value) in [(["Token", "token", "TOKEN", "[tOkEn]"], "taken-token-value"), (["lowered", "Lowered", "LOWERED", "[lOwErEd]"], "taken-lower-value")] {
+        for name in names {
+            for read in [format!("SELECT {name} FROM {t}"), format!("SELECT {name} FROM {upper}"), format!("SELECT * FROM {t}")] {
+                let got = q(read.clone());
+                assert!(!got.contains(value), "{read}: {got}");
+            }
+        }
+    }
+    assert!(e.call("run_query", with("ss", json!({"sql": format!("SELECT Id FROM {t} WHERE UPPER(TOKEN) = 'X'")}))).is_err(), "not through a filter either");
+    let notes = q(format!("SELECT Notes FROM {t}"));
+    assert!(!notes.contains(shaped), "the API key Mask, on a column named nothing like a key: {notes}");
+    assert!(q(format!("SELECT ApiKey FROM {t}")).contains(unshaped), "no shape and no rule: the name is all there is to go on");
+    assert!(!q(format!("SELECT ApiKey2 FROM {t}")).contains(unshaped), "the rule Scan again adds for it");
+    e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{s}_accts")})));
+    e.done();
 }
 
 #[test]
@@ -634,9 +671,6 @@ fn redis_values_stay_kept() {
     e.done();
 }
 
-/// User tools (mcp-tools.toml) run for agents: the connection's rules and dialect apply to them.
-/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
-/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
 /// Two connections with one name: a call on the Masked one by its id is masked as that
 /// connection's, never looked up again by the name (which is both).
 #[test]
@@ -658,6 +692,8 @@ fn a_shared_name_does_not_unmask_a_reply() {
     e.done();
 }
 
+/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
+/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
 /// any level; writes stop at read and on a read-only connection.
 #[test]
 fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
@@ -854,9 +890,7 @@ fn user_tools_follow_the_rules() {
         return;
     }
     let s = format!("mcp_tools_{}", std::process::id());
-    let rules = format!(
-        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"*tax_id*\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"users.password_hash\", kind = \"column\" }}]\n"
-    );
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"*tax_id*\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.password_hash\", kind = \"column\" }]\n".to_string();
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", Some(&tools.replace("{s}", &s)));
     e.admin(
         "execute",
@@ -906,7 +940,7 @@ fn rules_have_one_precedence() {
     use McpAccess::*;
     let del = "DELETE FROM t";
     let upd = "UPDATE t SET a = 1 WHERE id = 2";
-    let allowed = vec![upd.to_string(), del.to_string()];
+    let allowed = [upd.to_string(), del.to_string()];
     for env in Environment::ALL {
         for access in [Off, Read, Write, Full] {
             for ro in [false, true] {

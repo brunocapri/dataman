@@ -11,6 +11,15 @@ version = "0.3.9"
 license = "MIT"
 publish = false
 
+[workspace.lints.clippy]
+# Deliberate in this codebase; the default groups stay on for everything else.
+too_many_arguments = "allow"     # layout helpers and check stages pass plain values, no parameter structs.
+type_complexity = "allow"        # callback and channel types, each used in one place.
+result_large_err = "allow"       # ErrorInfo is carried by value on an error path that is not hot.
+large_enum_variant = "allow"     # events and states are short-lived; boxing them only adds a step.
+if_same_then_else = "allow"      # parsers keep one branch per grammar case, even when two act alike.
+single_range_in_vec_init = "allow" # a list of ranges that has one range is what those sites mean.
+
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "2"

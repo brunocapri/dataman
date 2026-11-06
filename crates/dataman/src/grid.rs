@@ -645,7 +645,6 @@ impl ResultGrid {
         self.land = key;
     }
 
-    /// The sort the grid is on, or on its way to while one runs.
     #[cfg(feature = "checks")]
     pub fn demo_sort_asked(&self) -> Option<(usize, SortDir)> {
         if self.sorting { self.sort_asked } else { self.rs.as_ref().and_then(|r| r.sort_state()) }
@@ -656,7 +655,6 @@ impl ResultGrid {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
     }
 
-    /// The pop now, else the last one that ran its course.
     #[cfg(feature = "checks")]
     pub fn demo_pop_ran(&self) -> Option<((usize, usize), PopStyle)> {
         self.demo_pop().or(self.ran_pop.map(|(c, style)| ((c.row, c.col), style)))
@@ -717,7 +715,6 @@ impl ResultGrid {
         }
     }
 
-    /// What a new row's cells say, and whether each is a grey placeholder.
     #[cfg(feature = "checks")]
     pub fn demo_new_row(&self, i: usize) -> Vec<(Option<String>, bool)> {
         self.decor.as_ref().and_then(|d| d.virtual_rows.get(i)).map_or(Vec::new(), |r| r.cells.iter().map(|c| (c.text.clone().flatten(), c.ghost)).collect())
@@ -2715,7 +2712,7 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     });
     let rows_area = gpui::ContentMask { bounds: rect(0., HEADER_H, full_w, geo.body_h) };
     if let (Some(p), Some((_, _, b))) = (click_pop, pop_rect) {
-        window.with_content_mask(Some(rows_area.clone()), |window| {
+        window.with_content_mask(Some(rows_area), |window| {
             crate::motion::paint_pop(window, cx, b, CELL_RADIUS, crate::theme::mix(sel_color, t.sel_hi, p.f.strength), p.f.scale, None);
         });
     }
@@ -2809,12 +2806,11 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             }
         }
     });
-    // The last row closes the table with a line under it, across the gutter and the columns.
     if rows > 0
         && let Some(end) = frame.cols.last().map(|fc| geo.gutter + fc.x + fc.w)
     {
         let y = HEADER_H + ry(rows) - 1.;
-        window.with_content_mask(Some(rows_area.clone()), |window| {
+        window.with_content_mask(Some(rows_area), |window| {
             window.paint_quad(fill(rect(0., y, end.min(geo.gutter + geo.body_w), 1.), t.grid_line));
         });
     }
@@ -2838,7 +2834,7 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
         });
     }
     if let (Some(p), Some((_, _, b)), true) = (click_pop, pop_rect, focused) {
-        window.with_content_mask(Some(rows_area.clone()), |window| {
+        window.with_content_mask(Some(rows_area), |window| {
             window.paint_quad(gpui::quad(
                 crate::motion::scale_bounds(b, p.f.scale),
                 px(CELL_RADIUS * p.f.scale),
@@ -2921,14 +2917,14 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
 
 pub fn fetch_step() -> String {
     let n = dataman_core::result::prefetch();
-    if n % 1000 == 0 { format!("{}k", n / 1000) } else { ui_count(n) }
+    if n.is_multiple_of(1000) { format!("{}k", n / 1000) } else { ui_count(n) }
 }
 
 pub fn ui_count(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -3233,7 +3229,6 @@ pub fn follow_growth(row: usize, old: usize, new: usize) -> usize {
     if row >= old && new > old { row + (new - old) } else { row }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decorated_line(
     ts: &gpui::WindowTextSystem,
     t: &Theme,

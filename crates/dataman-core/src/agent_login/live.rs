@@ -14,7 +14,6 @@ use crate::backend::{Db, text_rows};
 use crate::conn::Connection;
 use crate::nosql::Client;
 
-/// What the review sheet shows, and what Create runs.
 #[derive(Clone)]
 pub struct Review {
     pub probe: Probe,
@@ -67,7 +66,6 @@ pub async fn has_logins(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<bo
     }
 }
 
-/// What the user's login can do here, and whether the login already exists.
 pub async fn probe(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<(Probe, Option<redis::Persist>)> {
     let user = login_name(&p.id);
     Ok(match p.engine {
@@ -188,7 +186,6 @@ pub async fn apply(c: &Arc<Connection>, plan: &Plan, database: &str) -> Result<(
     Ok(())
 }
 
-/// What the profile keeps once the plan ran.
 pub fn record(p: &ConnectionProfile, plan: &Plan, o: &Options) -> AgentLogin {
     let now = Utc::now();
     AgentLogin {
@@ -281,16 +278,13 @@ pub struct Check {
     pub what: String,
     /// What it was tried on: one table, column or command picked from the rules ("" for none).
     pub on: String,
-    /// Why it is tried and how, in a line.
     pub tip: &'static str,
     /// A refusal it holds (what it can't do), not something it can.
     pub guard: bool,
     pub ok: bool,
-    /// What the server said.
     pub detail: String,
 }
 
-/// Verify's checks, by what they are about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CheckGroup {
     Login,
@@ -315,7 +309,6 @@ impl CheckGroup {
 }
 
 impl Check {
-    /// One line: what it holds, and on what.
     pub fn line(&self) -> String {
         if self.on.is_empty() { self.what.clone() } else { format!("{} ({})", self.what, self.on) }
     }
@@ -325,7 +318,6 @@ fn check(group: CheckGroup, what: &str, on: impl Into<String>, tip: &'static str
     Check { group, what: what.into(), on: on.into(), tip, guard: guards(what), ok, detail: detail.into() }
 }
 
-/// Whether a check is about what the login can't do.
 pub fn guards(what: &str) -> bool {
     what.starts_with("Can't") || matches!(what, "Hidden fields are left out" | "Sessions start read-only")
 }
@@ -461,7 +453,7 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let r = try_sql(top0(e, "1", &qual(s, n))).await;
         out.push(check(G::Privacy, "Can't read hidden tables", name, TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden table".into())));
     }
-    let probe_table = format!("dataman_probe_{}", &hash::hex(&hash::random_bytes(4)));
+    let probe_table = format!("dataman_probe_{}", hash::hex(&hash::random_bytes(4)));
     let schema = match e {
         Engine::Postgres => "public".to_string(),
         Engine::SqlServer => "dbo".to_string(),
@@ -599,7 +591,6 @@ pub struct Drift {
     pub inventory: Inventory,
 }
 
-/// Dataman's SQL Server login left without its user in `database` (restored or made again).
 pub fn lost_user_text(user: &str, database: &str) -> String {
     format!("{user} lost its user in {database} (the database was restored or made again): Verify puts it back, as Auto sync does on its own")
 }
@@ -640,7 +631,6 @@ pub async fn reattach(core: &crate::Core, admin: &Arc<Connection>, p: &Connectio
     Ok(Some(plan))
 }
 
-/// What the record keeps once `plan` ran for the rules `hash`.
 pub fn note_synced(l: &mut AgentLogin, hash: String, plan: &Plan) {
     (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
     for m in &plan.made {
@@ -867,7 +857,6 @@ pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str
             for id in ids.iter().filter_map(|r| r[0].as_deref()).filter_map(|x| x.parse::<u64>().ok()) {
                 match db.execute(&format!("KILL {id}")).await {
                     Ok(_) => n += 1,
-                    // Gone since it was listed.
                     Err(e) if e.code.as_deref() == Some("1094") => {}
                     Err(e) => bail!("{e}"),
                 }
@@ -891,7 +880,6 @@ pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str
     })
 }
 
-/// The database a plan's statements run in.
 pub fn database_for(p: &ConnectionProfile, login: Option<&AgentLogin>) -> String {
     login.map(|l| l.database.clone()).filter(|d| !d.is_empty()).unwrap_or_else(|| p.database.clone())
 }

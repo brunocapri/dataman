@@ -122,7 +122,7 @@ fn when(window: &mut Window, timeout: Duration, mut ready: impl FnMut(&mut App) 
     let mut polls = 0u64;
     every_frame(window, move |window, cx| {
         polls += 1;
-        if std::env::var("DATAMAN_DEBUG").is_ok() && polls % 60 == 0 {
+        if std::env::var("DATAMAN_DEBUG").is_ok() && polls.is_multiple_of(60) {
             eprintln!("bench: still waiting after {polls} frames");
         }
         if ready(cx) {

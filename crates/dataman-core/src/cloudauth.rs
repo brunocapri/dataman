@@ -35,7 +35,6 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MARGIN: Duration = Duration::from_secs(5 * 60);
 /// A token whose expiry the CLI does not tell (gcloud's) is taken to last this long.
 const UNTOLD: Duration = Duration::from_secs(15 * 60);
-/// RDS tokens: 15 minutes.
 const AWS_LIFETIME: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,7 +123,6 @@ impl SignInError {
     }
 }
 
-/// The sign-in error somewhere in `e`'s chain.
 pub fn sign_in_error(e: &anyhow::Error) -> Option<&SignInError> {
     e.chain().find_map(|c| c.downcast_ref::<SignInError>())
 }
@@ -164,14 +162,11 @@ struct Request {
     args: Vec<String>,
 }
 
-/// Who the CLI signs in as, for the connection dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedIn {
     pub who: Option<String>,
     pub valid_for: Duration,
 }
-
-// ---- Hosts ---------------------------------------------------------------------------------
 
 /// The cloud's own database hosts (the public, US Government and China clouds; private-link
 /// names are under them too).
@@ -243,8 +238,6 @@ pub fn aws_region_of(host: &str) -> Option<String> {
     ok.then(|| region.to_string())
 }
 
-// ---- Arguments -----------------------------------------------------------------------------
-
 /// What a tenant, profile, region, account, host or user may be to reach a CLI: plain characters,
 /// no leading `-`.
 pub fn plain_value(v: &str) -> bool {
@@ -313,8 +306,6 @@ fn request(p: &ConnectionProfile) -> Result<Request, SignInError> {
     };
     Ok(Request { cli, args })
 }
-
-// ---- Running the CLI -------------------------------------------------------------------------
 
 /// Where the CLIs are looked for: the PATH, then where their installers put them.
 pub fn default_dirs() -> Vec<PathBuf> {
@@ -501,7 +492,6 @@ pub async fn run_tree(cmd: &mut tokio::process::Command, timeout: Duration) -> O
     Some(out)
 }
 
-/// Runs the CLI: its standard output, or what went wrong said plainly.
 async fn run(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth) -> Result<String, SignInError> {
     match exec(cli, args, dirs, auth, TIMEOUT).await? {
         Ok(out) => Ok(out),
@@ -509,7 +499,6 @@ async fn run(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth) -> Result
     }
 }
 
-/// Runs the CLI for at most `timeout`: its standard output, or its standard error when it failed.
 async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout: Duration) -> Result<Result<String, String>, SignInError> {
     let Some(path) = locate(cli.program(), dirs) else {
         return Err(SignInError::new(format!("{} ({}) not found", cli.name(), cli.program()), format!("Dataman signs in through it: install it ({}), then sign in.", cli.install_url())).fix(Fix::Install(cli)));
@@ -575,7 +564,6 @@ fn login_args(r: &Request, auth: &Auth) -> Result<Vec<String>, SignInError> {
     Ok(args)
 }
 
-/// The command that signs the user in again, with the connection's tenant, profile or account.
 pub fn login_command(cli: Cli, auth: &Auth) -> String {
     let given = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
     match (cli, auth) {
@@ -667,8 +655,6 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
     SignInError::new(format!("{} could not make a token", cli.name()), if first.is_empty() { format!("Run `{login}` in a terminal, then try again.") } else { first })
 }
 
-// ---- Parsing ---------------------------------------------------------------------------------
-
 fn from_epoch(secs: i64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs.max(0) as u64)
 }
@@ -677,7 +663,6 @@ fn bad_output(cli: Cli) -> SignInError {
     SignInError::new(format!("{} answered something that is not a token", cli.name()), format!("Update it ({}).", cli.install_url()))
 }
 
-/// A token is one word of printable ASCII.
 fn plain_token(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_graphic())
 }
@@ -767,8 +752,6 @@ fn parse_sts(out: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(out.trim()).ok()?;
     v.get("Arn").and_then(|a| a.as_str()).map(str::to_string)
 }
-
-// ---- The source ------------------------------------------------------------------------------
 
 type Slot = Arc<tokio::sync::Mutex<Option<Token>>>;
 
@@ -889,8 +872,6 @@ impl TokenSource {
         Ok(SignedIn { who, valid_for })
     }
 }
-
-// ---- Refusals by the server ------------------------------------------------------------------
 
 /// What the user's side most likely misses when the server refused a token, put on top of the
 /// server's error.
@@ -1222,7 +1203,6 @@ mod tests {
         assert_eq!(e.body, "something odd happened", "{e}");
     }
 
-    /// A fake CLI: a shell script in `dir`.
     #[cfg(unix)]
     fn fake(dir: &Path, name: &str, script: &str) {
         write_script(&dir.join(name), script);

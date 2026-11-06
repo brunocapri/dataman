@@ -63,7 +63,8 @@ fn edit_every_type() {
             "g" => continue,
             _ => continue,
         };
-        for (from, to) in [(old.clone().unwrap(), new.to_string())] {
+        {
+            let (from, to) = (old.clone().unwrap(), new.to_string());
             let rs = run(&e, &s, "SELECT * FROM `we``ird`");
             let snap = rs.snapshot();
             let from = snap.text(0, ix).map(|x| x.into_owned()).unwrap_or(from);

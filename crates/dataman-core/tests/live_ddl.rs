@@ -42,12 +42,12 @@ fn pg_create_table_round_trip() {
     eprintln!("{}\n{orders}", ddl_a[0]);
     for want in [
         "id serial,",
-        &format!("customer bigint NOT NULL,"),
+        "customer bigint NOT NULL,",
         "total numeric(12,2) NOT NULL DEFAULT 0,",
         "GENERATED ALWAYS AS",
         "STORED",
         "tags text[] DEFAULT '{}'::text[]",
-        &format!("PRIMARY KEY (id)"),
+        "PRIMARY KEY (id)",
         &format!("FOREIGN KEY (customer) REFERENCES {a}.customers(id) ON DELETE CASCADE"),
         "CHECK (total >= 0::numeric)",
         "UNIQUE (customer, status)",

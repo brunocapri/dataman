@@ -110,7 +110,7 @@ pub fn detect_format(path: &Path, head: &[u8]) -> ImportFormat {
     if head.starts_with(b"PAR1") {
         return ImportFormat::Parquet;
     }
-    let first = head.iter().copied().skip_while(|c| c.is_ascii_whitespace() || *c == 0xef || *c == 0xbb || *c == 0xbf).next();
+    let first = head.iter().copied().find(|c| !(c.is_ascii_whitespace() || *c == 0xef || *c == 0xbb || *c == 0xbf));
     match (ImportFormat::from_path(path), first) {
         (Some(ImportFormat::Json), Some(b'{')) => ImportFormat::Ndjson,
         (Some(ImportFormat::Ndjson), Some(b'[')) => ImportFormat::Json,

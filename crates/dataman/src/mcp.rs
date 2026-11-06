@@ -52,6 +52,14 @@ impl Pending {
     }
 }
 
+/// The sheet as if drawn just now: on a slow renderer one frame outlasts `ALLOW_AFTER`.
+#[cfg(feature = "checks")]
+pub(crate) fn demo_just_shown(cx: &App) {
+    if let Some(p) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()) {
+        p.shown.set(Some(std::time::Instant::now()));
+    }
+}
+
 pub(crate) fn allow_ready(cx: &App) -> bool {
     cx.try_global::<McpHost>().and_then(|h| h.pending.front()).and_then(|p| p.shown.get()).is_some_and(|t| t.elapsed() >= ALLOW_AFTER)
 }
@@ -174,6 +182,7 @@ impl Shared {
     }
 }
 
+#[derive(Default)]
 pub struct McpHost {
     shared: Option<Arc<Shared>>,
     ipc: Option<dataman_mcp::ipc::IpcServer>,
@@ -187,19 +196,6 @@ pub struct McpHost {
 
 impl Global for McpHost {}
 
-impl Default for McpHost {
-    fn default() -> Self {
-        McpHost {
-            shared: None,
-            ipc: None,
-            ipc_starting: false,
-            pending: VecDeque::new(),
-            workspace: None,
-            #[cfg(feature = "checks")]
-            forward: 0,
-        }
-    }
-}
 
 pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
     cx.default_global::<McpHost>().workspace = Some((ws, window));
@@ -211,7 +207,6 @@ pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App
     .detach();
 }
 
-/// The socket agents reach this app through is up.
 #[cfg(feature = "checks")]
 pub(crate) fn listening(cx: &App) -> bool {
     cx.try_global::<McpHost>().is_some_and(|h| h.ipc.is_some())

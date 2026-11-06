@@ -26,10 +26,9 @@ fn qual(schema: &str, name: &str) -> String {
     format!("{}.{}", q(schema), q(name))
 }
 
-/// The grant as the statement says it, without `GRANT`/`TO`.
 pub fn text(g: &Grant) -> String {
     match g {
-        Grant::Database(p) => format!("{p}"),
+        Grant::Database(p) => p.to_string(),
         Grant::Schema { schema, privilege } => format!("{privilege} ON SCHEMA {}", q(schema)),
         Grant::Table { schema, name, privilege } => format!("{privilege} ON {}", qual(schema, name)),
         Grant::Column { schema, name, column, privilege } => format!("{privilege} ({}) ON {}", q(column), qual(schema, name)),
@@ -435,8 +434,6 @@ pub fn rotate_step(user: &str, password: &str, expires_days: Option<u32>) -> Ste
     Step::secret_sql("a new password", sql.replace("{}", &lit(&hash::pg_scram(password))), sql.replace("{}", "'SCRAM-SHA-256$4096:…'"))
 }
 
-// ---- Live ----
-
 async fn rows(db: &Db, sql: &str) -> Result<Vec<Vec<Option<String>>>> {
     text_rows(db, sql).await
 }
@@ -465,7 +462,6 @@ pub fn no_roles(code: Option<&str>, message: &str) -> bool {
     matches!(code, Some("42P01" | "3F000")) || (named && missing)
 }
 
-/// Whether the server has PostgreSQL's logins: false where pg_roles is missing or empty.
 pub(crate) async fn has_roles(db: &Db) -> Result<bool> {
     match rows(db, "SELECT 1 FROM pg_roles LIMIT 1").await {
         Ok(r) => Ok(!r.is_empty()),
@@ -671,7 +667,6 @@ pub(crate) async fn made_here(db: &Db, space: &str) -> Result<(Vec<String>, bool
     Ok((views, salt, ours && !other, ours))
 }
 
-/// Whether the role named `user` is there, and marked for this connection.
 pub(crate) async fn exists(db: &Db, user: &str, conn: &str) -> Result<Option<bool>> {
     let e = rows(db, &format!("SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = {}", lit(user))).await?;
     Ok(e.first().map(|r| r[0].as_deref().is_some_and(|c| marked_for(c, conn))))

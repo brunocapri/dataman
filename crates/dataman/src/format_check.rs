@@ -53,14 +53,12 @@ fn notice(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| ws.read(cx).flash_notice.as_ref().map(|n| n.0.clone())).ok().flatten().unwrap_or_default()
 }
 
-/// Clicks Format and returns the text after it.
 async fn format(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Option<String> {
     let clicked = click_probe("tb-format", cx);
     pause(cx, 100).await;
     clicked.then(|| text(tab, cx))
 }
 
-/// ⌘S, then the text in the editor and the tab's favorite.
 async fn save(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (String, Option<String>) {
     key(cx, "cmd-s");
     pause(cx, 150).await;
@@ -111,7 +109,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let back = text(&tab, cx);
     r.check("one ⌘Z after ⌘S gives back the text as typed", back == messy, format!("{back:?}"));
 
-    // MongoDB: the same button, the tab's own language.
     let Some(tab) = on(ws, Engine::MongoDb, r, cx).await else { return };
     let mongo = until(cx, 10, |cx| cx.update(|_, cx| tab.read(cx).editor.read(cx).doc_lang() == Some(Engine::MongoDb)).unwrap_or(false)).await;
     r.check("the tab speaks MongoDB", mongo, "");

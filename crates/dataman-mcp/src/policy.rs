@@ -31,17 +31,12 @@ use dataman_core::{ConnectionProfile, Environment, McpAccess};
 /// `run_tool` applies before the handler both come from here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Reads a database.
     Read,
-    /// Writes to a database (through the tier).
     Write,
     /// A read, or a write through the tier as execute's (open_query, run_favorite, explain_analyze).
     MaybeWrite,
-    /// Reads Dataman's own state.
     Local,
-    /// Adds to or changes Dataman's own state.
     LocalEdit,
-    /// Removes from Dataman's own state.
     LocalRemove,
 }
 

@@ -4,7 +4,7 @@
 //! before Save.
 
 use dataman_core::privacy::{self, AgentView, Keep, Mask, Names, Side};
-use dataman_core::{ConnectionProfile, Engine};
+use dataman_core::ConnectionProfile;
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, div, prelude::*};
 
 use crate::agents::{AgentsPage, Tip, qmark};
@@ -16,13 +16,11 @@ use crate::ui;
 pub(crate) struct SensEdit {
     pub(crate) col: String,
     pub(crate) how: Mask,
-    /// Values of the column and the table they were read from, once read.
     pub(crate) sample: Option<(Vec<String>, String)>,
 }
 
 /// Long values are cut: the preview shows how the mask looks, not the whole value.
 const SAMPLE_MAX: usize = 80;
-/// The rows the preview reads and shows.
 const SAMPLE_ROWS: u32 = 6;
 const GRID_ROW_H: f32 = 22.;
 const GRID_HEAD_H: f32 = 28.;
@@ -87,7 +85,7 @@ impl AgentsPage {
                     Some((schema, table, c)) => conn.sample_column_values(&db, &schema, &table, &c, SAMPLE_ROWS).await.ok().map(|v| (v, table)),
                     None => None,
                 }
-            } else if engine == Engine::MongoDb && !col.contains('*') {
+            } else if engine.caps().field_values && !col.contains('*') {
                 match col.split_once('.') {
                     Some((coll, path)) => conn.sample_field_values(&db, coll, path, SAMPLE_ROWS as i64).await.ok().map(|v| (v, coll.to_string())),
                     None => None,

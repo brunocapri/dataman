@@ -137,7 +137,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{:?}", heads(&t, &names, cx)),
     );
 
-    // Made from the header's button, named in place.
     let clicked = click_probe("x-new-folder", cx);
     pause(cx, 50).await;
     let naming = cx.update(|_, cx| t.read(cx).demo_naming(cx)).ok().flatten();
@@ -154,7 +153,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     let Some(prod) = prod else { return };
     r.check("a folder: still no folder chip in the search field", probed("x-scope", cx).is_none(), "");
 
-    // Into the folder through the connection's menu.
     let moved = menu(&t, &format!("c:{billing}"), Act::MoveToFolder(0), cx).await;
     let h = heads(&t, &names, cx);
     r.check(
@@ -163,7 +161,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{h:?}"),
     );
 
-    // Into the folder by a drag onto its row.
     let (from, to) = (row_point(&t, &format!("c:{search}"), cx), row_point(&t, &fid(&prod.id), cx));
     let mut during = None;
     if let (Some(from), Some(to)) = (from, to) {
@@ -200,11 +197,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{back:?} / {again:?}"),
     );
 
-    // Color.
     let colored = menu(&t, &fid(&prod.id), Act::FolderColor(Some(4)), cx).await;
     r.check("Color › Sky on the folder's menu: saved by the swatch's name", colored && folder_named(ws, "Prod", cx).and_then(|d| d.color).as_deref() == Some("sky"), format!("{:?}", folders(ws, cx)));
 
-    // The keys over folder rows.
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.select_id(&fid(&prod.id), cx)));
     focus_tree(&t, cx);
     key(cx, "left");
@@ -221,7 +216,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{shut:?} {open:?} {sel:?} {up:?}"),
     );
 
-    // Rename from the menu.
     let renaming = menu(&t, &fid(&prod.id), Act::RenameFolder, cx).await;
     key(cx, "cmd-a");
     typ(cx, "Live");
@@ -314,7 +308,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     fav_scope(ws, r, false, cx).await;
 }
 
-/// The header's Collapse all, by a click on its item.
 async fn click_collapse_all(t: &Entity<SchemaTree>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|window, cx| t.update(cx, |t, cx| t.open_menu(None, MenuAnchor::Header(point(px(60.), px(60.))), window, cx)));
     pause(cx, 200).await;
@@ -416,7 +409,6 @@ async fn collapse_all(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, pg: &datam
     r.check("the pin taken back", matches!(unpinned, Ok(Ok(_))), "");
 }
 
-/// A right click on the row; what its menu lists.
 async fn right_click(t: &Entity<SchemaTree>, row: &str, cx: &mut AsyncWindowContext) -> Vec<Act> {
     let Some(p) = row_point(t, row, cx) else {
         eprintln!("check: row {row} not on screen");
@@ -428,7 +420,6 @@ async fn right_click(t: &Entity<SchemaTree>, row: &str, cx: &mut AsyncWindowCont
     cx.update(|_, cx| t.read(cx).demo_menu_acts()).unwrap_or_default()
 }
 
-/// A click on an item of the menu that is open.
 async fn menu_click(t: &Entity<SchemaTree>, act: Act, cx: &mut AsyncWindowContext) -> bool {
     let Some(p) = cx.update(|_, cx| t.read(cx).demo_menu_item_point(act)).ok().flatten() else { return false };
     click(cx, p);
@@ -683,7 +674,6 @@ async fn picked_rows(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, pg: &datama
     draw(cx);
 }
 
-/// The field a folder is named in, from a new folder until the focus leaves it.
 async fn naming_field(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, names: &[&str], r: &mut Report, cx: &mut AsyncWindowContext) {
     let text = |cx: &mut AsyncWindowContext| cx.update(|_, cx| t.read(cx).demo_naming(cx)).ok().flatten().map(|n| n.1);
     let in_field = |cx: &mut AsyncWindowContext| cx.update(|window, cx| t.read(cx).demo_naming_focused(window, cx)).unwrap_or(false);
@@ -778,7 +768,6 @@ async fn naming_field(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, names: &[&
     }
 }
 
-/// A folder's or a favorite's row, without its arrow or indent.
 fn bare(rows: Vec<String>) -> Vec<String> {
     rows.into_iter().map(|r| r.trim_start_matches(['▾', '▸', ' ']).to_string()).collect()
 }

@@ -94,7 +94,6 @@ impl History {
         let _g = self.lock.lock();
         std::fs::create_dir_all(&self.dir)?;
         let file = self.file(connection_id);
-        // The app and dataman-mcp write the same files: across processes too.
         let _held = crate::stamp::hold(&file);
         let mut all = bytes.to_vec();
         match std::fs::read(&file) {
@@ -111,7 +110,7 @@ impl History {
         for id in connection_ids {
             all.extend(self.load(id, limit)?.into_iter().map(|e| (id.clone(), e)));
         }
-        all.sort_by(|a, b| b.1.ts.cmp(&a.1.ts));
+        all.sort_by_key(|a| std::cmp::Reverse(a.1.ts));
         all.truncate(limit);
         Ok(all)
     }
@@ -119,7 +118,6 @@ impl History {
     pub fn remove(&self, connection_id: &str, entry: &HistoryEntry) -> Result<Option<Vec<u8>>> {
         let _g = self.lock.lock();
         let file = self.file(connection_id);
-        // The app and dataman-mcp write the same files: across processes too.
         let _held = crate::stamp::hold(&file);
         let text = match std::fs::read_to_string(&file) {
             Ok(t) => t,
@@ -145,7 +143,6 @@ impl History {
         let _g = self.lock.lock();
         std::fs::create_dir_all(&self.dir)?;
         let file = self.file(connection_id);
-        // The app and dataman-mcp write the same files: across processes too.
         let _held = crate::stamp::hold(&file);
         let now = match std::fs::read(&file) {
             Ok(b) => b,

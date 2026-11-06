@@ -55,7 +55,6 @@ pub enum Op {
         args: Map<String, Value>,
         client: String,
     },
-    /// A resource (`resources/read`).
     Read {
         uri: String,
         client: String,
@@ -117,7 +116,6 @@ fn owner(path: &Path) -> std::io::Result<u32> {
     Ok(std::fs::metadata(path)?.uid())
 }
 
-/// The pipe the running app listens on, from `app.sock`.
 #[cfg(windows)]
 fn pipe_name(dirs: &Dirs) -> std::io::Result<String> {
     let name = std::fs::read_to_string(socket_path(dirs))?.trim().to_string();

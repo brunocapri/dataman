@@ -246,7 +246,6 @@ pub struct HistoryPanel {
     store: Entity<ConnStore>,
     focus: FocusHandle,
     entries: Vec<(String, HistoryEntry)>,
-    /// The entries being read again after a run.
     loading: Option<gpui::Task<()>>,
     /// The files were read at least once: before that, no entries is not "no history".
     loaded: bool,
@@ -272,7 +271,6 @@ pub struct HistoryPanel {
     chip: Chip,
     /// Connection (and database) the history is narrowed to, with the status chip.
     scope: Option<(String, Option<String>)>,
-    /// The connection dropdown's menu, of whichever list shows.
     scope_menu: bool,
     /// Connection (and database) the favorites are narrowed to.
     fav_scope: Option<(String, Option<String>)>,
@@ -419,7 +417,6 @@ impl HistoryPanel {
         self.picked.retain(|id| favorites.iter().any(|f| f.id == *id));
     }
 
-    /// In the favorites' connection (and database), or no connection is picked.
     fn fav_in_scope(&self, f: &Favorite) -> bool {
         self.fav_scope.as_ref().is_none_or(|(c, d)| f.connection_id.as_ref() == Some(c) && d.as_ref().is_none_or(|d| f.database.as_ref() == Some(d)))
     }
@@ -515,7 +512,6 @@ impl HistoryPanel {
         cx.emit(HistoryEvent::FavoritesChanged);
     }
 
-    /// The favorites an action on `id` takes: every picked one when `id` is among them.
     fn picked_with(&self, id: &str) -> Vec<String> {
         if self.picked.len() > 1 && self.picked.iter().any(|p| p == id) {
             self.favorites.iter().filter(|f| self.picked.contains(&f.id)).map(|f| f.id.clone()).collect()
@@ -886,7 +882,6 @@ impl HistoryPanel {
         }
     }
 
-    /// What narrows the list showing now: its search and its own filters.
     fn filtered(&self) -> bool {
         !self.query.is_empty() || if self.show_favorites { self.fav_scope.is_some() } else { self.chip != Chip::All || self.scope.is_some() }
     }
@@ -1195,7 +1190,7 @@ impl HistoryPanel {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .map(|d| ui::selectable(d, &t, sel, focused))
+                    .map(|d| ui::selectable(d, t, sel, focused))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
@@ -1303,7 +1298,7 @@ impl HistoryPanel {
                     .items_center()
                     .gap(px(5.))
                     .text_size(px(crate::theme::text::BODY))
-                    .map(|d| ui::selectable(d, &t, sel && !dropping, focused))
+                    .map(|d| ui::selectable(d, t, sel && !dropping, focused))
                     .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
@@ -1382,7 +1377,7 @@ impl HistoryPanel {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .map(|d| ui::selectable(d, &t, sel, focused))
+                    .map(|d| ui::selectable(d, t, sel, focused))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
                     .when(!is_renaming, |d| d.cursor_pointer())
@@ -2029,7 +2024,6 @@ impl HistoryPanel {
         self.folding_moves()
     }
 
-    /// When the latest fold started and whether it opens.
     #[cfg(feature = "checks")]
     pub(crate) fn demo_fold_start(&self) -> Option<(std::time::Instant, bool)> {
         self.folding.as_ref().map(|(_, at, opening)| (*at, *opening))

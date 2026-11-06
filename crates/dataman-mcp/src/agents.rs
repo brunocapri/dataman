@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 const SERVER: &str = "dataman";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// What Add does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum How {
     /// `program args… dataman -- command…`. `dashes: false`: the command right after, with `--`
@@ -25,7 +24,6 @@ enum How {
     Json,
 }
 
-/// Where an agent keeps its servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfigFile {
     ClaudeCode,
@@ -40,7 +38,6 @@ pub struct Agent {
     pub id: &'static str,
     pub label: &'static str,
     pub logo: &'static str,
-    /// The logo is one shape, drawn in the theme's text color.
     pub mono: bool,
     how: How,
     file: ConfigFile,
@@ -48,7 +45,6 @@ pub struct Agent {
     bins: &'static [&'static str],
     apps: &'static [&'static str],
     home: &'static [&'static str],
-    /// The answer once Add is done, and whether the user still has something to do.
     pub done: &'static str,
     pub waits: bool,
     pub add_hint: &'static str,
@@ -177,7 +173,6 @@ fn nvm_bins(home: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// This machine, as the agents see it.
 pub struct Env {
     home: PathBuf,
     /// The folder apps keep their settings in: Application Support, `%APPDATA%`, `~/.config`.
@@ -234,15 +229,11 @@ impl Env {
     }
 }
 
-/// One row of the list.
 pub struct Row {
-    /// Its place in [`AGENTS`].
     pub index: usize,
     pub agent: &'static Agent,
     pub installed: bool,
-    /// Its settings already run this install.
     pub added: bool,
-    /// What Copy gives.
     pub copy: String,
 }
 
@@ -272,7 +263,6 @@ impl Listing {
     }
 }
 
-/// The program's arguments for the CLIs.
 fn cli_args(how: How, argv: &[&str]) -> (&'static str, Vec<String>) {
     let (command, rest) = argv.split_first().map_or(("", &[][..]), |(c, r)| (*c, r));
     let How::Cli { program, args, dashes, .. } = how else { return ("", Vec::new()) };
@@ -297,7 +287,6 @@ fn server_json(argv: &[&str]) -> Value {
     }
 }
 
-/// What Copy gives: the command for a terminal, or the JSON for a settings file.
 pub fn copy_text(a: &Agent, argv: &[&str]) -> String {
     match a.how {
         How::Cli { .. } => {
@@ -358,11 +347,9 @@ async fn run(program: &str, args: &[String], env: &Env) -> Result<(), String> {
     Err(stderr.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{program} exited with {}", out.status), str::to_string))
 }
 
-/// What Add left to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Added {
     Done,
-    /// A link for the app to open.
     Open(String),
 }
 

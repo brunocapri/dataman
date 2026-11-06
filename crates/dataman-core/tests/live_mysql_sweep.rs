@@ -248,7 +248,7 @@ fn lint_does_not_reject_valid_scripts() {
     let s = c.session(None);
     let _ = script(&e, &s, ROUTINES);
     let db = c.database().to_string();
-    e.core.block_on(c.preload(&db));
+    e.core.block_on(c.preload(&db)).unwrap();
     let snap = c.schema.snapshot(&db);
     for src in [ROUTINES, DELIM] {
         let l = lint(src, &LintContext { schema: Some(&snap), ..Default::default() });

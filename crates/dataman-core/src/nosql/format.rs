@@ -233,9 +233,7 @@ enum K {
 struct Tok<'a> {
     k: K,
     s: &'a str,
-    /// Newlines in the whitespace before it.
     nl: usize,
-    /// Any whitespace before it.
     sp: bool,
 }
 
@@ -433,7 +431,6 @@ fn same_tokens(a: &[Tok], b: &[Tok]) -> bool {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Frame {
-    /// One entry per line.
     Lines,
     Flat,
     /// A call's parentheses; `true` when written over several lines (those are kept, indented).
@@ -443,7 +440,6 @@ enum Frame {
 struct Open {
     at: usize,
     frame: Frame,
-    /// The indent of the line it opens on.
     base: usize,
 }
 

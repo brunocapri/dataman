@@ -13,7 +13,6 @@ use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The end of a value Partial shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Side {
     First,
@@ -43,7 +42,6 @@ impl Keep {
     pub const DEFAULT: Keep = Keep { side: Side::Last, count: 4 };
     pub const MAX: u8 = 4;
 
-    /// `count` held to 1–[`Keep::MAX`].
     pub fn new(side: Side, count: u8) -> Keep {
         Keep { side, count: count.clamp(1, Keep::MAX) }
     }
@@ -373,7 +371,6 @@ impl Builtin {
         }
     }
 
-    /// The type as it ships, in the editor's shape.
     pub fn as_custom(&self) -> CustomType {
         CustomType { id: self.id.into(), name: self.name.into(), pattern: self.pattern.into(), mask: self.mask, keep: self.keep(), validator: self.validator, ignore_case: false, on: self.on }
     }
@@ -467,7 +464,6 @@ fn known_builtins<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<Str
 pub const MAX_CUSTOM: usize = 50;
 pub const MAX_PATTERN: usize = 500;
 
-/// One row of the Sensitive data list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeRow {
     pub id: String,
@@ -477,7 +473,6 @@ pub struct TypeRow {
     pub on: bool,
     pub mask: Mask,
     pub custom: bool,
-    /// A built-in type whose definition the user changed.
     pub edited: bool,
     /// The pattern does not compile: reads are refused while it is on.
     pub broken: Option<String>,
@@ -529,14 +524,12 @@ impl TypeSettings {
         }
     }
 
-    /// The definition back to the default; the switch stays as it is.
     pub fn reset_builtin(&mut self, id: &str) {
         if let Some(o) = self.builtin.remove(id).and_then(|o| o.on).map(|on| BuiltinOverride { on: Some(on), ..Default::default() }) {
             self.builtin.insert(id.to_string(), o);
         }
     }
 
-    /// Its definition differs from the default (not counting the switch).
     pub fn builtin_edited(&self, id: &str) -> bool {
         self.builtin.get(id).is_some_and(|o| BuiltinOverride { on: None, ..o.clone() } != BuiltinOverride::default())
     }
@@ -586,7 +579,6 @@ impl TypeSettings {
     }
 }
 
-/// Why a custom pattern cannot be used, in the editor's words.
 pub fn check_pattern(p: &str) -> Result<(), String> {
     if p.chars().count() > MAX_PATTERN {
         return Err("Pattern is too large.".into());
@@ -793,7 +785,6 @@ pub fn mask_value(how: Mask, v: &str) -> String {
     }
 }
 
-/// Values masked in one reply, by type name.
 pub type Counts = BTreeMap<String, u64>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -805,11 +796,9 @@ impl std::fmt::Display for Unfinished {
     }
 }
 
-/// The switched-on types, compiled once per settings change.
 pub struct Types {
     set: Option<RegexSet>,
     kinds: Vec<Kind>,
-    /// Switched-on custom types whose pattern does not compile.
     pub broken: Vec<String>,
 }
 
@@ -1021,8 +1010,6 @@ fn value_code(msg: &str) -> bool {
         .into_iter()
         .any(|e| crate::backend::class::of(e, code).carries_values())
 }
-
-// ---- What the agent sees ----
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1270,29 +1257,74 @@ pub fn sensitive_match(entry: &str, schema: Option<&str>, table: &str, column: &
     name_eq(s, schema) && glob(t, table) && glob(c, column)
 }
 
-/// Column names that usually hold personal data (English and Portuguese), for Scan again. Not
-/// those whose values a Mask on as it ships already masks anywhere: e-mails, phones, card
-/// numbers, password hashes.
-pub fn sensitive_name(column: &str) -> Option<Mask> {
-    static RE: OnceLock<(Regex, Regex, Regex, Regex)> = OnceLock::new();
-    let (hashed, hidden, ids, partial) = RE.get_or_init(|| {
+/// A column name that usually holds a secret or personal data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NameHit {
+    pub how: Mask,
+    /// The name alone says what the column is for: it counts even empty, since it may get data
+    /// tomorrow. Any other hit counts only on what the column holds ([`values_call_for_rule`]).
+    pub sure: bool,
+}
+
+/// `UserPassword`, `userPassword`, `USER_PASSWORD` and `user password` as `user_password`.
+fn snake(name: &str) -> String {
+    let cs: Vec<char> = name.chars().collect();
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, &c) in cs.iter().enumerate() {
+        if c == ' ' || c == '-' {
+            out.push('_');
+            continue;
+        }
+        if c.is_uppercase() && i > 0 {
+            let prev = cs[i - 1];
+            if prev.is_lowercase() || prev.is_ascii_digit() || (prev.is_uppercase() && cs.get(i + 1).is_some_and(|n| n.is_lowercase())) {
+                out.push('_');
+            }
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
+/// Column names that usually hold secrets or personal data (English and Portuguese), for Scan
+/// again. Not a stored digest of a password or a token: reading one logs nobody in. Partial
+/// names are matched as written, so a name in another case style never swaps the Redacted a typed
+/// column gets for Partial.
+pub fn sensitive_name(column: &str) -> Option<NameHit> {
+    static RE: OnceLock<[Regex; 5]> = OnceLock::new();
+    let [digest, sure, last, hidden, partial] = RE.get_or_init(|| {
         let r = |p: &str| RegexBuilder::new(p).case_insensitive(true).build().expect("name rule");
-        (
-            r(r"(^|_)(hashed_?(password|passwd|senha)|(password|passwd|senha)_?(hash|digest))(_|$)"),
-            r(r"(^|_)(password|passwd|senha|secret|segredo|token|api_?key|private_?key|mfa|otp|salt)(_|$|hash)"),
-            r(r"(^|_)(ssn|cpf|cnpj|rg|passport|passaporte|tax_?id|nif|iban)(_|$)"),
+        [
+            r(r"(^|_)(hashed_?(password|passwd|senha|token)|(password|passwd|senha|token)_?(hash|digest))(_|$)"),
+            r(r"(^|_)(password|passwd|senha|secret|segredo|secret_?key|api_?key|private_?key|ssn|cpf|cnpj|rg|passport|passaporte|tax_?id|nif|iban)$"),
+            r(r"(^|_)(token|otp|mfa|salt)$"),
+            r(r"(^|_)(password|passwd|senha|secret|segredo|token|api_?key|private_?key|mfa|otp|salt)(_|$|hash)|(^|_)(ssn|cpf|cnpj|rg|passport|passaporte|tax_?id|nif|iban)(_|$)"),
             r(r"(^|_)(phone|telefone|celular|mobile|birth|nascimento|birthday|salario|salary|endereco|address|street|rua|cep|zip)(_|$)"),
-        )
+        ]
     });
-    if hashed.is_match(column) {
+    let words = snake(column);
+    if digest.is_match(&words) {
         None
-    } else if hidden.is_match(column) || ids.is_match(column) {
-        Some(Mask::Hidden)
+    } else if sure.is_match(&words) {
+        Some(NameHit { how: Mask::Hidden, sure: true })
+    } else if last.is_match(&words) || hidden.is_match(column) {
+        Some(NameHit { how: Mask::Hidden, sure: false })
     } else if partial.is_match(column) {
-        Some(Mask::PARTIAL)
+        Some(NameHit { how: Mask::PARTIAL, sure: false })
     } else {
         None
     }
+}
+
+/// Whether a column's sampled values (not null, at most `limit` read) call for a rule on it: some
+/// value is real and the Masks in `types` would let it through. Nothing but blanks in fewer than
+/// `limit` rows is an empty column; `limit` blanks say nothing about the rows not read.
+pub fn values_call_for_rule(values: &[String], limit: usize, types: &Types) -> bool {
+    if values.len() >= limit && values.iter().all(|v| v.trim().is_empty()) {
+        return true;
+    }
+    let mut counts = Counts::new();
+    values.iter().map(|v| v.trim()).any(|v| !v.is_empty() && !["0", "1", "true", "false"].iter().any(|f| v.eq_ignore_ascii_case(f)) && matches!(types.scrub(v, &mut counts), Cow::Borrowed(_)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1491,7 +1523,6 @@ pub const UNLIMITED: u64 = 0;
 /// Time per call ∞: a statement still stops after a day, so nothing holds a connection forever.
 pub const NO_TIME_LIMIT_S: u64 = 24 * 3600;
 
-/// A row limit as a count, ∞ as the largest.
 pub fn row_cap(limit: u64) -> u64 {
     if limit == UNLIMITED { u64::MAX } else { limit }
 }
@@ -1530,6 +1561,13 @@ impl AgentRules {
         self.sensitive.iter().filter(|s| s.on).find(|s| sensitive_match(&s.col, schema, table, column, names)).map(|s| s.how)
     }
 
+    /// An entry, on or off, already speaks for this column, as the masks match names: the
+    /// decision stands whatever its spelling (a schema before it, a pattern, another case).
+    pub fn names_column(&self, schema: Option<&str>, table: &str, column: &str, names: Names) -> bool {
+        let written = format!("{table}.{column}");
+        self.sensitive.iter().any(|s| sensitive_match(&s.col, schema, table, column, names) || glob(&s.col, &written))
+    }
+
     pub fn time_limit(&self) -> std::time::Duration {
         match self.time_limit_s.unwrap_or(DEFAULT_TIME_LIMIT_S) {
             UNLIMITED => std::time::Duration::from_secs(NO_TIME_LIMIT_S),
@@ -1537,7 +1575,6 @@ impl AgentRules {
         }
     }
 
-    /// Rows per read as a count (∞ as the largest).
     pub fn read_cap(&self) -> u64 {
         row_cap(self.read_rows.unwrap_or(crate::settings::MCP_MAX_ROWS))
     }
@@ -1587,8 +1624,6 @@ pub struct Generated {
     pub column: String,
     pub from: Vec<String>,
 }
-
-// ---- Validators ----
 
 fn digits(s: &str) -> Vec<u32> {
     s.chars().filter_map(|c| c.to_digit(10)).collect()
@@ -1812,6 +1847,61 @@ mod tests {
     }
 
     #[test]
+    fn scan_names_by_what_they_say() {
+        let sure = Some(NameHit { how: Mask::Hidden, sure: true });
+        let hidden = Some(NameHit { how: Mask::Hidden, sure: false });
+        let partial = Some(NameHit { how: Mask::PARTIAL, sure: false });
+        for name in ["password", "Password", "PASSWORD", "UserPassword", "user_password", "userPassword", "User Password", "senha", "secret", "ClientSecret", "SECRET_KEY", "api_key", "ApiKey", "APIKey", "apiKey", "API_KEY", "apikey", "StripeApiKey", "private_key", "PrivateKey", "ssn", "SSN", "cpf", "CustomerCPF", "tax_id", "TaxId", "iban"] {
+            assert_eq!(sensitive_name(name), sure, "{name}");
+        }
+        // Their subject is in the name, but so is `token_expires_at`'s: what they hold decides.
+        for name in ["token", "Token", "TOKEN", "AccessToken", "access_token", "email_token", "otp", "Mfa", "PasswordSalt", "password_changed_at", "api_key_id", "secret_hash", "secrethash", "cpf_number"] {
+            assert_eq!(sensitive_name(name), hidden, "{name}");
+        }
+        for name in ["phone", "Phone", "PHONE", "phone_number", "telefone", "billing_address", "Address", "zip"] {
+            assert_eq!(sensitive_name(name), partial, "{name}");
+        }
+        for name in ["token_hash", "TokenHash", "TOKENHASH", "tokenhash", "Token_Hash", "UserTokenHash", "HashedToken", "TokenDigest", "password_hash", "PasswordHash", "passwordhash", "senha_hash", "hashed_password", "password_digest", "UserPasswordHash"] {
+            assert_eq!(sensitive_name(name), None, "a digest: {name}");
+        }
+        for name in ["email", "e_mail", "user_email", "card_number", "cartao", "pan", "created_at", "Notes", "TokenExpiry", "PasswordChangedAt", "MfaEnabled", "PhoneNumberConfirmed", "tokenizer", "Secretary", "apikeys"] {
+            assert_eq!(sensitive_name(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn values_decide_a_scan_hit() {
+        let t = Types::new(&TypeSettings::default());
+        let vals = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!values_call_for_rule(&[], 20, &t), "no rows, or only NULLs");
+        assert!(!values_call_for_rule(&vals(&["", "  "]), 20, &t), "only blanks");
+        assert!(values_call_for_rule(&vec![String::new(); 20], 20, &t), "a full page of blanks hides what follows");
+        assert!(!values_call_for_rule(&vals(&["0", "1", "true", "False"]), 20, &t), "a flag is no secret");
+        assert!(!values_call_for_rule(&vals(&["415-555-0132", "+1 415 555 0199"]), 20, &t), "the Phone mask has them");
+        assert!(values_call_for_rule(&vals(&["415-555-0132", "(11) 91234-5678"]), 20, &t), "it does not know this one");
+        assert!(values_call_for_rule(&vals(&["1234"]), 20, &t), "too short for any Mask");
+        assert!(!values_call_for_rule(&vals(&["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc", "sk_live_abcdefghij012345"]), 20, &t));
+        assert!(values_call_for_rule(&vals(&["abc123deadbeefcafe"]), 20, &t), "a key of no known shape");
+        let mut off = TypeSettings::default();
+        off.set_builtin("phone", Some(false), None);
+        assert!(values_call_for_rule(&vals(&["415-555-0132"]), 20, &Types::new(&off)), "a Mask switched off catches nothing");
+    }
+
+    #[test]
+    fn a_rule_speaks_for_its_column_in_any_spelling() {
+        let rules = |col: &str, on| AgentRules { sensitive: vec![SensitiveCol { col: col.into(), how: Mask::Hidden, on }], ..Default::default() };
+        let q = Names::Qualified;
+        for col in ["Users.Token", "users.token", "USERS.TOKEN", "dbo.Users.Token", "DBO.users.TOKEN", "*token*", "*.Token", "Token"] {
+            assert!(rules(col, true).names_column(Some("dbo"), "Users", "Token", q), "{col}");
+            assert!(rules(col, false).names_column(Some("dbo"), "Users", "Token", q), "{col}, off: still decided");
+        }
+        for col in ["sales.Users.Token", "Users.TokenHash", "Orders.Token"] {
+            assert!(!rules(col, true).names_column(Some("dbo"), "Users", "Token", q), "{col}");
+        }
+        assert!(rules("Customers.Address.Phone", true).names_column(Some("app"), "customers", "address.phone", q), "a nested field");
+    }
+
+    #[test]
     fn custom_patterns_are_checked() {
         assert_eq!(check_pattern(r"(?=x)abc").unwrap_err(), "Look-around isn't supported.");
         assert_eq!(check_pattern(r"(a)\1").unwrap_err(), "Back-references aren't supported.");
@@ -1923,18 +2013,6 @@ mod tests {
         assert!(back.restricted() && !back.activity_on() && back.activity);
         assert_eq!(back.sensitive_mask(Some("public"), "users", "EMAIL", Names::Qualified), Some(Mask::PARTIAL));
         assert_eq!(AgentRules { view: AgentView::Data, ..back.clone() }.sensitive_mask(None, "users", "email", Names::Qualified), None, "columns mask in Masked data only");
-        assert_eq!(sensitive_name("password"), Some(Mask::Hidden));
-        assert_eq!(sensitive_name("api_key"), Some(Mask::Hidden));
-        assert_eq!(sensitive_name("ssn"), Some(Mask::Hidden));
-        assert_eq!(sensitive_name("billing_address"), Some(Mask::PARTIAL));
-        assert_eq!(sensitive_name("created_at"), None);
-        // Masks on as they ship already mask these values anywhere.
-        for name in ["email", "e_mail", "user_email", "card_number", "cartao", "pan", "password_hash", "passwordhash", "senha_hash", "hashed_password", "password_digest"] {
-            assert_eq!(sensitive_name(name), None, "{name}");
-        }
-        assert_eq!(sensitive_name("email_token"), Some(Mask::Hidden), "a token still is");
-        // The Phone mask knows only US and Canada numbers.
-        assert_eq!(sensitive_name("telefone"), Some(Mask::PARTIAL));
         assert_eq!(RedisCat::of("KEYS"), RedisCat::Dangerous);
         // The configuration holds requirepass: not for agents.
         assert_eq!(RedisCat::of("CONFIG GET"), RedisCat::Dangerous);

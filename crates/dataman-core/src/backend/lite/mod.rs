@@ -28,7 +28,6 @@ fn closed_error() -> LiteError {
     rusqlite::Error::SqliteFailure(ffi::Error::new(ffi::SQLITE_MISUSE), Some("the connection is closed".into()))
 }
 
-/// How a connection is opened.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Open {
     pub read_only: bool,
@@ -243,7 +242,6 @@ impl Client {
         .await
     }
 
-    /// Runs `sql` (one statement or several), its rows coming through the returned channel.
     pub(crate) async fn stream(&self, sql: &str, params: &[Option<String>], kinds: Option<Vec<Kind>>) -> Result<(Columns, embed::Rows<LiteError>), LiteError> {
         let (sink, first, rx) = Sink::new();
         let sql = sql.to_string();

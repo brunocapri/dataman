@@ -422,7 +422,7 @@ mod tests {
         assert!(l.is_empty());
         let s = snap();
         let known: HashSet<String> = ["sess_tmp".to_string()].into();
-        let l = lint("select * from sess_tmp", &LintContext { schema: Some(&s), known: Some(&known), ..Default::default() });
+        let l = lint("select * from sess_tmp", &LintContext { schema: Some(&s), known: Some(&known) });
         assert!(l.is_empty());
     }
 

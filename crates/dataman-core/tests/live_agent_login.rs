@@ -37,7 +37,6 @@ fn pw(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.into())
 }
 
-/// An admin's profile on one of this test's own servers.
 pub fn admin(engine: Engine, id: &str) -> (ConnectionProfile, String) {
     let (var, default, user, db, password, ssl) = match engine {
         Engine::Postgres => ("DATAMAN_AU_PG", "127.0.0.1:56432", "postgres", "au_shop", pw("DATAMAN_AU_PG_PASSWORD", "admin-pw"), SslMode::Disable),
@@ -110,7 +109,6 @@ fn guard(p: &mut ConnectionProfile) {
     r.time_limit_s = Some(30);
 }
 
-/// Creates the login as the review would, keeps its password, and returns the record.
 fn create(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile) -> (AgentLogin, String, live::Review) {
     let rv = e.core.block_on(live::review(admin, p, &opts())).unwrap();
     assert!(rv.plan.lacks.is_empty(), "{:?}", rv.plan.lacks);
@@ -164,8 +162,6 @@ fn remove(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile, login: &Agent
     assert!(e.core.secrets.get(&agent_login::secret_account(&p.id)).unwrap().is_none());
     assert!(as_agent(e, p, &login.user, password).is_err(), "its password no longer logs in");
 }
-
-// ---- PostgreSQL ----
 
 #[test]
 fn postgres() {
@@ -328,8 +324,6 @@ fn postgres_createrole_admin() {
     ok(&e, &rs, "DROP ROLE IF EXISTS au_admin");
 }
 
-// ---- MySQL ----
-
 #[test]
 fn mysql() {
     if !on() {
@@ -418,8 +412,6 @@ fn mysql() {
     assert_eq!(first(&ok(&e, &s, &format!("SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{space}'"))), "0");
     assert_eq!(first(&ok(&e, &s, "SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = 'au_other'")), "1");
 }
-
-// ---- SQL Server ----
 
 #[test]
 fn sql_server() {
@@ -513,8 +505,6 @@ fn sql_server() {
     assert_eq!(first(&ok(&e, &s, "SELECT COUNT(*) FROM sys.database_principals WHERE name = 'dataman_agent_decoy'")), "1");
     assert_eq!(first(&ok(&e, &s, &format!("SELECT COUNT(*) FROM sys.schemas WHERE name = '{space}'"))), "0");
 }
-
-// ---- MongoDB ----
 
 fn nosql(e: &Env, c: &Arc<Connection>, db: &str, text: &str) -> Result<Output, String> {
     e.core.block_on(c.run_nosql(db, text, Page { skip: 0, limit: 100 })).map(|r| r.output).map_err(|x| format!("{x:#}"))
@@ -612,8 +602,6 @@ fn mongodb() {
     assert!(!views.contains(&format!("{space}.users")), "its view is gone: {views}");
 }
 
-// ---- Redis ----
-
 #[test]
 fn redis() {
     if !on() {
@@ -667,8 +655,6 @@ fn redis() {
     remove(&e, &a, &q, &login, &password);
     assert_eq!(e.core.block_on(live::exists(&a, &q, "dataman_agent_decoy")).unwrap(), Some(false), "what Dataman didn't make stays");
 }
-
-// ---- Elasticsearch, OpenSearch ----
 
 fn search_denied(r: Result<Output, String>, what: &str) {
     match r {
@@ -760,7 +746,6 @@ fn opensearch() {
 
 // ---- Red team: what an agent holding the login's password could try on the server itself ----
 
-/// Ends the login's sessions as Rotate and Remove do.
 fn end_sessions(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile, user: &str) -> usize {
     e.core.block_on(live::end_sessions(admin, p, user)).unwrap_or_else(|x| panic!("{x:#}"))
 }
@@ -836,7 +821,7 @@ fn postgres_redteam() {
 
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     let exposed: Vec<&str> = rv.plan.exposed.iter().map(|x| x.object.as_str()).collect();
-    assert!(exposed.iter().any(|o| *o == "public.pub_leak") && exposed.iter().any(|o| o.contains("cols_leak.pw")), "what PUBLIC reads is said: {exposed:?}");
+    assert!(exposed.contains(&"public.pub_leak") && exposed.iter().any(|o| o.contains("cols_leak.pw")), "what PUBLIC reads is said: {exposed:?}");
     assert!(rv.plan.copy().contains("REVOKE SELECT ON \"public\".\"pub_leak\" FROM PUBLIC;"), "{}", rv.plan.copy());
     assert!(rv.plan.notes.iter().any(|n| n.contains("public.leak_secrets") && n.contains("SECURITY DEFINER")), "{:?}", rv.plan.notes);
     assert!(rv.plan.rules.iter().any(|l| l.rule.contains("readable by every login") && l.who == agent_login::Who::Dataman), "{:?}", rv.plan.rules);
@@ -846,11 +831,9 @@ fn postgres_redteam() {
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
     let g = agent.session(None);
-    // Becoming someone else.
     denied(&e, &g, "SET ROLE postgres");
     denied(&e, &g, "SET SESSION AUTHORIZATION postgres");
     denied(&e, &g, "SET ROLE pg_read_all_data");
-    // The server's files, programs, large objects, other connections.
     denied(&e, &g, "SELECT pg_read_file('/etc/passwd')");
     denied(&e, &g, "SELECT pg_ls_dir('.')");
     denied(&e, &g, "COPY (SELECT 1) TO PROGRAM 'id'");
@@ -861,7 +844,6 @@ fn postgres_redteam() {
     let x = run(&e, &g, "SELECT dblink_connect('dbname=au_rt user=postgres')").unwrap_err();
     assert!(x.contains("password"), "dblink needs a password the agent doesn't have: {x}");
     denied(&e, &g, "SELECT * FROM dblink_connect_u('dbname=au_rt')");
-    // Hidden and masked, straight and sideways.
     denied(&e, &g, "SELECT * FROM secrets");
     denied(&e, &g, "SELECT email FROM users");
     denied(&e, &g, "SELECT id FROM users WHERE email LIKE 'a%'");
@@ -884,7 +866,6 @@ fn postgres_redteam() {
     assert_eq!(first(&ok(&e, &g, "SELECT s FROM pub_leak")), "public-secret");
     assert_eq!(first(&ok(&e, &g, "SELECT pw FROM cols_leak")), "col-secret");
     assert_eq!(first(&ok(&e, &g, "SELECT leak_secrets()")), "top-secret", "SECURITY DEFINER, said in the notes");
-    // No structure, no grants of its own.
     denied(&e, &g, "CREATE TABLE public.mine (i int)");
     denied(&e, &g, "CREATE SCHEMA mine");
     // PostgreSQL takes a GRANT without the grant option with a warning, granting nothing.
@@ -1026,14 +1007,12 @@ fn mysql_redteam() {
     assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
     let x = run(&e, &g, "SET PASSWORD = 'mine-now-123'").unwrap_err();
     assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
-    // Files, other accounts, the grant tables.
     assert_eq!(ok(&e, &g, "SELECT LOAD_FILE('/etc/passwd')")[0][0], None, "no FILE privilege");
     denied(&e, &g, "SELECT 1 INTO OUTFILE '/tmp/au_out.txt'");
     denied(&e, &g, "SELECT * FROM mysql.user");
     denied(&e, &g, "SHOW GRANTS FOR 'root'@'%'");
     denied(&e, &g, "CREATE USER 'x'@'%'");
     denied(&e, &g, &format!("GRANT SELECT ON au_rt.users TO '{user}'@'%'"));
-    // Masked and hidden, sideways.
     denied(&e, &g, "SELECT id FROM au_rt.users WHERE email = 'alice@acme.com'");
     denied(&e, &g, "UPDATE au_rt.users SET name = name WHERE email LIKE 'a%'");
     denied(&e, &g, "DELETE FROM au_rt.users WHERE password_hash = 'h1'");
@@ -1041,7 +1020,6 @@ fn mysql_redteam() {
     assert!(ok(&e, &g, &format!("SELECT id FROM {users} WHERE email = 'alice@acme.com'")).is_empty(), "a filter on the view compares the masked value");
     denied(&e, &g, &format!("CREATE OR REPLACE VIEW {users} AS SELECT 1"));
     denied(&e, &g, &format!("ALTER USER '{user}'@'%' ATTRIBUTE '{{\"dataman\": \"x\"}}'"));
-    // Hostile names through their views.
     let weird = login.view_for("au_rt", "we`ird").unwrap().view.clone();
     assert_eq!(first(&ok(&e, &g, &format!("SELECT `e``mail` FROM {weird}"))), "••••••••••.com");
     ok(&e, &g, "SELECT id FROM au_rt.`x'; DROP USER root; --`");
@@ -1162,7 +1140,6 @@ fn sql_server_redteam() {
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
     let g = agent.session(None);
-    // Becoming someone else, the server's shell and files.
     denied(&e, &g, "EXECUTE AS LOGIN = 'sa'");
     denied(&e, &g, "EXECUTE AS USER = 'dbo'");
     denied(&e, &g, "EXEC master.dbo.xp_cmdshell 'whoami'");
@@ -1174,7 +1151,6 @@ fn sql_server_redteam() {
     denied(&e, &g, "CREATE TABLE dbo.mine (i INT)");
     denied(&e, &g, "GRANT SELECT ON dbo.users TO public");
     denied(&e, &g, "ALTER ROLE db_owner ADD MEMBER [public]");
-    // Hidden and masked, sideways.
     denied(&e, &g, "SELECT * FROM dbo.secrets");
     denied(&e, &g, "SELECT email FROM dbo.users");
     denied(&e, &g, "SELECT id FROM dbo.users WHERE email = N'alice@acme.com'");
@@ -1185,7 +1161,6 @@ fn sql_server_redteam() {
     let salt_view = login.view_for("dbo", "salt").unwrap().view.clone();
     assert!(!salt_view.ends_with("[salt]"), "{salt_view}");
     assert_eq!(first(&ok(&e, &rs, "SELECT COUNT(*) FROM sys.server_principals WHERE name = 'sa' AND is_disabled = 0")), "1");
-    // What public holds, said in the review.
     assert_eq!(first(&ok(&e, &g, "SELECT s FROM dbo.pub_leak")), "public-secret");
 
     // Rotation: the old password's sessions end.

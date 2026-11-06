@@ -6,7 +6,6 @@ use dataman_core::Core;
 use dataman_core::settings::Settings;
 use gpui::{App, Global};
 
-/// Where the UI's settings are saved.
 pub struct UiPrefs(pub Arc<Core>);
 
 impl Global for UiPrefs {}

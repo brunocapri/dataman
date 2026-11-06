@@ -2,7 +2,6 @@
 //! does: what refuses it on a read, on a write, on a file database or where data is kept from
 //! agents all reads this, so the lists cannot drift apart.
 
-/// What a function does that the guard and the agents' rules care about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Does(u8);
 
@@ -218,7 +217,6 @@ table! {
     ("database_to_xml_and_xmlschema", READS_AROUND),
 }
 
-/// What `name` does (any case; none for a function not in the table).
 pub fn does(name: &str) -> Does {
     let n = name.trim_matches(['"', '`', '[', ']']);
     FUNCTIONS.iter().find(|(f, _)| f.eq_ignore_ascii_case(n)).map_or(Does::NONE, |&(_, d)| d)

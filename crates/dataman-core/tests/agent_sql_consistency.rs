@@ -23,7 +23,6 @@ fn rank(c: &WriteClass) -> u8 {
     }
 }
 
-/// What a whole text is to the agent layers, to compare readings of it.
 #[derive(Debug, PartialEq, Eq)]
 struct Reading {
     statements: usize,
@@ -354,7 +353,6 @@ fn privacy_rewrite_keeps_statements() {
 /// What each server was seen to do (PostgreSQL 18, MySQL 8.4, SQL Server 2022), and the cases
 /// the properties above found: the class and the read gate's answer they must keep.
 const REGRESSIONS: &[(Dialect, &str, u8, bool)] = &[
-    // A text is its strongest statement.
     (Dialect::Postgres, "SELECT 1; DELETE FROM t", 3, false),
     // MySQL runs what `/*! … */` holds; versioned ones are read run and skipped.
     (Dialect::MySql, "SELECT 1 /*!; DELETE FROM t */", 3, false),

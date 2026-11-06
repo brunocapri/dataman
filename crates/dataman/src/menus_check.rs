@@ -21,7 +21,6 @@ fn show_history(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     draw(cx);
 }
 
-/// Clicks the button: open; clicks it again: closed.
 async fn toggles(id: &str, open: impl Fn(&mut AsyncWindowContext) -> bool, cx: &mut AsyncWindowContext) -> (bool, bool) {
     click_probe(id, cx);
     pause(cx, 100).await;

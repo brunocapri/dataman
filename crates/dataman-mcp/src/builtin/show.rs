@@ -52,7 +52,6 @@ pub fn tools() -> Vec<Builtin> {
     }]
 }
 
-/// A saved connection agents may be told about, for the log by its name and id.
 fn saved(cx: &Call, a: &Args) -> Result<ConnectionProfile, ToolError> {
     let p = cx.target(a, Need::Read)?;
     refusal(&p).map_err(ToolError::Refused)?;
