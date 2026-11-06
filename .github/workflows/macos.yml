@@ -63,14 +63,20 @@ jobs:
       - name: Desktop for the check stages
         if: ${{ !cancelled() }}
         run: |
-          system_profiler SPDisplaysDataType | grep -i resolution
           defaults write com.apple.universalaccess reduceMotion -bool false
           defaults read com.apple.universalaccess reduceMotion
-          swift -e 'import CoreGraphics; CGWarpMouseCursorPosition(CGPoint(x: 5000, y: 5000))'
           security create-keychain -p ci ci.keychain
+          security list-keychains -d user -s ci.keychain
           security default-keychain -s ci.keychain
           security unlock-keychain -p ci ci.keychain
           security set-keychain-settings ci.keychain
+          cat > "$RUNNER_TEMP/pointer.swift" <<'SWIFT'
+          import AppKit
+          let screen = NSScreen.main!.frame
+          print("screen:", screen, "reduce motion:", NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+          CGWarpMouseCursorPosition(CGPoint(x: screen.maxX - 1, y: screen.maxY - 1))
+          SWIFT
+          swift "$RUNNER_TEMP/pointer.swift"
       # The runner's own PostgreSQL in place of the compose container. It runs when the tests fail
       # too, so its results still show.
       - name: End-to-end on PostgreSQL and the file databases
