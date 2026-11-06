@@ -52,6 +52,14 @@ impl Pending {
     }
 }
 
+/// The sheet as if drawn just now: on a slow renderer one frame outlasts `ALLOW_AFTER`.
+#[cfg(feature = "checks")]
+pub(crate) fn demo_just_shown(cx: &App) {
+    if let Some(p) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()) {
+        p.shown.set(Some(std::time::Instant::now()));
+    }
+}
+
 pub(crate) fn allow_ready(cx: &App) -> bool {
     cx.try_global::<McpHost>().and_then(|h| h.pending.front()).and_then(|p| p.shown.get()).is_some_and(|t| t.elapsed() >= ALLOW_AFTER)
 }
