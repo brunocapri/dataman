@@ -146,9 +146,13 @@ fn read_only(at: (&str, &str), sharded: bool) {
     };
     let (ph, rs) = run("UPDATE vt_items SET name = 'x' WHERE id = 1");
     assert_eq!(ph, Phase::Failed);
-    assert!(rs.status().error.is_some_and(|err| err.message.contains("READ ONLY")), "{:?}", rs.status().error);
+    let err = rs.status().error.unwrap();
+    assert_eq!(err.code.as_deref(), Some("1792"));
+    assert_eq!(err.message, "Cannot execute statement in a READ ONLY transaction.", "the server's message, without the statement's values");
     assert_eq!(name_of(1).as_deref(), Some("a"));
     assert!(!tab.tx().status.is_open(), "the transaction around a run ends with it");
+    let rolled = tab.execute_opts("UPDATE vt_items SET name = 'x' WHERE id = 1", vec![], true);
+    assert_eq!(e.core.block_on(rolled.wait_finished()), Phase::Failed, "a statement run to be rolled back is no write either");
     let (ph, rs) = run("SELECT name FROM vt_items ORDER BY id");
     assert_eq!((ph, rs.rows()), (Phase::Done, 3), "{:?}", rs.status().error);
     assert_eq!(run("START TRANSACTION READ ONLY").0, Phase::Done);

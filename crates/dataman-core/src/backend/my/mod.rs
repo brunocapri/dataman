@@ -521,11 +521,20 @@ pub(crate) async fn search_path(client: &Client) -> Vec<String> {
     }
 }
 
+/// vtgate wraps a tablet's error in where it came from, then the statement with its values
+/// (`target: ks.0.primary: vttablet: rpc error: code = Unknown desc = <message> (errno 1792)
+/// (sqlstate 25006) (CallerID: u): Sql: "…", BindVars: {…}`), once per shard: the message alone.
+fn tablet_message(m: &str) -> Option<&str> {
+    let rest = &m[m.find("vttablet: ")?..];
+    let desc = &rest[rest.find("desc = ")? + "desc = ".len()..];
+    Some(desc.split(" (errno ").next().unwrap_or(desc).trim())
+}
+
 pub(crate) fn error_info(e: &MyError) -> ErrorInfo {
     match e {
         MyError::Server(se) => ErrorInfo {
             code: Some(se.code.to_string()),
-            message: se.message.clone(),
+            message: tablet_message(&se.message).unwrap_or(&se.message).to_string(),
             severity: Some("ERROR".into()),
             ..Default::default()
         },
@@ -658,6 +667,14 @@ mod tests {
         assert_eq!(version_label("8.0.39-0ubuntu0.22.04.1"), "MySQL 8.0.39");
         assert_eq!(version_label("11.4.2-MariaDB-ubu2404"), "MariaDB 11.4.2");
         assert_eq!(version_label("5.5.5-10.6.12-MariaDB-log"), "MariaDB 10.6.12");
+    }
+
+    #[test]
+    fn tablet_errors_keep_the_message() {
+        let m = "target: shop.-80.primary: vttablet: rpc error: code = Unknown desc = Cannot execute statement in a READ ONLY transaction. (errno 1792) (sqlstate 25006) (CallerID: u): Sql: \"update t set pw = :vtg1\", BindVars: {vtg1: \"type:VARCHAR value:\\\"s3cret\\\"\"}\ntarget: shop.80-.primary: vttablet: rpc error: code = Unknown desc = Cannot execute statement in a READ ONLY transaction. (errno 1792)";
+        assert_eq!(tablet_message(m), Some("Cannot execute statement in a READ ONLY transaction."));
+        assert_eq!(tablet_message("VT12001: unsupported: correlated subquery is only supported for EXISTS"), None);
+        assert_eq!(tablet_message("Duplicate entry 'a' for key 't.PRIMARY'"), None);
     }
 
     #[test]

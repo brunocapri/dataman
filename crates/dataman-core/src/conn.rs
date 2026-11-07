@@ -592,7 +592,11 @@ impl Session {
                 });
                 return;
             }
-            let begin = if read_only { dialect.begin_read_only().unwrap_or(dialect.begin()) } else { dialect.begin() };
+            let begin = match self.read_only_hold(&rs.sql) {
+                Some(hold) if !agent => hold,
+                _ if read_only => dialect.begin_read_only().unwrap_or(dialect.begin()),
+                _ => dialect.begin(),
+            };
             let sql = if savepoint { dialect.savepoint(ROLLBACK_SAVEPOINT) } else { begin.to_string() };
             if !self.wrapper(&client, rs, &sql, agent).await {
                 return;
