@@ -48,7 +48,7 @@ pub fn marked_for(comment: &str, conn: &str) -> bool {
 
 /// Engines with logins: SQLite and DuckDB have none (Dataman guards them inside the engine).
 pub fn supported(e: Engine) -> bool {
-    !e.is_file()
+    e.caps().agent_login
 }
 
 /// Whether the database itself caps how many sessions the agent login holds open at once

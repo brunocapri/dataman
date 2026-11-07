@@ -194,6 +194,9 @@ pub fn push_value_literal_in(d: Dialect, out: &mut String, kind: Kind, v: Option
             _ => push_quoted(d, out, s),
         },
         Kind::Int if is_integer(t) => out.push_str(t),
+        // ClickHouse reads a number past 64 bits as a float, so a compare with it misses its row
+        // (or finds another): a string is converted to the column's type, exactly.
+        Kind::Numeric if d == Dialect::ClickHouse && is_decimal(t) && !t.contains(['e', 'E']) => push_quoted(d, out, t),
         Kind::Float | Kind::Float4 | Kind::Numeric if is_decimal(t) => out.push_str(t),
         Kind::Bytes if hex_bytes(t).and_then(|h| bytes_literal(d, h)).is_some() => out.push_str(&hex_bytes(t).and_then(|h| bytes_literal(d, h)).unwrap_or_default()),
         Kind::Bytes if ms && hex_bytes(t).is_some() => {
@@ -210,11 +213,12 @@ fn bytes_literal(d: Dialect, hex: &str) -> Option<String> {
     match d {
         Dialect::MySql | Dialect::Sqlite => Some(format!("X'{hex}'")),
         Dialect::DuckDb => Some(format!("from_hex('{hex}')")),
+        Dialect::ClickHouse => Some(format!("unhex('{hex}')")),
         Dialect::TSql | Dialect::Postgres => None,
     }
 }
 
-fn hex_bytes(s: &str) -> Option<&str> {
+pub(crate) fn hex_bytes(s: &str) -> Option<&str> {
     let h = s.strip_prefix("\\x")?;
     (h.len() % 2 == 0 && h.bytes().all(|c| c.is_ascii_hexdigit())).then_some(h)
 }
@@ -226,7 +230,7 @@ fn push_quoted(d: Dialect, out: &mut String, s: &str) {
     }
     out.push('\'');
     for c in s.chars() {
-        if c == '\'' || (c == '\\' && d == Dialect::MySql) {
+        if c == '\'' || (c == '\\' && d.backslash_literals()) {
             out.push(c);
         }
         out.push(c);
@@ -497,6 +501,15 @@ pub fn create_table_template_duckdb(schema: &str) -> String {
     )
 }
 
+pub fn create_table_template_clickhouse(database: &str) -> String {
+    let d = Dialect::ClickHouse;
+    format!(
+        "-- A new table in {}. Edit the columns and the sort key, then run it with {RUN_KEY}.\nCREATE TABLE {} (\n    id         UInt64,\n    name       String,\n    created_at DateTime DEFAULT now()\n)\nENGINE = MergeTree\nORDER BY id;",
+        d.quote_ident(database),
+        d.qualified(Some(database), "new_table")
+    )
+}
+
 pub fn create_table_template_tsql(schema: &str) -> String {
     let d = Dialect::TSql;
     format!(
@@ -515,7 +528,7 @@ pub fn drop_database_template_in(d: Dialect, db: &str) -> Option<String> {
     let q = d.quote_ident(db);
     Some(match d {
         Dialect::Postgres => drop_database_template(db),
-        Dialect::MySql => danger(&format!("DROP DATABASE deletes {q} and everything in it, for good."), format!("DROP DATABASE {q};")),
+        Dialect::MySql | Dialect::ClickHouse => danger(&format!("DROP DATABASE deletes {q} and everything in it, for good."), format!("DROP DATABASE {q};")),
         Dialect::Sqlite | Dialect::DuckDb => return None,
         Dialect::TSql => danger(
             &format!(

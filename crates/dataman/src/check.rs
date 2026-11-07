@@ -18,7 +18,7 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check" | "conn-steps-check" | "errors-check") || crate::conn_folders_check::is_stage(s)
+    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "clickhouse-check" | "project-check" | "outside-check" | "format-check" | "conn-steps-check" | "errors-check") || crate::conn_folders_check::is_stage(s)
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -43,6 +43,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         "agents-check" => crate::agents_check::run(ws, &mut r, cx).await,
         "sqlite-check" => crate::lite_check::run(ws, &crate::lite_check::SQLITE, &mut r, cx).await,
         "duckdb-check" => crate::lite_check::run(ws, &crate::lite_check::DUCKDB, &mut r, cx).await,
+        "clickhouse-check" => crate::clickhouse_check::run(ws, &mut r, cx).await,
         "project-check" => crate::project_check::run(ws, &mut r, cx).await,
         "outside-check" => crate::outside_check::run(ws, &mut r, cx).await,
         "format-check" => crate::format_check::run(ws, &mut r, cx).await,
@@ -208,6 +209,18 @@ pub fn profile(engine: Engine) -> (ConnectionProfile, String) {
         Engine::MongoDb => crate::nosql_check::mongo_profile(),
         Engine::Elasticsearch => crate::nosql_check::es_profile(),
         Engine::Redis => crate::nosql_check::redis_profile(),
+        Engine::ClickHouse => {
+            let p = spec("DATAMAN_BENCH_CLICKHOUSE", "127.0.0.1:18123:default:dataman");
+            let mut prof = ConnectionProfile::new("clickhouse-local");
+            prof.engine = Engine::ClickHouse;
+            prof.host = p[0].clone();
+            prof.port = p[1].parse().unwrap();
+            prof.user = p[2].clone();
+            prof.database = "dataman_ch".into();
+            prof.sslmode = SslMode::Disable;
+            prof.save_password = true;
+            (prof, p[3].clone())
+        }
         Engine::Sqlite | Engine::DuckDb => {
             let ext = engine.file_extensions()[0];
             let path = std::env::temp_dir().join(format!("dataman-check-{}.{ext}", std::process::id()));

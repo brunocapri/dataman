@@ -36,7 +36,7 @@ pub struct Connection {
     /// Agents' connections per database and read-only state: typed, apart from the caches
     /// above (a cache cleared never closes a pool, a failed downcast never makes a second one).
     pub(crate) agent_pools: Mutex<HashMap<(String, bool), Arc<crate::bounded::Pool>>>,
-    read_only_dbs: parking_lot::RwLock<std::collections::BTreeMap<String, bool>>,
+    pub(crate) read_only_dbs: parking_lot::RwLock<std::collections::BTreeMap<String, bool>>,
     pub(crate) nosql: Option<crate::nosql::Client>,
     /// The rules for agents as the last agent call read them: SQLite's agent connections check
     /// what triggers and views read against them.
@@ -74,6 +74,7 @@ impl Connection {
         }
         let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&profile, e))?;
         drop(password);
+        let strings = crate::bounded::strings_as_written(&d).await;
         let (client, tls_active) = (d.db(), d.tls_active());
         drop(d);
         let info = backend::server_info(&client).await?;
@@ -81,6 +82,7 @@ impl Connection {
         let mut meta = HashMap::new();
         meta.insert(db.clone(), client);
         let schema = Arc::new(SchemaCache::with_dialect(db, info.search_path.clone(), profile.engine.dialect()));
+        note_strings(&schema, schema.default_database(), strings);
         Ok(Arc::new(Connection {
             read_only_dbs: parking_lot::RwLock::new(profile.read_only_databases.clone()),
             agent_rules: Arc::new(parking_lot::RwLock::new(profile.mcp_rules.clone())),
@@ -159,6 +161,14 @@ impl Connection {
         }
     }
 
+    /// A connection that is read-only because this use needs it, whatever the database's setting.
+    pub(crate) async fn dedicated_read_only(&self, db: &str, read_only: bool) -> Result<Dedicated> {
+        let mut p = self.profile_for(db);
+        p.read_only = read_only;
+        let password = self.cred.secret(&p).await?;
+        backend::dedicated(&p, password.as_deref(), Some(db), self.tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&p, e))
+    }
+
     pub(crate) async fn dedicated(&self, database: Option<&str>) -> Result<Dedicated> {
         let db = database.unwrap_or(self.database());
         let p = self.profile_for(db);
@@ -182,7 +192,9 @@ impl Connection {
         {
             return Ok(c.clone());
         }
-        let client = self.dedicated(Some(db)).await?.db();
+        let d = self.dedicated(Some(db)).await?;
+        note_strings(&self.schema, db, crate::bounded::strings_as_written(&d).await);
+        let client = d.db();
         if !self.schema.has_search_path(db) {
             let sp = backend::search_path(&client, &self.info.user).await;
             self.schema.set_search_path(db, sp);
@@ -226,8 +238,18 @@ impl Connection {
             queue: Arc::new(tokio::sync::Mutex::new(())),
             tx: Arc::new(TxWatch::default()),
             ro_applied: Mutex::new(None),
+            used: Mutex::new(None),
             agent_run: Mutex::new(None),
         })
+    }
+}
+
+/// A server that takes no such setting (a proxy's, a fork's) keeps its own, which is the usual one
+/// almost everywhere: its catalog stays readable, and this says so.
+fn note_strings(schema: &SchemaCache, db: &str, set: Result<()>) {
+    if let Err(e) = set {
+        log::warn!("{db}: {e:#}");
+        schema.note(format!("{db}: the catalog reads under the server's own string settings: {e:#}"));
     }
 }
 
@@ -247,6 +269,8 @@ pub struct Session {
     queue: Arc<tokio::sync::Mutex<()>>,
     tx: Arc<TxWatch>,
     ro_applied: Mutex<Option<bool>>,
+    /// What a `USE` left the connection on: gone with the connection.
+    used: Mutex<Option<String>>,
     /// The agent's own connection while one of its reads runs (what a cancel reaches).
     agent_run: Mutex<Option<Arc<Dedicated>>>,
 }
@@ -282,6 +306,11 @@ impl Session {
             return TxState::default();
         }
         self.tx.get()
+    }
+
+    /// The database the next statement runs on: the session's, or the last `USE`'s.
+    pub fn current_database(&self) -> String {
+        self.used.lock().clone().unwrap_or_else(|| self.database.clone())
     }
 
     pub fn backend_pid(&self) -> Option<i32> {
@@ -410,9 +439,9 @@ impl Session {
         if let Some(c) = g.as_ref()
             && !c.is_closed()
         {
-            // A file database is opened read-only or not: a change of mind reopens it (between
-            // transactions only).
-            let stale = self.conn.engine().is_file()
+            // Read-only is how it was opened: a change of mind reopens it (between transactions
+            // only).
+            let stale = self.conn.caps().read_only_on_connect
                 && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database))
                 && !self.tx.get().status.is_open();
             if !stale {
@@ -425,6 +454,7 @@ impl Session {
         let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
         *self.cancel.lock() = Some(cancel);
         *self.ro_applied.lock() = Some(self.conn.read_only_for(&self.database));
+        *self.used.lock() = None;
         *g = Some(client.clone());
         Ok(client)
     }
@@ -482,7 +512,8 @@ impl Session {
             let client = self.client().await;
             return self.run_on(client, rs, false).await;
         }
-        let ro = self.conn.read_only_for(&self.database) || self.conn.dialect() == Dialect::Sqlite;
+        let d = self.conn.dialect();
+        let ro = self.conn.read_only_for(&self.database) || d == Dialect::Sqlite || !d.has_transactions();
         let client = match self.conn.agent_take(&self.database, ro).await {
             Ok(d) => {
                 let d = Arc::new(d);
@@ -529,9 +560,21 @@ impl Session {
         let dialect = self.conn.dialect();
         let facts = crate::guard::classify_in(&rs.sql, dialect);
         let rollback = rs.rolled_back();
+        // Nothing would undo it: it does not run. A read has nothing to undo (and an agent's runs
+        // on a read-only connection).
+        if rollback && !dialect.has_transactions() && (facts.is_write() || facts.effect == crate::guard::Effect::Other) {
+            let info = ErrorInfo { message: format!("{} has no transactions: {} cannot be rolled back, so it did not run", self.conn.engine().label(), facts.verb), ..Default::default() };
+            self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
+            rs.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.elapsed = Some(Duration::ZERO);
+                s.error = Some(info);
+            });
+            return;
+        }
         // Rolled back: a transaction of its own, or a savepoint inside the open one (whose work
         // must survive).
-        let wrap = if rollback {
+        let wrap = if rollback && dialect.has_transactions() {
             let savepoint = self.tx.get().status.is_open();
             // An agent's read never runs inside a transaction someone else opened: a read-only
             // one of its own, or not at all.
@@ -608,6 +651,12 @@ impl Session {
             Ran::Cancelled | Ran::NeverRan { .. } => (Phase::Cancelled, None, None),
             Ran::Failed(info) => (Phase::Failed, None, Some(info)),
         };
+        if !agent
+            && phase == Phase::Done
+            && let Some(db) = crate::bounded::used_database(&rs.sql, dialect)
+        {
+            *self.used.lock() = Some(db);
+        }
         // A failure reaches us before the ReadyForQuery that follows it: the status it leaves
         // (a failed transaction) is read first.
         if !agent {

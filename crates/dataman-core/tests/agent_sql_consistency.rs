@@ -350,9 +350,56 @@ fn privacy_rewrite_keeps_statements() {
     report(fails);
 }
 
+/// A guard refuses; it never panics. Every statement cut anywhere: what never closes included.
+#[test]
+fn every_cut_of_a_statement_gets_an_answer() {
+    let routines = HashSet::new();
+    let tables = |schema: Option<&str>, name: &str| Some(Table { schema: schema.unwrap_or("public").to_string(), name: name.to_string(), columns: ["id", "a", "name", "email", "ssn", "secret"].map(String::from).to_vec() });
+    let r = rules(AgentView::Masked);
+    let more = [
+        "SELECT * FROM numbers(1, 2)",
+        "SELECT * FROM sys.dm_exec_cursors(0) AS c WHERE c.id = 1",
+        "WITH RECURSIVE a(b) AS (SELECT 1 UNION ALL SELECT b FROM a), c AS (SELECT * FROM (a) AS d (e)) SELECT * FROM c",
+        "INSERT INTO users (id) SELECT id FROM t ON CONFLICT (id) DO UPDATE SET id = 1 RETURNING *",
+        "UPDATE u SET a = (SELECT 1) FROM users u WHERE u.id = 1",
+        "SELECT (SELECT tuple(*) FROM users) x, [1, (2)] FROM users FINAL SAMPLE 1/10 OFFSET 1/2",
+    ];
+    for d in DIALECTS {
+        let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines, views: &[] };
+        for t in texts(d).iter().map(String::as_str).chain(more) {
+            for cut in t.char_indices().map(|(i, _)| i) {
+                let piece = &t[..cut];
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    agent_sql::tables_named(piece, d);
+                    (agent_sql::check(piece, false, &cx).is_ok(), agent_sql::check(piece, true, &cx).is_ok())
+                }));
+                assert!(run.is_ok(), "[{d:?}] {piece:?}");
+            }
+        }
+    }
+}
+
 /// What each server was seen to do (PostgreSQL 18, MySQL 8.4, SQL Server 2022), and the cases
 /// the properties above found: the class and the read gate's answer they must keep.
 const REGRESSIONS: &[(Dialect, &str, u8, bool)] = &[
+    // ClickHouse: what the server runs behind what a plainer lexer takes for a comment, a string or
+    // a word.
+    (Dialect::ClickHouse, "SELECT 1 // '\n, file('x') --'", 3, false),
+    (Dialect::ClickHouse, "SELECT * FROM\u{a0}file('x', 'CSV', 'a Int8')", 3, false),
+    (Dialect::ClickHouse, "SELECT * FROM “file”('x', 'CSV', 'a Int8')", 3, false),
+    (Dialect::ClickHouse, "SELECT ‘ ' ’, file('x') -- '", 3, false),
+    (Dialect::ClickHouse, "SELECT‘'’, file('x') -- '", 3, false),
+    (Dialect::ClickHouse, "SELECT `fi\\x6Ce`('x')", 3, false),
+    (Dialect::ClickHouse, "SELECT `fi\\Nle`('x')", 3, false),
+    (Dialect::ClickHouse, "SELECT 1 AS $a$, file('x')", 3, false),
+    (Dialect::ClickHouse, "SELECT $1$ ' $1$, file('x') -- '", 3, false),
+    (Dialect::ClickHouse, "SELECT {x:Enum('}' = 1)}, file('x'), ''", 3, false),
+    (Dialect::ClickHouse, "SELECT 1 PARALLEL WITH DROP TABLE t", 3, false),
+    (Dialect::ClickHouse, "SELECT 1 // file('x')", 0, true),
+    (Dialect::ClickHouse, "SELECT ‘file('x')’", 0, true),
+    (Dialect::ClickHouse, "SELECT $1$file('x')$1$", 0, true),
+    (Dialect::ClickHouse, "SELECT {x:Enum('file(' = 1)}", 0, true),
+    (Dialect::ClickHouse, "SELECT a FROM t GROUP BY a WITH TOTALS", 0, true),
     (Dialect::Postgres, "SELECT 1; DELETE FROM t", 3, false),
     // MySQL runs what `/*! … */` holds; versioned ones are read run and skipped.
     (Dialect::MySql, "SELECT 1 /*!; DELETE FROM t */", 3, false),

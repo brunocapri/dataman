@@ -40,6 +40,13 @@ pub struct EngineSpec {
     pub numbered_dbs: Option<u32>,
     pub nouns: Nouns,
     pub form: Form,
+    /// The password itself crosses with every request (ClickHouse's HTTP Basic), so there is
+    /// nothing a certificate check would only be nice to have: off this machine a connection that
+    /// states no mode verifies, and `Prefer` never falls back to plain text.
+    pub strict_tls: bool,
+    /// A statement can reach another database of the server by name: a name of at least this many
+    /// parts starts with one (`db.t`, SQL Server's `db.dbo.t`). None: only the current database.
+    pub db_in_name: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +77,7 @@ const FILE: Form = Form { file: true, user_required: false, database: false, dat
 const NO_FILES: &[&str] = &[];
 
 /// In `Engine`'s declaration order: `Engine::spec` indexes it.
-pub static SPECS: [EngineSpec; 9] = [
+pub static SPECS: [EngineSpec; 10] = [
     EngineSpec {
         engine: Engine::Postgres,
         slug: "postgres",
@@ -94,6 +101,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: TABLES,
         form: SERVER,
+        strict_tls: false,
+        db_in_name: None,
     },
     EngineSpec {
         engine: Engine::MySql,
@@ -118,6 +127,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: TABLES,
         form: Form { scheme: "mysql", ..SERVER },
+        strict_tls: false,
+        db_in_name: Some(2),
     },
     EngineSpec {
         engine: Engine::SqlServer,
@@ -142,6 +153,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: TABLES,
         form: Form { scheme: "sqlserver", ..SERVER },
+        strict_tls: false,
+        db_in_name: Some(3),
     },
     EngineSpec {
         engine: Engine::MongoDb,
@@ -166,6 +179,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: Nouns { one: "collection", many: "collections" },
         form: Form { user_required: false, database_placeholder: "test", options: true, scheme: "mongodb", ..SERVER },
+        strict_tls: false,
+        db_in_name: None,
     },
     EngineSpec {
         engine: Engine::Elasticsearch,
@@ -190,6 +205,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: Nouns { one: "index", many: "indices" },
         form: Form { user_required: false, database: false, database_placeholder: "", scheme: "https", ..SERVER },
+        strict_tls: false,
+        db_in_name: None,
     },
     EngineSpec {
         engine: Engine::OpenSearch,
@@ -214,6 +231,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: Nouns { one: "index", many: "indices" },
         form: Form { user_required: false, database: false, database_placeholder: "", scheme: "https", ..SERVER },
+        strict_tls: false,
+        db_in_name: None,
     },
     EngineSpec {
         engine: Engine::Redis,
@@ -238,6 +257,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: Some(16),
         nouns: Nouns { one: "key", many: "keys" },
         form: Form { user_required: false, database_placeholder: "0", database_label: "DB", scheme: "redis", ..SERVER },
+        strict_tls: false,
+        db_in_name: None,
     },
     EngineSpec {
         engine: Engine::Sqlite,
@@ -262,6 +283,8 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: TABLES,
         form: FILE,
+        strict_tls: false,
+        db_in_name: None,
     },
     EngineSpec {
         engine: Engine::DuckDb,
@@ -286,6 +309,34 @@ pub static SPECS: [EngineSpec; 9] = [
         numbered_dbs: None,
         nouns: TABLES,
         form: FILE,
+        strict_tls: false,
+        db_in_name: Some(2),
+    },
+    EngineSpec {
+        engine: Engine::ClickHouse,
+        slug: "clickhouse",
+        label: "ClickHouse",
+        aliases: &["ch"],
+        search: "clickhouse ch analytics olap columnar",
+        default_port: 8123,
+        default_user: "default",
+        family: Family::Sql,
+        family_label: "Analytical",
+        file_exts: NO_FILES,
+        dialect: Some(Dialect::ClickHouse),
+        caps: Caps::CLICKHOUSE,
+        badge: "CH",
+        logo: "logos/clickhouse.svg",
+        default_database: "default",
+        default_schema: None,
+        db_names_ignore_case: false,
+        system_dbs: &["system", "information_schema", "INFORMATION_SCHEMA"],
+        system_schemas: &["system", "information_schema", "INFORMATION_SCHEMA"],
+        numbered_dbs: None,
+        nouns: TABLES,
+        form: Form { database_placeholder: "default", scheme: "clickhouse", ..SERVER },
+        strict_tls: true,
+        db_in_name: Some(2),
     },
 ];
 
@@ -372,7 +423,7 @@ mod tests {
             assert_eq!(e.spec().caps.file, e.spec().form.file, "{e:?}");
             assert_eq!(e.is_sql(), e.sql_dialect().is_some(), "{e:?}");
         }
-        assert_eq!(Engine::port_list(), "5432 / 3306 / 1433 / 27017 / 9200 / 6379");
+        assert_eq!(Engine::port_list(), "5432 / 3306 / 1433 / 27017 / 9200 / 6379 / 8123");
         assert_eq!((Engine::Redis.db_label("3"), Engine::MySql.db_label("shop")), ("db3".to_string(), "shop".to_string()));
         assert!(Engine::SqlServer.is_system_db("tempdb") && !Engine::Postgres.is_system_db("postgres"));
         assert!(Engine::Postgres.is_system_schema("pg_toast_temp_3") && !Engine::Postgres.is_system_schema("public"));

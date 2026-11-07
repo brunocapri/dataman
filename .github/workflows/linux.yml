@@ -65,7 +65,14 @@ jobs:
         run: scripts/duckdb-engine.sh
         env:
           DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
+      # What is selected of the ClickHouse tests skips without a server, and would pass untested:
+      # this one is up for them, and DATAMAN_LIVE_REQUIRED makes its absence a failure. The
+      # end-to-end stage below reuses it.
+      - name: ClickHouse for its live tests
+        run: docker compose -f e2e/compose.yaml up -d --wait clickhouse
       - name: Tests, with a Secret Service for the password store
+        env:
+          DATAMAN_LIVE_REQUIRED: clickhouse
         run: |
           # -e: a failing `cargo test` fails the step, not only the last command.
           # --workspace on both: `-p dataman-core` has other features, and builds it all again.

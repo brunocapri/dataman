@@ -145,6 +145,8 @@ impl ConnSpec {
         }
         if let Some(m) = self.sslmode.or(mssql_mode.filter(|_| self.engine == Engine::SqlServer)) {
             p.sslmode = m;
+        } else if self.engine.spec().strict_tls {
+            p.sslmode = crate::config::default_sslmode(self.engine, &p.host, false);
         }
         p.name = match &self.service {
             Some(s) => s.clone(),
@@ -180,7 +182,7 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
     };
-    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
+    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "clickhouse://", "ch://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
         parse_sqlserver(rest)
@@ -374,6 +376,8 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
         (Engine::MongoDb, r)
     } else if let Some(r) = s.strip_prefix("rediss://").or_else(|| s.strip_prefix("redis://")) {
         (Engine::Redis, r)
+    } else if let Some(r) = s.strip_prefix("clickhouse://").or_else(|| s.strip_prefix("ch://")) {
+        (Engine::ClickHouse, r)
     } else if let Some(r) = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://")) {
         // What the sheet shows for Elasticsearch and OpenSearch; the sheet keeps OpenSearch.
         (Engine::Elasticsearch, r)
@@ -680,11 +684,16 @@ mod tests {
 
     #[test]
     fn one_string_per_engine() {
-        let cases: [(&str, Engine, &str, u16, &str, &str, SslMode, Option<&str>); 10] = [
+        let cases: [(&str, Engine, &str, u16, &str, &str, SslMode, Option<&str>); 15] = [
             ("postgresql://app:pw@db.internal:6543/shop?sslmode=require", Engine::Postgres, "db.internal", 6543, "app", "shop", SslMode::Require, Some("pw")),
             ("host=db.internal port=6543 dbname=shop user=app password=pw sslmode=disable", Engine::Postgres, "db.internal", 6543, "app", "shop", SslMode::Disable, Some("pw")),
             ("jdbc:postgresql://db.internal/shop?user=app&password=pw&ssl=true", Engine::Postgres, "db.internal", 5432, "app", "shop", SslMode::Require, Some("pw")),
             ("mysql://app:pw@db.internal:3307/shop?ssl-mode=DISABLED", Engine::MySql, "db.internal", 3307, "app", "shop", SslMode::Disable, Some("pw")),
+            ("clickhouse://app:pw@ch.internal:8124/events", Engine::ClickHouse, "ch.internal", 8124, "app", "events", SslMode::VerifyFull, Some("pw")),
+            ("ch://app@ch.internal/events", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::VerifyFull, None),
+            ("clickhouse://app@ch.internal/events?sslmode=require", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::Require, None),
+            ("clickhouse://app@ch.internal/events?sslmode=disable", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::Disable, None),
+            ("clickhouse://app@localhost/events", Engine::ClickHouse, "localhost", 8123, "app", "events", SslMode::Prefer, None),
             ("mariadb://app@db.internal/shop", Engine::MySql, "db.internal", 3306, "app", "shop", SslMode::Prefer, None),
             ("jdbc:mysql://db.internal:3307/shop?user=app&password=pw&useSSL=false", Engine::MySql, "db.internal", 3307, "app", "shop", SslMode::Disable, Some("pw")),
             ("sqlserver://app:pw@db.internal:14330/shop?encrypt=false", Engine::SqlServer, "db.internal", 14330, "app", "shop", SslMode::Disable, Some("pw")),
@@ -699,6 +708,9 @@ mod tests {
             let saved = toml::to_string(&p).unwrap();
             assert!(!saved.contains("pw"), "no password in what is saved: {saved}");
         }
+        let (p, _) = parse_profile("clickhouse://app@ch.internal:8443/events?sslmode=require").unwrap();
+        assert_eq!(p.url(), "clickhouse://app@ch.internal:8443/events?sslmode=require");
+        assert_eq!(parse_profile(&p.url()).unwrap().0.sslmode, SslMode::Require, "what the sheet shows reads back");
         for junk in ["", "postgres", "db.internal", "mysql:/x", "Server", "a=1;b=2"] {
             assert!(parse_profile(junk).is_none(), "{junk:?} is not a connection string");
         }

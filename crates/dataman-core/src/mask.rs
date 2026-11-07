@@ -1,5 +1,5 @@
-//! Passwords written into statements (`CREATE USER … PASSWORD '…'`, `AUTH …`, `pwd: "…"`)
-//! never reach the history or the audit log: they are kept as `••••••`.
+//! Passwords written into statements (`CREATE USER … PASSWORD '…'`, `AUTH …`, `pwd: "…"`,
+//! `remote(…, 'pw')`) never reach the history or the audit log: they are kept as `••••••`.
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -7,18 +7,67 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::config::Engine;
-use crate::sql::{Dialect, TokenKind, tokenize_in};
+use crate::sql::{Dialect, ident_value_in, tokenize_in, TokenKind};
 
 pub const MASK: &str = "••••••";
 
 /// SQL words after which the next value is a secret.
 const ARMS: &[&str] = &["PASSWORD", "OLD_PASSWORD", "IDENTIFIED", "SECRET", "PASSPHRASE", "PASSWD"];
 
+/// ClickHouse's table functions and engines that take credentials among their plain arguments
+/// (lower case), with the first argument that can hold one: every string from there on is masked,
+/// inside calls too (`headers('Authorization' = '…')`), since the positions move from one form of
+/// a call to another (`remote('h', db.t, 'u', 'pw')`).
+const CLICKHOUSE_CREDENTIALS: &[(&str, usize)] = &[
+    ("aes_decrypt_mysql", 2),
+    ("aes_encrypt_mysql", 2),
+    ("arrowflight", 1),
+    ("azureblobstorage", 0),
+    ("azureblobstoragecluster", 1),
+    ("azurequeue", 0),
+    ("clickhouse", 2),
+    ("cos", 1),
+    ("cosn", 1),
+    ("decrypt", 2),
+    ("deltalake", 1),
+    ("deltalakeazure", 3),
+    ("deltalakes3", 1),
+    ("encrypt", 2),
+    ("gcs", 1),
+    ("headers", 0),
+    ("hudi", 1),
+    ("iceberg", 1),
+    ("icebergazure", 3),
+    ("icebergs3", 1),
+    ("materializedmysql", 3),
+    ("materializedpostgresql", 3),
+    ("mongodb", 3),
+    ("mysql", 3),
+    ("oss", 1),
+    ("postgresql", 3),
+    ("redis", 3),
+    ("remote", 2),
+    ("remotesecure", 2),
+    ("s3", 1),
+    ("s3cluster", 2),
+    ("s3queue", 1),
+    ("trydecrypt", 2),
+    ("ytsaurus", 2),
+];
+
 pub fn statement(engine: Engine, text: &str) -> Cow<'_, str> {
     let masked = match engine {
         Engine::Redis => redis(text),
         e if e.is_sql() => sql(text, e.dialect()),
         _ => Cow::Borrowed(text),
+    };
+    let masked = if engine == Engine::ClickHouse {
+        match clickhouse_arguments(&masked) {
+            Cow::Owned(s) => Cow::Owned(s),
+            Cow::Borrowed(_) => masked,
+        }
+    } else {
+        masked
     };
     match inline(&masked) {
         Cow::Borrowed(_) => masked,
@@ -29,11 +78,69 @@ pub fn statement(engine: Engine, text: &str) -> Cow<'_, str> {
 /// Whatever the engine: every engine's masking (for text whose engine is not known).
 pub fn any(text: &str) -> Cow<'_, str> {
     let s = sql(text, Dialect::Postgres).into_owned();
+    let s = clickhouse_arguments(&s).into_owned();
     let s = redis(&s).into_owned();
     match inline(&s) {
         Cow::Borrowed(_) if s == text => Cow::Borrowed(text),
         c => Cow::Owned(c.into_owned()),
     }
+}
+
+/// A word after which the next value is a secret: `SECRET`, or settings' `kafka_sasl_password`.
+fn arms(word: &str) -> bool {
+    let w = word.trim_matches(['"', '`', '[', ']']);
+    ARMS.iter().any(|a| w.eq_ignore_ascii_case(a)) || ["_password", "_secret", "_passwd", "secret_access_key"].iter().any(|s| w.len() >= s.len() && w.is_char_boundary(w.len() - s.len()) && w[w.len() - s.len()..].eq_ignore_ascii_case(s))
+}
+
+/// The string arguments of ClickHouse's calls that can hold credentials.
+fn clickhouse_arguments(text: &str) -> Cow<'_, str> {
+    let d = Dialect::ClickHouse;
+    let toks: Vec<_> = tokenize_in(text, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    let mut cuts: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut i = 0;
+    while i + 1 < toks.len() {
+        let open = toks[i + 1].kind == TokenKind::Punct && toks[i + 1].text(text) == "(";
+        let from = matches!(toks[i].kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword).then(|| ident_value_in(text, &toks[i], d).to_ascii_lowercase()).and_then(|n| CLICKHOUSE_CREDENTIALS.iter().find(|(c, _)| *c == n)).map(|(_, f)| *f);
+        let (Some(from), true) = (from, open) else {
+            i += 1;
+            continue;
+        };
+        let (mut depth, mut arg) = (0usize, 0usize);
+        let mut k = i + 1;
+        while let Some(t) = toks.get(k) {
+            match (t.kind, t.text(text)) {
+                (TokenKind::Punct, "(") => depth += 1,
+                (TokenKind::Punct, ")") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                (TokenKind::Punct, ",") if depth == 1 => arg += 1,
+                (TokenKind::String, _) if arg >= from => cuts.push(t.start..t.end),
+                _ => {}
+            }
+            k += 1;
+        }
+        // Past the call: a call inside it has had its strings counted with it.
+        i = k + 1;
+    }
+    if cuts.is_empty() { Cow::Borrowed(text) } else { Cow::Owned(with_masks(text, cuts)) }
+}
+
+fn with_masks(text: &str, cuts: Vec<std::ops::Range<usize>>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for r in cuts {
+        out.push_str(&text[at..r.start]);
+        let lit = &text[r.clone()];
+        let q = if lit.starts_with('$') { "$$" } else { "'" };
+        let lead = if lit.starts_with(['N', 'n', 'E', 'e']) && lit.len() > 1 && lit.as_bytes()[1] == b'\'' { &lit[..1] } else { "" };
+        out.push_str(&format!("{lead}{q}{MASK}{q}"));
+        at = r.end;
+    }
+    out.push_str(&text[at..]);
+    out
 }
 
 fn sql(text: &str, dialect: Dialect) -> Cow<'_, str> {
@@ -47,11 +154,11 @@ fn sql(text: &str, dialect: Dialect) -> Cow<'_, str> {
     for (i, t) in toks.iter().enumerate() {
         let word = t.text(text);
         match t.kind {
-            TokenKind::Keyword | TokenKind::Ident | TokenKind::QuotedIdent if ARMS.iter().any(|a| word.trim_matches(['"', '`', '[', ']']).eq_ignore_ascii_case(a)) => armed = true,
+            TokenKind::Keyword | TokenKind::Ident | TokenKind::QuotedIdent if arms(word) => armed = true,
             TokenKind::Punct if word == ";" => armed = false,
             TokenKind::String | TokenKind::DollarString if armed => {
                 let prev = i.checked_sub(1).map(|p| toks[p].text(text).to_ascii_uppercase()).unwrap_or_default();
-                if ARMS.contains(&prev.trim_matches(['"', '`', '[', ']'])) || matches!(prev.as_str(), "=" | "(" | "BY" | "N") {
+                if arms(&prev) || matches!(prev.as_str(), "=" | "(" | "BY" | "N") {
                     cuts.push(t.start..t.end);
                     armed = false;
                 }
@@ -62,18 +169,7 @@ fn sql(text: &str, dialect: Dialect) -> Cow<'_, str> {
     if cuts.is_empty() {
         return Cow::Borrowed(text);
     }
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
-    for r in cuts {
-        out.push_str(&text[at..r.start]);
-        let lit = &text[r.clone()];
-        let q = if lit.starts_with('$') { "$$" } else { "'" };
-        let lead = if lit.starts_with(['N', 'n', 'E', 'e']) && lit.len() > 1 && lit.as_bytes()[1] == b'\'' { &lit[..1] } else { "" };
-        out.push_str(&format!("{lead}{q}{MASK}{q}"));
-        at = r.end;
-    }
-    out.push_str(&text[at..]);
-    Cow::Owned(out)
+    Cow::Owned(with_masks(text, cuts))
 }
 
 fn redis(text: &str) -> Cow<'_, str> {
@@ -190,6 +286,32 @@ mod tests {
         for s in ["SELECT * FROM t WHERE name = 'password'", "SELECT 1", "UPDATE users SET name = 'x' WHERE id = 1"] {
             assert_eq!(m(Postgres, s), s);
         }
+    }
+
+    #[test]
+    fn clickhouse_credentials_in_arguments() {
+        let m = |s: &str| statement(ClickHouse, s).into_owned();
+        for (sql, want) in [
+            ("SELECT * FROM remote('h:9000', 'db', 't', 'u', 'pw1')", "SELECT * FROM remote('h:9000', 'db', '••••••', '••••••', '••••••')"),
+            ("SELECT * FROM remote('h:9000', db.t, 'u', 'pw2')", "SELECT * FROM remote('h:9000', db.t, '••••••', '••••••')"),
+            ("SELECT * FROM `re\\x6Dote`('h', 'db', 't', 'u', 'pw3')", "SELECT * FROM `re\\x6Dote`('h', 'db', '••••••', '••••••', '••••••')"),
+            ("SELECT * FROM s3('https://b/x.csv', 'AKIA', 'pw4', 'CSV')", "SELECT * FROM s3('https://b/x.csv', '••••••', '••••••', '••••••')"),
+            ("CREATE TABLE t (a Int8) ENGINE = MySQL('h:3306', 'db', 't', 'u', 'pw5')", "CREATE TABLE t (a Int8) ENGINE = MySQL('h:3306', 'db', 't', '••••••', '••••••')"),
+            ("CREATE TABLE t (a Int8) ENGINE = S3('https://b/x.csv', 'AKIA', 'pw6')", "CREATE TABLE t (a Int8) ENGINE = S3('https://b/x.csv', '••••••', '••••••')"),
+            ("CREATE TABLE t (a Int8) ENGINE = Kafka SETTINGS kafka_sasl_password = 'pw7'", "CREATE TABLE t (a Int8) ENGINE = Kafka SETTINGS kafka_sasl_password = '••••••'"),
+            ("BACKUP TABLE t TO S3('https://b/x', 'AKIA', 'pw8')", "BACKUP TABLE t TO S3('https://b/x', '••••••', '••••••')"),
+            ("SELECT * FROM url('https://x', CSV, 'a Int8', headers('Authorization' = 'Bearer pw9'))", "SELECT * FROM url('https://x', CSV, 'a Int8', headers('••••••' = '••••••'))"),
+            ("SELECT encrypt('aes-256-gcm', 'text', 'pw10', 'iv')", "SELECT encrypt('aes-256-gcm', 'text', '••••••', '••••••')"),
+            ("SELECT * FROM s3('https://b/x.csv', access_key_id = 'AKIA', secret_access_key = 'p\\'w11')", "SELECT * FROM s3('https://b/x.csv', access_key_id = '••••••', secret_access_key = '••••••')"),
+        ] {
+            assert_eq!(m(sql), want, "{sql}");
+            assert!(!any(sql).contains("pw"), "{sql}: {}", any(sql));
+        }
+        for s in ["SELECT remote FROM t WHERE mysql = 'x'", "SELECT * FROM numbers(3)", "SELECT 'remote(a, b, c, d)'"] {
+            assert_eq!(m(s), s);
+        }
+        // Elsewhere those are other functions, and a statement's values stay.
+        assert_eq!(statement(Postgres, "SELECT encrypt('a', 'b', 'c')"), "SELECT encrypt('a', 'b', 'c')");
     }
 
     #[test]

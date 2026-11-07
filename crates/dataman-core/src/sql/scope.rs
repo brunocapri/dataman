@@ -34,6 +34,10 @@ pub struct Source {
     pub kind: SourceKind,
     pub name_range: Range<usize>,
     pub alias_columns: Option<Vec<String>>,
+    /// INSERT's, UPDATE's or DELETE's own table.
+    pub target: bool,
+    /// The WITH query this name means where it stands; `None` is the table of that name.
+    pub cte: Option<usize>,
 }
 
 impl Source {
@@ -80,11 +84,17 @@ pub struct Scope {
     pub using: Vec<String>,
     pub natural: bool,
     pub open: bool,
+    /// This scope's WITH says RECURSIVE.
+    pub recursive: bool,
+    /// A later branch joined to the one before it by UNION, not INTERSECT or EXCEPT.
+    pub after_union: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct Cte {
     pub name: String,
+    /// The name with the case it was written in.
+    pub written: String,
     pub columns: Option<Vec<String>>,
     pub scope: Option<usize>,
     pub name_range: Range<usize>,
@@ -119,12 +129,61 @@ pub struct Analysis {
     pub ci: bool,
     pub unsure: bool,
     pub distrust: std::collections::HashSet<String>,
+    pub dialect: Dialect,
 }
 
 impl Analysis {
     pub fn col_eq(&self, a: &str, b: &str) -> bool {
         if self.ci { a.eq_ignore_ascii_case(b) } else { a == b }
     }
+}
+
+/// Where a WITH clause's names reach, past what every server agrees on (the query after the clause
+/// and the clause's earlier queries). Where a name does not reach, it means the table of that
+/// name. As each server was seen to resolve them: PostgreSQL 18, MySQL 8.4, SQL Server 2022,
+/// SQLite 3.53, DuckDB 1.5, ClickHouse 25.8.
+#[derive(Clone, Copy)]
+struct WithReach {
+    later: Later,
+    /// A query reaches its own name without RECURSIVE.
+    recursive_unasked: bool,
+    /// Only the last branch recurses: a branch before it reads the table.
+    last_branch_only: bool,
+    /// The server may tell names apart by case: ClickHouse does, MySQL by its file system, SQL
+    /// Server by its collation.
+    exact_case: bool,
+    /// A write's own table may be a WITH query (elsewhere it is the table whatever the WITH says).
+    target_is_query: bool,
+}
+
+/// Whether a query of the clause reaches the names of the queries after it.
+#[derive(Clone, Copy)]
+enum Later {
+    Never,
+    WhenRecursive,
+    Always,
+    /// ClickHouse's analyzer does and the old one does not (a setting away), and through a cycle
+    /// of names a query reaches the table of its own name: the text cannot tell.
+    Unsure,
+}
+
+impl WithReach {
+    const fn of(d: Dialect) -> WithReach {
+        match d {
+            Dialect::Postgres => WithReach { later: Later::WhenRecursive, recursive_unasked: false, last_branch_only: false, exact_case: false, target_is_query: false },
+            Dialect::MySql => WithReach { later: Later::Never, recursive_unasked: false, last_branch_only: false, exact_case: true, target_is_query: false },
+            Dialect::TSql => WithReach { later: Later::Never, recursive_unasked: true, last_branch_only: false, exact_case: true, target_is_query: true },
+            Dialect::Sqlite => WithReach { later: Later::Always, recursive_unasked: true, last_branch_only: false, exact_case: false, target_is_query: false },
+            Dialect::DuckDb => WithReach { later: Later::Never, recursive_unasked: false, last_branch_only: true, exact_case: false, target_is_query: false },
+            Dialect::ClickHouse => WithReach { later: Later::Unsure, recursive_unasked: false, last_branch_only: false, exact_case: true, target_is_query: false },
+        }
+    }
+}
+
+enum Means {
+    Query(usize),
+    Table,
+    Unsure,
 }
 
 const NOT_COLUMNS: &[&str] = &[
@@ -206,6 +265,9 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
 
 pub const SYSTEM_COLUMNS: &[&str] = &["ctid", "xmin", "xmax", "cmin", "cmax", "tableoid", "oid"];
 
+/// ClickHouse's words around a join's kind, in any order (`GLOBAL ANY LEFT JOIN`, `ALL INNER JOIN`).
+const CLICKHOUSE_JOIN_WORDS: &[&str] = &["GLOBAL", "LOCAL", "ALL", "ANY", "ASOF", "SEMI", "ANTI", "PASTE", "LEFT", "RIGHT", "FULL", "INNER", "OUTER", "CROSS"];
+
 const CLAUSE_WORDS: &[&str] = &[
     "FROM", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT",
     "EXCEPT", "RETURNING", "INTO", "ON", "USING", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "SET",
@@ -220,31 +282,33 @@ pub fn analyze_in(src: &str, toks: &[Token], dialect: Dialect) -> Analysis {
     let toks: Vec<Token> = toks.iter().copied().filter(|t| !t.kind.is_trivia()).collect();
     let mut close = vec![usize::MAX; toks.len()];
     let mut stack = Vec::new();
+    let mut unbalanced = false;
     for (i, t) in toks.iter().enumerate() {
         if t.kind == TokenKind::Punct {
             match t.text(src) {
                 "(" | "[" => stack.push(i),
-                ")" | "]" => {
-                    if let Some(o) = stack.pop() {
-                        close[o] = i;
-                    }
-                }
+                ")" | "]" => match stack.pop() {
+                    Some(o) => close[o] = i,
+                    None => unbalanced = true,
+                },
                 _ => {}
             }
         }
     }
+    unbalanced |= !stack.is_empty();
     let n = toks.len();
     for c in close.iter_mut() {
         if *c == usize::MAX {
             *c = n;
         }
     }
-    let unsure = unmodeled(src, &toks, &close, dialect);
-    let mut p = P { src, t: &toks, close, a: Analysis { ci: dialect != Dialect::Postgres, ..Default::default() }, dialect, qualified: Vec::new() };
+    let unsure = unbalanced || unmodeled(src, &toks, &close, dialect);
+    let mut p = P { src, t: &toks, close, a: Analysis { ci: dialect != Dialect::Postgres, dialect, ..Default::default() }, dialect, qualified: Vec::new() };
     if !toks.is_empty() {
         p.query(0, n, None, None);
     }
-    p.a.unsure = unsure || p.a.scopes.iter().any(|s| s.open);
+    let unsure_name = p.settle_names();
+    p.a.unsure = unsure || unsure_name || p.a.scopes.iter().any(|s| s.open);
     p.a
 }
 
@@ -311,10 +375,12 @@ impl<'a> P<'a> {
 
     fn with(&mut self, mut i: usize, hi: usize, id: usize) -> usize {
         if self.word(i, "RECURSIVE") {
+            self.a.scopes[id].recursive = true;
             i += 1;
         }
         while i < hi && (self.is_name(i) || self.t[i].kind == TokenKind::Keyword) && !self.word(i, "SELECT") {
             let name = self.value(i);
+            let written = ident_value_in(self.src, &self.t[i], self.dialect);
             let name_range = self.t[i].range();
             i += 1;
             let mut columns = None;
@@ -333,7 +399,7 @@ impl<'a> P<'a> {
                 i += 1;
             }
             let cte = self.a.ctes.len();
-            self.a.ctes.push(Cte { name, columns, scope: None, name_range });
+            self.a.ctes.push(Cte { name, written, columns, scope: None, name_range });
             self.a.scopes[id].ctes.push(cte);
             if self.punct(i, "(") {
                 let j = self.close[i].min(hi);
@@ -418,8 +484,9 @@ impl<'a> P<'a> {
                     "UPDATE" => {
                         clause = Clause::Other;
                         if !self.any_word(i.wrapping_sub(1), &["DO", "FOR", "KEY"]) {
-                            dml.get_or_insert(self.a.scopes[id].sources.len());
+                            let first = *dml.get_or_insert(self.a.scopes[id].sources.len());
                             i = self.from_list(self.top(i + 1, hi), hi, id);
+                            self.mark_target(id, first);
                             continue;
                         }
                     }
@@ -431,7 +498,9 @@ impl<'a> P<'a> {
                     "INTO" | "INSERT"
                         if (w == "INTO" && self.any_word(i.wrapping_sub(1), &["INSERT", "REPLACE", "IGNORE", "LOW_PRIORITY", "HIGH_PRIORITY", "DELAYED"])) || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
                     {
-                        i = self.insert_target(i + 1, hi, id);
+                        // ClickHouse's `INSERT INTO TABLE t`.
+                        let at = if self.dialect == Dialect::ClickHouse && self.word(i + 1, "TABLE") { i + 2 } else { i + 1 };
+                        i = self.insert_target(at, hi, id);
                         if i < hi && self.starts_query(i) {
                             let end = (i..hi).find(|&k| self.word(k, "ON") && self.word(k + 1, "CONFLICT") || self.word(k, "RETURNING")).unwrap_or(hi);
                             let end = self.depth0(i, end, hi);
@@ -459,8 +528,9 @@ impl<'a> P<'a> {
                         }
                     }
                     "DELETE" if self.word(self.top(i + 1, hi), "FROM") => {
-                        dml.get_or_insert(self.a.scopes[id].sources.len());
+                        let first = *dml.get_or_insert(self.a.scopes[id].sources.len());
                         i = self.source(self.top(i + 1, hi) + 1, hi, id);
+                        self.mark_target(id, first);
                         clause = Clause::Other;
                         continue;
                     }
@@ -472,6 +542,7 @@ impl<'a> P<'a> {
                         let parent = self.a.scopes[id].parent;
                         let next = self.query(k, hi, parent, Some(id));
                         self.a.scopes[next].role = Role::Branch(id);
+                        self.a.scopes[next].after_union = w == "UNION";
                         self.settle_targets(id, dml);
                         return;
                     }
@@ -493,6 +564,12 @@ impl<'a> P<'a> {
             i += 1;
         }
         self.settle_targets(id, dml);
+    }
+
+    fn mark_target(&mut self, id: usize, source: usize) {
+        if let Some(s) = self.a.scopes[id].sources.get_mut(source) {
+            s.target = true;
+        }
     }
 
     fn top(&self, mut i: usize, hi: usize) -> usize {
@@ -519,6 +596,7 @@ impl<'a> P<'a> {
             if let Some(j) = (0..srcs.len()).find(|&j| j != d && same(&srcs[j])) {
                 self.a.scopes[id].sources.remove(d);
                 let j = if j > d { j - 1 } else { j };
+                self.a.scopes[id].sources[j].target = true;
                 for t in self.a.targets.iter_mut().filter(|t| t.scope == id) {
                     if t.source == d {
                         t.source = j;
@@ -815,6 +893,8 @@ impl<'a> P<'a> {
             kind: SourceKind::Table { schema, name },
             name_range: self.t[i].start..self.t[k - 1].end,
             alias_columns: None,
+            target: true,
+            cte: None,
         });
         if self.punct(k, "(") && !self.starts_query(k + 1) {
             let j = self.close[k].min(hi);
@@ -859,12 +939,32 @@ impl<'a> P<'a> {
             }
             let start = i;
             let mut k = i;
+            let clickhouse = self.dialect == Dialect::ClickHouse;
+            // `ARRAY JOIN x AS y` names no table: its expressions are read, whatever comes next.
+            let array = if self.word(k, "LEFT") && self.word(k + 1, "ARRAY") { k + 1 } else { k };
+            if clickhouse && self.word(array, "ARRAY") && self.word(array + 1, "JOIN") {
+                let mut e = array + 2;
+                while e < hi && !self.word(e, "JOIN") && !self.is_join_start(e) && !self.is_clause_end_strict(e) && !self.any_word(e, CLICKHOUSE_JOIN_WORDS) {
+                    if self.punct(e, "(") {
+                        e = self.close[e] + 1;
+                        continue;
+                    }
+                    e += 1;
+                }
+                let e = e.min(hi);
+                self.expr(array + 2, e, id, Clause::From, false);
+                i = e;
+                continue;
+            }
+            while clickhouse && self.any_word(k, CLICKHOUSE_JOIN_WORDS) {
+                k += 1;
+            }
             let natural = self.word(k, "NATURAL");
             if natural {
                 k += 1;
             }
-            let cross = self.word(k, "CROSS");
-            if cross {
+            let cross = self.word(k, "CROSS") || (clickhouse && self.word(k.wrapping_sub(1), "CROSS"));
+            if self.word(k, "CROSS") {
                 k += 1;
             }
             if self.any_word(k, &["LEFT", "RIGHT", "FULL"]) {
@@ -906,6 +1006,16 @@ impl<'a> P<'a> {
                 let cols = self.name_list(i + 2, j);
                 self.a.scopes[id].using.extend(cols);
                 i = j + 1;
+            } else if clickhouse && self.word(i, "USING") {
+                // Without parentheses: names up to the next join or clause.
+                let mut e = i + 1;
+                while e < hi && !self.is_join_start(e) && !self.is_clause_end_strict(e) && !self.any_word(e, CLICKHOUSE_JOIN_WORDS) {
+                    e += 1;
+                }
+                let e = e.min(hi);
+                let cols = self.name_list(i + 1, e);
+                self.a.scopes[id].using.extend(cols);
+                i = e;
             } else if after > k + usize::from(lateral) {
                 let end = self.t.get(after - 1).map_or(self.src.len(), |t| t.end);
                 self.a.missing_on.push(self.t[start].start..end);
@@ -988,12 +1098,41 @@ impl<'a> P<'a> {
         k
     }
 
+    /// What every table name without a schema means, now that the whole statement is read; whether
+    /// any cannot be told.
+    fn settle_names(&mut self) -> bool {
+        if self.a.ctes.is_empty() {
+            return false;
+        }
+        let reach = WithReach::of(self.dialect);
+        let mut unsure = false;
+        for si in 0..self.a.scopes.len() {
+            for k in 0..self.a.scopes[si].sources.len() {
+                let src = &self.a.scopes[si].sources[k];
+                let SourceKind::Table { schema: None, name } = &src.kind else { continue };
+                if src.target && !reach.target_is_query {
+                    continue;
+                }
+                let at = self.t.partition_point(|t| t.start < src.name_range.start);
+                let written = self.t.get(at).map_or(String::new(), |t| ident_value_in(self.src, t, self.dialect));
+                let means = self.a.resolve(si, &|c: &Cte| if reach.exact_case { c.written == written } else { c.name == *name });
+                match means {
+                    Means::Query(c) => self.a.scopes[si].sources[k].cte = Some(c),
+                    Means::Table => {}
+                    Means::Unsure => unsure = true,
+                }
+            }
+        }
+        unsure
+    }
+
     fn is_clause_word(&self, i: usize) -> bool {
         CLAUSE_WORDS.iter().any(|w| self.word(i, w))
     }
 
     fn alias(&mut self, mut i: usize, hi: usize, id: usize, kind: Option<SourceKind>, start: usize) -> usize {
-        let name_end = self.t.get(i.saturating_sub(1)).map_or(0, |t| t.end);
+        // A call or a subquery that never closes ends past the last token.
+        let name_end = self.t.get(i.saturating_sub(1)).map_or(self.src.len(), |t| t.end);
         let mut alias = None;
         let mut alias_columns = None;
         if self.word(i, "AS") && i + 1 < hi {
@@ -1014,7 +1153,27 @@ impl<'a> P<'a> {
                 kind,
                 name_range: self.t[start].start..name_end,
                 alias_columns,
+                target: false,
+                cte: None,
             });
+        }
+        if self.dialect == Dialect::ClickHouse {
+            if self.word(i, "FINAL") {
+                i += 1;
+            }
+            // `SAMPLE 1/10 OFFSET 1/2`.
+            let fraction = |a: &Self, mut k: usize| {
+                while a.t.get(k).is_some_and(|t| t.kind == TokenKind::Number || t.text(a.src) == "/") {
+                    k += 1;
+                }
+                k
+            };
+            if self.word(i, "SAMPLE") {
+                i = fraction(self, i + 1);
+                if self.word(i, "OFFSET") {
+                    i = fraction(self, i + 1);
+                }
+            }
         }
         if self.word(i, "TABLESAMPLE") {
             i += 2;
@@ -1066,20 +1225,68 @@ impl Analysis {
         out
     }
 
+    /// The WITH query `name` means in `scope`, whatever its case. What is held against the server's
+    /// reading goes by [`Source::cte`], which compares case where the server may.
     pub fn visible_cte(&self, scope: usize, name: &str) -> Option<usize> {
-        let mut s = Some(scope);
-        let mut guard = 0;
-        while let Some(i) = s {
-            if let Some(&c) = self.scopes[i].ctes.iter().find(|&&c| self.ctes[c].name == name) {
-                return Some(c);
-            }
-            s = self.scopes[i].cte_parent.or(self.scopes[i].parent);
-            guard += 1;
-            if guard > 64 {
-                break;
-            }
+        match self.resolve(scope, &|c: &Cte| c.name == name) {
+            Means::Query(c) => Some(c),
+            Means::Table | Means::Unsure => None,
         }
-        None
+    }
+
+    /// Out through the enclosing queries from `scope`: at each WITH clause, a name it holds means
+    /// what the clause's reach says for where the name stands.
+    fn resolve(&self, scope: usize, same: &dyn Fn(&Cte) -> bool) -> Means {
+        let reach = WithReach::of(self.dialect);
+        // The branch of a chain of set operations the name stands in, and the one of the chain
+        // just left.
+        let (mut branch, mut left) = (scope, scope);
+        let (mut at, mut from) = (scope, None::<usize>);
+        loop {
+            let s = &self.scopes[at];
+            // The WITH of a later branch is that branch's alone; the first branch's reaches them all.
+            let sealed = matches!(s.role, Role::Branch(_)) && from.is_some_and(|f| self.scopes[f].role == Role::Branch(at));
+            let body = from.and_then(|f| s.ctes.iter().position(|&c| self.ctes[c].scope == Some(f)));
+            for (j, &c) in s.ctes.iter().enumerate().filter(|(_, c)| !sealed && same(&self.ctes[**c])) {
+                let Some(k) = body.filter(|&k| j >= k) else { return Means::Query(c) };
+                if j == k {
+                    if (s.recursive || reach.recursive_unasked) && from.is_some_and(|f| self.recursive_branch(f, left, reach.last_branch_only)) {
+                        return Means::Query(c);
+                    }
+                    continue;
+                }
+                match reach.later {
+                    Later::Never => {}
+                    Later::WhenRecursive if !s.recursive => {}
+                    Later::WhenRecursive | Later::Always => return Means::Query(c),
+                    Later::Unsure => return Means::Unsure,
+                }
+            }
+            let Some(up) = s.cte_parent.or(s.parent) else { return Means::Table };
+            if s.role != Role::Branch(up) {
+                left = branch;
+                branch = up;
+            }
+            from = Some(at);
+            at = up;
+        }
+    }
+
+    /// Whether `branch`, of the query whose first branch is `first`, is a recursive term: not the
+    /// first, in a chain of nothing but UNION (the servers read `a UNION ALL b EXCEPT c` as a query
+    /// that does not recurse, and `b` there reads the table).
+    fn recursive_branch(&self, first: usize, branch: usize, last_only: bool) -> bool {
+        if branch == first {
+            return false;
+        }
+        let mut last = first;
+        while let Some(next) = self.scopes.iter().position(|x| x.role == Role::Branch(last)) {
+            if !self.scopes[next].after_union {
+                return false;
+            }
+            last = next;
+        }
+        !last_only || last == branch
     }
 
     pub fn visible_ctes(&self, scope: usize) -> Vec<usize> {

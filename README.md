@@ -59,11 +59,13 @@ Claude Code and any other MCP client can work with your databases through it, an
     <td align="center" width="96"><img src="crates/dataman/assets/logos/elasticsearch.svg" width="36"><br><sub>Elasticsearch</sub></td>
     <td align="center" width="96"><img src="crates/dataman/assets/logos/opensearch.svg" width="36"><br><sub>OpenSearch</sub></td>
     <td align="center" width="96"><img src="crates/dataman/assets/logos/redis.svg" width="36"><br><sub>Redis</sub></td>
-    <td></td>
+    <td align="center" width="96"><img src="crates/dataman/assets/logos/clickhouse.svg" width="36"><br><sub>ClickHouse</sub></td>
   </tr>
 </table>
 
 SQLite and DuckDB need nothing installed: SQLite is built in, and DuckDB is its own library, shipped beside the app and loaded the first time you open a DuckDB file. Every connection can go through an SSH tunnel (agent, key or password, with `~/.ssh/config` aliases and ProxyJump) and over TLS (rustls, no OpenSSL).
+
+ClickHouse's HTTP interface sends the password with every request, so across the network a connection verifies the server's certificate unless you choose otherwise. `Prefer` stays on TLS there (it only falls back to plain text on this machine or through an SSH tunnel), `Require` encrypts but does not check who answers, and `Disable` is for private networks.
 
 ## A proper GUI, before anything else
 
@@ -239,9 +241,9 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 
 **Off.** The connection still appears in the agent's list, showing only its name, environment and engine. Nothing runs on it, its favorites are hidden, and agents cannot edit it.
 
-**Read.** Every read runs in a read-only transaction that is always rolled back.
+**Read.** Every read runs in a read-only transaction that is always rolled back. ClickHouse has no transactions: there a read runs on a connection the server itself holds read-only, where a statement cannot change settings (`SET`, `SETTINGS`).
 
-- **Runs:** `SELECT`, `WITH … SELECT`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN`, plus MySQL `DESCRIBE`, the DuckDB `DESCRIBE` / `SUMMARIZE` / `PIVOT` forms, and report-only `PRAGMA`s.
+- **Runs:** `SELECT`, `WITH … SELECT`, `TABLE`, `VALUES`, `SHOW` and `EXPLAIN`, plus MySQL `DESCRIBE`, the DuckDB `DESCRIBE` / `SUMMARIZE` / `PIVOT` forms, ClickHouse `DESCRIBE` and `EXISTS`, and report-only `PRAGMA`s.
 - **Refused:**
   - row locks (`FOR UPDATE`, `FOR SHARE`, `LOCK IN SHARE MODE`);
   - CTEs that write, `SELECT … INTO`, `COPY`, `CALL`, `DO` and `SET`;
@@ -255,6 +257,7 @@ Nothing the agent sends can change this. There is no argument an agent can pass 
 - **Row limit** (default 100 rows). The limit counts every row changed by the whole call, not per statement. The write runs in a transaction, and if it changed more rows than the limit, it is rolled back and you are asked. Your Allow shows the count and up to 5 of the changed rows. When it runs again, it commits only if it changes no more rows than you saw.
 - **Scripts.** All the statements of one call run in one transaction, committed only if every one succeeds. A statement that cannot run inside a transaction (`VACUUM`, `CREATE INDEX CONCURRENTLY`) must come alone.
 - **`CREATE` and destructive statements are refused** on this tier, with a message saying they need full.
+- **ClickHouse has no safe writes.** Nothing can count a write's rows first or undo it, so every write there, `INSERT` included, is destructive: it needs full and your Allow, and runs alone in its call.
 
 **Full.** Adds `CREATE` of new objects, which runs without asking: plain `CREATE TABLE`, `CREATE INDEX`, `CREATE VIEW` and `CREATE SCHEMA`. The row limit still counts the whole call, so a `CREATE TABLE` with a large `INSERT` waits for your Allow.
 
@@ -289,7 +292,7 @@ Tag a connection as **production** in its settings to change what agents can do 
 
 #### Read-only
 
-A connection, or a single database in it, marked read-only refuses every write from agents, on every tier. Reads and drafts still work. Agents cannot turn read-only off.
+A connection, or a single database in it, marked read-only refuses every write from agents, on every tier. The statement's target decides, not the database the call started on: a write that names a read-only database, or follows a `USE` of one, is refused, in your tabs too, and reading from it to write elsewhere still works. Reads and drafts still work. Agents cannot turn read-only off. Only names in the statement are seen, so a stored procedure or view that writes there on its own is the server's to refuse: give the login no such grant.
 
 #### Agents may
 
@@ -327,6 +330,8 @@ Anything that reaches the files or programs on the database server always waits 
 - **MySQL:** `INTO OUTFILE`, `DUMPFILE` and `LOAD DATA INFILE`.
 - **SQL Server:** `BULK INSERT`, `BACKUP`, `RESTORE`, `OPENROWSET`, `xp_cmdshell` and the other `xp_` / `sp_oa` procedures.
 
+ClickHouse never lets an agent reach outside its tables, not even with your Allow. A table function or engine is refused unless it is on a short list known to stay inside the database, which also shuts out any a newer server adds, and so is every dictionary source. Also refused: `merge`, `dictGet`, `COLUMNS('…')`, `INTO OUTFILE`, `BACKUP`, `RESTORE`, `ATTACH` and `DETACH`.
+
 SQLite and DuckDB never let an agent touch other files, not even with your Allow: `ATTACH`, `COPY`, `INSTALL` / `LOAD`, `read_csv` / `read_parquet` / `read_json`, file paths in place of tables, and the scanners for other databases are all refused.
 
 ### Privacy
@@ -335,7 +340,7 @@ SQLite and DuckDB never let an agent touch other files, not even with your Allow
 
 **Default:** Data.
 
-**Data.** Rows come back as the table holds them. Visible to agents still hides what it hides, and database errors never quote values, in every mode.
+**Data.** Rows come back as the table holds them. Visible to agents still hides what it hides, and database errors never quote values, in every mode. While anything is kept from agents, every quoted string in a database error goes, except what the agent wrote itself: the code and the wording stay.
 
 **Masked data.** On top of Data:
 
@@ -373,10 +378,11 @@ What happens to hidden things:
 - **Hidden columns:** the table is quietly replaced with only its visible columns, so `SELECT *` and `row_to_json(t)` never include them. Naming a hidden column anywhere (in the select list, `WHERE`, `JOIN`, `ORDER BY` or a function) is refused. So are writes that would touch it through `*`, `RETURNING *` or an `INSERT` without a column list.
 - **Other ways around it:** while anything is hidden or masked on a connection, Dataman refuses whatever could reach that data some other way:
   - views that read it (followed through views of views), user functions and procedures, catalog tables;
+  - on ClickHouse, whatever else reads it: a materialized view and the table it fills, Merge, Buffer and Distributed tables (followed to the local table they name), dictionaries, and any object or expression whose sources Dataman cannot establish, which stays closed. On a table an agent can read, a column whose `DEFAULT`, `MATERIALIZED` or `ALIAS` reads a dictionary or Join table is hidden;
   - dynamic SQL and `dblink`, queries on another database;
   - writes to tables with triggers;
   - statements it cannot follow.
-  - Generated columns are protected as strongly as the columns they are computed from.
+  - Generated columns, and on ClickHouse columns with a `DEFAULT`, are protected as strongly as the columns they are computed from.
 - **NoSQL:**
   - MongoDB strips hidden fields from documents at any depth, and refuses `$$ROOT`, `$where` and database commands.
   - Elasticsearch refuses SQL, ES|QL and searches across all fields.
@@ -390,7 +396,7 @@ These apply only when the agent sees **Masked data**.
 
 - **Which columns:** only the ones in this list. Dataman never decides by itself which column is sensitive.
 - **Scan again** suggests entries from column names: `password`, `token`, `api_key`, `ssn`, `cpf`, `passport` and `iban` as Hidden; `phone`, `birth`, `salary` and `address` as Partial. E-mails, card numbers and password hashes are left to the Masks, which already catch them in every value. Nothing is added until you add it.
-- **Entry format:** `table.column`, `schema.table.column`, or a pattern such as `*ssn*` to match the column in any table.
+- **Entry format:** `table.column`, `schema.table.column`, or a pattern such as `*ssn*` to match the column in any table. On ClickHouse, an entry for a `Nested` column covers its parts, and `table.nest.a` names one part.
 
 | Mask | Example | Notes |
 |---|---|---|
@@ -400,10 +406,10 @@ These apply only when the agent sees **Masked data**.
 
 **What an agent can do** with a masked column:
 
-- select it under its own name, and it comes back masked;
-- compare it in `WHERE` or `ON`, for example `WHERE email = 'ana@acme.co'`.
+- select it under its own name, and it comes back masked, under any name the server gives it: `b.email` in a self-join, or a part such as `meta.keys`, `doc.a.b` or `nest.a` on ClickHouse;
+- compare it in `WHERE` or `ON`, for example `WHERE email = 'ana@acme.co'`, or use it as a set, `IN (SELECT email …)`.
 
-**What it cannot do:** rename it, compute with it (`upper()`, `substring`, casts, `||`, JSON functions), aggregate it, group or sort by it, or copy it into another table. Writes containing masked text (`‹` or `•`) are refused, so a masked value can never be written back over the real one.
+**What it cannot do:** rename it, compute with it (`upper()`, `substring`, casts, `||`, JSON functions), aggregate it, group or sort by it, or copy it into another table. Nor can it be the single value of a subquery, `WHERE d = (SELECT email …)`: the server would convert that value and quote it in its error. A part of a ClickHouse column can only be selected alone, with no alias. Writes containing masked text (`‹` or `•`) are refused, so a masked value can never be written back over the real one.
 
 > **What masking does not stop:** filters can still probe a value, for example `WHERE email LIKE 'a%'` or a `BETWEEN` on a salary. Masking keeps values out of replies. To keep a column out of reach entirely, hide it.
 
@@ -497,7 +503,7 @@ Dataman checks this first and says what is missing, before showing any SQL.
 Every agent call is written to `~/.config/dataman/mcp-audit.jsonl`. What the agent received, after masking, goes to `mcp-replies.jsonl` next to it. Both files are readable only by you.
 
 - **Recorded:** time, agent, tool, connection and database, the statement, how long it took, how many rows, and the outcome (ran, refused, denied, timed out, failed). Also recorded: your decision on any Allow, the rewritten statement if Privacy narrowed it, which columns and how many values were masked, and the login it ran as (the agent login, or `you` for what you allowed).
-- **Never recorded:** passwords, which show as `••••••` even inside statements, bound parameter values, and values quoted in database errors.
+- **Never recorded:** passwords, which show as `••••••` even inside statements (ClickHouse's `remote(…, 'pw')`, `s3(…)` and `ENGINE = MySQL(…)` too), bound parameter values, and values quoted in database errors.
 - **Size:** past 8 MB, the log rolls over once, so it never grows past about 16 MB.
 - **Clearing:** only from the Audit screen. You can clear everything, everything before a date, or everything older than 30 days, 3 months or 6 months. No agent tool can clear it.
 

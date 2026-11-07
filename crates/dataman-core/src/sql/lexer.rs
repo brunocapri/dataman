@@ -66,11 +66,54 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 }
                 TokenKind::LineComment
             }
-            b'#' if rules.hash_comments => {
+            b'#' if rules.hash_comments && (!rules.hash_needs_mark || matches!(b.get(i + 1), Some(b' ' | b'!'))) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
                 TokenKind::LineComment
+            }
+            b'/' if rules.slash_comments && b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                TokenKind::LineComment
+            }
+            0xe2 if rules.typographic_quotes && typographic_close(b, i).is_some() => {
+                let (close, kind) = typographic_close(b, i).unwrap_or((b"", TokenKind::Unknown));
+                let body = &b[i + 3..];
+                i = body.windows(3).position(|w| w == close).map_or(b.len(), |p| i + 3 + p + 3);
+                kind
+            }
+            b'$' if rules.heredocs => {
+                match heredoc_end(b, i) {
+                    Some(end) => {
+                        i = end;
+                        TokenKind::DollarString
+                    }
+                    None if b.get(i + 1).is_some_and(|&n| n.is_ascii_alphanumeric() || n == b'_' || n == b'$') => {
+                        i += 1;
+                        while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+                            i += 1;
+                        }
+                        TokenKind::Ident
+                    }
+                    None => {
+                        i += 1;
+                        TokenKind::Unknown
+                    }
+                }
+            }
+            b'\'' if rules.backslash_quotes => {
+                i = quoted(b, i + 1, b'\'', true);
+                TokenKind::String
+            }
+            b'"' | b'`' if rules.backslash_quotes => {
+                i = quoted(b, i + 1, c, true);
+                TokenKind::QuotedIdent
+            }
+            b'{' if rules.brace_params && brace_param_end(b, i).is_some() => {
+                i = brace_param_end(b, i).unwrap_or(i + 1);
+                TokenKind::Param
             }
             b'\'' | b'"' if rules.mysql_quotes => {
                 i = quoted(b, i + 1, c, true);
@@ -171,7 +214,7 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 i = quoted(b, i + 2, b'\'', true);
                 TokenKind::String
             }
-            b'b' | b'B' | b'x' | b'X' | b'n' | b'N' if b.get(i + 1) == Some(&b'\'') => {
+            b'b' | b'B' | b'x' | b'X' | b'n' | b'N' if b.get(i + 1) == Some(&b'\'') && !rules.backslash_quotes => {
                 i = quoted(b, i + 2, b'\'', false);
                 TokenKind::String
             }
@@ -226,9 +269,9 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 i += 1;
                 TokenKind::Punct
             }
-            c if is_ident_start(c) => {
+            c if is_ident_start(c) && !(rules.ascii_words && c >= 0x80) => {
                 i += 1;
-                while i < b.len() && is_ident_cont(b[i]) && space_len(src, i, &rules) == 0 {
+                while i < b.len() && is_ident_cont(b[i]) && space_len(src, i, &rules) == 0 && !(rules.ascii_words && b[i] >= 0x80) {
                     i += 1;
                 }
                 if is_keyword_in(&src[start..i], dialect) { TokenKind::Keyword } else { TokenKind::Ident }
@@ -237,6 +280,7 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 while i < b.len() && is_op_char(b[i]) {
                     if dash_comment(b, i, &rules)
                         || (b[i] == b'/' && b.get(i + 1) == Some(&b'*'))
+                        || (rules.slash_comments && b[i] == b'/' && b.get(i + 1) == Some(&b'/'))
                         || (rules.mysql_quotes && i > start && matches!(b[i], b'#' | b'`' | b'?' | b'@'))
                         || (rules.tsql_names && i > start && matches!(b[i], b'#' | b'@'))
                         || (rules.qmark_params && i > start && b[i] == b'?')
@@ -272,6 +316,7 @@ fn space_len(src: &str, i: usize, rules: &LexRules) -> usize {
             Some(c @ ('\u{85}' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200b}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}')) => c.len_utf8(),
             _ => 0,
         },
+        0x80.. if !rules.extra_spaces.is_empty() && src.is_char_boundary(i) => src[i..].chars().next().filter(|c| rules.extra_spaces.contains(c)).map_or(0, char::len_utf8),
         _ => 0,
     }
 }
@@ -279,7 +324,7 @@ fn space_len(src: &str, i: usize, rules: &LexRules) -> usize {
 fn dash_comment(b: &[u8], i: usize, rules: &LexRules) -> bool {
     b[i] == b'-'
         && b.get(i + 1) == Some(&b'-')
-        && (!rules.hash_comments || b.get(i + 2).is_none_or(|c| c.is_ascii_whitespace() || c.is_ascii_control()))
+        && (!rules.mysql_quotes || b.get(i + 2).is_none_or(|c| c.is_ascii_whitespace() || c.is_ascii_control()))
 }
 
 fn utf8_len(c: u8) -> usize {
@@ -290,6 +335,78 @@ fn utf8_len(c: u8) -> usize {
         0xf0..=0xff => 4,
         _ => 1,
     }
+}
+
+/// Past the spaces and the comments at `i`.
+fn skip_trivia(b: &[u8], mut i: usize) -> usize {
+    loop {
+        match b.get(i) {
+            Some(c) if c.is_ascii_whitespace() || *c == 0x0b => i += 1,
+            Some(b'/') if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 1;
+                i += 2;
+                while i < b.len() && depth > 0 {
+                    if b[i..].starts_with(b"/*") {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i..].starts_with(b"*/") {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            Some(b'/') if b.get(i + 1) == Some(&b'/') => i += b[i..].iter().position(|&c| c == b'\n').unwrap_or(b.len() - i),
+            Some(b'-') if b.get(i + 1) == Some(&b'-') => i += b[i..].iter().position(|&c| c == b'\n').unwrap_or(b.len() - i),
+            _ => return i,
+        }
+    }
+}
+
+/// Where `{name:Type}` ends, if that is what starts at `i`: a map literal (`{'a': 1}`) is not one,
+/// and a `}` in the type's strings (`Enum('}' = 1)`) or comments does not end it.
+fn brace_param_end(b: &[u8], i: usize) -> Option<usize> {
+    let mut j = skip_trivia(b, i + 1);
+    if !b.get(j).is_some_and(|&c| c.is_ascii_alphabetic() || c == b'_') {
+        return None;
+    }
+    while b.get(j).is_some_and(|&c| is_ident_cont(c) && c < 0x80) {
+        j += 1;
+    }
+    j = skip_trivia(b, j);
+    if b.get(j) != Some(&b':') {
+        return None;
+    }
+    j += 1;
+    loop {
+        j = skip_trivia(b, j);
+        match b.get(j)? {
+            b'}' => return Some(j + 1),
+            &q @ (b'\'' | b'"' | b'`') => j = quoted_end(b, j + 1, q, true)?,
+            _ => j += 1,
+        }
+    }
+}
+
+/// What closes the typographic quote at `i`, if one opens there, and what it quotes.
+fn typographic_close(b: &[u8], i: usize) -> Option<(&'static [u8], TokenKind)> {
+    match b.get(i..i + 3)? {
+        [0xe2, 0x80, 0x98] => Some(("’".as_bytes(), TokenKind::String)),
+        [0xe2, 0x80, 0x9c] => Some(("”".as_bytes(), TokenKind::QuotedIdent)),
+        _ => None,
+    }
+}
+
+/// Where the `$tag$…$tag$` at `i` ends: nothing starts here if it never closes.
+fn heredoc_end(b: &[u8], i: usize) -> Option<usize> {
+    let tag = i + 1 + b[i + 1..].iter().position(|&c| !(c.is_ascii_alphanumeric() || c == b'_'))?;
+    if b[tag] != b'$' {
+        return None;
+    }
+    let tag = &b[i..=tag];
+    let from = i + tag.len();
+    b[from..].windows(tag.len()).position(|w| w == tag).map(|p| from + p + tag.len())
 }
 
 fn quoted(b: &[u8], i: usize, q: u8, backslash: bool) -> usize {
@@ -321,6 +438,17 @@ pub fn unterminated(src: &str, t: &Token) -> Option<&'static str> {
 
 pub fn unterminated_in(src: &str, t: &Token, dialect: Dialect) -> Option<&'static str> {
     let b = t.text(src).as_bytes();
+    if dialect.lex().backslash_quotes && matches!(t.kind, TokenKind::String | TokenKind::QuotedIdent) {
+        let what = if t.kind == TokenKind::String { "string" } else { "quoted identifier" };
+        if let Some((close, _)) = typographic_close(b, 0) {
+            return (b.len() < 6 || !b.ends_with(close)).then_some(what);
+        }
+        return b.first().and_then(|&q| quoted_end(b, 1, q, true).is_none().then_some(what));
+    }
+    // It only is one if it closes.
+    if dialect.lex().heredocs && t.kind == TokenKind::DollarString {
+        return None;
+    }
     if dialect.lex().mysql_quotes {
         return match (t.kind, b.first()) {
             (TokenKind::String, Some(&q @ (b'\'' | b'"'))) => quoted_end(b, 1, q, true).is_none().then_some("string"),
@@ -479,6 +607,11 @@ pub const DUCKDB_KEYWORDS: &[&str] = &[
     "UNPIVOT", "USE",
 ];
 
+pub const CLICKHOUSE_KEYWORDS: &[&str] = &[
+    "ALIAS", "ANTI", "ASOF", "ATTACH", "CLUSTER", "CODEC", "DESCRIBE", "DETACH", "DICTIONARY", "ENGINE", "EXCHANGE", "FINAL",
+    "FORMAT", "GLOBAL", "KILL", "OPTIMIZE", "OUTFILE", "PREWHERE", "SAMPLE", "SEMI", "SETTINGS", "SYSTEM", "TTL", "UNDROP", "USE", "WATCH",
+];
+
 pub fn is_keyword(word: &str) -> bool {
     in_list(KEYWORDS, word)
 }
@@ -490,6 +623,7 @@ pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
             Dialect::TSql => in_list(TSQL_KEYWORDS, word),
             Dialect::Sqlite => in_list(SQLITE_KEYWORDS, word),
             Dialect::DuckDb => in_list(DUCKDB_KEYWORDS, word),
+            Dialect::ClickHouse => in_list(CLICKHOUSE_KEYWORDS, word),
             Dialect::Postgres => false,
         }
 }
@@ -519,8 +653,48 @@ mod tests {
     }
 
     #[test]
+    fn clickhouse_reads_as_the_server_does() {
+        let d = Dialect::ClickHouse;
+        let kinds = |src: &'static str| -> Vec<(TokenKind, &'static str)> { tokenize_in(src, d).into_iter().filter(|t| !t.kind.is_trivia()).map(|t| (t.kind, t.text(src))).collect() };
+        // The quote after a backslash does not end the string: `DROP` stays inside it.
+        assert_eq!(kinds(r"SELECT 'a\'; DROP'"), [(TokenKind::Keyword, "SELECT"), (TokenKind::String, r"'a\'; DROP'")]);
+        assert_eq!(kinds(r#"SELECT "a\"b", `c\`d`"#)[1..], [(TokenKind::QuotedIdent, r#""a\"b""#), (TokenKind::Punct, ","), (TokenKind::QuotedIdent, r"`c\`d`")]);
+        assert_eq!(kinds("/* a /* b */ c */ SELECT"), [(TokenKind::Keyword, "SELECT")]);
+        assert_eq!(kinds("SELECT 1--2\n"), [(TokenKind::Keyword, "SELECT"), (TokenKind::Number, "1")]);
+        // Probed: `\r` does not end a `--` comment.
+        assert_eq!(kinds("SELECT 1 --x\r, 2\n"), [(TokenKind::Keyword, "SELECT"), (TokenKind::Number, "1")]);
+        assert_eq!(kinds("# a\n#!b\nSELECT"), [(TokenKind::Keyword, "SELECT")]);
+        assert_eq!(kinds("SELECT $t$a'b$t$")[1], (TokenKind::DollarString, "$t$a'b$t$"));
+        // The tag may start with a digit; a tag that never closes is a word, and what follows it runs.
+        assert_eq!(kinds("SELECT $1$'$1$, 2")[1..3], [(TokenKind::DollarString, "$1$'$1$"), (TokenKind::Punct, ",")]);
+        assert_eq!(kinds("SELECT $a$, file('x')")[1..4], [(TokenKind::Ident, "$a$"), (TokenKind::Punct, ","), (TokenKind::Ident, "file")]);
+        assert_eq!(kinds("SELECT 1 // '\n, 2")[1..], [(TokenKind::Number, "1"), (TokenKind::Punct, ","), (TokenKind::Number, "2")]);
+        assert_eq!(kinds("SELECT 1 + // '\n 2")[3], (TokenKind::Number, "2"));
+        assert_eq!(kinds("#x\n")[0], (TokenKind::Operator, "#"), "the server refuses it: no comment hides anything");
+        // Whitespace by the server's list, which is not SQL Server's.
+        assert_eq!(kinds("SELECT\u{a0}1\u{feff}FROM\u{2060}t").len(), 4);
+        assert_eq!(kinds("SELECT\u{1680}")[1], (TokenKind::Unknown, "\u{1680}"));
+        // Typographic quotes: nothing escaped inside, and a word stops where one starts.
+        assert_eq!(kinds("SELECT ‘a\\'’, “b”")[1..], [(TokenKind::String, "‘a\\'’"), (TokenKind::Punct, ","), (TokenKind::QuotedIdent, "“b”")]);
+        assert_eq!(kinds("SELECT‘a’")[..2], [(TokenKind::Keyword, "SELECT"), (TokenKind::String, "‘a’")]);
+        assert_eq!(kinds("SELECT ’a")[1], (TokenKind::Unknown, "’"), "a closing quote opens nothing");
+        // A `}` in a type's string or comment, and spaces and comments where the server takes them.
+        assert_eq!(kinds("SELECT {x:Enum('}'=1)}, 'y'")[1..], [(TokenKind::Param, "{x:Enum('}'=1)}"), (TokenKind::Punct, ","), (TokenKind::String, "'y'")]);
+        assert_eq!(kinds("{ x : String }")[0], (TokenKind::Param, "{ x : String }"));
+        assert_eq!(kinds("{/*c*/x:/*}*/String},")[0], (TokenKind::Param, "{/*c*/x:/*}*/String}"));
+        for src in ["‘a’", "“a”", "$1$a$1$", "{x:String}"] {
+            assert!(tokenize_in(src, d).iter().all(|t| unterminated_in(src, t, d).is_none()), "{src}");
+        }
+        assert!(tokenize_in("‘a", d).iter().any(|t| unterminated_in("‘a", t, d) == Some("string")));
+        assert_eq!(kinds("WHERE a = {p:Array(String)} AND {'k': 1}")[3], (TokenKind::Param, "{p:Array(String)}"));
+        assert_eq!(kinds("{'k': 1}")[0], (TokenKind::Unknown, "{"));
+        assert_eq!(kinds(r"x'41\''")[1], (TokenKind::String, r"'41\''"));
+        assert!(tokenize_in(r"'a\'", d).iter().any(|t| unterminated_in(r"'a\'", t, d) == Some("string")));
+    }
+
+    #[test]
     fn keywords_sorted() {
-        for list in [KEYWORDS, MYSQL_KEYWORDS, TSQL_KEYWORDS, SQLITE_KEYWORDS, DUCKDB_KEYWORDS] {
+        for list in [KEYWORDS, MYSQL_KEYWORDS, TSQL_KEYWORDS, SQLITE_KEYWORDS, DUCKDB_KEYWORDS, CLICKHOUSE_KEYWORDS] {
             assert!(list != SQLITE_KEYWORDS && list != DUCKDB_KEYWORDS || list.iter().all(|k| k.len() <= 17), "longer words are never looked up");
             let mut v = list.to_vec();
             v.sort();

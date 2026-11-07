@@ -96,6 +96,7 @@ fn language(e: dataman_core::Engine) -> &'static str {
         dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer => "sql",
         dataman_core::Engine::Sqlite => "sql (SQLite)",
         dataman_core::Engine::DuckDb => "sql (DuckDB)",
+        dataman_core::Engine::ClickHouse => "sql (ClickHouse, parameters as {name:Type}, no transactions)",
         dataman_core::Engine::MongoDb => "mongodb shell, statements or javascript (nosql_query / nosql_execute)",
         dataman_core::Engine::Elasticsearch | dataman_core::Engine::OpenSearch => "query dsl console (nosql_query / nosql_execute)",
         dataman_core::Engine::Redis => "redis commands (nosql_query / nosql_execute)",
@@ -425,15 +426,13 @@ async fn visible_relation(o: &Opened, name: &str) -> Result<Relation, ToolError>
     Ok(r)
 }
 
-/// A view that reads what is kept from agents is kept too: its rows, its definition and the
-/// names of its columns (`v.password_hash`).
+/// What reads what is kept from agents is kept too: its rows, its definition and the names of
+/// its columns (`v.password_hash`).
 async fn view_check(o: &Opened, r: &Relation) -> Result<(), String> {
-    if !super::rules::restricted(&o.profile.mcp_rules) || !matches!(r.kind, RelKind::View | RelKind::MaterializedView) {
+    if !super::rules::restricted(&o.profile.mcp_rules) {
         return Ok(());
     }
-    let cols = o.conn.columns(&o.database, &r.schema, &r.name).await.map_err(|e| format!("{e:#}"))?;
-    let t = dataman_core::agent_sql::Table { schema: r.schema.clone(), name: r.name.clone(), columns: cols.into_iter().map(|c| c.name).collect() };
-    super::rules::view_reads_kept(o, &o.profile.mcp_rules, &t, r.kind).await
+    super::rules::view_reads_kept(o, &o.profile.mcp_rules, &r.schema, &r.name, r.kind).await
 }
 
 pub(crate) async fn view_open(o: &Opened, r: &Relation) -> bool {

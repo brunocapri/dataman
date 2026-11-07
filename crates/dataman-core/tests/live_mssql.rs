@@ -421,6 +421,52 @@ fn parse_check_reports_the_servers_syntax_errors() {
     mssql_drop(&e, db);
 }
 
+/// The statement's target decides, not the database the connection is on.
+#[test]
+fn a_read_only_database_holds_against_a_write_from_another() {
+    use dataman_core::bounded::{Limits, Mode, Stop};
+    let e = env();
+    let pid = std::process::id();
+    let (w, ro) = (format!("dataman_t_w_{pid}"), format!("dataman_t_ro_{pid}"));
+    let Some(admin) = mssql_on(&e, mssql_profile("master")) else { return };
+    for d in [&w, &ro] {
+        mssql_drop(&e, d);
+        exec(&e, &admin, &[&format!("CREATE DATABASE [{d}]")]);
+        exec(&e, &admin, &[&format!("CREATE TABLE [{d}].dbo.items (id int)"), &format!("INSERT INTO [{d}].dbo.items VALUES (1)")]);
+    }
+    let count = |d: &str| query(&e, &admin, &format!("SELECT count(*) FROM [{d}].dbo.items")).snapshot().text(0, 0).map(|t| t.into_owned());
+    let mut p = mssql_profile(&w);
+    p.set_read_only_for(&ro, true);
+    let Some(c) = mssql_on(&e, p) else { return };
+    let call = |sql: &str| e.core.block_on(c.bounded(Some(&w), sql, vec![], Mode::Write, Limits::default(), std::future::pending::<()>()));
+    for sql in [
+        format!("INSERT INTO {ro}.dbo.items VALUES (2)"),
+        format!("UPDATE [{ro}].dbo.items SET id = 9"),
+        format!("DELETE FROM {ro}..items"),
+        format!("MERGE {ro}.dbo.items t USING (SELECT 1 AS id) s ON t.id = s.id WHEN MATCHED THEN DELETE;"),
+        format!("USE {ro}; INSERT INTO dbo.items VALUES (2)"),
+        format!("USE {ro}\nDELETE FROM dbo.items"),
+        format!("SELECT 1 AS a UPDATE {ro}.dbo.items SET id = 9"),
+        format!("INSERT INTO dbo.items VALUES (2); DELETE FROM {}.dbo.items", ro.to_uppercase()),
+    ] {
+        assert!(matches!(call(&sql), Err(Stop::Refused(r)) if r.contains("read-only")), "{sql}");
+    }
+    assert_eq!(count(&ro).as_deref(), Some("1"));
+    assert_eq!(count(&w).as_deref(), Some("1"), "nothing of a refused call runs");
+    call(&format!("INSERT INTO dbo.items SELECT id FROM {ro}.dbo.items")).unwrap();
+    assert_eq!(count(&w).as_deref(), Some("2"));
+
+    let tab = c.session(None);
+    let use_ro = tab.execute(format!("USE [{ro}]"));
+    e.core.block_on(use_ro.wait_finished());
+    assert_eq!(tab.current_database(), ro);
+    assert!(c.read_only_refusal(&tab.current_database(), "INSERT INTO dbo.items VALUES (2)").is_some());
+    drop(tab);
+    drop(c);
+    mssql_drop(&e, &w);
+    mssql_drop(&e, &ro);
+}
+
 #[test]
 fn read_only_per_database() {
     use dataman_core::bounded::{Limits, Mode, Stop};

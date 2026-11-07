@@ -60,9 +60,10 @@ const MS: (&str, &str) = ("DATAMAN_MSSQL", "127.0.0.1:14330");
 const MG: (&str, &str) = ("DATAMAN_MONGO", "127.0.0.1:27027");
 const ES: (&str, &str) = ("DATAMAN_ES", "127.0.0.1:9201");
 const RD: (&str, &str) = ("DATAMAN_REDIS", "127.0.0.1:63790");
+const CH: (&str, &str) = ("DATAMAN_CLICKHOUSE", "127.0.0.1:18123");
 
 /// Every value seeded below that agents must never get, nor the audit log keep.
-const SECRETS: &[&str] = &["hash-secret-1", "dflt-secret", "taxid-secret-9", "card-secret", "ssn-secret-1", "kid-secret", "4242cardsecret", "zed-secret", "pw-secret", "sess-secret", "closed-secret"];
+const SECRETS: &[&str] = &["hash-secret-1", "dflt-secret", "taxid-secret-9", "card-secret", "ssn-secret-1", "kid-secret", "4242cardsecret", "zed-secret", "pw-secret", "sess-secret", "closed-secret", "meta-secret", "doc-secret", "attrs-secret", "nest-secret", "tuple-secret"];
 
 struct Conn<'a> {
     id: &'a str,
@@ -122,6 +123,7 @@ fn env_with(conns: &[Conn], files: &str, settings: &str, tools: Option<&str>) ->
             "DATAMAN_MONGO" => pw("DATAMAN_MONGO_PASSWORD", "dataman"),
             "DATAMAN_ES" => pw("DATAMAN_ES_PASSWORD", "dataman"),
             "DATAMAN_REDIS" => pw("DATAMAN_REDIS_PASSWORD", "dataman"),
+            "DATAMAN_CLICKHOUSE" => pw("DATAMAN_CLICKHOUSE_PASSWORD", "dataman"),
             _ => continue,
         };
         secrets.set(c.id, &p).unwrap();
@@ -1215,6 +1217,501 @@ fn generated_columns_follow_their_sources() {
         check(&e, "ss", &table, &format!("SELECT * FROM {table}"));
         e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{t}")})));
         e.nothing_kept_logged();
+        e.done();
+    }
+}
+
+/// What a user makes by hand and the tools refuse an agent (a Merge table, a dictionary): on the
+/// connection's own session, past the guard.
+fn ch_by_hand(e: &Env, sql: &str) {
+    let hub = &e.server.hub;
+    let p = hub.profile("chadmin").unwrap();
+    let pw = std::env::var("DATAMAN_CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "dataman".into());
+    hub.core.block_on(async {
+        let c = hub.core.connect(p, Some(pw)).await.unwrap();
+        let rs = c.session(None).execute(sql);
+        rs.fetch_all();
+        rs.wait_finished().await;
+        assert!(rs.status().error.is_none(), "{sql}: {:?}", rs.status().error);
+    });
+}
+
+fn ch_env(s: &str, rules: &str) -> Env {
+    let e = env(&[conn("chadmin", CH, "clickhouse", "default", "default", "mcp = \"full\""), conn("ch", CH, "clickhouse", "default", s, rules.to_string()), conn("chopen", CH, "clickhouse", "default", s, "")], "", None);
+    ch_by_hand(&e, &format!("DROP DATABASE IF EXISTS {s}"));
+    ch_by_hand(&e, &format!("CREATE DATABASE {s}"));
+    e
+}
+
+/// Whatever a relation reads, down to its last source: a view, a materialized view and the table
+/// it fills, a Merge, Buffer or Distributed table, a dictionary, a column's default. What reads
+/// what the rules keep is kept whole; what reads only what agents see goes on working.
+#[test]
+fn clickhouse_what_reads_kept_data_is_kept() {
+    if !up(CH) {
+        return;
+    }
+    let s = format!("mcp_chfollow_{}", std::process::id());
+    let other = format!("{s}_other");
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"customers.email\", how = \"partial\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"*.payments\", kind = \"table\" }, { name = \"users.pw\", kind = \"column\" }]\n";
+    let e = ch_env(&s, rules);
+    let by_hand = |sql: String| ch_by_hand(&e, &sql);
+    let auth = "USER 'default' PASSWORD 'dataman'".replace("dataman", &std::env::var("DATAMAN_CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "dataman".into()));
+    by_hand(format!("CREATE DATABASE IF NOT EXISTS {other}"));
+    by_hand(format!("CREATE TABLE {s}.payments (id UInt64, card String) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("CREATE TABLE {s}.users (id UInt64, name String, pw String, up String DEFAULT upper(pw), mat String MATERIALIZED upper(pw), ali String ALIAS upper(pw), n String DEFAULT upper(name)) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("CREATE TABLE {other}.users (id UInt64, pw String, up String DEFAULT upper(pw)) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("CREATE TABLE {s}.customers (id UInt64, name String, email String, mail_up String DEFAULT upper(email)) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("CREATE TABLE {s}.open (id UInt64, x String) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("INSERT INTO {s}.payments VALUES (1, 'card-secret')"));
+    by_hand(format!("INSERT INTO {s}.users (id, name, pw) VALUES (1, 'Ana', 'pw-secret')"));
+    by_hand(format!("INSERT INTO {other}.users (id, pw) VALUES (1, 'pw-secret')"));
+    by_hand(format!("INSERT INTO {s}.customers (id, name, email) VALUES (1, 'Ana', 'zed-secret-acme')"));
+    by_hand(format!("INSERT INTO {s}.open VALUES (1, 'visible')"));
+    let view = |name: &str, body: String| ch_by_hand(&e, &format!("CREATE VIEW {s}.{name} AS {body}"));
+    view("v_hidden_column", format!("SELECT id, pw AS h FROM {s}.users"));
+    view("v_masked_column", format!("SELECT id, email AS e FROM {s}.customers"));
+    view("v_hidden_table", format!("SELECT * FROM {s}.payments"));
+    view("v_of_view", format!("SELECT * FROM {s}.v_hidden_table"));
+    view("v_join", format!("SELECT o.id FROM {s}.open o JOIN (SELECT id FROM {s}.payments) p USING id"));
+    view("v_in", format!("SELECT id FROM {s}.open WHERE id IN {s}.payments"));
+    view("v_scalar", format!("WITH (SELECT card FROM {s}.payments LIMIT 1) AS c SELECT c"));
+    view("v_system", "SELECT name FROM system.tables".to_string());
+    view("v_merge_fn", format!("SELECT * FROM merge('{s}', '^payments$')"));
+    by_hand(format!("CREATE MATERIALIZED VIEW {s}.mv ENGINE = MergeTree ORDER BY id POPULATE AS SELECT id, card FROM {s}.payments"));
+    by_hand(format!("CREATE TABLE {s}.filled (id UInt64, card String) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("CREATE MATERIALIZED VIEW {s}.mv_to TO {s}.filled AS SELECT id, card FROM {s}.payments"));
+    by_hand(format!("CREATE TABLE {s}.m_name (id UInt64, card String) ENGINE = Merge('{s}', '^payments$')"));
+    by_hand(format!("CREATE TABLE {s}.m_regexp (id UInt64, card String) ENGINE = Merge(REGEXP('^{s}$'), '^pay')"));
+    by_hand(format!("CREATE TABLE {s}.buffered (id UInt64, card String) ENGINE = Buffer('{s}', 'payments', 1, 10, 100, 10, 100, 1000, 10000)"));
+    by_hand(format!("CREATE TABLE {s}.shards (id UInt64, card String) ENGINE = Distributed(default, '{s}', 'payments')"));
+    by_hand(format!("CREATE DICTIONARY {s}.dict (id UInt64, card String) PRIMARY KEY id SOURCE(CLICKHOUSE(DB '{s}' TABLE 'payments' {auth})) LAYOUT(FLAT()) LIFETIME(0)"));
+    by_hand(format!("CREATE DICTIONARY {s}.dict_q (id UInt64, card String) PRIMARY KEY id SOURCE(CLICKHOUSE(QUERY 'SELECT id, card FROM {s}.payments' {auth})) LAYOUT(FLAT()) LIFETIME(0)"));
+    by_hand(format!("CREATE TABLE {s}.dict_t (id UInt64, card String) ENGINE = Dictionary('{s}.dict')"));
+    by_hand(format!("CREATE TABLE {s}.reads_dict (id UInt64, c String ALIAS dictGetString('{s}.dict', 'card', id), x String) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("CREATE TABLE {s}.j (id UInt64, card String) ENGINE = Join(ANY, LEFT, id)"));
+    by_hand(format!("CREATE TABLE {s}.reads_join (id UInt64, c String ALIAS joinGet('{s}.j', 'card', id), x String) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("INSERT INTO {s}.reads_dict (id, x) VALUES (1, 'visible')"));
+    let f = format!("{s}_fn");
+    by_hand(format!("CREATE FUNCTION {f} AS (x) -> dictGetString('{s}.dict', 'card', x)"));
+    let stored = e.ok("run_query", with("chopen", json!({"sql": format!("SELECT name FROM system.tables WHERE database = '{s}' AND name LIKE '.inner%'")})))["rows"][0][0].as_str().unwrap().to_string();
+
+    let m = |x: Value| with("ch", x);
+    let q = |sql: &str| e.call("run_query", m(json!({"sql": sql})));
+    let closed = ["v_hidden_column", "v_masked_column", "v_hidden_table", "v_of_view", "v_join", "v_in", "v_scalar", "v_system", "v_merge_fn", "mv", "mv_to", "filled", "m_name", "m_regexp", "buffered", "shards", "dict", "dict_q", "dict_t"];
+    for name in closed {
+        refused(name, q(&format!("SELECT * FROM `{name}`")), "agents");
+        refused(name, e.call("describe_table", m(json!({"table": name}))), "agents");
+        refused(name, e.call("sample_rows", m(json!({"table": name}))), "agents");
+    }
+    refused("what a materialized view stores in", q(&format!("SELECT * FROM `{stored}`")), "agents");
+    let listed = e.ok("list_tables", m(json!({"schema": s}))).to_string();
+    let call = dataman_mcp::Call::new(e.server.hub.clone(), "privacy-test".into(), "stdio", "resources/read", CancellationToken::new());
+    let u = dataman_mcp::resources::parse(&dataman_mcp::resources::uri("ch", &s, false)).unwrap();
+    let resource = e.server.hub.core.block_on(dataman_mcp::resources::read(&call, &u)).unwrap();
+    let found = e.ok("search_objects", m(json!({"pattern": "%"}))).to_string();
+    for name in closed {
+        for (what, text) in [("list_tables", &listed), ("the schema resource", resource.as_ref()), ("search_objects", &found)] {
+            assert!(!text.contains(&format!("\"{name}\"")), "{name} is in {what}: {text}");
+        }
+    }
+    assert!(!listed.contains(".inner") && !resource.contains(".inner") && !found.contains(".inner"), "{listed}");
+    // A hidden table's name is kept with it.
+    let err = q("SELECT * FROM m_name").unwrap_err();
+    assert!(!err.contains("payments"), "{err}");
+    // Without the rules each of them answers: only they keep it out.
+    let open = |sql: String| e.ok("run_query", with("chopen", json!({"sql": sql}))).to_string();
+    assert!(open("SELECT * FROM m_name".into()).contains("card-secret"));
+    assert!(open("SELECT * FROM dict_t".into()).contains("card-secret"));
+
+    // A column that keeps what it was made from.
+    for (sql, why) in [
+        ("SELECT up FROM users", "hidden"),
+        ("SELECT mat FROM users", "hidden"),
+        ("SELECT ali FROM users", "hidden"),
+        ("SELECT c FROM reads_dict", "hidden"),
+        ("SELECT c FROM reads_join", "hidden"),
+    ] {
+        refused(sql, q(sql), why);
+    }
+    refused("another database", q(&format!("SELECT up FROM {other}.users")), "hidden");
+    let got = e.ok("run_query", m(json!({"sql": "SELECT * FROM users"})));
+    clean("a table's visible columns", &got);
+    assert!(!got["columns"].to_string().contains("\"up\""), "{got}");
+    assert!(got.to_string().contains("ANA") && got.to_string().contains("Ana"), "{got}");
+    let got = e.ok("run_query", m(json!({"sql": "SELECT mail_up FROM customers"})));
+    clean("a default of a masked column", &got);
+    assert_ne!(got["rows"][0][0], "ZED-SECRET-ACME", "{got}");
+    // A user function reaches what the statement does not name.
+    refused("a function", q(&format!("SELECT {f}(1)")), "function of your database");
+
+    // What reads only what agents see goes on working, through every tool.
+    view("v_open", format!("SELECT id, x FROM {s}.open"));
+    view("v_of_open", format!("SELECT id, x FROM {s}.v_open"));
+    view("v_numbers", "SELECT number FROM numbers(2)".to_string());
+    by_hand(format!("CREATE MATERIALIZED VIEW {s}.mv_open ENGINE = MergeTree ORDER BY id POPULATE AS SELECT id, x FROM {s}.open"));
+    by_hand(format!("CREATE TABLE {s}.m_open (id UInt64, x String) ENGINE = Merge('{s}', '^open$')"));
+    by_hand(format!("CREATE TABLE {s}.b_open (id UInt64, x String) ENGINE = Buffer('{s}', 'open', 1, 10, 100, 10, 100, 1000, 10000)"));
+    by_hand(format!("CREATE DICTIONARY {s}.d_open (id UInt64, x String) PRIMARY KEY id SOURCE(CLICKHOUSE(DB '{s}' TABLE 'open' {auth})) LAYOUT(FLAT()) LIFETIME(0)"));
+    e.server.hub.forget(&e.server.hub.profile("ch").unwrap().id);
+    for name in ["open", "v_open", "v_of_open", "mv_open", "m_open", "b_open", "d_open"] {
+        let got = e.ok("run_query", m(json!({"sql": format!("SELECT * FROM {name}")})));
+        assert_eq!(got["rows"][0][1], "visible", "{name}: {got}");
+        e.ok("describe_table", m(json!({"table": name})));
+    }
+    assert_eq!(e.ok("run_query", m(json!({"sql": "SELECT x FROM reads_dict"})))["rows"][0][0], "visible");
+    assert_eq!(e.ok("run_query", m(json!({"sql": "SELECT count() FROM v_numbers"})))["rows"][0][0], "2");
+    let listed = e.ok("list_tables", m(json!({"schema": s}))).to_string();
+    for name in ["open", "v_open", "m_open", "d_open", "users", "customers", "reads_dict"] {
+        assert!(listed.contains(&format!("\"{name}\"")), "{name} is not listed: {listed}");
+    }
+
+    by_hand(format!("DROP FUNCTION {f}"));
+    by_hand(format!("DROP DATABASE {s}"));
+    by_hand(format!("DROP DATABASE {other}"));
+    e.nothing_kept_logged();
+    e.done();
+}
+
+/// A catalog that cannot be read says nothing about what is safe: the rules' answer is no.
+#[test]
+fn clickhouse_a_failed_catalog_read_keeps_it_closed() {
+    if !up(CH) {
+        return;
+    }
+    let s = format!("mcp_chfail_{}", std::process::id());
+    let user = format!("{s}_u");
+    let rules = "[connection.mcp_rules.visible]\nitems = [{ name = \"*.payments\", kind = \"table\" }]\n";
+    let e = env(
+        &[conn("chadmin", CH, "clickhouse", "default", "default", "mcp = \"full\""), conn("ch", CH, "clickhouse", &user, &s, rules.to_string())],
+        "",
+        None,
+    );
+    ch_by_hand(&e, &format!("CREATE DATABASE IF NOT EXISTS {s}"));
+    for t in ["open", "second", "third"] {
+        ch_by_hand(&e, &format!("CREATE TABLE {s}.{t} (id UInt64, x String) ENGINE = MergeTree ORDER BY id"));
+    }
+    ch_by_hand(&e, &format!("INSERT INTO {s}.open VALUES (1, 'closed-secret')"));
+    // A read of the one row it holds goes through; every catalog read of this login fails past one.
+    ch_by_hand(&e, &format!("CREATE USER IF NOT EXISTS {user} IDENTIFIED WITH plaintext_password BY 'dataman' SETTINGS max_result_rows = 1, result_overflow_mode = 'throw'"));
+    ch_by_hand(&e, &format!("GRANT SELECT ON {s}.* TO {user}"));
+    let r = e.call("run_query", with("ch", json!({"sql": "SELECT * FROM open"})));
+    let err = r.expect_err("no row may come back");
+    assert!(!err.contains("closed-secret"), "{err}");
+    ch_by_hand(&e, &format!("DROP USER {user}"));
+    ch_by_hand(&e, &format!("DROP DATABASE {s}"));
+    e.done();
+}
+
+/// A masked column comes back masked under any name the server gives it: a second copy in a
+/// self-join, a part of a Map, Tuple, JSON or Nested column. What cannot be matched by name is refused.
+#[test]
+fn clickhouse_masks_every_name_a_column_comes_back_under() {
+    if !up(CH) {
+        return;
+    }
+    let s = format!("mcp_chnames_{}", std::process::id());
+    let rules = format!(
+        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"customers.meta\", how = \"hidden\" }}, {{ col = \"customers.attrs\", how = \"hidden\" }}, {{ col = \"customers.doc\", how = \"hidden\" }}, {{ col = \"customers.t\", how = \"hidden\" }}, {{ col = \"customers.nest\", how = \"hidden\" }}, {{ col = \"{s}.accounts.parts.a\", how = \"hidden\" }}, {{ col = \"accounts.short.a\", how = \"hidden\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.accounts.parts.b\", kind = \"column\" }}]\n"
+    );
+    let e = ch_env(&s, &rules);
+    let by_hand = |sql: String| ch_by_hand(&e, &sql);
+    by_hand(format!("CREATE TABLE {s}.customers (id UInt64, name String, email String, meta Map(String, String), attrs Map(String, String), doc JSON, t Tuple(x String, y String), nest Nested(a String, b String)) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("INSERT INTO {s}.customers VALUES (1, 'Ana', 'zed-secret-acme', map('k', 'meta-secret'), map('k', 'attrs-secret'), '{{\"a\": {{\"b\": \"doc-secret\"}}}}', ('tuple-secret', 'y'), ['nest-secret'], ['nest-secret'])"));
+    by_hand(format!("CREATE TABLE {s}.accounts (id UInt64, parts Nested(a String, b String, c String), short Nested(a String, c String)) ENGINE = MergeTree ORDER BY id"));
+    by_hand(format!("INSERT INTO {s}.accounts VALUES (1, ['nest-secret'], ['nest-secret'], ['part-c'], ['nest-secret'], ['short-c'])"));
+    let q = |sql: &str| e.call("run_query", with("ch", json!({"sql": sql})));
+    let shown = |sql: &str| {
+        let got = q(sql).unwrap_or_else(|err| panic!("{sql}: {err}"));
+        clean(sql, &got);
+        got
+    };
+    for sql in [
+        "SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id",
+        "SELECT * FROM customers a JOIN customers b ON a.id = b.id",
+        "SELECT email, customers.email FROM customers",
+        "SELECT a.* FROM customers a",
+        "SELECT meta FROM customers",
+        "SELECT meta.keys FROM customers",
+        "SELECT meta.values FROM customers",
+        "SELECT attrs.values FROM customers",
+        "SELECT id, attrs.values, name FROM customers",
+        "SELECT doc.a.b FROM customers",
+        "SELECT doc FROM customers",
+        "SELECT t FROM customers",
+        "SELECT t.x FROM customers",
+        "SELECT nest.a FROM customers",
+        "SELECT nest.a, nest.b FROM customers",
+        "SELECT nest FROM customers",
+        "SELECT customers.nest.a FROM customers",
+        "SELECT c.nest.a FROM customers c",
+        "SELECT * FROM customers",
+        "SELECT parts.a FROM accounts",
+        "SELECT * FROM accounts",
+        "SELECT short.a FROM accounts",
+    ] {
+        shown(sql);
+    }
+    assert_eq!(shown("SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id")["rows"][0], json!(["•••••••••••acme", "•••••••••••acme"]));
+    assert_eq!(shown("SELECT nest.a FROM customers")["rows"][0][0], "‹hidden›");
+    assert_eq!(shown("SELECT parts.a FROM accounts")["rows"][0][0], "‹hidden›");
+    clean("sample", &e.ok("sample_rows", with("ch", json!({"table": "customers"}))));
+    clean("sample", &e.ok("sample_rows", with("ch", json!({"table": "accounts"}))));
+    // What is hidden in a Nested goes, its sibling stays.
+    refused("hidden part", q("SELECT parts.b FROM accounts"), "");
+    let got = shown("SELECT parts.c FROM accounts");
+    assert!(got.to_string().contains("part-c"), "{got}");
+    // Not masked, or with no name to mask it by.
+    let got = shown("SELECT a.name, b.name, a.id FROM customers a JOIN customers b ON a.id = b.id");
+    assert_eq!(got["rows"][0], json!(["Ana", "Ana", "1"]));
+    for sql in [
+        "SELECT meta.keys AS k FROM customers",
+        "SELECT upper(toString(meta.keys)) FROM customers",
+        "SELECT doc.a.b AS x FROM customers",
+        "SELECT doc.a.:String FROM customers",
+        "SELECT t.1 FROM customers",
+        "SELECT toString(t.x) FROM customers",
+        "SELECT meta['k'] FROM customers",
+        "SELECT nest.a[1] FROM customers",
+        "SELECT arrayElement(nest.a, 1) FROM customers",
+        "SELECT arrayStringConcat(nest.a) FROM customers",
+        "SELECT id FROM customers ORDER BY meta.keys",
+        "SELECT id FROM customers WHERE t.x = 'a-guess'",
+        "SELECT id FROM customers UNION ALL SELECT meta.keys FROM customers",
+        "SELECT keys FROM (SELECT meta.keys FROM customers)",
+        "SELECT x FROM (SELECT meta.keys AS x FROM customers)",
+        "SELECT a FROM customers ARRAY JOIN nest.a AS a",
+        "SELECT nest.a FROM customers ARRAY JOIN nest",
+        "SELECT upper(parts.a[1]) FROM accounts",
+    ] {
+        let r = q(sql);
+        if let Ok(v) = &r {
+            panic!("{sql}: {v}");
+        }
+        refused(sql, r, "");
+    }
+    ch_by_hand(&e, &format!("DROP DATABASE {s}"));
+    e.nothing_kept_logged();
+    e.done();
+}
+
+/// A statement that makes the server convert a masked value gets no error to read it in, and what
+/// an error quotes of the rest goes while rules apply.
+#[test]
+fn clickhouse_errors_quote_nothing_kept() {
+    if !up(CH) {
+        return;
+    }
+    let s = format!("mcp_cherr_{}", std::process::id());
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"customers.email\", how = \"partial\" }]\n";
+    let e = ch_env(&s, rules);
+    ch_by_hand(&e, &format!("CREATE TABLE {s}.customers (id UInt64, name String, email String, d Date, dt DateTime, u UUID, ip IPv4, b Bool, arr Array(Int32), tup Tuple(Int32), mp Map(String, Int32), i Int32, f Float64, de Decimal(10, 2)) ENGINE = MergeTree ORDER BY id"));
+    ch_by_hand(&e, &format!("INSERT INTO {s}.customers (id, name, email) VALUES (1, 'Ana', 'zed-secret-acme')"));
+    let q = |sql: String| e.call("run_query", with("ch", json!({"sql": sql})));
+    for c in ["d", "dt", "u", "ip", "b", "arr", "tup", "mp", "i", "f", "de"] {
+        refused(c, q(format!("SELECT id FROM customers WHERE {c} = (SELECT email FROM customers LIMIT 1)")), MASKED);
+        refused(c, q(format!("SELECT id FROM customers WHERE (SELECT email FROM customers LIMIT 1) = {c}")), MASKED);
+    }
+    refused("nested", q("SELECT id FROM customers WHERE i = ((SELECT email FROM customers LIMIT 1))".into()), MASKED);
+    for sql in [
+        "SELECT id FROM customers WHERE d IN (1, (SELECT email FROM customers LIMIT 1))",
+        "SELECT id FROM customers WHERE has([d], (SELECT email FROM customers LIMIT 1))",
+        "SELECT id FROM customers WHERE d = (SELECT email FROM (SELECT email FROM customers) LIMIT 1)",
+        "WITH c AS (SELECT email FROM customers LIMIT 1) SELECT id FROM customers WHERE d = (SELECT email FROM c)",
+        "SELECT id FROM customers WHERE d = (SELECT any(email) FROM customers)",
+        "SELECT id FROM customers HAVING d = (SELECT email FROM customers LIMIT 1)",
+        "SELECT (SELECT email FROM customers LIMIT 1) FROM customers",
+    ] {
+        refused(sql, q(sql.into()), MASKED);
+    }
+    refused("on", q("SELECT a.id FROM customers a JOIN customers b ON a.d = (SELECT email FROM customers LIMIT 1)".into()), MASKED);
+    // As it is, a masked column still filters.
+    assert_eq!(q("SELECT id FROM customers WHERE email <> 'a-guess'".into()).unwrap()["rows"][0][0], "1");
+    assert_eq!(q("SELECT id FROM customers WHERE email IN (SELECT email FROM customers)".into()).unwrap()["rows"][0][0], "1");
+    assert_eq!(q("SELECT email FROM customers WHERE id = (SELECT max(id) FROM customers)".into()).unwrap()["rows"][0][0], "•••••••••••acme");
+    // What the server quotes of a visible column: its shape and code stay, the value goes, unlike
+    // on a connection that keeps nothing.
+    let sql = "SELECT CAST(name AS Tuple(Int32)) FROM customers";
+    let err = q(sql.into()).unwrap_err();
+    assert!(err.starts_with("[27] Cannot parse input: expected") && !err.contains("Ana"), "{err}");
+    let raw = e.call("run_query", with("chopen", json!({"sql": sql}))).unwrap_err();
+    assert!(raw.contains("Ana"), "{raw}");
+    // What the agent wrote itself stays.
+    let err = q("SELECT nosuchcolumn FROM customers".into()).unwrap_err();
+    assert!(err.contains("nosuchcolumn"), "{err}");
+    let err = q("SELECT toInt32('mine') FROM customers".into()).unwrap_err();
+    assert!(err.contains("'mine'"), "{err}");
+    ch_by_hand(&e, &format!("DROP DATABASE {s}"));
+    e.nothing_kept_logged();
+    e.done();
+}
+
+/// Self-joins exist everywhere, and every server converts a value it is asked to compare.
+#[test]
+fn self_joins_and_cast_errors_on_the_other_engines() {
+    let s = format!("mcp_sj_{}", std::process::id());
+    let secret = "zed-secret-acme";
+    let rules = |t: &str| format!("mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{t}.email\", how = \"hidden\" }}]\n");
+    let check = |e: &Env, c: &str, t: &str, top: &str| {
+        let q = |sql: String| e.call("run_query", with(c, json!({"sql": sql})));
+        let got = q(format!("SELECT a.email, b.email, a.name FROM {t} a JOIN {t} b ON a.id = b.id")).unwrap_or_else(|err| panic!("{c}: {err}"));
+        assert_eq!(got["rows"][0], json!(["‹hidden›", "‹hidden›", "Ana"]), "{c}: {got}");
+        let got = q(format!("SELECT * FROM {t} a JOIN {t} b ON a.id = b.id")).unwrap_or_else(|err| panic!("{c}: {err}"));
+        clean(c, &got);
+        assert!(got.to_string().contains("Ana"), "{c}: {got}");
+        refused(c, q(format!("SELECT id FROM {t} WHERE id = (SELECT {top} email FROM {t})")), MASKED);
+        refused(c, q(format!("SELECT id FROM {t} WHERE (SELECT {top} email FROM {t}) = id")), MASKED);
+        assert_eq!(q(format!("SELECT id FROM {t} WHERE email IN (SELECT email FROM {t})")).unwrap_or_else(|err| panic!("{c}: {err}"))["rows"][0][0], json!(1), "{c}");
+    };
+    if up(PG) {
+        let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules("customers"))], "", None);
+        e.admin("execute", with("pgadmin", json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.customers (id int, name text, email text); INSERT INTO {s}.customers VALUES (1, 'Ana', '{secret}')")})));
+        let t = format!("{s}.customers");
+        check(&e, "pp", &t, "");
+        let q = |sql: String| e.call("run_query", with("pp", json!({"sql": sql})));
+        let err = q(format!("SELECT name::int FROM {t}")).unwrap_err();
+        assert!(err.contains("[22P02]") && err.contains("invalid input syntax for type integer") && !err.contains("Ana"), "{err}");
+        let err = q(format!("SELECT to_date(name, 'YYYY-MM') FROM {t}")).unwrap_err();
+        assert!(!err.contains("Ana"), "{err}");
+        // An operator between types is a planner's error, on no value: no value to lose.
+        refused("cast", q(format!("SELECT email::int FROM {t}")), MASKED);
+        let err = q(format!("SELECT id FROM {t} WHERE id = email")).unwrap_err();
+        assert!(!err.contains(secret), "{err}");
+        e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
+        e.nothing_kept_logged();
+        e.done();
+    }
+    if up(MY) {
+        let e = env(&[conn("myadmin", MY, "mysql", "root", "mysql", "mcp = \"full\""), conn("mm", MY, "mysql", "root", &s, rules("customers"))], "", None);
+        let a = |sql: String| e.admin("execute", with("myadmin", json!({"sql": sql})));
+        a(format!("CREATE DATABASE {s}"));
+        a(format!("CREATE TABLE {s}.customers (id int, name varchar(50), email varchar(50))"));
+        a(format!("INSERT INTO {s}.customers VALUES (1, 'Ana', '{secret}')"));
+        check(&e, "mm", "customers", "");
+        // An UPDATE is where strict mode turns MySQL's conversion warning into an error.
+        let err = e.call("execute", with("mm", json!({"sql": "UPDATE customers SET name = 'x' WHERE email = 0 LIMIT 1"})));
+        if let Err(err) = err {
+            assert!(!err.contains(secret), "{err}");
+        }
+        a(format!("DROP DATABASE {s}"));
+        e.nothing_kept_logged();
+        e.done();
+    }
+    if up(MS) {
+        let t = format!("{s}_c");
+        let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules(&t))], "", None);
+        e.admin("execute", with("msadmin", json!({"sql": format!("CREATE TABLE dbo.{t} (id int, name varchar(50), email varchar(50)); INSERT INTO dbo.{t} VALUES (1, 'Ana', '{secret}')")})));
+        let table = format!("dbo.{t}");
+        check(&e, "ss", &table, "TOP 1");
+        let q = |sql: String| e.call("run_query", with("ss", json!({"sql": sql})));
+        // Compared as it is, as the rules allow: SQL Server converts the column to the literal's type.
+        let err = q(format!("SELECT id FROM {table} WHERE email = 1")).unwrap_err();
+        assert!(err.contains("Conversion failed") && !err.contains(secret) && err.contains("[245]"), "{err}");
+        let err = q(format!("SELECT CONVERT(int, name) FROM {table}")).unwrap_err();
+        assert!(err.contains("Conversion failed") && !err.contains("Ana"), "{err}");
+        e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{t}")})));
+        e.nothing_kept_logged();
+        e.done();
+    }
+}
+
+/// DuckDB keeps no dependencies: its views are read for what they read.
+#[test]
+fn duckdb_views_follow_what_they_read() {
+    let files = tempfile::tempdir().unwrap();
+    let db = files.path().join("views.duckdb");
+    dataman_core::import::create_database(Engine::DuckDb, &db).unwrap();
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"customers.email\", how = \"hidden\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.pw\", kind = \"column\" }]\n";
+    let text = [file_conn("duckadmin", "duckdb", &db, "mcp = \"full\""), file_conn("dd", "duckdb", &db, rules)].concat();
+    let e = env_with(&[], &text, "", None);
+    e.admin(
+        "execute",
+        with("duckadmin", json!({"sql": "CREATE SCHEMA other; CREATE TABLE users (id INTEGER, name VARCHAR, pw VARCHAR); CREATE TABLE other.users (id INTEGER, pw VARCHAR); \
+            CREATE TABLE customers (id INTEGER, email VARCHAR); CREATE TABLE open (id INTEGER, x VARCHAR); \
+            INSERT INTO users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO other.users VALUES (1, 'hash-secret-1'); INSERT INTO customers VALUES (1, 'zed-secret-acme'); INSERT INTO open VALUES (1, 'visible'); \
+            CREATE VIEW v_pw AS SELECT pw AS h FROM users; CREATE VIEW v_mail AS SELECT email AS e FROM customers; CREATE VIEW v_cte AS WITH c AS (SELECT pw FROM users) SELECT * FROM c; \
+            CREATE VIEW v_cross AS SELECT pw FROM other.users; CREATE VIEW v_of_view AS SELECT * FROM v_pw; \
+            CREATE MACRO m_pw() AS (SELECT pw FROM users LIMIT 1); CREATE VIEW v_macro AS SELECT m_pw() AS h; \
+            CREATE VIEW v_open AS SELECT id, x FROM open; CREATE VIEW v_of_open AS SELECT x FROM v_open"})),
+    );
+    let q = |sql: &str| e.call("run_query", with("dd", json!({"sql": sql})));
+    for v in ["v_pw", "v_mail", "v_cte", "v_cross", "v_of_view", "v_macro"] {
+        refused(v, q(&format!("SELECT * FROM {v}")), "agents");
+    }
+    assert_eq!(q("SELECT * FROM v_open").unwrap()["rows"][0][1], "visible");
+    assert_eq!(q("SELECT * FROM v_of_open").unwrap()["rows"][0][0], "visible");
+    e.done();
+}
+
+/// The copies of a column in a subquery: what each server calls the second one, it comes back masked.
+const COPIES_OF_A_COLUMN: &[&str] = &[
+    "SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id",
+    "SELECT * FROM customers a JOIN customers b ON a.id = b.id",
+    "SELECT * FROM (SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id) x",
+    "SELECT * FROM (SELECT * FROM customers a JOIN customers b ON a.id = b.id) x",
+    "SELECT email, email FROM customers",
+    "SELECT * FROM (SELECT email, email FROM customers) x",
+    "WITH c AS (SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id) SELECT * FROM c",
+];
+
+/// Refused or masked, whichever the server's names allow; never in clear.
+fn no_copy_comes_back_clear(e: &Env, c: &str, from: &str) {
+    for sql in COPIES_OF_A_COLUMN {
+        let sql = sql.replace("customers", from);
+        match e.call("run_query", with(c, json!({"sql": sql}))) {
+            Ok(v) => clean(&format!("{c}: {sql}"), &v),
+            Err(err) => assert!(!SECRETS.iter().any(|s| err.contains(s)), "{c}: {sql}: {err}"),
+        }
+    }
+}
+
+#[test]
+fn a_copy_of_a_masked_column_is_masked_on_every_engine() {
+    let rules = |t: &str| format!("[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{t}.email\", how = \"hidden\" }}]\n");
+    let seed = "(id INTEGER, name VARCHAR(50), email VARCHAR(50))";
+    let row = "(1, 'Ana', 'zed-secret-acme')";
+    let files = tempfile::tempdir().unwrap();
+    for (slug, engine, name) in [("duckdb", Engine::DuckDb, "copies.duckdb"), ("sqlite", Engine::Sqlite, "copies.sqlite")] {
+        let db = files.path().join(name);
+        dataman_core::import::create_database(engine, &db).unwrap();
+        let text = [file_conn("admin", slug, &db, "mcp = \"full\""), file_conn("dd", slug, &db, &rules("customers"))].concat();
+        let e = env_with(&[], &text, "", None);
+        e.admin("execute", with("admin", json!({"sql": format!("CREATE TABLE customers {seed}; INSERT INTO customers VALUES {row}")})));
+        no_copy_comes_back_clear(&e, "dd", "customers");
+        e.done();
+    }
+    let s = format!("mcp_copies_{}", std::process::id());
+    if up(PG) {
+        let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules("customers"))], "", None);
+        e.admin("execute", with("pgadmin", json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.customers {seed}; INSERT INTO {s}.customers VALUES {row}")})));
+        no_copy_comes_back_clear(&e, "pp", &format!("{s}.customers"));
+        e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
+        e.done();
+    }
+    if up(MY) {
+        let e = env(&[conn("myadmin", MY, "mysql", "root", "mysql", "mcp = \"full\""), conn("mm", MY, "mysql", "root", &s, rules("customers"))], "", None);
+        let a = |sql: String| e.admin("execute", with("myadmin", json!({"sql": sql})));
+        a(format!("CREATE DATABASE {s}"));
+        a(format!("CREATE TABLE {s}.customers {seed}"));
+        a(format!("INSERT INTO {s}.customers VALUES {row}"));
+        no_copy_comes_back_clear(&e, "mm", "customers");
+        a(format!("DROP DATABASE {s}"));
+        e.done();
+    }
+    if up(MS) {
+        let t = format!("{s}_c");
+        let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules(&t))], "", None);
+        e.admin("execute", with("msadmin", json!({"sql": format!("CREATE TABLE dbo.{t} {seed}; INSERT INTO dbo.{t} VALUES {row}")})));
+        no_copy_comes_back_clear(&e, "ss", &format!("dbo.{t}"));
+        e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{t}")})));
+        e.done();
+    }
+    if up(CH) {
+        let e = ch_env(&s, &rules("customers"));
+        ch_by_hand(&e, &format!("CREATE TABLE {s}.customers (id Int32, name String, email String) ENGINE = MergeTree ORDER BY id"));
+        ch_by_hand(&e, &format!("INSERT INTO {s}.customers VALUES {row}"));
+        no_copy_comes_back_clear(&e, "ch", "customers");
+        ch_by_hand(&e, &format!("DROP DATABASE {s}"));
         e.done();
     }
 }

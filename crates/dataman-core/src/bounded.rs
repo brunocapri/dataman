@@ -13,7 +13,7 @@ use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, SimpleQueryMessage};
 
 use crate::backend::pg::{TextParam, column_infos, error_info, push_row};
-use crate::backend::{Dedicated, RowSource, duck, lite, ms, my};
+use crate::backend::{Dedicated, RowSource, ch, duck, lite, ms, my};
 use crate::conn::Connection;
 use crate::guard;
 use crate::result::{Cell, ChunkBuilder, ColumnInfo, ErrorClass, ErrorInfo, format_cell};
@@ -190,6 +190,117 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     None
 }
 
+/// The database `USE x` names (the one of the last `USE`, where a text has more than one).
+pub(crate) fn used_database(sql: &str, d: Dialect) -> Option<String> {
+    let mut used = None;
+    for range in statement_ranges(sql, d) {
+        let s = &sql[range];
+        let toks: Vec<_> = crate::sql::tokenize_in(s, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+        if !toks.first().is_some_and(|t| t.text(s).eq_ignore_ascii_case("USE")) {
+            continue;
+        }
+        // `USE database` is a database of that name.
+        let name = match toks.get(2).filter(|t| t.text(s) != ";") {
+            Some(n) if toks[1].text(s).eq_ignore_ascii_case("DATABASE") => Some(n),
+            _ => toks.get(1),
+        };
+        if let Some(n) = name {
+            used = Some(crate::sql::ident_value_in(s, n, d));
+        }
+    }
+    used
+}
+
+/// T-SQL needs no `;` between its statements.
+fn statement_ranges(sql: &str, d: Dialect) -> Vec<std::ops::Range<usize>> {
+    if d == Dialect::TSql { guard::tsql_statements(sql) } else { crate::sql::split_in(sql, d).into_iter().map(|s| s.range).collect() }
+}
+
+/// What starts a statement that writes: from here on a `SELECT` before it is no reason to take a
+/// name as read. A word followed by `(` is a function (`REPLACE(a, 'x', 'y')`).
+const WRITE_WORDS: &[&str] = &[
+    "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME", "EXCHANGE", "OPTIMIZE", "ATTACH", "DETACH", "UNDROP", "EXEC", "EXECUTE", "CALL", "GRANT", "REVOKE", "LOAD",
+];
+
+/// The databases a statement that writes reaches by name: the first part of each name long enough
+/// to start with one (SQL Server's four parts have the linked server first), and what follows
+/// `DATABASE` (`SCHEMA` where a schema is a database) or `TABLES FROM`.
+///
+/// Read by the tokens, so a name that is not there is not reached: a table a stored procedure or a
+/// view writes to is the server's to know. A name in a query's `SELECT` is only read, so copying
+/// out of a read-only database stays allowed; everything else counts, which refuses
+/// `CREATE TABLE w.t AS ro.s` as well, and an `x.y` that turns out to be a table and its column.
+pub(crate) fn databases_written(sql: &str, d: Dialect, parts: u8, schema_is_database: bool) -> Vec<String> {
+    use crate::sql::TokenKind;
+    let toks: Vec<_> = crate::sql::tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    let is_name = |i: usize| toks.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword));
+    let word = |i: usize| toks.get(i).filter(|t| matches!(t.kind, TokenKind::Ident | TokenKind::Keyword)).map(|t| t.text(sql));
+    let is_word = |i: usize, w: &str| word(i).is_some_and(|x| x.eq_ignore_ascii_case(w));
+    let is_punct = |i: usize, p: &str| toks.get(i).is_some_and(|t| t.kind == TokenKind::Punct && t.text(sql) == p);
+    let mut out: Vec<String> = Vec::new();
+    // Per parenthesis: whether a query's `SELECT` has been seen there, or around it.
+    let mut read = vec![false];
+    let mut writes = false;
+    let mut i = 0;
+    while i < toks.len() {
+        if is_punct(i, "(") {
+            read.push(read.last().copied().unwrap_or(false));
+        } else if is_punct(i, ")") && read.len() > 1 {
+            read.pop();
+        }
+        if is_word(i, "SELECT") {
+            // Before the write it is a common table expression, and in `DELETE x FROM (SELECT …) x`
+            // a derived table: both can be what is written to.
+            let derived = i >= 2 && is_punct(i - 1, "(") && (is_word(i - 2, "FROM") || is_word(i - 2, "JOIN"));
+            if writes && !derived && let Some(r) = read.last_mut() {
+                *r = true;
+            }
+        } else if WRITE_WORDS.iter().any(|w| is_word(i, w)) && !is_punct(i + 1, "(") {
+            writes = true;
+            if let Some(r) = read.last_mut() {
+                *r = false;
+            }
+        }
+        if !is_name(i) {
+            i += 1;
+            continue;
+        }
+        let named = is_word(i, "DATABASE") || (schema_is_database && is_word(i, "SCHEMA")) || (is_word(i, "TABLES") && (is_word(i + 1, "FROM") || is_word(i + 1, "IN")));
+        if named {
+            let mut n = if is_word(i, "TABLES") { i + 2 } else { i + 1 };
+            if is_word(n, "IF") {
+                n += if is_word(n + 1, "NOT") { 3 } else { 2 };
+            }
+            if is_name(n) {
+                out.push(crate::sql::ident_value_in(sql, &toks[n], d));
+            }
+        }
+        // `a.b.c`, and T-SQL's `db..t` with its default schema left out.
+        let first = i;
+        let mut count = 1u8;
+        let mut second = None;
+        while is_punct(i + 1, ".") {
+            i += 1;
+            count = count.saturating_add(1);
+            if is_name(i + 1) {
+                i += 1;
+                second.get_or_insert(i);
+            }
+        }
+        let after_into = first > 0 && is_word(first - 1, "INTO");
+        if count >= parts && (after_into || !read.last().copied().unwrap_or(false)) {
+            out.push(crate::sql::ident_value_in(sql, &toks[first], d));
+            if count >= 4
+                && let Some(s) = second
+            {
+                out.push(crate::sql::ident_value_in(sql, &toks[s], d));
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Modes that change how MySQL reads strings (and the composite modes that turn them on).
 const MY_LEXING_MODES: &[&str] = &["NO_BACKSLASH_ESCAPES", "ANSI_QUOTES", "ANSI", "ORACLE", "MSSQL", "DB2", "POSTGRESQL", "MAXDB"];
 
@@ -201,11 +312,77 @@ fn my_lexed_sql_mode() -> String {
     format!("SET SESSION sql_mode = TRIM(BOTH ',' FROM {e})")
 }
 
+/// A literal Dataman writes (`Dialect::quote_literal`) reads as written only under these settings,
+/// whatever the server or the database has as its own.
+pub(crate) async fn strings_as_written(d: &Dedicated) -> anyhow::Result<()> {
+    match d {
+        Dedicated::Pg(p) => {
+            p.client.simple_query("SET standard_conforming_strings = on").await?;
+        }
+        Dedicated::My(c) => {
+            c.execute(&my_lexed_sql_mode()).await?;
+        }
+        Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) | Dedicated::Ch(_) => {}
+    }
+    Ok(())
+}
+
 const GRACE: Duration = Duration::from_millis(500);
 const POOL_SIZE: usize = 2;
 pub(crate) type Pool = Mutex<Vec<Dedicated>>;
 
 impl Connection {
+    /// Whether a name in a statement is a read-only database. A database the user set counts by
+    /// any case: the lexer cannot see how the server folds names, and a wrong refusal says why.
+    /// Past those, under a connection read-only by default, a name counts when the server has such
+    /// a database, and while the list is unknown (the first part of `t.col` is no database).
+    fn names_read_only(&self, name: &str) -> bool {
+        let set: Vec<bool> = self.read_only_dbs.read().iter().filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, on)| *on).collect();
+        if !set.is_empty() {
+            return set.contains(&true);
+        }
+        self.profile.read_only && self.schema.cached_databases().is_none_or(|known| known.iter().any(|d| d.eq_ignore_ascii_case(name)))
+    }
+
+    /// Why `sql` must not run with `database` current: a write on a read-only database, or a write
+    /// that reaches one by name or after a `USE`, in any statement of the text. Both a tab and an
+    /// agent ask this, before anything is sent. Only the current database's state is held on the
+    /// server's side (a read-only session); the rest is this check.
+    pub fn read_only_refusal(&self, database: &str, sql: &str) -> Option<String> {
+        let d = self.dialect();
+        if self.read_only_for(database)
+            && let Some(r) = guard::read_only_refusal_in(sql, d)
+        {
+            return Some(r);
+        }
+        let spec = self.engine().spec();
+        let parts = spec.db_in_name?;
+        if !self.profile.read_only && !self.read_only_dbs.read().values().any(|on| *on) {
+            return None;
+        }
+        for text in crate::sql::exec_readings(sql, d) {
+            let mut current = database.to_string();
+            for range in statement_ranges(&text, d) {
+                let s = &text[range];
+                if let Some(used) = used_database(s, d) {
+                    current = used;
+                    continue;
+                }
+                if guard::read_only_refusal_in(s, d).is_none() {
+                    continue;
+                }
+                let verb = || guard::classify_in(s, d).verb;
+                if self.read_only_for(&current) {
+                    return Some(format!("read-only database {current}: {} is not run", verb()));
+                }
+                if let Some(name) = databases_written(s, d, parts, !spec.caps.schemas).into_iter().find(|n| self.names_read_only(n)) {
+                    return Some(format!("read-only database {name}: {} is not run", verb()));
+                }
+            }
+        }
+        None
+    }
+
     /// The pool of `db`'s connections made while it was read-only (`ro`) or not: a toggle in
     /// the explorer never hands out a connection made for the other state.
     fn agent_pool(&self, db: &str, ro: bool) -> Arc<Pool> {
@@ -227,26 +404,27 @@ impl Connection {
         let d = if self.engine() == crate::config::Engine::Sqlite {
             let agent = if ro { lite::Agent::Read } else { lite::Agent::Write };
             Dedicated::Lite(lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent), kept: Some(self.agent_rules.clone()) }, None).await?)
+        } else if !self.dialect().has_transactions() {
+            self.dedicated_read_only(db, ro).await?
         } else {
             self.dedicated(Some(db)).await?
         };
         // The guard lexes strings as these settings read them: the server must too. Errors come
         // in English where the login may choose (what privacy::clean_error knows how to clean);
         // PostgreSQL lets only a superuser set lc_messages.
+        strings_as_written(&d).await?;
         match &d {
             Dedicated::Pg(p) => {
                 let _ = p.client.simple_query("SET application_name = 'Dataman MCP'").await;
-                p.client.simple_query("SET standard_conforming_strings = on").await?;
                 let _ = p.client.simple_query("SET lc_messages = 'C'").await;
             }
             Dedicated::My(c) => {
-                c.execute(&my_lexed_sql_mode()).await?;
                 let _ = c.execute("SET SESSION lc_messages = 'en_US'").await;
             }
             Dedicated::Ms(c) => {
                 let _ = c.execute("SET LANGUAGE us_english").await;
             }
-            Dedicated::Lite(_) | Dedicated::Duck(_) => {}
+            Dedicated::Lite(_) | Dedicated::Duck(_) | Dedicated::Ch(_) => {}
         }
         Ok(d)
     }
@@ -292,12 +470,21 @@ impl Connection {
         if let Some(r) = refusal_in(&stmts, params.len(), mode, ro, dialect) {
             return Err(Stop::Refused(r));
         }
+        if mode != Mode::Read {
+            if self.profile.read_only && self.engine().spec().db_in_name.is_some() {
+                self.load_databases().await;
+            }
+            if let Some(r) = self.read_only_refusal(&db, sql) {
+                return Err(Stop::Refused(r));
+            }
+        }
         // Files and code outside the database are an agent's at no level.
         if let Some(r) = guard::file_access(sql, dialect) {
             return Err(Stop::Refused(r));
         }
-        // SQLite's readers run on connections that cannot write: a pool of their own.
-        let ro = ro || (dialect == Dialect::Sqlite && mode == Mode::Read);
+        // SQLite's readers run on connections that cannot write: a pool of their own. Where nothing
+        // can roll a read back, so do those.
+        let ro = ro || (mode == Mode::Read && (dialect == Dialect::Sqlite || !dialect.has_transactions()));
         let started = Instant::now();
         let mut d = tokio::select! {
             d = self.agent_take(&db, ro) => d.map_err(Stop::Other)?,
@@ -312,6 +499,7 @@ impl Connection {
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Lite(c) => lite_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Duck(c) => duck_in_transaction(c, &stmts, &params, mode, &limits).await,
+                    Dedicated::Ch(c) => ch_statements(c, &stmts, &params, mode, &limits).await,
                 }
             };
             tokio::pin!(work);
@@ -360,7 +548,8 @@ impl Connection {
             Err(Stop::Server(e)) if e.class(self.engine()) == ErrorClass::Timeout => Err(Stop::Timeout(limits.timeout)),
             Err(e) => Err(e),
         };
-        if reuse {
+        // A `USE` stays with the connection: the next call on this database must not find it there.
+        if reuse && !stmts.iter().any(|s| used_database(s, dialect).is_some()) {
             self.agent_give(&db, ro, d);
         } else {
             if matches!(r, Err(Stop::Timeout(_) | Stop::Cancelled)) {
@@ -376,7 +565,7 @@ impl Connection {
 }
 
 async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Result<(), Failed> {
-    if mode == Mode::Autocommit {
+    if mode == Mode::Autocommit || !dialect.has_transactions() {
         return Ok(());
     }
     let sql = if commit { dialect.commit() } else { dialect.rollback() };
@@ -386,7 +575,69 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
         Dedicated::Ms(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(ms::error_info_at(&e, sql, 0)), !c.is_closed())),
         Dedicated::Lite(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(lite::error_info_at(&e, sql)), !c.is_closed())),
         Dedicated::Duck(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(duck::error_info_at(&e, sql)), !c.is_closed())),
+        Dedicated::Ch(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(ch::error_info_at(&e, sql)), !c.is_closed())),
     }
+}
+
+/// ClickHouse has no transaction to run them in: a read is held to it by its read-only connection
+/// (the server refuses anything else), a write is alone in its call (`Facts::outside_tx`) and has
+/// been allowed by then. The caller's timer cancels.
+async fn ch_statements(c: &Arc<ch::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+    let mut out = Outcome::default();
+    for (i, s) in stmts.iter().enumerate() {
+        let last = i + 1 == stmts.len();
+        let p = if last { params } else { &[] };
+        let (cut0, t0) = (out.cut_cells, Instant::now());
+        if mode == Mode::Read {
+            out.start_part();
+        }
+        let r = ch_statement(c, s, p, mode, !last, limits, &mut out).await;
+        if mode == Mode::Read && r.is_ok() {
+            out.end_part(i, s, cut0, t0.elapsed());
+        }
+        match r {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = tokio::time::timeout(Duration::from_secs(2), c.cancel()).await;
+                return Ok((out, false));
+            }
+            Err(e) => return Err((e, true)),
+        }
+    }
+    Ok((out, true))
+}
+
+async fn ch_statement(c: &Arc<ch::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+    let verb = guard::classify_in(sql, Dialect::ClickHouse).verb;
+    let (cols, mut rows) = c.query(sql, params).await.map_err(|e| Stop::Server(ch::error_info_at(&e, sql)))?;
+    let returns_rows = !cols.is_empty();
+    if returns_rows {
+        start_rows(&cols, mode, out);
+    }
+    let mut b = ChunkBuilder::new(&cols);
+    loop {
+        let next = match rows.next_into(&mut b).await {
+            // What was read before it is still the answer, cut as a result past its bytes is.
+            Err(ch::ChError::RowTooLong) if !out.rows.is_empty() => {
+                out.truncated = Some(Truncation::Bytes);
+                return Ok(false);
+            }
+            r => r.map_err(|e| Stop::Server(ch::error_info(&e)))?,
+        };
+        if !next {
+            break;
+        }
+        let chunk = b.finish();
+        // A cell that turned its column to text: the column is text from here on.
+        let cols: Vec<ColumnInfo> = cols.iter().enumerate().map(|(i, c)| ColumnInfo { kind: b.kind(i), ..c.clone() }).collect();
+        match keep_row(&cols, &chunk, mode, more, limits, out) {
+            Keep::Yes | Keep::Skip => {}
+            Keep::Stop => return Ok(false),
+        }
+    }
+    let affected = rows.affected();
+    out.statements.push(Done { verb, affected: if returns_rows && mode == Mode::Read { None } else { affected } });
+    Ok(true)
 }
 
 /// DuckDB has no statement time limit either: the caller's timer interrupts. A read runs in a
@@ -978,6 +1229,90 @@ fn cut(s: &str, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn use_is_followed() {
+        let d = Dialect::ClickHouse;
+        assert_eq!(used_database("USE system", d).as_deref(), Some("system"));
+        assert_eq!(used_database("/* x */ use `a b` ;", d).as_deref(), Some("a b"));
+        assert_eq!(used_database("USE DATABASE d", d).as_deref(), Some("d"));
+        assert_eq!(used_database("USE database", d).as_deref(), Some("database"), "a database named so");
+        assert_eq!(used_database("USE database;", d).as_deref(), Some("database"));
+        assert_eq!(used_database(r"USE `a\x62`", d).as_deref(), Some("ab"), "as the server reads the name");
+        assert_eq!(used_database("SELECT 1", d), None);
+        assert_eq!(used_database("USE [ro db]", Dialect::TSql).as_deref(), Some("ro db"));
+        assert_eq!(used_database("USE a\nINSERT INTO t VALUES (1)\nUSE b", Dialect::TSql).as_deref(), Some("b"), "no ; between them");
+        assert_eq!(used_database("USE `ro`; INSERT INTO t VALUES (1)", Dialect::MySql).as_deref(), Some("ro"));
+    }
+
+    #[test]
+    fn what_a_write_reaches_by_name() {
+        let ch = |sql: &str| databases_written(sql, Dialect::ClickHouse, 2, true);
+        let my = |sql: &str| databases_written(sql, Dialect::MySql, 2, true);
+        let ms = |sql: &str| databases_written(sql, Dialect::TSql, 3, false);
+        let duck = |sql: &str| databases_written(sql, Dialect::DuckDb, 2, false);
+        for sql in [
+            "INSERT INTO ro.items VALUES (1)",
+            "INSERT INTO TABLE `ro`.`items` VALUES (1)",
+            "ALTER TABLE ro.items DELETE WHERE 1",
+            "ALTER TABLE \"ro\" . items UPDATE a = 1 WHERE 1",
+            "OPTIMIZE TABLE ro.items",
+            "RENAME TABLE w.a TO ro.b",
+            "EXCHANGE TABLES w.a AND ro.b",
+            "CREATE TABLE ro.t ENGINE = Memory AS SELECT 1",
+            "CREATE MATERIALIZED VIEW w.mv TO ro.t AS SELECT 1",
+            "ALTER TABLE w.t MOVE PARTITION p TO TABLE ro.t",
+            "DROP DATABASE IF EXISTS ro",
+            "TRUNCATE ALL TABLES FROM ro",
+            "TRUNCATE ALL TABLES FROM IF EXISTS ro",
+            "INSERT INTO w.t SELECT 1 FROM x UPDATE ro.t SET a = 1",
+            "WITH 1 AS y INSERT INTO ro.t SELECT y",
+        ] {
+            assert!(ch(sql).contains(&"ro".to_string()), "{sql}: {:?}", ch(sql));
+        }
+        // What is only read of it.
+        for sql in [
+            "INSERT INTO w.t SELECT * FROM ro.s",
+            "INSERT INTO w.t (a) SELECT replace(a, 'x', 'y') FROM ro.s",
+            "INSERT INTO w.t SELECT a FROM (SELECT a FROM ro.s) x",
+            "CREATE TABLE w.t ENGINE = Memory AS SELECT * FROM ro.s",
+            "ALTER TABLE w.t DELETE WHERE id IN (SELECT id FROM ro.s)",
+            "CREATE VIEW w.v AS SELECT * FROM ro.s",
+            "INSERT INTO t VALUES (1)",
+            "UPDATE t SET a = 1",
+        ] {
+            assert!(!ch(sql).contains(&"ro".to_string()), "{sql}: {:?}", ch(sql));
+        }
+        assert_eq!(my("UPDATE w.t JOIN ro.s ON w.t.a = ro.s.a SET ro.s.b = 1"), ["w", "ro", "w", "ro", "ro"], "either side of a join can be written");
+        assert!(my("DELETE FROM ro.t").contains(&"ro".to_string()));
+        assert!(my("DROP SCHEMA ro").contains(&"ro".to_string()));
+        assert!(my("REPLACE INTO ro.t VALUES (1)").contains(&"ro".to_string()));
+        assert!(my("CALL ro.p()").contains(&"ro".to_string()));
+        assert!(my("UPDATE w.t SET a = (SELECT b FROM ro.s LIMIT 1)").iter().all(|n| n == "w"));
+        assert!(my("UPDATE w.t JOIN (SELECT a FROM ro.s) x USING (a) SET b = 1").contains(&"ro".to_string()), "a derived table can be what is written to");
+
+        for sql in [
+            "INSERT INTO ro.dbo.t VALUES (1)",
+            "UPDATE [ro].dbo.t SET a = 1",
+            "DELETE FROM ro..t",
+            "SELECT * INTO ro.dbo.t FROM w.dbo.s",
+            "EXEC ro.dbo.p",
+            "MERGE ro.dbo.t USING w.dbo.s ON 1 = 1 WHEN MATCHED THEN DELETE;",
+            "WITH c AS (SELECT * FROM ro.dbo.t) UPDATE c SET a = 1",
+            "DELETE x FROM (SELECT * FROM ro.dbo.t) x",
+            "UPDATE x SET a = 1 FROM ro.dbo.t x",
+            "ALTER DATABASE ro SET READ_ONLY",
+            "INSERT INTO link.ro.dbo.t VALUES (1)",
+        ] {
+            assert!(ms(sql).contains(&"ro".to_string()), "{sql}: {:?}", ms(sql));
+        }
+        assert!(ms("INSERT INTO dbo.t VALUES (1)").is_empty(), "a schema, not a database");
+        assert!(ms("INSERT INTO w.dbo.t SELECT * FROM ro.dbo.s").iter().all(|n| n == "w"));
+
+        assert!(duck("INSERT INTO ro.main.t VALUES (1)").contains(&"ro".to_string()));
+        assert!(duck("INSERT INTO ro.t VALUES (1)").contains(&"ro".to_string()));
+        assert!(duck("DROP DATABASE ro").contains(&"ro".to_string()));
+    }
 
     #[test]
     fn json_cells() {

@@ -280,13 +280,15 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     let mut t = t;
     if restricted {
         visible_only(&o.profile, &mut t);
-        // Views that read what is kept are kept, as list_tables keeps them.
+        // What reads what is kept is kept, as list_tables keeps it.
         let mut kept: Vec<(String, String)> = Vec::new();
+        let tables_read = o.conn.caps().tables_read_others;
         for (s, rels) in &t {
             for (name, rel) in rels {
                 let kind = match rel.kind.as_str() {
                     "view" => RelKind::View,
                     "materialized view" => RelKind::MaterializedView,
+                    _ if tables_read => RelKind::Table,
                     _ => continue,
                 };
                 let r = Relation { schema: s.clone(), name: name.clone(), kind, oid: None };

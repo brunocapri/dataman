@@ -29,6 +29,8 @@ pub enum Engine {
     Sqlite,
     #[serde(rename = "duckdb")]
     DuckDb,
+    #[serde(rename = "clickhouse")]
+    ClickHouse,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,10 +41,11 @@ pub enum Family {
 }
 
 impl Engine {
-    pub const ALL: [Engine; 9] = [
+    pub const ALL: [Engine; 10] = [
         Engine::Postgres,
         Engine::MySql,
         Engine::SqlServer,
+        Engine::ClickHouse,
         Engine::Sqlite,
         Engine::DuckDb,
         Engine::MongoDb,
@@ -120,14 +123,23 @@ pub fn is_local_host(host: &str) -> bool {
         || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// A loopback address or the name `localhost`: what stays on this machine whatever a resolver may
+/// answer for another name (`x.localhost` is on [`is_local_host`]'s side, not on this one).
+pub fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 /// What a new connection starts with until the user picks: opportunistic (`prefer`, which is
 /// plain text for the document engines) on this machine or through an SSH tunnel (already
-/// encrypted up to the bastion), TLS required anywhere else.
+/// encrypted up to the bastion), TLS required anywhere else, and verified where the engine's
+/// spec says so.
 pub fn default_sslmode(engine: Engine, host: &str, tunnel: bool) -> SslMode {
     if engine.is_file() {
         return SslMode::Disable;
     }
     match (tunnel || is_local_host(host), engine.is_sql()) {
+        (false, _) if engine.spec().strict_tls => SslMode::VerifyFull,
         (false, _) => SslMode::Require,
         (true, true) => SslMode::Prefer,
         (true, false) => SslMode::Disable,
@@ -746,6 +758,7 @@ impl ConnectionProfile {
                 let scheme = if matches!(self.sslmode, SslMode::Require | SslMode::VerifyFull) { "https" } else { "http" };
                 return format!("{scheme}://{user}{host}:{}", self.port);
             }
+            Engine::ClickHouse => return format!("clickhouse://{user}{host}:{}/{}?sslmode={}", self.port, percent_encode(&self.database), self.sslmode.label()),
             _ => {}
         }
         if self.engine == Engine::SqlServer {
@@ -1247,9 +1260,11 @@ mod tests {
             assert_eq!(default_sslmode(Engine::Redis, h, false), SslMode::Disable, "{h}");
         }
         for h in ["db.example.com", "10.0.0.5", "192.168.1.2", "localhost.evil.com", "::2", "host.docker.internal"] {
+            assert_eq!(default_sslmode(Engine::ClickHouse, h, false), SslMode::VerifyFull, "{h}: its password crosses with every request");
+            assert_eq!(default_sslmode(Engine::ClickHouse, h, true), SslMode::Prefer, "{h}: the tunnel is the crossing");
             assert!(!is_local_host(h), "{h}");
             for e in Engine::ALL.into_iter().filter(|e| !e.is_file()) {
-                assert_eq!(default_sslmode(e, h, false), SslMode::Require, "{h} {e:?}");
+                assert_eq!(default_sslmode(e, h, false), if e.spec().strict_tls { SslMode::VerifyFull } else { SslMode::Require }, "{h} {e:?}");
                 // Through a tunnel the hop to the bastion is encrypted: as on this machine.
                 assert_eq!(default_sslmode(e, h, true), if e.is_sql() { SslMode::Prefer } else { SslMode::Disable }, "{h} {e:?} tunnel");
             }
@@ -1609,7 +1624,7 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![pg, my, ms]);
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].engine, Engine::Postgres);
-        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 0, 0, 27017, 9200, 9200, 6379]);
+        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 8123, 0, 0, 27017, 9200, 9200, 6379]);
     }
 
     #[test]

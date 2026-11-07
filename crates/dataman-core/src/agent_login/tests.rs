@@ -76,7 +76,7 @@ fn names() {
     let n = login_name("x");
     assert!(n.starts_with(PREFIX) && n.len() == PREFIX.len() + 8 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{n}");
     assert_eq!(secret_account("abc"), "agent:abc");
-    assert!(!supported(Engine::Sqlite) && !supported(Engine::DuckDb) && supported(Engine::Redis));
+    assert!(!supported(Engine::Sqlite) && !supported(Engine::DuckDb) && !supported(Engine::ClickHouse) && supported(Engine::Redis));
 }
 
 #[test]

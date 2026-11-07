@@ -967,6 +967,13 @@ pub fn clean_error(msg: &str) -> Cow<'_, str> {
             (r"(The duplicate key value is )\((?s:.*?)\)(\.|$)", "$1(‹value›)$2"),
             (r"(Conversion failed when converting (?:the )?(?:[a-z]+ )?value )'(?:[^']|'')*'", "$1'‹value›'"),
             (r"(Error converting data type [^\n]*? )'(?:[^']|'')*'", "$1'‹value›'"),
+            // ClickHouse: a scalar subquery compared with another type answers with its value.
+            (r"(Cannot (?:convert|parse) string )'(?:[^'\\]|\\.)*'", "$1'‹value›'"),
+            (r"(while converting )'(?:[^'\\]|\\.)*'", "$1'‹value›'"),
+            // What the server was running, with quotes inside it that it does not escape.
+            (r"(while executing )'(?s:.*)'", "$1'‹value›'"),
+            (r"(_CAST\()'(?:[^'\\]|\\.)*'", "$1'‹value›'"),
+            (r"(Cannot parse (?:date|datetime|uuid|IPv4|IPv6|boolean value)(?: here)?:? )(?:[^:\n]*)", "$1‹value›"),
             // MongoDB
             (r"(dup key: )\{(?s:.*?)\}", "$1{ ‹value› }"),
             // Elasticsearch / OpenSearch
@@ -1009,6 +1016,107 @@ fn value_code(msg: &str) -> bool {
     [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::Sqlite, Engine::DuckDb, Engine::MongoDb]
         .into_iter()
         .any(|e| crate::backend::class::of(e, code).carries_values())
+}
+
+/// A connection that keeps data from agents: besides [`clean_error`]'s, every quoted string goes,
+/// whatever the words around it, unless it stands in the statement the agent wrote (a name it
+/// misspelled, a literal of its own). Servers quote values in more shapes than any list of them:
+/// ClickHouse's `_CAST('…')` and `while converting '…' to`. Code and wording stay.
+pub fn error_without_values(msg: &str, written: Option<(&str, crate::sql::Dialect)>) -> String {
+    let clean = clean_error(msg);
+    let mine: std::collections::HashSet<String> = written
+        .map(|(sql, d)| {
+            crate::sql::tokenize_in(sql, d)
+                .iter()
+                .filter(|t| !t.kind.is_trivia() && !matches!(t.kind, crate::sql::TokenKind::Punct | crate::sql::TokenKind::Operator))
+                .map(|t| t.text(sql).trim_matches(['\'', '"', '`', '[', ']']).to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = String::with_capacity(clean.len());
+    let mut rest: &str = &clean;
+    let mut before: Option<char> = None;
+    while let Some(c) = rest.chars().next() {
+        let contraction = c == '\'' && before.is_some_and(char::is_alphanumeric) && {
+            let word = rest[1..].split(|n: char| !n.is_alphanumeric()).next().unwrap_or("");
+            matches!(word, "t" | "s" | "re" | "ve" | "ll" | "d" | "m")
+        };
+        if !matches!(c, '\'' | '"') || contraction {
+            out.push(c);
+            before = Some(c);
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let inner = &rest[1..];
+        let end = quoted_end(inner, c);
+        let text = &inner[..end];
+        if mine.contains(text) || text == "‹value›" {
+            out.push(c);
+            out.push_str(text);
+            out.push(c);
+        } else {
+            out.push(c);
+            out.push_str("‹value›");
+            out.push(c);
+        }
+        before = Some(c);
+        rest = inner[end..].strip_prefix(c).unwrap_or(&inner[end..]);
+    }
+    out
+}
+
+/// Where a quoted string that starts at `s` ends: at its quote, not at a doubled or escaped one
+/// nor at one inside a word (`'o'brien'`), and if it never closes, at the end of the line: the
+/// rest may be the value.
+fn quoted_end(s: &str, quote: char) -> usize {
+    let mut it = s.char_indices().peekable();
+    while let Some((i, c)) = it.next() {
+        match c {
+            '\n' => return i,
+            '\\' => {
+                it.next();
+            }
+            c if c == quote => match it.peek() {
+                Some((_, n)) if *n == quote => {
+                    it.next();
+                }
+                Some((_, n)) if n.is_alphanumeric() => {}
+                _ => return i,
+            },
+            _ => {}
+        }
+    }
+    s.len()
+}
+
+/// The mask of a result column, whatever the server calls it: a second copy of a column is
+/// `b.email`, and in a subquery `email_1` (DuckDB) or `email:1` (SQLite); a column read into is
+/// `meta.keys`, `doc.a.b`, `c.nest.a` or the whole of a Nested (`nest` for `nest.a`). The strongest
+/// of those that apply; a name matches a little too much rather than too little.
+pub fn result_mask(masks: &[(String, Mask)], result: &str) -> Option<Mask> {
+    masks.iter().filter(|(m, _)| names_masked(m, result)).map(|(_, how)| *how).reduce(Mask::stronger)
+}
+
+/// `email` of `email_1`, `email_1_2` or `email:1`.
+fn without_copy_number(name: &str) -> &str {
+    let mut n = name;
+    while let Some((head, tail)) = n.rsplit_once(['_', ':']) {
+        if head.is_empty() || tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        n = head;
+    }
+    n
+}
+
+fn names_masked(masked: &str, result: &str) -> bool {
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    let want: Vec<&str> = masked.split('.').collect();
+    let mut got: Vec<&str> = result.split('.').collect();
+    if let Some(last) = got.last_mut() {
+        *last = without_copy_number(last);
+    }
+    got.windows(want.len()).any(|w| w.iter().zip(&want).all(|(a, b)| same(a, b))) || (got.len() < want.len() && got.iter().zip(&want).all(|(a, b)| same(a, b)))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1133,16 +1241,25 @@ fn table_parts(name: &str, names: Names) -> (Option<&str>, &str) {
     }
 }
 
-/// `table.column`, `schema.table.column`, or for flat names everything before the last dot.
-fn column_parts(name: &str, names: Names) -> (Option<&str>, &str, &str) {
+/// The ways an entry can be read: `table.column`, `schema.table.column`, and a column with dots
+/// of its own (ClickHouse's Nested `nest.a`, in `table.nest.a` or `schema.table.nest.a`). For flat
+/// names, everything before the last dot.
+fn column_readings(name: &str, names: Names) -> [Option<(Option<&str>, &str, &str)>; 3] {
     let (rest, col) = name.rsplit_once('.').unwrap_or(("*", name));
-    match names {
-        Names::Qualified => {
-            let (s, t) = table_parts(rest, names);
-            (s, t, col)
-        }
-        Names::Flat => (None, rest, col),
+    if names == Names::Flat {
+        return [Some((None, rest, col)), None, None];
     }
+    let (s, t) = table_parts(rest, names);
+    let last_dot = Some((s, t, col));
+    let Some((first, after)) = name.split_once('.').filter(|_| s.is_some()) else { return [last_dot, None, None] };
+    let table_first = Some((None, first, after));
+    let schema_first = after.split_once('.').map(|(table, c)| (Some(first), table, c));
+    [last_dot, table_first, schema_first]
+}
+
+/// A column by its pattern, or one with dots under what the pattern names (`nest` covers `nest.a`).
+fn column_covered(pattern: &str, column: &str) -> bool {
+    glob(pattern, column) || column.match_indices('.').any(|(i, _)| glob(pattern, &column[..i]))
 }
 
 fn name_eq(pattern: Option<&str>, actual: Option<&str>) -> bool {
@@ -1191,12 +1308,7 @@ impl Visible {
     }
 
     pub fn column_hidden(&self, schema: Option<&str>, table: &str, column: &str, names: Names) -> bool {
-        self.items.iter().any(|i| {
-            i.kind == ItemKind::Column && {
-                let (s, t, c) = column_parts(&i.name, names);
-                name_eq(s, schema) && glob(t, table) && (glob(c, column) || column.starts_with(&format!("{c}.")))
-            }
-        })
+        self.items.iter().any(|i| i.kind == ItemKind::Column && column_readings(&i.name, names).into_iter().flatten().any(|(s, t, c)| name_eq(s, schema) && glob(t, table) && column_covered(c, column)))
     }
 
     /// The column entries that can apply to a table (patterns, as written).
@@ -1204,10 +1316,9 @@ impl Visible {
         self.items
             .iter()
             .filter(|i| i.kind == ItemKind::Column)
-            .filter_map(|i| {
-                let (s, t, c) = column_parts(&i.name, names);
-                (name_eq(s, schema) && glob(t, table)).then(|| c.to_string())
-            })
+            .flat_map(|i| column_readings(&i.name, names).into_iter().flatten())
+            .filter(|(s, t, _)| name_eq(*s, schema) && glob(t, table))
+            .map(|(_, _, c)| c.to_string())
             .collect()
     }
 
@@ -1251,10 +1362,9 @@ pub struct SensitiveCol {
 
 pub fn sensitive_match(entry: &str, schema: Option<&str>, table: &str, column: &str, names: Names) -> bool {
     if !entry.contains('.') {
-        return glob(entry, column);
+        return column_covered(entry, column);
     }
-    let (s, t, c) = column_parts(entry, names);
-    name_eq(s, schema) && glob(t, table) && glob(c, column)
+    column_readings(entry, names).into_iter().flatten().any(|(s, t, c)| name_eq(s, schema) && glob(t, table) && column_covered(c, column))
 }
 
 /// A column name that usually holds a secret or personal data.
@@ -1593,7 +1703,7 @@ impl AgentRules {
                     continue;
                 }
                 let name = format!("{}.{}.{}", g.schema, g.table, g.column);
-                if g.from.iter().any(|d| r.visible.column_hidden(s, &g.table, d, names)) {
+                if g.opaque || g.from.iter().any(|d| r.visible.column_hidden(s, &g.table, d, names)) {
                     r.visible.items.push(VisibleItem { name, kind: ItemKind::Column });
                     changed = true;
                     continue;
@@ -1623,6 +1733,8 @@ pub struct Generated {
     pub table: String,
     pub column: String,
     pub from: Vec<String>,
+    /// It reads past its own row, from what cannot be followed: kept from agents whatever `from` says.
+    pub opaque: bool,
 }
 
 fn digits(s: &str) -> Vec<u32> {
@@ -1824,6 +1936,73 @@ mod tests {
     }
 
     #[test]
+    fn rules_reach_columns_with_dots() {
+        let q = Names::Qualified;
+        for rule in ["customers.nest", "customers.nest.a", "shop.customers.nest", "shop.customers.nest.a", "*.nest"] {
+            assert!(sensitive_match(rule, Some("shop"), "customers", "nest.a", q), "{rule}");
+        }
+        assert!(sensitive_match("nest", Some("shop"), "customers", "nest.b", q));
+        assert!(!sensitive_match("customers.nest.a", Some("shop"), "customers", "nest.b", q));
+        assert!(!sensitive_match("customers.nest", Some("shop"), "customers", "nesting", q));
+        assert!(!sensitive_match("other.nest", Some("shop"), "customers", "nest.a", q));
+        let v = Visible { mode: VisibleMode::Except, items: vec![VisibleItem { name: "shop.customers.nest.a".into(), kind: ItemKind::Column }] };
+        assert!(v.column_hidden(Some("shop"), "customers", "nest.a", q));
+        assert!(!v.column_hidden(Some("shop"), "customers", "nest.b", q));
+        assert!(!v.column_hidden(Some("other"), "customers", "nest.a", q));
+        // The older readings stay: a schema, a table and a column.
+        assert!(sensitive_match("public.users.email", Some("public"), "users", "email", q));
+        assert!(!sensitive_match("public.users.email", Some("audit"), "users", "email", q));
+        assert_eq!(column_readings("users.ssn", Names::Flat), [Some((None, "users", "ssn")), None, None]);
+    }
+
+    #[test]
+    fn a_result_column_is_masked_by_any_name_it_comes_back_under() {
+        let hide = Mask::Hidden;
+        let masks = vec![("email".to_string(), Mask::PARTIAL), ("meta".to_string(), hide), ("nest.a".to_string(), hide)];
+        for result in ["email", "EMAIL", "b.email", "shop.b.email", "email_1", "email_12", "email_1_1", "email:1", "b.email_1", "meta", "meta_1", "meta.keys", "c.meta.values", "doc.meta.x", "nest.a", "c.nest.a", "nest"] {
+            assert!(result_mask(&masks, result).is_some(), "{result}");
+        }
+        for result in ["id", "e_mail", "email2", "b.email2", "email_x", "1", "_1", "nest.b", "metadata", "a"] {
+            assert_eq!(result_mask(&masks, result), None, "{result}");
+        }
+        let both = vec![("email".to_string(), Mask::PARTIAL), ("b.email".to_string(), hide)];
+        assert_eq!(result_mask(&both, "b.email"), Some(hide), "the stronger of the two");
+    }
+
+    #[test]
+    fn errors_lose_every_value_they_quote_when_rules_apply() {
+        let secret = "ana-at-acme";
+        // As ClickHouse 25.8 and the others answer, with the value in each place they put it.
+        for raw in [
+            "[38] Cannot parse date here: ana-at-acm: while converting 'ana-at-acme' to Date: while executing 'FUNCTION equals(d : 0, _CAST('ana-at-acme'_Nullable(String), 'Nullable(String)'_String) :: 1)'. (CANNOT_PARSE_DATE)",
+            "[376] Cannot parse uuid ana-at-acme: while converting 'ana-at-acme' to UUID: while executing 'FUNCTION equals(u : 0, _CAST('ana-at-acme'_Nullable(String), 'Nullable(String)'_String) :: 1)'",
+            "[675] Cannot parse IPv4 ana-at-acme: while converting 'ana-at-acme' to IPv4",
+            "[467] Cannot parse boolean value here: 'ana-at-acm', should be 'true' or 'false': while converting 'ana-at-acme' to Bool",
+            "[130] Array does not start with '[' character: while converting 'ana-at-acme' to Array(Int32)",
+            "[27] Cannot parse input: expected '(' before: 'ana-at-acme': while converting 'ana-at-acme' to Tuple(Int32)",
+            "[53] Cannot convert string 'ana-at-acme' to type Int32: while executing 'FUNCTION equals(i : 0, _CAST('ana-at-acme'_Nullable(String), 'Nullable(String)'_String) :: 1)'",
+            "[22P02] invalid input syntax for type integer: \"ana-at-acme\"",
+            "[1292] Truncated incorrect DOUBLE value: 'ana-at-acme'",
+            "[245] Conversion failed when converting the varchar value 'ana-at-acme' to data type int.",
+            "[38] Cannot parse date: while executing 'FUNCTION equals(d : 0, _CAST('-ana-at-acme'_Nullable(String), 'Nullable(String)'_String) :: 1) -> equals(d, _CAST('-ana-at-acme'_Nullable(String), 'Nullable(String)'_String)) Nullable(UInt8) : 2': While executing MergeTreeSelect(pool: ReadPool). (CANNOT_PARSE_DATE)",
+            "[0] an unknown shape quoting \"ana-at-acme\" and 'ana-at-acme' with a stray quote 'ana-at-acme",
+            "[1] Can't convert 'ana-at-acme' to a number, it isn't one",
+        ] {
+            let out = error_without_values(raw, None);
+            assert!(!out.contains(secret) && !out.contains("ana-at-acm"), "{raw}\n{out}");
+            assert!(out.starts_with(&raw[..raw.find(']').unwrap() + 1]), "the code stays: {out}");
+        }
+        assert_eq!(error_without_values("[1] value 'it''s o'brien' here", None), "[1] value '‹value›' here");
+        assert_eq!(error_without_values("[1] Can't read 'x\\'y' now", None), "[1] Can't read '‹value›' now");
+        // A name or literal the agent wrote itself tells nothing, and helps it fix its statement.
+        let sql = "SELECT nope, 'mine' FROM t WHERE \"quoted name\" = 1";
+        let written = Some((sql, crate::sql::Dialect::Postgres));
+        assert_eq!(error_without_values("[42703] column \"nope\" does not exist", written), "[42703] column \"nope\" does not exist");
+        assert_eq!(error_without_values("[1] 'mine' is not 'yours'", written), "[1] 'mine' is not '‹value›'");
+        assert_eq!(error_without_values("[1] \"quoted name\"", written), "[1] \"quoted name\"");
+    }
+
+    #[test]
     fn json_keys_and_values_and_budget() {
         let t = Types::new(&TypeSettings::default());
         let mut v = serde_json::json!({"rows": [["ana@acme.com", 1]], "ana@acme.com": {"card": "4242 4242 4242 4242"}});
@@ -1932,6 +2111,7 @@ mod tests {
             ("new row for relation \"t\" violates check constraint \"c\"\nFailing row contains (1, ana, 123).", "Failing row contains (‹value›)."),
             ("invalid input syntax for type integer: \"12a\"", "invalid input syntax for type integer: \"‹value›\""),
             ("Duplicate entry 'ana@acme.com' for key 'users.email'", "Duplicate entry '‹value›' for key 'users.email'"),
+            (r"Cannot convert string 'it\'s' to type UInt8: In scope", "Cannot convert string '‹value›' to type UInt8: In scope"),
             ("Cannot insert duplicate key row in object 'dbo.users' with unique index 'ix'. The duplicate key value is (ana@acme.com).", "The duplicate key value is (‹value›)."),
             ("Conversion failed when converting the varchar value 'abc' to data type int.", "Conversion failed when converting the varchar value '‹value›' to data type int."),
             ("E11000 duplicate key error collection: shop.users index: email_1 dup key: { email: \"ana@acme.com\" }", "dup key: { ‹value› }"),

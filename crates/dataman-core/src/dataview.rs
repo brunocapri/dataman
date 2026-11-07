@@ -160,7 +160,12 @@ impl Filter {
             col.clone()
         };
         let is_null_word = self.value.trim().eq_ignore_ascii_case("null");
+        // ClickHouse's String holds any bytes, and those that are no text are shown as hex: the
+        // value may be those bytes or that text.
+        let bytes = (d == Dialect::ClickHouse && self.kind == Kind::Text).then(|| crate::sqlgen::hex_bytes(&v)).flatten();
         match self.op {
+            Op::Eq if let Some(h) = bytes => format!("({lhs} = {} OR {lhs} = unhex('{h}'))", lit(&v)),
+            Op::Ne if let Some(h) = bytes => format!("({lhs} <> {} AND {lhs} <> unhex('{h}'))", lit(&v)),
             Op::Eq if is_null_word => format!("{col} IS NULL"),
             Op::Ne if is_null_word => format!("{col} IS NOT NULL"),
             Op::Eq => format!("{lhs} = {}", lit(&v)),
@@ -392,6 +397,7 @@ impl Connection {
                 crate::schema::lite::lit(schema)
             )),
             Engine::DuckDb => Some(crate::schema::duck::primary_key_sql(schema, table)),
+            Engine::ClickHouse => Some(crate::schema::ch::primary_key_sql(schema, table)),
             _ => None,
         };
         if let Some(q) = other {

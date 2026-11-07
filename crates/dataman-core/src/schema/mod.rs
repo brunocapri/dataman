@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod catalog;
+pub(crate) mod ch;
 pub(crate) mod duck;
 pub mod lite;
 mod model;
@@ -36,13 +37,14 @@ async fn read_databases(c: &Db) -> Result<Vec<String>> {
         Db::Ms(_) => ms::databases(c).await,
         Db::Lite(_) => lite::databases(c).await,
         Db::Duck(_) => duck::databases(c).await,
+        Db::Ch(_) => ch::databases(c).await,
     }
 }
 
 async fn read_schemas(c: &Db, db: &str) -> Result<Vec<String>> {
     match c {
         Db::Pg(_) => pg::schemas(c).await,
-        Db::My(_) | Db::Lite(_) => Ok(vec![db.to_string()]),
+        Db::My(_) | Db::Lite(_) | Db::Ch(_) => Ok(vec![db.to_string()]),
         Db::Duck(_) => duck::schemas(c, db).await,
         Db::Ms(_) => ms::schemas(c).await,
     }
@@ -55,6 +57,7 @@ async fn read_relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
         Db::Ms(_) => ms::relations(c, schema).await,
         Db::Lite(_) => lite::relations(c, schema).await,
         Db::Duck(_) => duck::relations(c, "", schema).await,
+        Db::Ch(_) => ch::relations(c, schema).await,
     }
 }
 
@@ -65,6 +68,7 @@ async fn read_columns(c: &Db, rel: &Relation) -> Option<Vec<Column>> {
         Db::Ms(_) => ms::columns(c, &rel.schema, &rel.name).await,
         Db::Lite(_) => lite::columns(c, &rel.schema, &rel.name).await,
         Db::Duck(_) => duck::columns(c, "", &rel.schema, &rel.name).await,
+        Db::Ch(_) => ch::columns(c, &rel.schema, &rel.name).await,
     }
 }
 
@@ -75,6 +79,7 @@ async fn read_indexes(c: &Db, rel: &Relation, cols: &[Column]) -> Option<Result<
         Db::Ms(_) => Some(ms::indexes(c, &rel.schema, &rel.name).await),
         Db::Lite(_) => Some(lite::indexes(c, &rel.schema, &rel.name).await),
         Db::Duck(_) => Some(duck::indexes(c, "", &rel.schema, &rel.name).await),
+        Db::Ch(_) => Some(ch::indexes(c, &rel.schema, &rel.name).await),
     }
 }
 
@@ -85,6 +90,7 @@ async fn read_columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<St
         Db::Ms(_) => ms::columns_of_schemas(c, list).await,
         Db::Lite(_) => lite::columns_of_schemas(c, list).await,
         Db::Duck(_) => duck::columns_of_schemas(c, "", list).await,
+        Db::Ch(_) => ch::columns_of_schemas(c, list).await,
     }
 }
 
@@ -136,8 +142,9 @@ pub struct SchemaCache {
     snapshots: Mutex<HashMap<String, (u64, Arc<SchemaSnapshot>)>>,
 }
 
+/// PostgreSQL's, for what is only ever its own; what any dialect reaches goes through `SchemaCache::lit`.
 fn lit(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    Dialect::Postgres.quote_literal(s)
 }
 
 fn parse_bool(s: &Option<String>) -> Option<bool> {
@@ -184,11 +191,15 @@ impl SchemaCache {
         self.notes.lock().clone()
     }
 
-    fn note(&self, what: String) {
+    pub(crate) fn note(&self, what: String) {
         let mut n = self.notes.lock();
         if !n.contains(&what) {
             n.push(what);
         }
+    }
+
+    fn lit(&self, s: &str) -> String {
+        self.dialect.quote_literal(s)
     }
 
     pub(crate) fn has_search_path(&self, db: &str) -> bool {
@@ -313,22 +324,35 @@ impl Connection {
             if let Some(v) = this.schema.cached_databases() {
                 return Ok(v);
             }
-            let client = this.meta(this.database()).await?;
-            let v = match read_databases(&client).await {
-                Ok(v) => v,
-                Err(e) => {
-                    this.schema.note(format!("list of databases unavailable: {e}"));
-                    vec![]
-                }
-            };
-            let mut v = v;
-            if !this.database().is_empty() && !v.iter().any(|d| d == this.database()) {
-                v.insert(0, this.database().to_string());
-            }
-            *this.schema.databases.write() = Some(v.clone());
-            this.schema.bump();
-            Ok(v)
+            this.read_database_list().await
         })
+    }
+
+    /// Fills the list for whoever only looks at what is cached. A failure stays unknown.
+    pub(crate) async fn load_databases(&self) {
+        if self.schema.cached_databases().is_none()
+            && let Err(e) = self.read_database_list().await
+        {
+            log::warn!("list of databases: {e:#}");
+        }
+    }
+
+    async fn read_database_list(&self) -> Result<Vec<String>> {
+        let client = self.meta(self.database()).await?;
+        let v = match read_databases(&client).await {
+            Ok(v) => v,
+            Err(e) => {
+                self.schema.note(format!("list of databases unavailable: {e}"));
+                vec![]
+            }
+        };
+        let mut v = v;
+        if !self.database().is_empty() && !v.iter().any(|d| d == self.database()) {
+            v.insert(0, self.database().to_string());
+        }
+        *self.schema.databases.write() = Some(v.clone());
+        self.schema.bump();
+        Ok(v)
     }
 
     pub fn schemas(self: &Arc<Self>, db: &str) -> Task<Vec<String>> {
@@ -364,7 +388,7 @@ impl Connection {
         let mut v: Vec<Relation> = match read_relations(&client, schema).await {
             Ok(v) => v,
             Err(_) => {
-                let is = format!("SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = {}", lit(schema));
+                let is = format!("SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = {}", self.schema.lit(schema));
                 match first_ok(&client, &[&is]).await {
                     Ok(rows) => rows
                         .into_iter()
@@ -419,8 +443,8 @@ impl Connection {
                 let q = format!(
                     "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns \
                      WHERE table_schema = {} AND table_name = {} ORDER BY ordinal_position",
-                    lit(schema),
-                    lit(rel)
+                    self.schema.lit(schema),
+                    self.schema.lit(rel)
                 );
                 match first_ok(&client, &[&q]).await {
                     Ok(rows) => rows
@@ -495,7 +519,7 @@ impl Connection {
                 this.load_relations(&db, s).await?;
             }
             let client = this.meta(&db).await?;
-            let list = sp.iter().map(|s| lit(s)).collect::<Vec<_>>().join(", ");
+            let list = sp.iter().map(|s| this.schema.lit(s)).collect::<Vec<_>>().join(", ");
             if list.is_empty() {
                 return Ok(());
             }
@@ -601,9 +625,10 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert_eq!(lit("o'k"), "'o''k'");
         let c = SchemaCache::with_dialect("db".into(), vec![], Dialect::MySql);
         assert_eq!(c.snapshot("db").dialect, Dialect::MySql);
+        assert_eq!(c.lit(r"a\'b"), r"'a\\''b'", "a backslash cannot take the quote away");
+        assert_eq!(SchemaCache::new("db".into(), vec![]).lit(r"a\'b"), r"'a\''b'");
         assert_eq!(SchemaCache::new("db".into(), vec![]).snapshot("nope").dialect, Dialect::Postgres);
     }
 }

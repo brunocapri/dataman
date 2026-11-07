@@ -18,6 +18,9 @@ pub const SQLITE_FILE: Does = Does(1 << 3);
 /// DuckDB: reads (and runs) whatever it names: files, other databases, SQL in a string, secrets,
 /// the instance every connection to the file shares and its logs.
 pub const DUCKDB_FILE: Does = Does(1 << 4);
+/// ClickHouse: table functions, table engines and dictionary sources that read (and write) files,
+/// URLs, buckets and other servers, or read tables whole past what the agents' rules narrow.
+pub const CLICKHOUSE_FILE: Does = Does(1 << 7);
 /// Reads tables, schemas or files whole, around the agents' rules on columns.
 pub const READS_AROUND: Does = Does(1 << 5);
 /// An effect a write is allowed to have (a sequence, a notification).
@@ -42,6 +45,56 @@ const fn or(a: Does, b: Does) -> Does {
     Does(a.0 | b.0)
 }
 
+/// ClickHouse's table functions that read only their arguments. A table function is refused for
+/// agents unless it is here: a server's new one stays closed until someone reads what it does.
+pub const CLICKHOUSE_PLAIN_TABLE_FUNCTIONS: &[&str] = &["format", "fuzzJSON", "fuzzQuery", "generateRandom", "generateSeries", "generate_series", "null", "numbers", "numbers_mt", "values", "zeros", "zeros_mt"];
+
+/// Table engines that keep to the server's own disks, and the same rule. `Replicated…` too.
+pub const CLICKHOUSE_PLAIN_TABLE_ENGINES: &[&str] = &[
+    "AggregatingMergeTree", "CoalescingMergeTree", "CollapsingMergeTree", "EmbeddedRocksDB", "FuzzJSON", "FuzzQuery", "GenerateRandom", "GraphiteMergeTree", "Join", "LiveView", "Log", "MaterializedView",
+    "Memory", "MergeTree", "Null", "ReplacingMergeTree", "Set", "StripeLog", "SummingMergeTree", "TimeSeries", "TinyLog", "VersionedCollapsingMergeTree", "View", "WindowView",
+];
+
+pub const CLICKHOUSE_PLAIN_DATABASE_ENGINES: &[&str] = &["Atomic", "Lazy", "Memory", "Ordinary", "Replicated"];
+
+/// ClickHouse's `system` tables that show definitions, settings and counters: no statement that
+/// ran, no value that passed through. With server activity off an agent reads these only, so a
+/// server's new table stays closed until someone reads what it holds.
+pub const CLICKHOUSE_PLAIN_SYSTEM_TABLES: &[&str] = &[
+    "aggregate_function_combinators", "asynchronous_metrics", "azure_queue_settings", "build_options", "certificates", "clusters", "codecs", "collations", "columns", "completions",
+    "contributors", "current_roles", "dashboards", "data_skipping_indices", "data_type_families", "database_engines", "databases", "detached_parts", "detached_tables", "dictionaries", "dimensional_metrics",
+    "disks", "dns_cache", "dropped_tables", "dropped_tables_parts", "enabled_roles", "events", "filesystem_cache_settings", "formats", "functions", "grants", "graphite_retentions", "histogram_metrics",
+    "iceberg_history", "jemalloc_bins", "keywords", "licenses", "macros", "merge_tree_settings", "metrics", "models", "named_collections", "numbers", "numbers_mt", "one", "parts", "parts_columns", "privileges",
+    "projection_parts", "projection_parts_columns", "projections", "quota_limits", "quota_usage", "quotas", "quotas_usage", "remote_data_paths", "replicas", "replicated_merge_tree_settings", "resources", "rocksdb",
+    "role_grants", "roles", "row_policies", "s3_queue_settings", "scheduler", "server_settings", "settings", "settings_changes", "settings_profile_elements", "settings_profiles", "storage_policies", "symbols",
+    "table_engines", "table_functions", "tables", "time_zones", "user_directories", "users", "warnings", "workloads", "zeros", "zeros_mt",
+];
+
+/// Those known to show what is running or ran: other sessions' statements, their failures and
+/// values. Nothing reads this but the live test that holds a server's list to both.
+pub const CLICKHOUSE_ACTIVITY_SYSTEM_TABLES: &[&str] = &[
+    "asynchronous_insert_log", "asynchronous_inserts", "asynchronous_loader", "asynchronous_metric_log", "azure_queue", "backup_log", "backups", "blob_storage_log", "crash_log", "distributed_ddl_queue", "distribution_queue", "error_log", "errors",
+    "filesystem_cache", "iceberg_metadata_log", "kafka_consumers", "merges", "metric_log", "moves", "mutations", "opentelemetry_span_log", "part_log", "part_moves_between_shards", "processes", "processors_profile_log",
+    "query_cache", "query_condition_cache", "query_log", "query_metric_log", "query_thread_log", "query_views_log", "replicated_fetches", "replication_queue", "s3queue", "s3queue_log", "schema_inference_cache", "session_log",
+    "stack_trace", "text_log", "trace_log", "user_processes", "view_refreshes",
+];
+
+fn listed(list: &[&str], name: &str) -> bool {
+    list.iter().any(|n| n.eq_ignore_ascii_case(name))
+}
+
+pub fn clickhouse_plain_table_function(name: &str) -> bool {
+    listed(CLICKHOUSE_PLAIN_TABLE_FUNCTIONS, name)
+}
+
+pub fn clickhouse_plain_system_table(name: &str) -> bool {
+    listed(CLICKHOUSE_PLAIN_SYSTEM_TABLES, name)
+}
+
+pub fn clickhouse_plain_engine(name: &str) -> bool {
+    listed(CLICKHOUSE_PLAIN_TABLE_ENGINES, name) || listed(CLICKHOUSE_PLAIN_DATABASE_ENGINES, name) || name.to_ascii_lowercase().starts_with("replicated")
+}
+
 macro_rules! table {
     ($(($name:literal, $first:ident $(| $more:ident)*)),* $(,)?) => {
         /// Lowercase names.
@@ -50,6 +103,96 @@ macro_rules! table {
 }
 
 table! {
+    ("arrowflight", CLICKHOUSE_FILE),
+    ("azureblobstorage", CLICKHOUSE_FILE),
+    ("azureblobstoragecluster", CLICKHOUSE_FILE),
+    ("azurequeue", CLICKHOUSE_FILE),
+    ("backup", CLICKHOUSE_FILE),
+    ("buffer", CLICKHOUSE_FILE),
+    ("cassandra", CLICKHOUSE_FILE),
+    ("catboostevaluate", CLICKHOUSE_FILE),
+    ("clickhouse", CLICKHOUSE_FILE),
+    ("cluster", CLICKHOUSE_FILE),
+    ("clusterallreplicas", CLICKHOUSE_FILE),
+    ("columns", CLICKHOUSE_FILE),
+    ("cos", CLICKHOUSE_FILE),
+    ("cosn", CLICKHOUSE_FILE),
+    ("datalakecatalog", CLICKHOUSE_FILE),
+    ("deltalake", CLICKHOUSE_FILE),
+    ("deltalakeazure", CLICKHOUSE_FILE),
+    ("deltalakecluster", CLICKHOUSE_FILE),
+    ("deltalakelocal", CLICKHOUSE_FILE),
+    ("deltalakes3", CLICKHOUSE_FILE),
+    ("dictionary", CLICKHOUSE_FILE),
+    ("dictisin", CLICKHOUSE_FILE),
+    ("disk", CLICKHOUSE_FILE),
+    ("distributed", CLICKHOUSE_FILE),
+    ("executable", CLICKHOUSE_FILE),
+    ("executable_pool", CLICKHOUSE_FILE),
+    ("executablepool", CLICKHOUSE_FILE),
+    ("file", CLICKHOUSE_FILE),
+    ("filecluster", CLICKHOUSE_FILE),
+    ("filelog", CLICKHOUSE_FILE),
+    ("filesystem", CLICKHOUSE_FILE),
+    ("gcs", CLICKHOUSE_FILE),
+    ("generateserialid", CLICKHOUSE_FILE),
+    ("hascolumnintable", CLICKHOUSE_FILE),
+    ("hdfs", CLICKHOUSE_FILE),
+    ("hdfscluster", CLICKHOUSE_FILE),
+    ("hive", CLICKHOUSE_FILE),
+    ("http", CLICKHOUSE_FILE),
+    ("hudi", CLICKHOUSE_FILE),
+    ("hudicluster", CLICKHOUSE_FILE),
+    ("iceberg", CLICKHOUSE_FILE),
+    ("icebergazure", CLICKHOUSE_FILE),
+    ("icebergazurecluster", CLICKHOUSE_FILE),
+    ("iceberghdfs", CLICKHOUSE_FILE),
+    ("iceberghdfscluster", CLICKHOUSE_FILE),
+    ("iceberglocal", CLICKHOUSE_FILE),
+    ("icebergs3", CLICKHOUSE_FILE),
+    ("icebergs3cluster", CLICKHOUSE_FILE),
+    ("input", CLICKHOUSE_FILE),
+    ("jdbc", CLICKHOUSE_FILE),
+    ("joinget", CLICKHOUSE_FILE),
+    ("joingetornull", CLICKHOUSE_FILE),
+    ("kafka", CLICKHOUSE_FILE),
+    ("keepermap", CLICKHOUSE_FILE),
+    ("logtrace", CLICKHOUSE_FILE),
+    ("loop", CLICKHOUSE_FILE),
+    ("materializedmysql", CLICKHOUSE_FILE),
+    ("materializedpostgresql", CLICKHOUSE_FILE),
+    ("materializemysql", CLICKHOUSE_FILE),
+    ("merge", CLICKHOUSE_FILE),
+    ("mergetreeindex", CLICKHOUSE_FILE),
+    ("mergetreeprojection", CLICKHOUSE_FILE),
+    ("mongodb", CLICKHOUSE_FILE),
+    ("mysql", CLICKHOUSE_FILE),
+    ("nats", CLICKHOUSE_FILE),
+    ("odbc", CLICKHOUSE_FILE),
+    ("oss", CLICKHOUSE_FILE),
+    ("paimon", CLICKHOUSE_FILE),
+    ("postgresql", CLICKHOUSE_FILE),
+    ("prometheusquery", CLICKHOUSE_FILE),
+    ("prometheusqueryrange", CLICKHOUSE_FILE),
+    ("rabbitmq", CLICKHOUSE_FILE),
+    ("redis", CLICKHOUSE_FILE),
+    ("remote", CLICKHOUSE_FILE),
+    ("remotesecure", CLICKHOUSE_FILE),
+    ("s3", CLICKHOUSE_FILE),
+    ("s3cluster", CLICKHOUSE_FILE),
+    ("s3queue", CLICKHOUSE_FILE),
+    ("sqlite", CLICKHOUSE_FILE),
+    ("timeseriesdata", CLICKHOUSE_FILE),
+    ("timeseriesmetrics", CLICKHOUSE_FILE),
+    ("timeseriesselector", CLICKHOUSE_FILE),
+    ("timeseriestags", CLICKHOUSE_FILE),
+    ("url", CLICKHOUSE_FILE),
+    ("urlcluster", CLICKHOUSE_FILE),
+    ("view", CLICKHOUSE_FILE),
+    ("viewexplain", CLICKHOUSE_FILE),
+    ("viewifpermitted", CLICKHOUSE_FILE),
+    ("yamlregexptree", CLICKHOUSE_FILE),
+    ("ytsaurus", CLICKHOUSE_FILE),
     ("pg_terminate_backend", EFFECT),
     ("pg_cancel_backend", EFFECT),
     ("pg_reload_conf", EFFECT),
@@ -241,5 +384,11 @@ mod tests {
         }
         assert!(is("QUERY_TO_XML", STRING_SQL) && is("query_to_xml", READS_AROUND) && is("\"pg_read_file\"", SERVER_FILE));
         assert!(is("nextval", WRITE_OK) && is("nextval", EFFECT) && !is("upper", EFFECT));
+        for t in CLICKHOUSE_PLAIN_SYSTEM_TABLES {
+            assert!(!CLICKHOUSE_ACTIVITY_SYSTEM_TABLES.contains(t), "{t} on both lists");
+        }
+        assert!(clickhouse_plain_system_table("tables") && !clickhouse_plain_system_table("query_cache") && !clickhouse_plain_system_table("a_later_server_s_table"));
+        assert!(is("S3", CLICKHOUSE_FILE) && !is("url", EFFECT), "a name other engines may use is refused on ClickHouse only");
+        assert!(!is("buffer", READS_AROUND | STRING_SQL) && !is("hive", READS_AROUND | STRING_SQL), "`agent_sql` refuses those words anywhere, on every engine");
     }
 }

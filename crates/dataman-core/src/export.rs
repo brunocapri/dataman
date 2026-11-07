@@ -315,7 +315,10 @@ impl Connection {
         let p = progress.clone();
         let task = self.spawn(async move {
             let t0 = Instant::now();
-            if !is_rerunnable(&sql) {
+            // Where nothing can roll it back, what the statement does is the guard's to read:
+            // `SELECT 1 PARALLEL WITH DROP TABLE t` starts with a read.
+            let d = this.dialect();
+            if !is_rerunnable(&sql) || (!d.has_transactions() && crate::guard::classify_in(&sql, d).effect != crate::guard::Effect::Read) {
                 bail!("only SELECT, WITH, TABLE and VALUES statements can be exported by running them again");
             }
             let d = this.dedicated(db.as_deref()).await?;

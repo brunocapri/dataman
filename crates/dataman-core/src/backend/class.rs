@@ -12,6 +12,7 @@ pub fn of(engine: Engine, code: &str) -> ErrorClass {
         Engine::SqlServer => ms(code),
         Engine::Sqlite => lite(code),
         Engine::DuckDb => duck(code),
+        Engine::ClickHouse => ch(code),
         Engine::MongoDb => mongo(code),
         Engine::Redis => redis(code),
         Engine::Elasticsearch | Engine::OpenSearch => search(code),
@@ -124,6 +125,25 @@ fn duck(code: &str) -> ErrorClass {
     }
 }
 
+/// `ErrorCodes.cpp`; 194 is what a wrong password answers (probed on 25.8).
+fn ch(code: &str) -> ErrorClass {
+    use ErrorClass::*;
+    match code {
+        "192" | "193" | "194" | "516" => Auth,
+        "291" | "497" => Permission,
+        "164" => ReadOnly,
+        "394" | "735" => Cancelled,
+        "159" => Timeout,
+        "373" => LockTimeout,
+        "62" => Syntax,
+        "16" | "46" | "47" | "60" | "81" => Undefined,
+        "48" => Unsupported,
+        "6" | "27" | "38" | "41" | "53" | "69" | "70" | "72" => Data,
+        "209" | "210" => Connection,
+        _ => Other,
+    }
+}
+
 /// Server error codes (`AuthenticationFailed` is 18, `Unauthorized` 13).
 fn mongo(code: &str) -> ErrorClass {
     use ErrorClass::*;
@@ -181,6 +201,7 @@ mod tests {
             assert_eq!(of(e, c), Auth, "{e:?} {c}");
         }
         assert_eq!(of(Engine::Postgres, "42501"), Permission);
+        assert_eq!((of(Engine::ClickHouse, "194"), of(Engine::ClickHouse, "164"), of(Engine::ClickHouse, "60")), (Auth, ReadOnly, Undefined));
         assert_eq!(of(Engine::Postgres, "22P02"), Data);
         assert_eq!(of(Engine::Sqlite, "SQLITE_CONSTRAINT_NOTNULL"), NotNull);
         assert!(of(Engine::SqlServer, "2627").carries_values() && of(Engine::MySql, "1062").carries_values());

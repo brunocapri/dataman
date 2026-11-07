@@ -37,6 +37,8 @@ impl Connection {
                 this.ms_graph(&db, &schema).await?
             } else if this.engine() == crate::config::Engine::Sqlite {
                 this.lite_graph(&db, &schema).await?
+            } else if this.engine() == crate::config::Engine::ClickHouse {
+                RelationGraph::default()
             } else if this.engine() == crate::config::Engine::DuckDb {
                 this.duck_graph(&db, &schema).await?
             } else {

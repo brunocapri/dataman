@@ -245,3 +245,56 @@ fn snakeoil_certificate() {
     assert!(err.to_lowercase().contains("certificate"), "{err}");
     eprintln!("verify-full, snakeoil: {err}");
 }
+
+/// The bastion reaches ClickHouse by its compose service's name, which only it can resolve: the URL
+/// keeps the name and takes the tunnel's port.
+#[test]
+fn clickhouse_through_the_tunnel() {
+    let Some(((h, p), keys)) = setup().ssh.clone() else { return };
+    if answers(&std::env::var("DATAMAN_CLICKHOUSE").unwrap_or_else(|_| "127.0.0.1:18123".into())).is_none() {
+        return;
+    }
+    let db = std::env::var("DATAMAN_SSH_CLICKHOUSE").unwrap_or_else(|_| "clickhouse:8123".into());
+    let (dh, dp) = db.rsplit_once(':').unwrap();
+    let ssh = SshSettings { host: h, port: Some(p), user: "dataman".into(), auth: SshAuth::Key, key_file: keys.join("k_ed").display().to_string() };
+    let prof = ConnectionProfile {
+        engine: dataman_core::config::Engine::ClickHouse,
+        host: dh.into(),
+        port: dp.parse().unwrap(),
+        user: "default".into(),
+        database: "system".into(),
+        sslmode: SslMode::Disable,
+        ssh: Some(ssh),
+        ..ConnectionProfile::new("clickhouse-ssh")
+    };
+    let e = env();
+    let c = connect(&e, &prof).unwrap();
+    assert!(c.tunneled() && !c.tls_in_use());
+    let s = c.session(None);
+    assert_eq!(ok(&e, &s, "SELECT currentDatabase()"), "system");
+    // The tunnel is the crossing: `Prefer` may fall back here, as on this machine.
+    let c = connect(&e, &ConnectionProfile { sslmode: SslMode::Prefer, ..prof }).unwrap();
+    assert!(c.tunneled() && !c.tls_in_use());
+}
+
+/// A certificate someone vouches for is taken under verify-full. `DATAMAN_TLS_CA` is the compose
+/// service's own: `docker cp <container>:/etc/clickhouse-server/ca.crt ca.crt`.
+#[test]
+fn clickhouse_verify_full_takes_a_certificate_it_trusts() {
+    if !setup().ca || answers("127.0.0.1:18443").is_none() {
+        return;
+    }
+    let prof = ConnectionProfile {
+        engine: dataman_core::config::Engine::ClickHouse,
+        host: "localhost".into(),
+        port: 18443,
+        user: "default".into(),
+        database: String::new(),
+        sslmode: SslMode::VerifyFull,
+        ..ConnectionProfile::new("clickhouse-verify")
+    };
+    let e = env();
+    let c = connect(&e, &prof).unwrap();
+    assert!(c.tls_in_use());
+    assert_eq!(ok(&e, &c.session(None), "SELECT 1"), "1");
+}

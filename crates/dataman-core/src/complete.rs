@@ -585,7 +585,7 @@ fn enum_labels(src: &str, tokens: &[Token], i: usize, cursor: usize, snap: &Sche
         .iter()
         .filter_map(|l| {
             let s = match_score(l, partial)?;
-            let mut insert = l.replace('\'', "''");
+            let mut insert = if d.backslash_literals() { l.replace('\\', "\\\\") } else { l.clone() }.replace('\'', "''");
             if open {
                 insert.push('\'');
             }
@@ -819,6 +819,19 @@ mod tests {
 
     fn labels(src: &str) -> Vec<String> {
         comp(src).items.into_iter().map(|c| c.label).collect()
+    }
+
+    /// A label is the schema's: inserted between quotes, it must stay one literal.
+    #[test]
+    fn a_label_stays_inside_its_literal_where_a_backslash_escapes() {
+        let label = r"a\' OR 1 = 1 -- ";
+        let mut s = snap();
+        s.catalog = Some(Arc::new(Catalog::new(vec![], vec![TypeEntry { schema: "public".into(), name: "status_type".into(), kind: 'e', labels: vec![label.into()] }])));
+        let src = "select * from orders where status = '";
+        let insert = |s: &SchemaSnapshot| complete(src, src.len(), s).items.into_iter().find(|c| c.label == label).expect("the label").insert;
+        assert_eq!(insert(&s), r"a\'' OR 1 = 1 -- '", "PostgreSQL: a backslash is a character");
+        s.dialect = crate::sql::Dialect::MySql;
+        assert_eq!(insert(&s), r"a\\'' OR 1 = 1 -- '");
     }
 
     #[test]
