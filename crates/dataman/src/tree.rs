@@ -762,8 +762,11 @@ impl SchemaTree {
         }
     }
 
-    fn conn_row(&self, p: &dataman_core::ConnectionProfile, state: Option<&ConnState>, open: bool, t: &Theme) -> Row {
+    fn conn_row(&self, p: &dataman_core::ConnectionProfile, state: Option<&ConnState>, link: dataman_core::Link, open: bool, t: &Theme) -> Row {
+        let live = matches!(state, Some(ConnState::Connecting | ConnState::Connected(_)));
         let (glyph, meta) = match state {
+            _ if live && link == dataman_core::Link::Waking => ("waking", Meta::Plain),
+            Some(ConnState::Connected(_)) if link == dataman_core::Link::Lost => ("○", Meta::Off),
             Some(ConnState::Connecting) => ("◐", Meta::Warn),
             Some(ConnState::Connected(_)) => ("●", Meta::Ok),
             Some(ConnState::Failed { .. }) => ("✕", Meta::Err),
@@ -771,6 +774,8 @@ impl SchemaTree {
         };
         let mut r = Row::new(cid(&p.id), 0, p.name.clone(), Kind::Conn { id: p.id.clone() })
             .tone(match state {
+                _ if live && link == dataman_core::Link::Waking => Tone::ConnWait,
+                Some(ConnState::Connected(_)) if link == dataman_core::Link::Lost => Tone::ConnOff,
                 Some(ConnState::Connected(_)) => Tone::Conn,
                 Some(ConnState::Connecting) => Tone::ConnWait,
                 _ => Tone::ConnOff,
@@ -782,6 +787,8 @@ impl SchemaTree {
         if let Some(ConnState::Failed { msg: e, .. }) = state {
             r.tip = Some(e.clone().into());
             r.tip_err = true;
+        } else if matches!(state, Some(ConnState::Connected(_))) && link == dataman_core::Link::Lost {
+            r.tip = Some("Connection lost".into());
         }
         r.tunnel = p.ssh.is_some();
         r.logo = Some(match state {
@@ -829,7 +836,7 @@ impl SchemaTree {
         let id = cid(&p.id);
         let open = self.expanded.contains(&id);
         let state = store.states.get(&p.id);
-        rows.push(self.conn_row(p, state, open, t));
+        rows.push(self.conn_row(p, state, store.link(&p.id), open, t));
         if !open {
             return;
         }
@@ -892,7 +899,7 @@ impl SchemaTree {
                     }
                 }
                 if !block.is_empty() {
-                    rows.push(self.conn_row(p, store.states.get(&p.id), true, t));
+                    rows.push(self.conn_row(p, store.states.get(&p.id), store.link(&p.id), true, t));
                     rows.extend(block);
                 }
                 continue;
@@ -1022,7 +1029,7 @@ impl SchemaTree {
                 }
             }
             if !block.is_empty() {
-                rows.push(self.conn_row(p, store.states.get(&p.id), true, t));
+                rows.push(self.conn_row(p, store.states.get(&p.id), store.link(&p.id), true, t));
                 rows.extend(block);
             }
         }

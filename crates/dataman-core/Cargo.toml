@@ -92,6 +92,8 @@ windows-sys = { version = "0.61", features = ["Win32_System_JobObjects", "Win32_
 
 [dev-dependencies]
 tempfile = "3"
+# The wake retries' tests run on a paused clock.
+tokio = { workspace = true, features = ["test-util"] }
 # Certificates for the fake TLS servers, made as the tests start: no private key in the repository.
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 

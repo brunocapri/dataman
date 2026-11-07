@@ -335,6 +335,8 @@ pub enum ErrorClass {
     Syntax,
     Undefined,
     Connection,
+    /// A database waking up (paused, moving) refused the login for now: trying again is safe.
+    Waking,
     Other,
 }
 
@@ -361,6 +363,7 @@ impl ErrorClass {
             ErrorClass::Unsupported => "The server does not support this.",
             ErrorClass::Cancelled => "Cancelled.",
             ErrorClass::Timeout => "The statement ran out of time.",
+            ErrorClass::Waking => "The database is waking up; nothing was saved. Try again.",
             ErrorClass::Syntax | ErrorClass::Undefined | ErrorClass::Connection | ErrorClass::Other => "",
         }
     }

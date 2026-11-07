@@ -33,6 +33,7 @@ pub mod http;
 pub mod import;
 pub mod jsontree;
 pub mod layout;
+pub mod link;
 pub mod lint;
 pub mod nosql;
 pub mod os;
@@ -84,6 +85,7 @@ pub use conn::TxEnd;
 pub use tx::{TxState, TxStatus};
 pub use ssh::{HostKeyPrompt, SshError};
 pub use conn::{Connection, Session};
+pub use link::{Link, LinkState};
 pub use favorites::{Favorite, FavoritesStore, NameMatch};
 pub use history::{History, HistoryEntry, Outcome};
 pub use pins::PinStore;
@@ -413,7 +415,7 @@ impl Core {
                 }
                 return Ok((r?.1, rtt));
             }
-            let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await.map_err(|e| cloudauth::explain(&profile, e))?;
+            let d = link::through_wake(&Default::default(), || backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref())).await.map_err(|e| cloudauth::explain(&profile, e))?;
             let t = std::time::Instant::now();
             let info = backend::server_info(&d.db()).await?;
             let rtt = t.elapsed();
@@ -440,17 +442,18 @@ impl Core {
             }
             let ssh_secret = secrets.ssh_only(&user).await?;
             let tunnel = open_tunnel(&agent, ssh_secret, known).await?;
-            Connection::open(handle, agent, Cred::Password(Some(password)), history, tunnel).await
+            Connection::open(handle, agent, Cred::Password(Some(password)), history, tunnel, Default::default()).await
         })
     }
 
     pub fn connect(&self, profile: ConnectionProfile, password: Option<String>) -> Task<Arc<Connection>> {
-        self.connect_telling(profile, password).0
+        self.connect_telling(profile, password, Default::default()).0
     }
 
     /// As `connect`, and whether a password went with it (typed, saved, or ~/.pgpass's), set once
-    /// the credentials are read: refused, it was the wrong one, not a missing one.
-    pub fn connect_telling(&self, profile: ConnectionProfile, password: Option<String>) -> (Task<Arc<Connection>>, Arc<std::sync::atomic::AtomicBool>) {
+    /// the credentials are read: refused, it was the wrong one, not a missing one. `link` shows
+    /// how the dial goes while there is no connection yet, then how the connection does.
+    pub fn connect_telling(&self, profile: ConnectionProfile, password: Option<String>, link: Arc<LinkState>) -> (Task<Arc<Connection>>, Arc<std::sync::atomic::AtomicBool>) {
         let handle = self.handle();
         let history = self.history.clone();
         let secrets = self.resolver();
@@ -461,7 +464,7 @@ impl Core {
             let (cred, ssh_secret) = secrets.both(&profile, password, None).await?;
             told.store(matches!(&cred, Cred::Password(Some(pw)) if !pw.is_empty()), std::sync::atomic::Ordering::Relaxed);
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
-            Connection::open(handle, profile, cred, history, tunnel).await
+            Connection::open(handle, profile, cred, history, tunnel, link).await
         });
         (task, sent)
     }

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Instant;
 
@@ -74,9 +75,16 @@ pub struct TxWatch {
     /// The connection closed with a transaction open: the server rolled it back, and the next
     /// statement must not run on a new connection as if it were still inside it.
     lost: AtomicBool,
+    /// The socket died under the session (set by the driver, cleared by a new socket).
+    gone: AtomicBool,
+    link: Option<Arc<crate::link::LinkState>>,
 }
 
 impl TxWatch {
+    pub(crate) fn linked(link: Arc<crate::link::LinkState>) -> TxWatch {
+        TxWatch { link: Some(link), ..Default::default() }
+    }
+
     /// Capped: a loop of `RAISE NOTICE` must not fill memory.
     pub(crate) fn push_notice(&self, m: String) {
         let mut g = self.notices.lock();
@@ -135,6 +143,7 @@ impl TxWatch {
         self.lost.swap(false, Ordering::AcqRel)
     }
 
+    /// The session has no socket (or a new one is coming): nothing is open on it.
     pub(crate) fn closed(&self) {
         let mut st = self.state.lock();
         if st.status.is_open() {
@@ -142,8 +151,22 @@ impl TxWatch {
         }
         st.closed();
         drop(st);
+        self.gone.store(false, Ordering::Release);
         self.error_pending.store(false, Ordering::Release);
         self.settle.notify_waiters();
+    }
+
+    /// The socket died under the session, and an open transaction with it (`take_lost`).
+    pub(crate) fn broke(&self) {
+        self.closed();
+        self.gone.store(true, Ordering::Release);
+        if let Some(l) = &self.link {
+            l.lost();
+        }
+    }
+
+    pub(crate) fn gone(&self) -> bool {
+        self.gone.load(Ordering::Acquire)
     }
 }
 
@@ -157,6 +180,22 @@ pub(crate) enum Seen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lost_socket_reports_its_transaction_once_and_the_link() {
+        let link = Arc::new(crate::link::LinkState::default());
+        let w = TxWatch::linked(link.clone());
+        w.seen(Seen::Ready(b'T'));
+        w.broke();
+        assert!(w.gone() && !w.get().status.is_open());
+        assert_eq!(link.get(), crate::link::Link::Lost);
+        assert!(w.take_lost());
+        assert!(!w.take_lost(), "once");
+        w.closed();
+        assert!(!w.gone());
+        w.broke();
+        assert!(!w.take_lost(), "none was open");
+    }
 
     #[test]
     fn state_machine() {

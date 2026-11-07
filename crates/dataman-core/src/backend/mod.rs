@@ -72,6 +72,11 @@ use crate::server::ServerInfo;
 use crate::ssh::Tunnel;
 use crate::tx::TxWatch;
 
+/// How long a server may take to take a connection and to answer its login, each. An Aurora
+/// Serverless v2 instance holds both until it has resumed: under 15 s, 30 s or more after a day
+/// paused, and AWS asks for client timeouts above that.
+pub(crate) const CONNECT_WAIT: Duration = Duration::from_secs(45);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caps {
     pub schemas: bool,
@@ -276,6 +281,10 @@ pub fn server_error_class(e: &anyhow::Error) -> Option<crate::result::ErrorClass
     })
 }
 
+pub(crate) fn is_waking(e: &anyhow::Error) -> bool {
+    server_error_class(e) == Some(crate::result::ErrorClass::Waking)
+}
+
 /// A typed connect failure where the driver gives no class of its own (the message as the
 /// server put it).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,6 +331,30 @@ impl Db {
             Db::Lite(c) => c.is_closed(),
             Db::Duck(c) => c.is_closed(),
             Db::Ch(c) => c.is_closed(),
+        }
+    }
+
+    /// Asked just before a statement would go out on a socket that sat idle: a socket that fails
+    /// here never carried that statement. Only MySQL's and SQL Server's sockets go unread while
+    /// idle, and PostgreSQL's may be cut off without a reset; HTTP and files have none to lose.
+    /// On a task of its own: its caller may be dropped, and a request given up halfway would leave
+    /// the socket's protocol out of step.
+    pub(crate) async fn answers(&self) -> bool {
+        let db = self.clone();
+        let check = tokio::spawn(async move {
+            match &db {
+                Db::Pg(c) => matches!(tokio::time::timeout(crate::link::CHECK_WAIT, c.simple_query("")).await, Ok(Ok(_))),
+                Db::My(c) => c.answers().await,
+                Db::Ms(c) => c.answers().await,
+                Db::Lite(_) | Db::Duck(_) | Db::Ch(_) => true,
+            }
+        });
+        match check.await {
+            Ok(alive) => alive,
+            Err(e) => {
+                log::warn!("connection check: {e}");
+                false
+            }
         }
     }
 

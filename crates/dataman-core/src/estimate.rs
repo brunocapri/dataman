@@ -55,7 +55,11 @@ impl Connection {
                 let slot = self.showplan_slot(db);
                 let mut g = slot.lock().await;
                 if g.as_ref().is_none_or(|c| c.is_closed()) {
-                    let crate::backend::Dedicated::Ms(c) = self.dedicated(Some(db)).await.ok()? else { return None };
+                    // An estimate is no reason to log in to a connection known to be lost.
+                    if self.link() != crate::link::Link::Up {
+                        return None;
+                    }
+                    let crate::backend::Dedicated::Ms(c) = self.dedicated_once(Some(db)).await.ok()? else { return None };
                     *g = Some(c);
                 }
                 let c = g.clone()?;

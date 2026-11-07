@@ -178,6 +178,8 @@ fn drive<S, T>(
 {
     tokio::spawn(async move {
         let mut conn = conn;
+        // Ends without an error when the client was dropped (a tab closed).
+        let mut broke = false;
         let mut msgs = futures_util::stream::poll_fn(move |cx| conn.poll_message(cx));
         while let Some(m) = msgs.next().await {
             match m {
@@ -195,12 +197,13 @@ fn drive<S, T>(
                 Ok(_) => {}
                 Err(e) => {
                     log::debug!("connection closed: {e}");
+                    broke = true;
                     break;
                 }
             }
         }
         if let Some(w) = watch {
-            w.closed();
+            if broke { w.broke() } else { w.closed() }
         }
         drop(mark.lock().take());
     });
@@ -305,7 +308,7 @@ fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&st
     cfg.user(&p.user)
         .dbname(database.unwrap_or(&p.database))
         .application_name("Dataman")
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(super::CONNECT_WAIT)
         .ssl_mode(match sslmode {
             SslMode::Disable => tokio_postgres::config::SslMode::Disable,
             SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
@@ -402,7 +405,7 @@ impl Reach {
             }
             Ok::<_, std::io::Error>(RawStream::Tcp(tokio::net::TcpStream::connect((self.host.as_str(), self.port)).await?))
         };
-        let s = tokio::time::timeout(Duration::from_secs(10), connect)
+        let s = tokio::time::timeout(super::CONNECT_WAIT, connect)
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out"))??;
         #[cfg_attr(not(unix), allow(irrefutable_let_patterns))]
@@ -418,9 +421,9 @@ impl Reach {
 /// The startup and the login, bounded as the TCP connect is: a peer that takes the connection
 /// and never answers fails like a server that is not there, not forever.
 async fn handshake<T>(f: impl std::future::Future<Output = Result<T, tokio_postgres::Error>>) -> Result<T> {
-    match tokio::time::timeout(Duration::from_secs(30), f).await {
+    match tokio::time::timeout(super::CONNECT_WAIT, f).await {
         Ok(r) => Ok(r?),
-        Err(_) => anyhow::bail!("the server did not answer the login in 30 s"),
+        Err(_) => anyhow::bail!("the server did not answer the login in {} s", super::CONNECT_WAIT.as_secs()),
     }
 }
 

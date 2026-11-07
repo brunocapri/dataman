@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, EventEmitter};
-use dataman_core::{ConnFolder, ConnectionProfile, Connection, Core, SshError};
+use dataman_core::{ConnFolder, ConnectionProfile, Connection, Core, Link, LinkState, SshError};
 
 #[derive(Clone)]
 pub enum ConnState {
@@ -47,6 +47,10 @@ pub struct ConnStore {
     /// dialog (a password, an SSH host key), until it is picked.
     quiet: HashSet<String>,
     attempts: Attempts,
+    /// How each connection's way to its server is, from its first dial on (a database waking up
+    /// before there is a connection at all).
+    links: HashMap<String, Arc<LinkState>>,
+    links_seen: u64,
 }
 
 /// Which connect is the live one for each id: a disconnect or forget made while one runs ends
@@ -84,7 +88,7 @@ impl ConnStore {
     pub fn new(core: Arc<Core>) -> Self {
         let profiles = core.config.connections();
         let folders = core.config.folders();
-        ConnStore { core, profiles, folders, states: HashMap::new(), quiet: HashSet::new(), attempts: Attempts::default() }
+        ConnStore { core, profiles, folders, states: HashMap::new(), quiet: HashSet::new(), attempts: Attempts::default(), links: HashMap::new(), links_seen: 0 }
     }
 
     pub fn edit_folders(&mut self, f: impl FnOnce(&mut Vec<ConnFolder>), cx: &mut Context<Self>) -> anyhow::Result<()> {
@@ -136,6 +140,31 @@ impl ConnStore {
         }
     }
 
+    pub fn link(&self, id: &str) -> Link {
+        self.links.get(id).map_or(Link::Up, |l| l.get())
+    }
+
+    /// What the connections learned on their own (a socket the server closed, a database
+    /// waking) shows: nothing here goes to a server.
+    pub fn poll_links(&mut self, cx: &mut Context<Self>) {
+        for s in self.states.values() {
+            if let ConnState::Connected(c) = s {
+                c.notice_closed();
+            }
+        }
+        let seen = self.links.values().map(|l| l.changes()).sum();
+        if seen != self.links_seen {
+            self.links_seen = seen;
+            cx.notify();
+        }
+    }
+
+    fn drop_link(&mut self, id: &str) {
+        if let Some(l) = self.links.remove(id) {
+            l.stop();
+        }
+    }
+
     pub fn connect(&mut self, id: &str, password: Option<String>, cx: &mut Context<Self>) {
         let Some(profile) = self.profile(id).cloned() else { return };
         if matches!(self.states.get(id), Some(ConnState::Connecting | ConnState::Connected(_))) {
@@ -148,7 +177,11 @@ impl ConnStore {
         cx.notify();
         // A cloud token has no password to ask for: its error says what to run instead.
         let token = profile.auth.is_token();
-        let (task, sent) = self.core.connect_telling(profile, password);
+        let link = Arc::new(LinkState::default());
+        if let Some(old) = self.links.insert(id.to_string(), link.clone()) {
+            old.stop();
+        }
+        let (task, sent) = self.core.connect_telling(profile, password, link);
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
             let r = task.await;
@@ -267,6 +300,7 @@ impl ConnStore {
     pub fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
         self.attempts.end(id);
         self.quiet.remove(id);
+        self.drop_link(id);
         if let Some(ConnState::Connected(c)) = self.states.remove(id) {
             c.close();
         }
@@ -276,6 +310,7 @@ impl ConnStore {
     pub fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
         self.attempts.end(id);
         self.quiet.remove(id);
+        self.drop_link(id);
         self.states.remove(id);
         cx.notify();
     }
@@ -312,6 +347,9 @@ impl crate::app::Workspace {
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                if this.update(cx, |w, cx| w.store.update(cx, |s, cx| s.poll_links(cx))).is_err() {
+                    break;
+                }
                 let c = core.clone();
                 let changed = cx.background_executor().spawn(async move { c.config.refresh() }).await;
                 let alive = if changed {

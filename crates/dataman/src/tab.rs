@@ -549,6 +549,7 @@ impl QueryTab {
             self.want = None;
             self.waiting = None;
         }
+        self.edit.update(cx, |e, cx| e.set_connection(conn.clone(), cx));
         self.conn = conn;
         self.database = None;
         self.schema_version = 0;

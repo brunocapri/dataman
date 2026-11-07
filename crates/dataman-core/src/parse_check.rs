@@ -19,10 +19,15 @@ impl Connection {
             if this.engine() != Engine::SqlServer || sql.len() > MAX_BYTES || sql.trim().is_empty() {
                 return Ok(Vec::new());
             }
+            // Typing is no reason to log in to a connection known to be lost: that would wake a
+            // paused database. Running a statement reconnects, and the checks come back.
+            if this.link() != crate::link::Link::Up {
+                return Ok(Vec::new());
+            }
             let slot = this.parse_slot(&db);
             let mut g = slot.lock().await;
             if g.as_ref().is_none_or(|c| c.is_closed()) {
-                let Dedicated::Ms(c) = this.dedicated(Some(&db)).await? else { anyhow::bail!("not a SQL Server connection") };
+                let Dedicated::Ms(c) = this.dedicated_once(Some(&db)).await? else { anyhow::bail!("not a SQL Server connection") };
                 // In force for every later batch of this connection: it only ever parses.
                 // (Read as rows: `execute` probes the transaction state after a batch, and the
                 // probe is only parsed here.)
@@ -42,6 +47,9 @@ impl Connection {
                 }
                 let range = info.position.map(|p| token_at(&sql, char_to_byte(&sql, p as usize - 1))).unwrap_or(b.range.start..b.range.start + 1);
                 out.push(Lint { range, severity: Severity::Error, message: info.message });
+            }
+            if c.is_closed() {
+                this.link.lost();
             }
             Ok(out)
         })

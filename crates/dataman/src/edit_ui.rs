@@ -437,6 +437,8 @@ enum Card {
 pub struct GridEdit {
     grid: Entity<ResultGrid>,
     conn: Option<Arc<Connection>>,
+    /// The saved connection the result came from: edits go nowhere else.
+    origin: Option<String>,
     db: String,
     rs: Option<Arc<ResultSet>>,
     target: TargetState,
@@ -468,6 +470,7 @@ impl GridEdit {
         GridEdit {
             grid,
             conn: None,
+            origin: None,
             db: String::new(),
             rs: None,
             target: TargetState::Unknown,
@@ -527,6 +530,7 @@ impl GridEdit {
 
     pub fn reset(&mut self, conn: Option<Arc<Connection>>, db: String, rs: Option<Arc<ResultSet>>, cx: &mut Context<Self>) {
         let had = self.model.pending() > 0 || self.review_open;
+        self.origin = conn.as_ref().map(|c| c.profile.id.clone());
         self.conn = conn;
         self.db = db;
         self.target = if rs.as_ref().is_some_and(|r| r.is_restored()) { TargetState::ReadOnly("a saved result: run it again to edit".into()) } else { TargetState::Unknown };
@@ -545,6 +549,19 @@ impl GridEdit {
             cx.emit(EditEvent::Changed);
         }
         cx.notify();
+    }
+
+    /// The tab's connection changed: the same saved connection made again keeps the edits under
+    /// way (they apply through it); none keeps them until it is back; another one is another
+    /// server, and the result shown is not its to edit.
+    pub fn set_connection(&mut self, conn: Option<Arc<Connection>>, cx: &mut Context<Self>) {
+        match &conn {
+            Some(c) if self.origin.as_deref() != Some(c.profile.id.as_str()) => self.reset(conn, self.db.clone(), None, cx),
+            _ => {
+                self.conn = conn;
+                cx.notify();
+            }
+        }
     }
 
     pub fn pending_count(&self) -> usize {
@@ -954,7 +971,12 @@ impl GridEdit {
     }
 
     pub fn apply(&mut self, cx: &mut Context<Self>) {
-        let Some(conn) = self.conn.clone() else { return };
+        let Some(conn) = self.conn.clone() else {
+            self.card = Some(Card::Note("Connect first".into()));
+            cx.emit(EditEvent::OpenReview);
+            cx.notify();
+            return;
+        };
         if self.applying {
             return;
         }

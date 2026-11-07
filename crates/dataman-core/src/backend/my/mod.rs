@@ -73,7 +73,7 @@ fn opts(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, v
 }
 
 async fn dial(opts: Opts) -> Result<Conn> {
-    match tokio::time::timeout(Duration::from_secs(10), Conn::new(opts)).await {
+    match tokio::time::timeout(super::CONNECT_WAIT, Conn::new(opts)).await {
         Ok(r) => Ok(r?),
         Err(_) => Err(anyhow!("connection timed out")),
     }
@@ -170,7 +170,26 @@ impl Client {
         *slot = None;
         self.closed.store(true, Ordering::Release);
         if let Some(w) = &self.watch {
-            w.closed();
+            w.broke();
+        }
+    }
+
+    /// Any error counts: a ping cannot fail on a good connection, and a server closing an idle
+    /// session (`wait_timeout`) leaves an error for the next read before the end of the stream.
+    pub(crate) async fn answers(&self) -> bool {
+        let Ok(mut g) = self.conn.try_lock() else { return true };
+        let Some(conn) = g.as_mut() else { return false };
+        match tokio::time::timeout(crate::link::CHECK_WAIT, conn.ping()).await {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                log::debug!("connection check: {e}");
+                self.lost(&mut g);
+                false
+            }
+            Err(_) => {
+                self.lost(&mut g);
+                false
+            }
         }
     }
 

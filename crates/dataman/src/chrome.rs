@@ -36,6 +36,8 @@ struct TabView {
     want: Option<(String, Option<String>)>,
     agent: Option<String>,
     running: bool,
+    /// Running, while the connection waits for its database to wake up.
+    waking: bool,
     cancelling: bool,
     elapsed: Option<std::time::Duration>,
     batch: Vec<crate::tab::BatchItem>,
@@ -64,6 +66,7 @@ fn tab_view(tab: &QueryTab, pane: Pane, focused: bool, compact: bool) -> TabView
         want: tab.want.clone(),
         agent: tab.agent.as_ref().map(|a| agent_name(&a.client)),
         running: tab.is_running(),
+        waking: tab.is_running() && tab.connection().is_some_and(|c| c.link() == dataman_core::Link::Waking),
         cancelling: tab.is_cancelling(),
         elapsed: tab.elapsed(),
         batch: tab.batch_items().to_vec(),
@@ -938,7 +941,8 @@ impl Workspace {
             let (label, key): (SharedString, Option<Div>) = if v.cancelling {
                 (format!("Running {timer}").into(), run_key.map(|k| ui::keycap_sm(t.key, t.tx3, k)))
             } else if v.running {
-                (format!("Running {timer}").into(), run_key.map(|k| ui::keycap_sm(t.key, t.acc_t, k)))
+                let doing = if v.waking { "Waking" } else { "Running" };
+                (format!("{doing} {timer}").into(), run_key.map(|k| ui::keycap_sm(t.key, t.acc_t, k)))
             } else {
                 ("Run".into(), run_key.map(|k| ui::keycap_sm(gpui::hsla(0., 0., 1., 0.18), t.on_acc, k)))
             };
