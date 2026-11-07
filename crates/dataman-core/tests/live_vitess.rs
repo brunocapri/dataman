@@ -137,29 +137,42 @@ fn read_only(at: (&str, &str), sharded: bool) {
         assert_eq!(ro.read_only_refusal(&ks, sql), None, "{sql}");
     }
 
-    // What the session runs anyway runs in a READ ONLY transaction the server holds.
+    // The session asks the same of every caller, and what it runs is in a READ ONLY transaction
+    // the server holds (a stored function that writes fails there).
     let tab = ro.session(None);
-    let run = |sql: &str| {
+    let run = |tab: &Arc<dataman_core::Session>, sql: &str| {
         let rs = tab.execute(sql);
         rs.fetch_all();
         (e.core.block_on(rs.wait_finished()), rs)
     };
-    let (ph, rs) = run("UPDATE vt_items SET name = 'x' WHERE id = 1");
+    for sql in ["UPDATE vt_items SET name = 'x' WHERE id = 1", "SELECT 1; COMMIT; UPDATE vt_items SET name = 'x' WHERE id = 1"] {
+        let (ph, rs) = run(&tab, sql);
+        assert_eq!((ph, rs.status().error.and_then(|e| e.code).as_deref()), (Phase::Failed, Some("25006")), "{sql}");
+    }
+    let rolled = tab.execute_opts("UPDATE vt_items SET name = 'x' WHERE id = 1", vec![], true);
+    assert_eq!(e.core.block_on(rolled.wait_finished()), Phase::Failed, "nor one run to be rolled back");
+    assert_eq!(name_of(1).as_deref(), Some("a"));
+    const ACCESS: &str = "SELECT ACCESS_MODE, STATE FROM performance_schema.events_transactions_current WHERE THREAD_ID = PS_CURRENT_THREAD_ID()";
+    let (ph, rs) = run(&tab, ACCESS);
+    assert_eq!(ph, Phase::Done, "{:?}", rs.status().error);
+    assert_eq!((rs.snapshot().text(0, 0).as_deref(), rs.snapshot().text(0, 1).as_deref()), (Some("READ ONLY"), Some("ACTIVE")));
+    assert!(!tab.tx().status.is_open(), "the transaction around a run ends with it");
+    let (ph, rs) = run(&tab, "SELECT name FROM vt_items ORDER BY id");
+    assert_eq!((ph, rs.rows()), (Phase::Done, 3), "{:?}", rs.status().error);
+    assert_eq!(run(&tab, "START TRANSACTION READ ONLY").0, Phase::Done);
+    assert!(tab.tx().status.is_open());
+    assert_eq!(run(&tab, ACCESS).1.snapshot().text(0, 0).as_deref(), Some("READ ONLY"), "the user's own");
+    assert_eq!(run(&tab, "ROLLBACK").0, Phase::Done);
+    // A writable database: as MySQL, nothing of Dataman's around the run.
+    let w = rw.session(None);
+    assert_eq!(run(&w, ACCESS).1.snapshot().text(0, 0).as_deref(), Some("READ WRITE"));
+    // A tablet's error comes as the server's message, without the statement and its values.
+    assert_eq!(run(&w, "START TRANSACTION READ ONLY").0, Phase::Done);
+    let (ph, rs) = run(&w, "UPDATE vt_items SET name = 'secret-value' WHERE id = 1");
     assert_eq!(ph, Phase::Failed);
     let err = rs.status().error.unwrap();
-    assert_eq!(err.code.as_deref(), Some("1792"));
-    assert_eq!(err.message, "Cannot execute statement in a READ ONLY transaction.", "the server's message, without the statement's values");
-    assert_eq!(name_of(1).as_deref(), Some("a"));
-    assert!(!tab.tx().status.is_open(), "the transaction around a run ends with it");
-    let rolled = tab.execute_opts("UPDATE vt_items SET name = 'x' WHERE id = 1", vec![], true);
-    assert_eq!(e.core.block_on(rolled.wait_finished()), Phase::Failed, "a statement run to be rolled back is no write either");
-    let (ph, rs) = run("SELECT name FROM vt_items ORDER BY id");
-    assert_eq!((ph, rs.rows()), (Phase::Done, 3), "{:?}", rs.status().error);
-    assert_eq!(run("START TRANSACTION READ ONLY").0, Phase::Done);
-    assert!(tab.tx().status.is_open());
-    assert_eq!(run("UPDATE vt_items SET name = 'x' WHERE id = 1").0, Phase::Failed);
-    assert_eq!(run("ROLLBACK").0, Phase::Done);
-    assert_eq!(name_of(1).as_deref(), Some("a"));
+    assert_eq!((err.code.as_deref(), err.message.as_str()), (Some("1792"), "Cannot execute statement in a READ ONLY transaction."));
+    assert_eq!(run(&w, "ROLLBACK").0, Phase::Done);
 
     // Agents: reads in a READ ONLY transaction of their own, and Vitess' sequences hand out
     // values inside one.
@@ -191,8 +204,8 @@ fn sharded() {
     read_only(SHARDED, true);
 }
 
-/// Detection, TLS and the read-only hold on PlanetScale itself. Reads only: an UPDATE whose WHERE
-/// matches no row is all it sends that could write.
+/// Detection, TLS and read-only on PlanetScale itself. Reads only: the one UPDATE (whose WHERE
+/// matches no row) is refused before it is sent.
 #[test]
 fn planetscale() {
     let Ok(url) = std::env::var("DATAMAN_PLANETSCALE_URL") else {
@@ -222,7 +235,7 @@ fn planetscale() {
         let cols = e.core.block_on(c.columns(&db, &db, &t.name)).unwrap();
         let (q, col) = (Dialect::MySql, Dialect::MySql.quote_ident(&cols[0].name));
         let rs = c.session(None).execute(format!("UPDATE {} SET {col} = {col} WHERE 1 = 0", q.quote_ident(&t.name)));
-        assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Failed, "the server holds the transaction it runs in");
-        assert!(rs.status().error.is_some_and(|err| err.message.contains("READ ONLY")), "{:?}", rs.status().error);
+        assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Failed);
+        assert_eq!(rs.status().error.and_then(|e| e.code).as_deref(), Some("25006"));
     }
 }

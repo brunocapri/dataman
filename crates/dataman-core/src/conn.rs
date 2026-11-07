@@ -575,6 +575,21 @@ impl Session {
             });
             return;
         }
+        // Nothing on such a server keeps the session read-only: what a tab asks before sending
+        // holds for every caller, and the rest runs in a READ ONLY transaction (below).
+        if !agent
+            && self.unheld_read_only()
+            && let Some(message) = self.conn.read_only_refusal(&self.current_database(), &rs.sql)
+        {
+            let info = ErrorInfo { code: Some("25006".into()), message, ..Default::default() };
+            self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
+            rs.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.elapsed = Some(Duration::ZERO);
+                s.error = Some(info);
+            });
+            return;
+        }
         // Rolled back: a transaction of its own, or a savepoint inside the open one (whose work
         // must survive).
         let wrap = if rollback && dialect.has_transactions() {
@@ -697,9 +712,15 @@ impl Session {
     /// control itself (which `guard::read_only_refusal_held` lets run only alone there).
     fn read_only_hold(&self, sql: &str) -> Option<&'static str> {
         let d = self.conn.dialect();
+        let outside = !self.tx.get().status.is_open() && crate::guard::classify_in(sql, d).tx.is_none();
+        if outside && self.unheld_read_only() { d.begin_read_only() } else { None }
+    }
+
+    /// A read-only database whose server keeps no read-only session but holds a READ ONLY
+    /// transaction (Vitess; SQL Server has neither).
+    fn unheld_read_only(&self) -> bool {
         let ro = self.conn.read_only_for(&self.database) || self.conn.read_only_for(&self.current_database());
-        let held = self.conn.caps().read_only_held || !ro || self.tx.get().status.is_open() || crate::guard::classify_in(sql, d).tx.is_some();
-        if held { None } else { d.begin_read_only() }
+        ro && !self.conn.caps().read_only_held && self.conn.dialect().begin_read_only().is_some()
     }
 
     fn record(&self, rs: &ResultSet, elapsed: Duration) {
