@@ -273,6 +273,9 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
         }
     };
     let pid = backend_pid(&client).await;
+    if pid.is_none() {
+        log::warn!("{}:{}: pg_backend_pid() gave no process ID: a pooler in front goes unnoticed", p.host, p.port);
+    }
     let pooler = pid.and_then(|b| crate::pooler::detect(&p.host, p.port, client.backend_key_pid(), b));
     // Through a pooler that hands out server connections per transaction the backend is shared
     // and changes: it is no one's own, and a session setting would land on whoever gets it next.
