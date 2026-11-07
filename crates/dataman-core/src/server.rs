@@ -8,6 +8,8 @@ pub enum Flavor {
     Standard,
     MariaDb,
     Azure,
+    /// Vitess' vtgate in front of MySQL (PlanetScale's too).
+    Vitess,
 }
 
 /// What the server is: `engine`, `flavor` and `release` are what behavior goes by; `version` is

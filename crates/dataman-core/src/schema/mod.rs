@@ -83,10 +83,10 @@ async fn read_indexes(c: &Db, rel: &Relation, cols: &[Column]) -> Option<Result<
     }
 }
 
-async fn read_columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<String>>>> {
+async fn read_columns_of_schemas(c: &Db, db: &str, list: &str) -> Result<Vec<Vec<Option<String>>>> {
     match c {
         Db::Pg(_) => pg::columns_of_schemas(c, list).await,
-        Db::My(_) => my::columns_of_schemas(c, list).await,
+        Db::My(_) => my::columns_of_schemas(c, db, list).await,
         Db::Ms(_) => ms::columns_of_schemas(c, list).await,
         Db::Lite(_) => lite::columns_of_schemas(c, list).await,
         Db::Duck(_) => duck::columns_of_schemas(c, "", list).await,
@@ -527,7 +527,7 @@ impl Connection {
                 "SELECT table_schema, table_name, column_name, data_type, is_nullable, ordinal_position \
                  FROM information_schema.columns WHERE table_schema IN ({list})"
             );
-            let rows = match read_columns_of_schemas(&client, &list).await {
+            let rows = match read_columns_of_schemas(&client, &db, &list).await {
                 Ok(r) => r,
                 Err(_) => match first_ok(&client, &[&is]).await {
                     Ok(r) => r,

@@ -14,12 +14,21 @@ pub(crate) fn is_system(db: &str) -> bool {
     crate::Engine::MySql.is_system_db(db)
 }
 
+/// A schema name the server reads back, as `name` where it is `same_as`'s. Vitess' tablets
+/// answer with their own name for a keyspace (`vt_shop_0` for `shop`), though they take the
+/// keyspace's in a WHERE.
+pub(crate) fn named(col: &str, same_as: &str, name: &str) -> String {
+    format!("IF({col} = {same_as}, {}, {col})", lit(name))
+}
+
 fn get(r: &[Option<String>], i: usize) -> Option<String> {
     r.get(i).cloned().flatten()
 }
 
 pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
-    let rows = first_ok(c, &["SELECT SCHEMA_NAME FROM information_schema.SCHEMATA", "SHOW DATABASES"]).await?;
+    // The same list on MySQL; Vitess answers SHOW DATABASES with its keyspaces, SCHEMATA with its
+    // tablets' databases.
+    let rows = first_ok(c, &["SHOW DATABASES", "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA"]).await?;
     let mut v: Vec<String> = rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect();
     v.sort_by(|a, b| is_system(a).cmp(&is_system(b)).then_with(|| a.cmp(b)));
     v.dedup();
@@ -124,23 +133,28 @@ pub(super) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Ind
     Ok(out)
 }
 
-pub(super) async fn columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<String>>>> {
+/// `db`: the database `c` is on.
+pub(super) async fn columns_of_schemas(c: &Db, db: &str, list: &str) -> Result<Vec<Vec<Option<String>>>> {
     let q = format!(
-        "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, ORDINAL_POSITION \
-         FROM information_schema.COLUMNS WHERE TABLE_SCHEMA IN ({list})"
+        "SELECT {}, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, ORDINAL_POSITION \
+         FROM information_schema.COLUMNS WHERE TABLE_SCHEMA IN ({list})",
+        named("TABLE_SCHEMA", "DATABASE()", db)
     );
     first_ok(c, &[&q]).await
 }
 
+/// A join, not a subquery per routine: Vitess plans no correlated subquery but EXISTS.
 pub(crate) fn routines_sql(db: &str) -> String {
+    let db = lit(db);
     format!(
-        "SELECT r.ROUTINE_SCHEMA, r.ROUTINE_NAME, r.ROUTINE_TYPE, r.DTD_IDENTIFIER, \
-           (SELECT GROUP_CONCAT(CONCAT(IF(r.ROUTINE_TYPE = 'PROCEDURE', CONCAT(p.PARAMETER_MODE, ' '), ''), p.PARAMETER_NAME, ' ', p.DTD_IDENTIFIER) \
-                   ORDER BY p.ORDINAL_POSITION SEPARATOR ', ') \
-              FROM information_schema.PARAMETERS p \
-             WHERE p.SPECIFIC_SCHEMA = r.ROUTINE_SCHEMA AND p.SPECIFIC_NAME = r.SPECIFIC_NAME AND p.ORDINAL_POSITION > 0) \
-         FROM information_schema.ROUTINES r WHERE r.ROUTINE_SCHEMA = {} ORDER BY r.ROUTINE_NAME",
-        lit(db)
+        "SELECT {db}, r.ROUTINE_NAME, r.ROUTINE_TYPE, r.DTD_IDENTIFIER, \
+           GROUP_CONCAT(CONCAT(IF(r.ROUTINE_TYPE = 'PROCEDURE', CONCAT(p.PARAMETER_MODE, ' '), ''), p.PARAMETER_NAME, ' ', p.DTD_IDENTIFIER) \
+                        ORDER BY p.ORDINAL_POSITION SEPARATOR ', ') \
+         FROM information_schema.ROUTINES r \
+         LEFT JOIN information_schema.PARAMETERS p \
+           ON p.SPECIFIC_SCHEMA = r.ROUTINE_SCHEMA AND p.SPECIFIC_NAME = r.SPECIFIC_NAME AND p.ORDINAL_POSITION > 0 \
+         WHERE r.ROUTINE_SCHEMA = {db} \
+         GROUP BY r.ROUTINE_SCHEMA, r.SPECIFIC_NAME, r.ROUTINE_NAME, r.ROUTINE_TYPE, r.DTD_IDENTIFIER ORDER BY r.ROUTINE_NAME"
     )
 }
 
@@ -253,7 +267,7 @@ pub(super) fn constraints_sql(schema: &str, table: &str) -> [String; 2] {
         format!(
             "SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, \
                     GROUP_CONCAT(k.COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR ', '), \
-                    MAX(k.REFERENCED_TABLE_SCHEMA), MAX(k.REFERENCED_TABLE_NAME), \
+                    MAX({r}), MAX(k.REFERENCED_TABLE_NAME), \
                     GROUP_CONCAT(k.REFERENCED_COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR ', '), \
                     MAX(rc.UPDATE_RULE), MAX(rc.DELETE_RULE) \
                FROM information_schema.TABLE_CONSTRAINTS tc \
@@ -262,7 +276,8 @@ pub(super) fn constraints_sql(schema: &str, table: &str) -> [String; 2] {
                LEFT JOIN information_schema.REFERENTIAL_CONSTRAINTS rc ON rc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA \
                     AND rc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME AND rc.TABLE_NAME = tc.TABLE_NAME \
               WHERE tc.TABLE_SCHEMA = {s} AND tc.TABLE_NAME = {t} \
-              GROUP BY tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE ORDER BY tc.CONSTRAINT_TYPE, tc.CONSTRAINT_NAME"
+              GROUP BY tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE ORDER BY tc.CONSTRAINT_TYPE, tc.CONSTRAINT_NAME",
+            r = named("k.REFERENCED_TABLE_SCHEMA", "k.TABLE_SCHEMA", schema)
         ),
         format!(
             "SELECT cc.CONSTRAINT_NAME, 'CHECK', cc.CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS cc \

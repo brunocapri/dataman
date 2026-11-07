@@ -109,7 +109,7 @@ pub static SPECS: [EngineSpec; 10] = [
         slug: "mysql",
         label: "MySQL",
         aliases: &["mariadb"],
-        search: "mysql mariadb",
+        search: "mysql mariadb vitess planetscale",
         default_port: 3306,
         default_user: "root",
         family: Family::Sql,

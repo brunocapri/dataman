@@ -350,8 +350,9 @@ impl Connection {
     /// server's side (a read-only session); the rest is this check.
     pub fn read_only_refusal(&self, database: &str, sql: &str) -> Option<String> {
         let d = self.dialect();
+        let held = self.caps().read_only_held;
         if self.read_only_for(database)
-            && let Some(r) = guard::read_only_refusal_in(sql, d)
+            && let Some(r) = guard::read_only_refusal_held(sql, d, held)
         {
             return Some(r);
         }
@@ -368,7 +369,7 @@ impl Connection {
                     current = used;
                     continue;
                 }
-                if guard::read_only_refusal_in(s, d).is_none() {
+                if guard::read_only_refusal_held(s, d, held).is_none() {
                     continue;
                 }
                 let verb = || guard::classify_in(s, d).verb;
@@ -381,6 +382,12 @@ impl Connection {
             }
         }
         None
+    }
+
+    /// What an agent's read must not run on a server that keeps no read-only session (Vitess):
+    /// its read-only transaction holds writes, and this keeps to reads what it lets through.
+    pub(crate) fn unheld_read_refusal(&self, sql: &str) -> Option<String> {
+        if self.caps().read_only_held { None } else { guard::read_only_refusal_held(sql, self.dialect(), false) }
     }
 
     /// The pool of `db`'s connections made while it was read-only (`ro`) or not: a toggle in
@@ -470,6 +477,11 @@ impl Connection {
         if let Some(r) = refusal_in(&stmts, params.len(), mode, ro, dialect) {
             return Err(Stop::Refused(r));
         }
+        if mode == Mode::Read
+            && let Some(r) = self.unheld_read_refusal(sql)
+        {
+            return Err(Stop::Refused(r));
+        }
         if mode != Mode::Read {
             if self.profile.read_only && self.engine().spec().db_in_name.is_some() {
                 self.load_databases().await;
@@ -495,7 +507,7 @@ impl Connection {
             let work = async {
                 match &d {
                     Dedicated::Pg(p) => in_transaction(&p.client, &stmts, &params, mode, &limits).await,
-                    Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, &limits).await,
+                    Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, ro, &limits).await,
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Lite(c) => lite_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Duck(c) => duck_in_transaction(c, &stmts, &params, mode, &limits).await,
@@ -762,10 +774,20 @@ async fn lite_statement(c: &Arc<lite::Client>, sql: &str, params: &[Option<Strin
 
 /// DDL commits on its own in MySQL: a write that changes the schema is not undone by a
 /// ROLLBACK (the agents' tiers ask before running it).
-async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+///
+/// `ro`: the database is read-only. MySQL's read-only session makes every transaction so; a
+/// server that drops the setting (Vitess) still holds one begun READ ONLY.
+async fn my_in_transaction(
+    c: &Arc<my::Client>,
+    stmts: &[String],
+    params: &[Option<String>],
+    mode: Mode,
+    ro: bool,
+    limits: &Limits,
+) -> Result<(Outcome, bool), Failed> {
     let server = |e: mysql_async::Error, sql: &str| Stop::Server(my::error_info_at(&e, sql));
     if mode != Mode::Autocommit {
-        let begin = Dialect::MySql.begin_for(mode == Mode::Read);
+        let begin = Dialect::MySql.begin_for(mode == Mode::Read || ro);
         c.execute(begin).await.map_err(|e| (server(e, begin), false))?;
     }
     // MySQL bounds SELECTs (MAX_EXECUTION_TIME, ms), MariaDB every statement (seconds); the

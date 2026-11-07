@@ -472,14 +472,44 @@ pub(crate) fn version_label(v: &str) -> String {
     }
 }
 
+/// Vitess' vtgate answers `@@version` (`8.4.6-Vitess`) and `@@version_comment` (`Version: 22.0.1
+/// (Git revision …)`) itself, while a VERSION() beside CURRENT_USER() reaches the MySQL behind it:
+/// the first two name the flavor, the last the release.
+fn vitess_label(gate: &str, comment: &str, release: &str) -> Option<String> {
+    let said = |s: &str| s.to_ascii_lowercase();
+    let (gate, comment) = (said(gate), said(comment));
+    let product = if gate.contains("planetscale") || comment.contains("planetscale") {
+        "PlanetScale"
+    } else if gate.contains("vitess") || comment.contains("vitess") {
+        "Vitess"
+    } else {
+        return None;
+    };
+    let mysql = release.split('-').next().unwrap_or(release);
+    let own = comment.strip_prefix("version: ").and_then(|v| v.split(['-', ' ']).next()).filter(|v| v.starts_with(|c: char| c.is_ascii_digit()));
+    Some(match own {
+        Some(v) => format!("{product} {v} (MySQL {mysql})"),
+        None => format!("{product} (MySQL {mysql})"),
+    })
+}
+
 pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
-    let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)").await?;
+    const WHO: &str = "SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)";
+    // A fork that has no such variables is no vtgate (which answers both).
+    let rows = match client.text_rows(&format!("{WHO}, @@version, @@version_comment")).await {
+        Ok(rows) => rows,
+        Err(_) => client.text_rows(WHO).await?,
+    };
     let row = rows.into_iter().next().context("VERSION() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let raw = get(0);
     let flavor = if raw.contains("MariaDB") { crate::server::Flavor::MariaDb } else { crate::server::Flavor::Standard };
     let release = raw.strip_prefix("5.5.5-").unwrap_or(&raw).to_string();
-    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, version_label(&raw), &release) };
+    let (flavor, label) = match vitess_label(&get(3), &get(4), &release) {
+        Some(label) => (crate::server::Flavor::Vitess, label),
+        None => (flavor, version_label(&raw)),
+    };
+    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, label, &release) };
     info.search_path = if info.database.is_empty() { vec![] } else { vec![info.database.clone()] };
     Ok(info)
 }
@@ -628,6 +658,16 @@ mod tests {
         assert_eq!(version_label("8.0.39-0ubuntu0.22.04.1"), "MySQL 8.0.39");
         assert_eq!(version_label("11.4.2-MariaDB-ubu2404"), "MariaDB 11.4.2");
         assert_eq!(version_label("5.5.5-10.6.12-MariaDB-log"), "MariaDB 10.6.12");
+    }
+
+    #[test]
+    fn vitess() {
+        let comment =
+            "Version: 25.0.0-SNAPSHOT (Git revision bbccb8e branch 'main') built on 2026-11-07T12:12:44Z by vitess@buildkitsandbox using go1.27.3 linux/amd64";
+        assert_eq!(vitess_label("8.4.6-Vitess", comment, "8.0.43").as_deref(), Some("Vitess 25.0.0 (MySQL 8.0.43)"));
+        assert_eq!(vitess_label("8.0.34-PlanetScale", "", "8.0.34-PlanetScale").as_deref(), Some("PlanetScale (MySQL 8.0.34)"));
+        assert_eq!(vitess_label("8.4.6", "MySQL Community Server - GPL", "8.4.6"), None);
+        assert_eq!(vitess_label("11.4.2-MariaDB-ubu2404", "mariadb.org binary distribution", "11.4.2-MariaDB-ubu2404"), None);
     }
 
     #[test]

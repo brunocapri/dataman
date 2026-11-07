@@ -62,6 +62,7 @@ pub async fn has_logins(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<bo
     match p.engine {
         Engine::Postgres if pg::motherduck(p) => Ok(false),
         Engine::Postgres => pg::has_roles(&admin_db(c, Some(&p.database)).await?).await,
+        Engine::MySql if c.info.flavor == crate::server::Flavor::Vitess => Ok(false),
         e => Ok(supported(e)),
     }
 }
@@ -70,6 +71,11 @@ pub async fn probe(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<(Probe,
     let user = login_name(&p.id);
     Ok(match p.engine {
         Engine::Postgres => (pg::probe(&admin_db(c, Some(&p.database)).await?, &user, &p.id).await?, None),
+        Engine::MySql if c.info.flavor == crate::server::Flavor::Vitess => {
+            bail!(
+                "Dataman makes no agent login on Vitess: vtgate runs no CREATE USER (PlanetScale makes passwords in its console). The connection's own login and its rules apply"
+            )
+        }
         Engine::MySql => (my::probe(&admin_db(c, None).await?, &user, &p.id).await?, None),
         Engine::SqlServer => (ms::probe(&admin_db(c, Some(&p.database)).await?, &user, &p.id).await?, None),
         Engine::MongoDb => match nosql(c)? {
