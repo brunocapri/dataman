@@ -462,24 +462,26 @@ impl Canceller {
     }
 }
 
+/// MySQL's own label; a flavor's (MariaDB, Percona Server) comes from `server::detect`.
 pub(crate) fn version_label(v: &str) -> String {
-    if v.contains("MariaDB") {
-        // Old MariaDB releases put a replication prefix in front (`5.5.5-10.6.12-MariaDB`).
-        let v = v.strip_prefix("5.5.5-").unwrap_or(v);
-        format!("MariaDB {}", v.split('-').next().unwrap_or(v))
-    } else {
-        format!("MySQL {}", v.split('-').next().unwrap_or(v))
-    }
+    format!("MySQL {}", v.split('-').next().unwrap_or(v))
+}
+
+/// What `VERSION()` and `@@version_comment` say the server is: its flavor, label and release.
+fn identify(raw: &str, comment: &str) -> (crate::server::Flavor, String, String) {
+    // Old MariaDB releases put a replication prefix in front (`5.5.5-10.6.12-MariaDB`).
+    let release = raw.strip_prefix("5.5.5-").unwrap_or(raw).to_string();
+    let detected = crate::server::detect(crate::config::Engine::MySql, &release, |n| (n == "version_comment").then_some(comment));
+    let (flavor, label) = detected.unwrap_or_else(|| (crate::server::Flavor::Standard, version_label(raw)));
+    (flavor, label, release)
 }
 
 pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
-    let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)").await?;
+    let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1), @@version_comment").await?;
     let row = rows.into_iter().next().context("VERSION() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
-    let raw = get(0);
-    let flavor = if raw.contains("MariaDB") { crate::server::Flavor::MariaDb } else { crate::server::Flavor::Standard };
-    let release = raw.strip_prefix("5.5.5-").unwrap_or(&raw).to_string();
-    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, version_label(&raw), &release) };
+    let (flavor, label, release) = identify(&get(0), &get(3));
+    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, label, &release) };
     info.search_path = if info.database.is_empty() { vec![] } else { vec![info.database.clone()] };
     Ok(info)
 }
@@ -626,8 +628,13 @@ mod tests {
     fn versions() {
         assert_eq!(version_label("8.4.6"), "MySQL 8.4.6");
         assert_eq!(version_label("8.0.39-0ubuntu0.22.04.1"), "MySQL 8.0.39");
-        assert_eq!(version_label("11.4.2-MariaDB-ubu2404"), "MariaDB 11.4.2");
-        assert_eq!(version_label("5.5.5-10.6.12-MariaDB-log"), "MariaDB 10.6.12");
+        use crate::server::Flavor;
+        let maria = identify("5.5.5-10.6.12-MariaDB-log", "mariadb.org binary distribution");
+        assert_eq!(maria, (Flavor::MariaDb, "MariaDB 10.6.12".into(), "10.6.12-MariaDB-log".into()));
+        assert_eq!(identify("11.4.2-MariaDB-ubu2404", "").1, "MariaDB 11.4.2");
+        let percona = identify("8.4.11-11", "Percona Server (GPL), Release 11, Revision 57878ff8");
+        assert_eq!(percona, (Flavor::Percona, "Percona Server 8.4.11".into(), "8.4.11-11".into()));
+        assert_eq!(identify("8.0.39-0ubuntu0.22.04.1", "(Ubuntu)"), (Flavor::Standard, "MySQL 8.0.39".into(), "8.0.39-0ubuntu0.22.04.1".into()));
     }
 
     #[test]

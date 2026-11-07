@@ -1018,7 +1018,7 @@ impl Workspace {
         let db = v.db.clone();
         let want = v.want.clone();
         let wanted = want.as_ref().and_then(|(id, db)| self.store.read(cx).profile(id).map(|p| (p.clone(), db.clone().unwrap_or_else(|| p.database.clone()))));
-        let engine = v.conn.as_ref().map(|c| c.engine()).or_else(|| wanted.as_ref().map(|(p, _)| p.engine));
+        let logo = v.conn.as_ref().map(|c| c.info.flavor.logo(c.engine())).or_else(|| wanted.as_ref().map(|(p, _)| p.engine.logo()));
         let (color, label): (Hsla, SharedString) = match (&v.conn, wanted) {
             (Some(c), _) if db.is_empty() => (t.profile_color(&c.profile), c.profile.name.clone().into()),
             (Some(c), _) => (t.profile_color(&c.profile), format!("{} · {}", c.profile.name, c.engine().db_label(&db)).into()),
@@ -1052,7 +1052,7 @@ impl Workspace {
             .when(open, |d| d.bg(prs))
             .when(!open, |d| d.hover(move |s| s.bg(hov)))
             .child(div().flex_none().size(px(7.)).bg(color))
-            .children(engine.and_then(|e| crate::assets::small_logo(e, 12.)))
+            .children(logo.and_then(|p| crate::assets::small_logo_at(p, 12.)))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
             .when(locked, |d| d.child(icon(Icon::Lock).flex_none().size(px(10.)).text_color(t.tx3)))
             .child(ui::dropdown_arrow("tb-conn-arrow", open, 9., t.tx3))

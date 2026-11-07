@@ -147,6 +147,29 @@ async fn file_engine(ws: &Entity<Workspace>, e: Engine, search: &str, r: &mut Re
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A server known by a name of its own has its own tile: it connects as its engine, on its port.
+async fn flavor_tile(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    key(cx, "cmd-n");
+    pause(cx, 150).await;
+    let Some(d) = dialog(ws, cx) else {
+        r.check("YugabyteDB: ⌘N opens the connection sheet", false, "no sheet");
+        return;
+    };
+    typ(cx, "yugabyte");
+    draw(cx);
+    let tile = probed("engine-YugabyteDB", cx).is_some() && probed("engine-PostgreSQL", cx).is_none();
+    key(cx, "enter");
+    pause(cx, 100).await;
+    let (step, p) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0)).unwrap();
+    r.check(
+        "YugabyteDB: typing its name shows its own tile, and ↩ picks PostgreSQL on its port 5433",
+        tile && step == Step::Connection && p.engine == Engine::Postgres && p.port == 5433,
+        format!("tile {tile} {step:?} {:?} {}", p.engine, p.port),
+    );
+    key(cx, "escape");
+    pause(cx, 100).await;
+}
+
 pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     for case in &CASES {
         engine(ws, case, r, cx).await;
@@ -154,6 +177,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     for (e, search) in FILE_CASES {
         file_engine(ws, e, search, r, cx).await;
     }
+    flavor_tile(ws, r, cx).await;
     urls(ws, r, cx).await;
     ssh(ws, r, cx).await;
     clipboard_and_import(ws, r, cx).await;

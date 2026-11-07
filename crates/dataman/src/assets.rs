@@ -101,6 +101,7 @@ assets!(
     "logos/sqlite.svg",
     "logos/duckdb.svg",
     "logos/clickhouse.svg",
+    "logos/timescale.svg",
 );
 
 pub struct Assets;
@@ -289,8 +290,8 @@ pub fn set_logos(on: bool) {
     LOGOS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn logo(e: dataman_core::Engine) -> gpui::Img {
-    let path: &'static str = e.logo();
+/// A logo by its path: an engine's (`Engine::logo`) or a flavor's (`Flavor::logo`).
+pub fn logo_at(path: &'static str) -> gpui::Img {
     gpui::img(path).flex_none()
 }
 
@@ -299,7 +300,11 @@ pub fn agent_logo_mono(path: &'static str) -> Svg {
 }
 
 pub fn small_logo(e: dataman_core::Engine, size: f32) -> Option<gpui::Img> {
-    logos_on().then(|| logo(e).size(crate::theme::px(size)))
+    small_logo_at(e.logo(), size)
+}
+
+pub fn small_logo_at(path: &'static str, size: f32) -> Option<gpui::Img> {
+    logos_on().then(|| logo_at(path).size(crate::theme::px(size)))
 }
 
 #[cfg(test)]
@@ -315,8 +320,8 @@ mod tests {
 
     #[test]
     fn every_engine_has_its_logo() {
-        for e in dataman_core::Engine::ALL {
-            let path = e.logo();
+        let flavors = dataman_core::server::FLAVORS.iter().map(|f| f.flavor.logo(f.engine));
+        for path in dataman_core::Engine::ALL.map(|e| e.logo()).into_iter().chain(flavors) {
             let bytes = Assets.load(path).unwrap().unwrap_or_else(|| panic!("{path}"));
             assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"), "{path}");
         }

@@ -84,6 +84,9 @@ pub(crate) struct Client {
     pub tls_active: bool,
     pub version: String,
     pub default_db: u32,
+    pub flavor: crate::server::Flavor,
+    /// `redis_version`: the Redis release the server answers as (a flavor's own is in `version`).
+    pub release: String,
 }
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -192,13 +195,13 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
             return Err(e);
         }
     };
-    let mut c = Client { dial, conn: tokio::sync::Mutex::new(Some(conn)), tls_active, version: String::new(), default_db };
-    let info = c.call(default_db, &["INFO", "server"]).await?.text().unwrap_or_default();
-    let field = |k: &str| info.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string());
-    c.version = match field("valkey_version:") {
-        Some(v) => format!("Valkey {v}"),
-        None => format!("Redis {}", field("redis_version:").unwrap_or_default()),
-    };
+    let mut c = Client { dial, conn: tokio::sync::Mutex::new(Some(conn)), tls_active, version: String::new(), default_db, flavor: Default::default(), release: String::new() };
+    // All the default sections: KeyDB tells itself only by a section of its own.
+    let info = c.call(default_db, &["INFO"]).await?.text().unwrap_or_default();
+    let field = |k: &str| info.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix(':')).map(str::trim);
+    let release = field("redis_version").unwrap_or_default();
+    (c.flavor, c.version) = crate::server::detect(crate::config::Engine::Redis, release, field).unwrap_or_else(|| (Default::default(), format!("Redis {release}")));
+    c.release = release.to_string();
     Ok(c)
 }
 
