@@ -118,7 +118,9 @@ fn options(sql: &str) -> Option<(Vec<String>, usize)> {
                     break;
                 }
             } else {
-                cur.push(s.trim_matches('\'').to_ascii_uppercase());
+                // A quoted name or value is the same to the server: `("analyze")`.
+                let word = if x.kind == crate::sql::TokenKind::QuotedIdent { crate::sql::ident_value(sql, x) } else { s.trim_matches('\'').to_string() };
+                cur.push(word.to_ascii_uppercase());
             }
         }
     } else {

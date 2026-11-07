@@ -69,6 +69,11 @@ impl<'a> Toks<'a> {
         self.t.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword))
     }
 
+    /// A name as the server reads it, in lower case (`U&"pg\005Fsleep"` is `pg_sleep`).
+    fn name_at(&self, i: usize) -> String {
+        crate::sql::ident_value_in(self.src, &self.t[i], self.dialect).to_ascii_lowercase()
+    }
+
     fn sub(&self, r: std::ops::Range<usize>) -> Toks<'a> {
         Toks { src: self.src, t: &self.t[r], dialect: self.dialect }
     }
@@ -597,9 +602,11 @@ fn statement(t: &Toks) -> Facts {
             let mut analyze = false;
             if t.punct(i, "(") {
                 let close = t.close_of(i);
-                // Each option's own value: `(ANALYZE, COSTS OFF)` analyzes.
-                let off = |j: usize| t.is(j, "FALSE") || t.is(j, "OFF") || t.t.get(j).is_some_and(|x| x.kind == TokenKind::Number && x.text(t.src) == "0");
-                analyze = (i + 1..close).any(|j| (t.is(j, "ANALYZE") || t.is(j, "ANALYSE")) && (t.punct(j - 1, "(") || t.punct(j - 1, ",")) && !off(j + 1));
+                // Each option's own value: `(ANALYZE, COSTS OFF)` analyzes. A quoted name or value
+                // is the same to the server: `("analyze" "true")`.
+                let said = |j: usize, w: &str| t.is_name(j) && t.name_at(j).eq_ignore_ascii_case(w);
+                let off = |j: usize| said(j, "FALSE") || said(j, "OFF") || t.t.get(j).is_some_and(|x| x.kind == TokenKind::Number && x.text(t.src) == "0");
+                analyze = (i + 1..close).any(|j| (said(j, "ANALYZE") || said(j, "ANALYSE")) && (t.punct(j - 1, "(") || t.punct(j - 1, ",")) && !off(j + 1));
                 i = close + 1;
             }
             while let Some(w) = t.word(i) {
@@ -874,7 +881,7 @@ impl Toks<'_> {
         let t = &self.t[i];
         let s = t.text(self.src);
         match t.kind {
-            TokenKind::QuotedIdent => s.trim_matches(['"', '`', '[', ']']).to_ascii_lowercase(),
+            TokenKind::QuotedIdent => self.name_at(i),
             TokenKind::Ident | TokenKind::Keyword => s.to_ascii_lowercase(),
             _ => s.to_string(),
         }
@@ -1047,7 +1054,7 @@ pub fn runs_code(sql: &str, dialect: Dialect) -> bool {
         matches!(f.verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE")
             // T-SQL's `INSERT … EXEC`: reserved words there; elsewhere a column may be named so.
             || dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE"))
-            || (0..all.len()).any(|i| t.is(i, "SP_EXECUTESQL") || (t.word(i).is_some_and(|w| functions::is(&w, functions::STRING_SQL)) && t.punct(i + 1, "(")))
+            || (0..all.len()).any(|i| t.is(i, "SP_EXECUTESQL") || (t.is_name(i) && functions::is(&t.name_at(i), functions::STRING_SQL) && t.punct(i + 1, "(")))
     })
 }
 
@@ -1325,7 +1332,7 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
             if !matches!(tok.kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
                 continue;
             }
-            let name = tok.text(&piece).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+            let name = t.name_at(i);
             // T-SQL runs a procedure without parentheses (`EXEC master..xp_cmdshell 'x'`).
             if functions::is(&name, functions::SERVER_FILE) && (t.punct(i + 1, "(") || dialect == Dialect::TSql) {
                 return Some(format!("{name} reaches files or programs on the database server"));
@@ -1357,7 +1364,7 @@ fn file_access_in(t: &Toks) -> Option<String> {
             }
             continue;
         }
-        let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+        let name = t.name_at(i);
         // DuckDB's `duckdb_…` functions are views too (`FROM duckdb_logs`).
         if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && functions::is(&name, list) {
             return Some(format!("{name}() reaches files or code outside the database"));
@@ -1410,6 +1417,7 @@ fn clickhouse_not_known_plain(t: &Toks) -> Option<String> {
     // Per parenthesis: whether a comma or a `(` here is still where tables go, and whether this
     // level is a query (`extract(DAY FROM f(x))` has a FROM that names no table).
     let mut levels = vec![(false, true)];
+    let mut settings = false;
     for i in 0..t.t.len() {
         let table_place = i > 0 && {
             let &(from, _) = levels.last().unwrap_or(&(false, false));
@@ -1434,7 +1442,11 @@ fn clickhouse_not_known_plain(t: &Toks) -> Option<String> {
             && let Some(level) = levels.last_mut()
         {
             let first = i == 0 || t.punct(i - 1, "(");
-            if w == "SELECT" {
+            // After AS or before a comma a word names something: no clause starts so.
+            let named = (i > 0 && t.is(i - 1, "AS")) || t.punct(i + 1, ",");
+            settings |= w == "SETTINGS" || w == "SETTING";
+            if named {
+            } else if w == "SELECT" {
                 *level = (false, true);
             } else if (w == "FROM" && (level.1 || first)) || (w == "JOIN" && level.1) {
                 level.0 = true;
@@ -1453,6 +1465,10 @@ fn clickhouse_not_known_plain(t: &Toks) -> Option<String> {
         if creates && engine && !functions::clickhouse_plain_engine(&name) {
             return Some(format!("the engine {name} is not known to stay inside the database"));
         }
+        // Where the table's parts go: another server's bucket, or a policy that leads to one.
+        if creates && settings && t.op(i + 1, "=") && (name.eq_ignore_ascii_case("disk") || name.eq_ignore_ascii_case("storage_policy")) {
+            return Some(format!("the setting {name} is not known to stay inside the database"));
+        }
         if creates && t.is(i, "SOURCE") && t.punct(i + 1, "(") && !t.is(i + 2, "NULL") {
             return Some("a dictionary's source reaches outside the database".into());
         }
@@ -1469,7 +1485,7 @@ fn effect_call(t: &Toks, write: bool) -> Option<String> {
         if !t.punct(i + 1, "(") || !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
             continue;
         }
-        let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+        let name = t.name_at(i);
         let d = functions::does(&name);
         if (d.has(functions::EFFECT) || d.has(functions::STRING_SQL)) && !(write && d.has(functions::WRITE_OK)) {
             return Some(name);

@@ -701,6 +701,16 @@ fn every_engine_the_server_lists_is_refused_or_keeps_to_its_own_disks() {
         "SELECT * FROM (aNewFunction('x'))",
         "SELECT * FROM (SELECT 1 FROM aNewFunction('x'))",
         "SELECT * FROM (SELECT 1) AS a, aNewFunction('x')",
+        // Named like the clause that would end the list of tables.
+        "SELECT * FROM numbers(1) AS values, aNewFunction('x')",
+        "SELECT * FROM numbers(1) values, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS where, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS limit, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS settings, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS format, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS into, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS select, aNewFunction('x')",
+        "SELECT * FROM numbers(1) AS \"where\", aNewFunction('x')",
         "SELECT (SELECT 1 FROM aNewFunction('x'))",
         "FROM aNewFunction('x') SELECT 1",
         "SELECT * FROM (FROM aNewFunction('x') SELECT 1)",
@@ -723,6 +733,9 @@ fn every_engine_the_server_lists_is_refused_or_keeps_to_its_own_disks() {
         "SELECT 1 FROM t JOIN u ON (lower(a), 1) = (lower(b), 1)",
         "SELECT f(a, g(b)) FROM t WHERE h(a) GROUP BY i(a) ORDER BY j(a)",
         "SELECT 1 FROM numbers(3), zeros(1)",
+        "SELECT 1 FROM numbers(3) AS values, zeros(1)",
+        "SELECT a, f(b) FROM t ORDER BY a, g(b)",
+        "SELECT 1 FROM t LIMIT 1, 2",
         "SELECT name FROM system.tables WHERE engine = other",
         "INSERT INTO t (a) VALUES (1)",
         "CREATE TABLE t (a Int8) ENGINE = ReplicatedMergeTree('/x', 'r') ORDER BY a",
@@ -735,6 +748,48 @@ fn every_engine_the_server_lists_is_refused_or_keeps_to_its_own_disks() {
     assert!(guard::file_access("CREATE DATABASE d ENGINE=Filesystem", CH).is_some());
     assert!(guard::file_access("CREATE TABLE t (a Int8) ENGINE MergeTree ORDER BY a", CH).is_none());
     assert!(guard::file_access("CREATE TABLE t (a Int8) ENGINE = Memory", CH).is_none());
+}
+
+/// With server activity off an agent reads `system` tables known to hold no statement.
+#[test]
+fn every_system_table_the_server_lists_is_read_for_what_it_holds() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let listed = column(&e, &s, "SELECT name FROM system.tables WHERE database = 'system' ORDER BY name");
+    assert!(listed.iter().any(|n| n == "query_cache"), "{listed:?}");
+    let unknown: Vec<&String> = listed.iter().filter(|n| !functions::CLICKHOUSE_PLAIN_SYSTEM_TABLES.contains(&n.as_str()) && !functions::CLICKHOUSE_ACTIVITY_SYSTEM_TABLES.contains(&n.as_str())).collect();
+    assert!(unknown.is_empty(), "the server has system tables no list reads: {unknown:?}. Add them to CLICKHOUSE_PLAIN_SYSTEM_TABLES if they hold no statement and no value, or to CLICKHOUSE_ACTIVITY_SYSTEM_TABLES");
+    // A column that holds a statement or a failure's text says which list a table is not on.
+    let telling = column(&e, &s, "SELECT DISTINCT table FROM system.columns WHERE database = 'system' AND name IN ('query', 'exception', 'last_exception', 'last_error_message', 'command', 'error', 'message')");
+    let plain: Vec<&String> = telling.iter().filter(|t| functions::CLICKHOUSE_PLAIN_SYSTEM_TABLES.contains(&t.as_str())).collect();
+    // Read one by one: definitions, built-in queries, the server's own notices, a load's failure.
+    assert!(plain.iter().all(|t| matches!(t.as_str(), "dashboards" | "dictionaries" | "projection_parts" | "projections" | "warnings")), "listed as plain, with a column of statements or failures: {plain:?}");
+}
+
+/// Where a table's parts go is not the agent's: a `disk(…)` of its own reaches any endpoint.
+#[test]
+fn a_disk_of_its_own_is_refused_at_every_tier() {
+    for sql in [
+        "CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS disk = disk(type = s3, endpoint = 'http://x/', access_key_id = 'a', secret_access_key = 'b')",
+        "CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS disk = 'default'",
+        "CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS `d\\x69sk` = 'default'",
+        "CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS storage_policy = 'default'",
+        "CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS index_granularity = 8192, storage_policy = 'default'",
+        "ALTER TABLE t MODIFY SETTING storage_policy = 'default'",
+        "ATTACH TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS disk = 'default'",
+        "SELECT disk(type = s3)",
+    ] {
+        assert!(guard::file_access(sql, CH).is_some(), "{sql}");
+    }
+    for sql in [
+        "CREATE TABLE t (a Int8) ENGINE = MergeTree ORDER BY a SETTINGS index_granularity = 8192",
+        "SELECT disk, storage_policy FROM t WHERE disk = 'x'",
+        "SELECT disk_name FROM system.parts",
+        "CREATE TABLE t ENGINE = Memory AS SELECT disk = 'x' AS d FROM u",
+    ] {
+        assert_eq!(guard::file_access(sql, CH), None, "{sql}");
+    }
 }
 
 #[test]

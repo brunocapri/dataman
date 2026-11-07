@@ -57,12 +57,38 @@ pub const CLICKHOUSE_PLAIN_TABLE_ENGINES: &[&str] = &[
 
 pub const CLICKHOUSE_PLAIN_DATABASE_ENGINES: &[&str] = &["Atomic", "Lazy", "Memory", "Ordinary", "Replicated"];
 
+/// ClickHouse's `system` tables that show definitions, settings and counters: no statement that
+/// ran, no value that passed through. With server activity off an agent reads these only, so a
+/// server's new table stays closed until someone reads what it holds.
+pub const CLICKHOUSE_PLAIN_SYSTEM_TABLES: &[&str] = &[
+    "aggregate_function_combinators", "asynchronous_metrics", "azure_queue_settings", "build_options", "certificates", "clusters", "codecs", "collations", "columns", "completions",
+    "contributors", "current_roles", "dashboards", "data_skipping_indices", "data_type_families", "database_engines", "databases", "detached_parts", "detached_tables", "dictionaries", "dimensional_metrics",
+    "disks", "dns_cache", "dropped_tables", "dropped_tables_parts", "enabled_roles", "events", "filesystem_cache_settings", "formats", "functions", "grants", "graphite_retentions", "histogram_metrics",
+    "iceberg_history", "jemalloc_bins", "keywords", "licenses", "macros", "merge_tree_settings", "metrics", "models", "named_collections", "numbers", "numbers_mt", "one", "parts", "parts_columns", "privileges",
+    "projection_parts", "projection_parts_columns", "projections", "quota_limits", "quota_usage", "quotas", "quotas_usage", "remote_data_paths", "replicas", "replicated_merge_tree_settings", "resources", "rocksdb",
+    "role_grants", "roles", "row_policies", "s3_queue_settings", "scheduler", "server_settings", "settings", "settings_changes", "settings_profile_elements", "settings_profiles", "storage_policies", "symbols",
+    "table_engines", "table_functions", "tables", "time_zones", "user_directories", "users", "warnings", "workloads", "zeros", "zeros_mt",
+];
+
+/// Those known to show what is running or ran: other sessions' statements, their failures and
+/// values. Nothing reads this but the live test that holds a server's list to both.
+pub const CLICKHOUSE_ACTIVITY_SYSTEM_TABLES: &[&str] = &[
+    "asynchronous_insert_log", "asynchronous_inserts", "asynchronous_loader", "asynchronous_metric_log", "azure_queue", "backup_log", "backups", "blob_storage_log", "crash_log", "distributed_ddl_queue", "distribution_queue", "error_log", "errors",
+    "filesystem_cache", "iceberg_metadata_log", "kafka_consumers", "merges", "metric_log", "moves", "mutations", "opentelemetry_span_log", "part_log", "part_moves_between_shards", "processes", "processors_profile_log",
+    "query_cache", "query_condition_cache", "query_log", "query_metric_log", "query_thread_log", "query_views_log", "replicated_fetches", "replication_queue", "s3queue", "s3queue_log", "schema_inference_cache", "session_log",
+    "stack_trace", "text_log", "trace_log", "user_processes", "view_refreshes",
+];
+
 fn listed(list: &[&str], name: &str) -> bool {
     list.iter().any(|n| n.eq_ignore_ascii_case(name))
 }
 
 pub fn clickhouse_plain_table_function(name: &str) -> bool {
     listed(CLICKHOUSE_PLAIN_TABLE_FUNCTIONS, name)
+}
+
+pub fn clickhouse_plain_system_table(name: &str) -> bool {
+    listed(CLICKHOUSE_PLAIN_SYSTEM_TABLES, name)
 }
 
 pub fn clickhouse_plain_engine(name: &str) -> bool {
@@ -99,6 +125,7 @@ table! {
     ("deltalakes3", CLICKHOUSE_FILE),
     ("dictionary", CLICKHOUSE_FILE),
     ("dictisin", CLICKHOUSE_FILE),
+    ("disk", CLICKHOUSE_FILE),
     ("distributed", CLICKHOUSE_FILE),
     ("executable", CLICKHOUSE_FILE),
     ("executable_pool", CLICKHOUSE_FILE),
@@ -357,6 +384,10 @@ mod tests {
         }
         assert!(is("QUERY_TO_XML", STRING_SQL) && is("query_to_xml", READS_AROUND) && is("\"pg_read_file\"", SERVER_FILE));
         assert!(is("nextval", WRITE_OK) && is("nextval", EFFECT) && !is("upper", EFFECT));
+        for t in CLICKHOUSE_PLAIN_SYSTEM_TABLES {
+            assert!(!CLICKHOUSE_ACTIVITY_SYSTEM_TABLES.contains(t), "{t} on both lists");
+        }
+        assert!(clickhouse_plain_system_table("tables") && !clickhouse_plain_system_table("query_cache") && !clickhouse_plain_system_table("a_later_server_s_table"));
         assert!(is("S3", CLICKHOUSE_FILE) && !is("url", EFFECT), "a name other engines may use is refused on ClickHouse only");
         assert!(!is("buffer", READS_AROUND | STRING_SQL) && !is("hive", READS_AROUND | STRING_SQL), "`agent_sql` refuses those words anywhere, on every engine");
     }

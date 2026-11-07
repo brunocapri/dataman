@@ -350,6 +350,35 @@ fn privacy_rewrite_keeps_statements() {
     report(fails);
 }
 
+/// A guard refuses; it never panics. Every statement cut anywhere: what never closes included.
+#[test]
+fn every_cut_of_a_statement_gets_an_answer() {
+    let routines = HashSet::new();
+    let tables = |schema: Option<&str>, name: &str| Some(Table { schema: schema.unwrap_or("public").to_string(), name: name.to_string(), columns: ["id", "a", "name", "email", "ssn", "secret"].map(String::from).to_vec() });
+    let r = rules(AgentView::Masked);
+    let more = [
+        "SELECT * FROM numbers(1, 2)",
+        "SELECT * FROM sys.dm_exec_cursors(0) AS c WHERE c.id = 1",
+        "WITH RECURSIVE a(b) AS (SELECT 1 UNION ALL SELECT b FROM a), c AS (SELECT * FROM (a) AS d (e)) SELECT * FROM c",
+        "INSERT INTO users (id) SELECT id FROM t ON CONFLICT (id) DO UPDATE SET id = 1 RETURNING *",
+        "UPDATE u SET a = (SELECT 1) FROM users u WHERE u.id = 1",
+        "SELECT (SELECT tuple(*) FROM users) x, [1, (2)] FROM users FINAL SAMPLE 1/10 OFFSET 1/2",
+    ];
+    for d in DIALECTS {
+        let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines, views: &[] };
+        for t in texts(d).iter().map(String::as_str).chain(more) {
+            for cut in t.char_indices().map(|(i, _)| i) {
+                let piece = &t[..cut];
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    agent_sql::tables_named(piece, d);
+                    (agent_sql::check(piece, false, &cx).is_ok(), agent_sql::check(piece, true, &cx).is_ok())
+                }));
+                assert!(run.is_ok(), "[{d:?}] {piece:?}");
+            }
+        }
+    }
+}
+
 /// What each server was seen to do (PostgreSQL 18, MySQL 8.4, SQL Server 2022), and the cases
 /// the properties above found: the class and the read gate's answer they must keep.
 const REGRESSIONS: &[(Dialect, &str, u8, bool)] = &[
