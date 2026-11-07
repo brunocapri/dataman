@@ -253,12 +253,13 @@ fn session_state_refused(e: &Env, c: &Arc<Connection>) {
 }
 
 /// A cancel reaches the server connection running the statement, through the pooler.
-fn cancel(e: &Env, c: &Arc<Connection>) {
+fn cancel(e: &Env, c: &Arc<Connection>, k: &str) {
     let s = c.session(None);
     let watcher = c.session(None);
-    let rs = s.execute("SELECT pg_sleep(30) AS dataman_pool_cancel");
+    // Named after the run's schema: the tests at once each wait for their own.
+    let rs = s.execute(sch(k, "SELECT pg_sleep(30) AS dataman_pool_check"));
     let deadline = Instant::now() + Duration::from_secs(20);
-    while text(&ok(e, &watcher, "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE 'SELECT pg_sleep(30) AS dataman_pool_cancel%'"), 0, 0) != "1" {
+    while text(&ok(e, &watcher, &sch(k, "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query = 'SELECT pg_sleep(30) AS dataman_pool_check'")), 0, 0) != "1" {
         assert!(Instant::now() < deadline, "the statement never started");
     }
     let started = Instant::now();
@@ -275,7 +276,7 @@ fn suite(e: &Env, c: &Arc<Connection>, read_only: &Arc<Connection>, k: &str) {
     agents_under_contention(e, c, k);
     read_only_under_contention(e, read_only, c, k);
     session_state_refused(e, c);
-    cancel(e, c);
+    cancel(e, c, k);
     teardown(e, c, k);
 }
 
@@ -377,7 +378,7 @@ fn real_pooled_endpoint() {
         read_only_under_contention(&e, &ro, &c, SCHEMA);
         session_state_refused(&e, &c);
     }
-    cancel(&e, &c);
+    cancel(&e, &c, SCHEMA);
     teardown(&e, &c, SCHEMA);
 }
 

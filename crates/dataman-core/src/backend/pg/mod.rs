@@ -280,6 +280,7 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
     // Through a pooler that hands out server connections per transaction the backend is shared
     // and changes: it is no one's own, and a session setting would land on whoever gets it next.
     let shared = pooler.is_some_and(|x| x.per_transaction());
+    client.keep_statements(!shared);
     if !shared {
         own_mark(p, &mark, pid);
     }
@@ -482,6 +483,7 @@ async fn connect_session(
             client
         }
     };
+    client.keep_statements(!pooler.is_some_and(|x| x.per_transaction()));
     // Behind a pooler BackendKeyData carries the pooler's number, not a server process's.
     if pooler.is_none() {
         own_mark(p, &mark, watch.pid());

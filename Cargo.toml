@@ -52,8 +52,8 @@ tiberius = { path = "vendor/tiberius" }
 # the server between two Syncs (a transaction-mode pooler, PgBouncer without
 # max_prepared_statements or Supavisor, gives each Sync to any server connection): the type
 # lookups run as unnamed statements (src/prepare.rs, src/client.rs), and `Client::describe`
-# returns a statement parsed again with each bind (src/statement.rs, src/query.rs `encode_bind`,
-# `bind_complete`). `Client::backend_key_pid` reads BackendKeyData. A cancel request waits for
+# returns, once `keep_statements(false)` says so, a statement parsed again with each bind
+# (src/statement.rs, src/query.rs `encode_bind`, `bind_complete`). `Client::backend_key_pid` reads BackendKeyData. A cancel request waits for
 # the other end to close (src/cancel_query_raw.rs), as libpq's does. Search for `Dataman:` in
 # vendor/tokio-postgres/src; upgrading means applying that again.
 tokio-postgres = { path = "vendor/tokio-postgres" }

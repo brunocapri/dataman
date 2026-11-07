@@ -77,6 +77,9 @@ pub struct InnerClient {
 
     /// A buffer to use when writing out postgres commands.
     buffer: Mutex<BytesMut>,
+
+    /// Dataman: `describe` keeps nothing on the server (see `Client::keep_statements`).
+    unnamed: std::sync::atomic::AtomicBool,
 }
 
 impl InnerClient {
@@ -164,6 +167,7 @@ impl Client {
                 sender,
                 cached_typeinfo: Default::default(),
                 buffer: Default::default(),
+                unnamed: Default::default(),
             }),
             #[cfg(feature = "runtime")]
             socket_config: None,
@@ -191,11 +195,23 @@ impl Client {
         self.prepare_typed(query, &[]).await
     }
 
-    /// Dataman: what the statement takes and returns, as `prepare` says, but with nothing kept on
-    /// the server: the statement is parsed again (unnamed) with each use, in the same batch as
-    /// its bind. Correct through a pooler that gives each Sync to any server connection.
+    /// Dataman: the statement to run once, as `prepare` gives it while the server keeps statements
+    /// (`keep_statements`); otherwise with nothing kept on the server: parsed again (unnamed)
+    /// with each use, in the same batch as its bind.
     pub async fn describe(&self, query: &str) -> Result<Statement, Error> {
-        prepare::describe(&self.inner, query).await
+        if self.inner.unnamed.load(std::sync::atomic::Ordering::Relaxed) {
+            prepare::describe(&self.inner, query).await
+        } else {
+            self.prepare(query).await
+        }
+    }
+
+    /// Dataman: whether the server connection keeps what this client prepares until the next
+    /// Sync and beyond (true, the default). A pooler that gives each Sync to whichever server
+    /// connection is free does not: there `describe` keeps nothing, at the cost of parsing each
+    /// statement twice.
+    pub fn keep_statements(&self, keep: bool) {
+        self.inner.unnamed.store(!keep, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Dataman: the process ID the server (or a pooler in front of it) gave in BackendKeyData.
