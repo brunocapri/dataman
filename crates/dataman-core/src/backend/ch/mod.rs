@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use bytes::Bytes;
 use parking_lot::Mutex;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use super::{Ran, RowSource};
@@ -30,6 +30,18 @@ const FORMAT: &str = "TabSeparatedWithNamesAndTypes";
 const IN_FLIGHT_BYTES: usize = 64 * 1024 * 1024;
 /// A statement that chose its own format is shown by lines; a binary one may have none.
 const RAW_LINE_CAP: usize = 1024 * 1024;
+/// The longest row kept: a line past it ends the statement. Past the reader's room, so a row longer
+/// than that still arrives. With what the reader holds ahead and the cell unescaped, this is what
+/// one row can cost, whatever the server sends.
+const ROW_BYTES: usize = 128 * 1024 * 1024;
+/// What is read of a failure: its first bytes tell it.
+const ERROR_BYTES: usize = 1024 * 1024;
+/// An answer read whole before its first row is seen (the catalog's).
+const TEXT_ROWS_BYTES: usize = 256 * 1024 * 1024;
+/// One `query` field of a form: the server's `http_max_field_value_size` is 128 KiB by default.
+const QUERY_FIELD_BYTES: usize = 64 * 1024;
+const MIB: usize = 1024 * 1024;
+const OFF_THIS_MACHINE: &str = "TLS did not connect and nothing was sent in clear. ClickHouse's HTTPS port is usually 8443; on a private network without TLS, choose Disable in the connection's settings";
 const EXCEPTION_MARK: &[u8] = b"__exception__";
 /// The server's own limit for a session (`max_session_timeout`, 3600 by default).
 const SESSION_SECONDS: &str = "3600";
@@ -48,6 +60,10 @@ pub(crate) enum ChError {
     Cut(String),
     #[error("{0}")]
     Params(String),
+    #[error("a row is larger than {} MiB: the statement was stopped, and the rows before it kept. Select fewer or shorter columns", ROW_BYTES / MIB)]
+    RowTooLong,
+    #[error("the answer is larger than {} MiB, and this one is read whole: it was stopped", TEXT_ROWS_BYTES / MIB)]
+    AnswerTooLong,
 }
 
 /// `Code: 62. DB::Exception: Syntax error: failed at position 1 (SELEC): …. (SYNTAX_ERROR) (version …)`
@@ -67,9 +83,11 @@ fn server_error(header_code: Option<&str>, body: &[u8]) -> ChError {
     ChError::Server { code, message: message.to_string(), position }
 }
 
-fn transport(base: &str, e: &reqwest::Error) -> ChError {
+/// `without_url`: a request's URL has its settings in it, and an error ends up in logs.
+fn transport(base: &str, e: reqwest::Error) -> ChError {
+    let e = e.without_url();
     let mut message = format!("cannot reach {base}: {e}");
-    let mut src = std::error::Error::source(e);
+    let mut src = std::error::Error::source(&e);
     while let Some(s) = src {
         let m = s.to_string();
         if !message.contains(&m) {
@@ -159,14 +177,20 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, datab
         None => None,
     };
     let mode = p.tls_mode();
+    // The password crosses with every request: in clear only where no one is on the path.
+    let here = via.is_some() || crate::config::is_loopback_host(&p.host);
     let opened = match mode {
         SslMode::Disable => open(p, password, database, via, session, false).await,
         SslMode::Require | SslMode::VerifyFull => open(p, password, database, via, session, true).await,
         // No answer in TLS is what a plain port gives: an answer of any kind ends the search.
         SslMode::Prefer => match open(p, password, database, via, session, true).await {
-            Err(ChError::Transport(_)) => open(p, password, database, via, session, false).await,
+            Err(ChError::Transport(_)) if here => open(p, password, database, via, session, false).await,
             r => r,
         },
+    };
+    let opened = match opened {
+        Err(ChError::Transport(why)) if mode != SslMode::Disable && !here => Err(ChError::Transport(format!("{why}. {OFF_THIS_MACHINE}"))),
+        r => r,
     };
     match opened {
         Ok(c) => Ok(c),
@@ -180,7 +204,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, datab
 async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<std::net::SocketAddr>, session: bool, tls: bool) -> Result<Arc<Client>, ChError> {
     let mode = if tls { p.tls_mode() } else { SslMode::Disable };
     let (base, b) = base_url(p, tls, via, builder(mode));
-    let http = b.build().map_err(|e| transport(&base, &e))?;
+    let http = b.build().map_err(|e| transport(&base, e))?;
     let raw = format!("{}:{}", p.user, password.unwrap_or(""));
     let mut auth = HeaderValue::from_str(&format!("Basic {}", data_encoding::BASE64.encode(raw.as_bytes()))).map_err(|e| ChError::Transport(e.to_string()))?;
     auth.set_sensitive(true);
@@ -222,8 +246,12 @@ impl Client {
         if let Some(id) = id {
             q.push(("query_id", id));
         }
-        q.extend(bind.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-        self.http.post(&self.base).header(AUTHORIZATION, self.auth.clone()).query(&q).body(sql.to_string())
+        let req = self.http.post(&self.base).header(AUTHORIZATION, self.auth.clone()).query(&q);
+        if bind.is_empty() {
+            return req.body(sql.to_string());
+        }
+        let (content_type, body) = form(sql, bind);
+        req.header(CONTENT_TYPE, content_type).body(body)
     }
 
     /// A status that is no success carries the error in full.
@@ -232,13 +260,13 @@ impl Client {
         // closed, when its KILL was refused (a read-only login's).
         let mut tries = 0;
         loop {
-            let resp = self.request(sql, Some(id), bind).send().await.map_err(|e| transport(&self.base, &e))?;
+            let resp = self.request(sql, Some(id), bind).send().await.map_err(|e| transport(&self.base, e))?;
             if resp.status().is_success() {
                 return Ok(resp);
             }
             let status = resp.status().as_u16();
             let code = header(resp.headers(), "x-clickhouse-exception-code").map(str::to_string);
-            let body = resp.bytes().await.map_err(|e| transport(&self.base, &e))?;
+            let body = read_up_to(resp, ERROR_BYTES).await.map_err(|e| transport(&self.base, e))?;
             // Whatever answers this is not ClickHouse saying why (a proxy, another service).
             if code.is_none() && !body.windows(6).any(|w| w == b"Code: ") {
                 return Err(ChError::Server { code: format!("HTTP {status}"), message: format!("the server answered HTTP {status}, not as ClickHouse does"), position: None });
@@ -265,7 +293,7 @@ impl Client {
                 return Err(e);
             }
         };
-        if let Some(db) = used_database(sql) {
+        if let Some(db) = crate::bounded::used_database(sql, crate::sql::Dialect::ClickHouse) {
             *self.database.lock() = Some(db);
         }
         let raw = header(resp.headers(), "x-clickhouse-format").is_some_and(|f| f != FORMAT);
@@ -289,7 +317,13 @@ impl Client {
     pub(crate) async fn text_rows(&self, sql: &str) -> Result<Vec<Vec<Option<String>>>, ChError> {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let resp = self.send(sql, &id, &[]).await?;
-        let body = resp.bytes().await.map_err(|e| ChError::Cut(e.to_string()))?;
+        let body = read_up_to(resp, TEXT_ROWS_BYTES).await.map_err(|e| ChError::Cut(e.without_url().to_string()))?;
+        if body.len() > TEXT_ROWS_BYTES {
+            if let Err(e) = self.kill(&id).await {
+                log::debug!("kill after an answer past the cap: {e:#}");
+            }
+            return Err(ChError::AnswerTooLong);
+        }
         if let Some(at) = exception_at(&body) {
             return Err(server_error(None, &body[at..]));
         }
@@ -321,10 +355,10 @@ impl Client {
         let sql = format!("KILL QUERY WHERE query_id = '{id}' SYNC");
         // Not in the session it would have to wait for, and whatever the connection may do.
         let q = [("default_format", FORMAT)];
-        let resp = self.http.post(&self.base).header(AUTHORIZATION, self.auth.clone()).query(&q).body(sql).timeout(Duration::from_secs(5)).send().await?;
+        let resp = self.http.post(&self.base).header(AUTHORIZATION, self.auth.clone()).query(&q).body(sql).timeout(Duration::from_secs(5)).send().await.map_err(reqwest::Error::without_url)?;
         if !resp.status().is_success() {
             let code = header(resp.headers(), "x-clickhouse-exception-code").map(str::to_string);
-            let body = resp.bytes().await?;
+            let body = read_up_to(resp, ERROR_BYTES).await.map_err(reqwest::Error::without_url)?;
             return Err(server_error(code.as_deref(), &body).into());
         }
         Ok(())
@@ -350,20 +384,38 @@ fn header<'a>(h: &'a HeaderMap, name: &str) -> Option<&'a str> {
     h.get(name).and_then(|v| v.to_str().ok())
 }
 
-/// The database `USE x` names.
-fn used_database(sql: &str) -> Option<String> {
-    use crate::sql::{Dialect, ident_value_in, tokenize_in};
-    let d = Dialect::ClickHouse;
-    let toks: Vec<_> = tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
-    if !toks.first()?.text(sql).eq_ignore_ascii_case("USE") {
-        return None;
+/// A response up to just past `cap`: dropping it with the rest unread closes the connection.
+async fn read_up_to(mut resp: reqwest::Response, cap: usize) -> Result<Vec<u8>, reqwest::Error> {
+    let mut out = Vec::new();
+    while out.len() <= cap {
+        match resp.chunk().await? {
+            Some(b) => out.extend_from_slice(&b),
+            None => break,
+        }
     }
-    // `USE database` is a database of that name.
-    let name = match toks.get(2).filter(|t| t.text(sql) != ";") {
-        Some(n) if toks[1].text(sql).eq_ignore_ascii_case("DATABASE") => n,
-        _ => toks.get(1)?,
+    Ok(out)
+}
+
+/// A statement with its bound values as a form: in the body, not in a URL that proxies and the
+/// server's own logs keep. The boundary is random, so no value can close its field. The server
+/// joins the `query` fields it gets, so a statement past one field's limit still fits.
+fn form(sql: &str, bind: &[(String, String)]) -> (String, Vec<u8>) {
+    let boundary = uuid::Uuid::new_v4().simple().to_string();
+    let values: usize = bind.iter().map(|(k, v)| k.len() + v.len()).sum();
+    let mut body = Vec::with_capacity(sql.len() + values + (bind.len() + 2 + sql.len() / QUERY_FIELD_BYTES) * 96);
+    let mut field = |name: &str, value: &[u8]| {
+        body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes());
+        body.extend_from_slice(value);
+        body.extend_from_slice(b"\r\n");
     };
-    Some(ident_value_in(sql, name, d))
+    for part in sql.as_bytes().chunks(QUERY_FIELD_BYTES) {
+        field("query", part);
+    }
+    for (name, value) in bind {
+        field(name, value.as_bytes());
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 /// `X-ClickHouse-Summary`: every row written, those of the materialized views the statement fed
@@ -382,6 +434,10 @@ fn bind_params(sql: &str, params: &[Option<String>]) -> Result<Vec<(String, Stri
             return Ok(Vec::new());
         }
         return Err(ChError::Params(format!("the statement has {} parameters and {} values were given", names.len(), params.len())));
+    }
+    // A name goes in a form field's header.
+    if let Some(n) = names.iter().find(|n| !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')) {
+        return Err(ChError::Params(format!("a parameter's name takes letters, digits and _ only: {n}")));
     }
     Ok(names.into_iter().zip(params).map(|(n, v)| (format!("param_{n}"), param_text(v.as_deref()))).collect())
 }
@@ -428,6 +484,7 @@ fn spawn_reader(mut resp: reqwest::Response) -> mpsc::UnboundedReceiver<Piece> {
                 }
                 Ok(None) => return,
                 Err(e) => {
+                    let e = e.without_url();
                     let mut message = e.to_string();
                     if let Some(s) = std::error::Error::source(&e) {
                         message = format!("{message}: {s}");
@@ -564,6 +621,9 @@ impl ChRows {
                 self.pos = line.end;
                 return Ok(Some(line));
             }
+            if rest.len() > ROW_BYTES {
+                return Err(self.stop_at_long_row());
+            }
             if !self.fill().await? {
                 let rest = self.buf.len() - self.pos;
                 if rest == 0 {
@@ -585,11 +645,36 @@ impl ChRows {
         }
     }
 
-    /// The marker's line was read: the rest of the stream is the error.
-    async fn server_failure(&mut self) -> Result<Option<Range<usize>>, ChError> {
-        while let Ok(true) = self.fill().await {}
+    /// What was read goes at once, and the reader with it. The kill goes on its own: whoever awaits
+    /// this may give up on it, and the server must hear it anyway. A login that may not kill stops
+    /// the statement by the closed connection alone, when the server next writes to it.
+    fn stop_at_long_row(&mut self) -> ChError {
+        self.rx.close();
+        while self.rx.try_recv().is_ok() {}
         self.finish();
-        Err(server_error(None, &self.buf[self.pos..]))
+        self.eof = true;
+        self.buf = Vec::new();
+        self.pos = 0;
+        let (client, id) = (self.client.clone(), self.id.clone());
+        tokio::spawn(async move {
+            if let Err(e) = client.kill(&id).await {
+                log::debug!("kill after a row past the cap: {e:#}");
+            }
+        });
+        ChError::RowTooLong
+    }
+
+    /// The marker's line was read: what follows is the error, its first bytes kept.
+    async fn server_failure(&mut self) -> Result<Option<Range<usize>>, ChError> {
+        while self.buf.len() - self.pos < ERROR_BYTES {
+            if !matches!(self.fill().await, Ok(true)) {
+                break;
+            }
+        }
+        self.rx.close();
+        self.finish();
+        let end = self.buf.len().min(self.pos + ERROR_BYTES);
+        Err(server_error(None, &self.buf[self.pos..end]))
     }
 
     async fn read_header(&mut self) -> Result<(), ChError> {
@@ -955,14 +1040,38 @@ mod tests {
     }
 
     #[test]
-    fn use_is_followed() {
-        assert_eq!(used_database("USE system").as_deref(), Some("system"));
-        assert_eq!(used_database("/* x */ use `a b` ;").as_deref(), Some("a b"));
-        assert_eq!(used_database("USE DATABASE d").as_deref(), Some("d"));
-        assert_eq!(used_database("USE database").as_deref(), Some("database"), "a database named so");
-        assert_eq!(used_database("USE database;").as_deref(), Some("database"));
-        assert_eq!(used_database(r"USE `a\x62`").as_deref(), Some("ab"), "as the server reads the name");
-        assert_eq!(used_database("SELECT 1"), None);
+    fn a_form_holds_what_it_was_given_and_nothing_can_close_a_field() {
+        let long = format!("SELECT '{}'", "é".repeat(QUERY_FIELD_BYTES));
+        let bind = [("param_a".to_string(), "x\r\n--y".to_string())];
+        let (kind, body) = form(&long, &bind);
+        let boundary = kind.strip_prefix("multipart/form-data; boundary=").unwrap();
+        assert_eq!(boundary.len(), 32, "a value cannot guess it");
+        let body = &body[..];
+        let mark = format!("--{boundary}");
+        let fields: Vec<&[u8]> = split_on(body, mark.as_bytes());
+        let query: Vec<u8> = fields.iter().filter_map(|f| value_of(f, "query")).flatten().copied().collect();
+        assert!(fields.iter().filter(|f| value_of(f, "query").is_some()).count() > 1, "past one field's limit");
+        assert_eq!(query, long.as_bytes(), "the server joins them back");
+        assert_eq!(fields.iter().find_map(|f| value_of(f, "param_a")), Some(&b"x\r\n--y"[..]));
+    }
+
+    fn split_on<'a>(mut b: &'a [u8], mark: &[u8]) -> Vec<&'a [u8]> {
+        let mut out = Vec::new();
+        while let Some(at) = b.windows(mark.len()).position(|w| w == mark) {
+            out.push(&b[..at]);
+            b = &b[at + mark.len()..];
+        }
+        out
+    }
+
+    fn value_of<'a>(field: &'a [u8], name: &str) -> Option<&'a [u8]> {
+        field.strip_prefix(format!("\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes())?.strip_suffix(b"\r\n")
+    }
+
+    #[test]
+    fn a_parameter_name_cannot_reach_a_field_header() {
+        assert!(matches!(bind_params("SELECT {`a\"b`:String}", &[Some("x".into())]), Err(ChError::Params(_))));
+        assert_eq!(bind_params("SELECT {a_1:String}", &[Some("x".into())]).unwrap(), [("param_a_1".to_string(), "x".to_string())]);
     }
 
     #[test]

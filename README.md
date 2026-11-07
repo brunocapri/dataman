@@ -65,6 +65,8 @@ Claude Code and any other MCP client can work with your databases through it, an
 
 SQLite and DuckDB need nothing installed: SQLite is built in, and DuckDB is its own library, shipped beside the app and loaded the first time you open a DuckDB file. Every connection can go through an SSH tunnel (agent, key or password, with `~/.ssh/config` aliases and ProxyJump) and over TLS (rustls, no OpenSSL).
 
+ClickHouse's HTTP interface sends the password with every request, so across the network a connection verifies the server's certificate unless you choose otherwise. `Prefer` stays on TLS there (it only falls back to plain text on this machine or through an SSH tunnel), `Require` encrypts but does not check who answers, and `Disable` is for private networks.
+
 ## A proper GUI, before anything else
 
 - **Editor**: tabs side by side, schema-aware autocomplete, a lint that catches `UPDATE` without `WHERE` and unknown columns as you type, formatting, find & replace with regex, query parameters, manual transactions. Tabs and unsaved text come back on relaunch.
@@ -290,7 +292,7 @@ Tag a connection as **production** in its settings to change what agents can do 
 
 #### Read-only
 
-A connection, or a single database in it, marked read-only refuses every write from agents, on every tier. Reads and drafts still work. Agents cannot turn read-only off.
+A connection, or a single database in it, marked read-only refuses every write from agents, on every tier. The statement's target decides, not the database the call started on: a write that names a read-only database, or follows a `USE` of one, is refused, in your tabs too, and reading from it to write elsewhere still works. Reads and drafts still work. Agents cannot turn read-only off. Only names in the statement are seen, so a stored procedure or view that writes there on its own is the server's to refuse: give the login no such grant.
 
 #### Agents may
 

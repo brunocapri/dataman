@@ -348,3 +348,21 @@ fn file_access_can_be_turned_off() {
     ok(&e, &sess, "CREATE TABLE t (a INT); INSERT INTO t VALUES (1)");
 }
 
+
+/// The statement's target decides, not the database the connection is on.
+#[test]
+fn a_read_only_catalog_holds_against_a_write_from_another() {
+    let d = open(false);
+    let (e, c) = (&d.e, &d.c);
+    let other = d.path.with_file_name("more.duckdb");
+    let admin = c.session(None);
+    ok(e, &admin, &format!("ATTACH '{}' AS more; CREATE TABLE more.main.items (id INT); INSERT INTO more.main.items VALUES (1); CREATE TABLE items (id INT)", other.display()));
+    c.set_read_only_for("more", true);
+    let call = |sql: &str| e.core.block_on(c.bounded(None, sql, vec![], Mode::Write, Limits::default(), std::future::pending::<()>()));
+    for sql in ["INSERT INTO more.main.items VALUES (2)", "INSERT INTO more.items VALUES (2)", "DELETE FROM \"more\".main.items", "DROP TABLE more.main.items", "USE more; INSERT INTO items VALUES (2)"] {
+        assert!(matches!(call(sql), Err(Stop::Refused(r)) if r.contains("read-only")), "{sql}");
+    }
+    assert_eq!(ok(e, &admin, "SELECT count(*) FROM more.main.items").snapshot().text(0, 0).as_deref(), Some("1"));
+    assert_eq!(call("INSERT INTO items VALUES (5)").unwrap().affected(), 1);
+    assert_eq!(call("INSERT INTO main.items SELECT id FROM more.main.items").unwrap().affected(), 1);
+}
