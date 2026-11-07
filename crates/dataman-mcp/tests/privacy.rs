@@ -491,6 +491,8 @@ fn mysql_and_sql_server_privacy() {
 #[test]
 fn clickhouse_through_the_tools() {
     if !up("DATAMAN_CLICKHOUSE", "127.0.0.1:18123") {
+        // CI brings the server up for this: a skip there would pass untested.
+        assert!(std::env::var_os("DATAMAN_LIVE_REQUIRED").is_none(), "no ClickHouse");
         return;
     }
     let s = format!("mcp_ch_{}", std::process::id());

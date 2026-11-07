@@ -112,7 +112,8 @@ services:
     environment:
       CLICKHOUSE_PASSWORD: dataman
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
-    ports: ["18123:8123", "18443:8443"]
+    # This machine's only: the password is in this file. The bastion reaches it by its service name.
+    ports: ["127.0.0.1:18123:8123", "127.0.0.1:18443:8443"]
     ulimits:
       nofile: 262144
     healthcheck:
