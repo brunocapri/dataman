@@ -1642,3 +1642,76 @@ fn duckdb_views_follow_what_they_read() {
     assert_eq!(q("SELECT * FROM v_of_open").unwrap()["rows"][0][0], "visible");
     e.done();
 }
+
+/// The copies of a column in a subquery: what each server calls the second one, it comes back masked.
+const COPIES_OF_A_COLUMN: &[&str] = &[
+    "SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id",
+    "SELECT * FROM customers a JOIN customers b ON a.id = b.id",
+    "SELECT * FROM (SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id) x",
+    "SELECT * FROM (SELECT * FROM customers a JOIN customers b ON a.id = b.id) x",
+    "SELECT email, email FROM customers",
+    "SELECT * FROM (SELECT email, email FROM customers) x",
+    "WITH c AS (SELECT a.email, b.email FROM customers a JOIN customers b ON a.id = b.id) SELECT * FROM c",
+];
+
+/// Refused or masked, whichever the server's names allow; never in clear.
+fn no_copy_comes_back_clear(e: &Env, c: &str, from: &str) {
+    for sql in COPIES_OF_A_COLUMN {
+        let sql = sql.replace("customers", from);
+        match e.call("run_query", with(c, json!({"sql": sql}))) {
+            Ok(v) => clean(&format!("{c}: {sql}"), &v),
+            Err(err) => assert!(!SECRETS.iter().any(|s| err.contains(s)), "{c}: {sql}: {err}"),
+        }
+    }
+}
+
+#[test]
+fn a_copy_of_a_masked_column_is_masked_on_every_engine() {
+    let rules = |t: &str| format!("[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{t}.email\", how = \"hidden\" }}]\n");
+    let seed = "(id INTEGER, name VARCHAR(50), email VARCHAR(50))";
+    let row = "(1, 'Ana', 'zed-secret-acme')";
+    let files = tempfile::tempdir().unwrap();
+    for (slug, engine, name) in [("duckdb", Engine::DuckDb, "copies.duckdb"), ("sqlite", Engine::Sqlite, "copies.sqlite")] {
+        let db = files.path().join(name);
+        dataman_core::import::create_database(engine, &db).unwrap();
+        let text = [file_conn("admin", slug, &db, "mcp = \"full\""), file_conn("dd", slug, &db, &rules("customers"))].concat();
+        let e = env_with(&[], &text, "", None);
+        e.admin("execute", with("admin", json!({"sql": format!("CREATE TABLE customers {seed}; INSERT INTO customers VALUES {row}")})));
+        no_copy_comes_back_clear(&e, "dd", "customers");
+        e.done();
+    }
+    let s = format!("mcp_copies_{}", std::process::id());
+    if up(PG) {
+        let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules("customers"))], "", None);
+        e.admin("execute", with("pgadmin", json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.customers {seed}; INSERT INTO {s}.customers VALUES {row}")})));
+        no_copy_comes_back_clear(&e, "pp", &format!("{s}.customers"));
+        e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
+        e.done();
+    }
+    if up(MY) {
+        let e = env(&[conn("myadmin", MY, "mysql", "root", "mysql", "mcp = \"full\""), conn("mm", MY, "mysql", "root", &s, rules("customers"))], "", None);
+        let a = |sql: String| e.admin("execute", with("myadmin", json!({"sql": sql})));
+        a(format!("CREATE DATABASE {s}"));
+        a(format!("CREATE TABLE {s}.customers {seed}"));
+        a(format!("INSERT INTO {s}.customers VALUES {row}"));
+        no_copy_comes_back_clear(&e, "mm", "customers");
+        a(format!("DROP DATABASE {s}"));
+        e.done();
+    }
+    if up(MS) {
+        let t = format!("{s}_c");
+        let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules(&t))], "", None);
+        e.admin("execute", with("msadmin", json!({"sql": format!("CREATE TABLE dbo.{t} {seed}; INSERT INTO dbo.{t} VALUES {row}")})));
+        no_copy_comes_back_clear(&e, "ss", &format!("dbo.{t}"));
+        e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{t}")})));
+        e.done();
+    }
+    if up(CH) {
+        let e = ch_env(&s, &rules("customers"));
+        ch_by_hand(&e, &format!("CREATE TABLE {s}.customers (id Int32, name String, email String) ENGINE = MergeTree ORDER BY id"));
+        ch_by_hand(&e, &format!("INSERT INTO {s}.customers VALUES {row}"));
+        no_copy_comes_back_clear(&e, "ch", "customers");
+        ch_by_hand(&e, &format!("DROP DATABASE {s}"));
+        e.done();
+    }
+}

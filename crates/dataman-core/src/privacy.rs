@@ -1090,17 +1090,32 @@ fn quoted_end(s: &str, quote: char) -> usize {
 }
 
 /// The mask of a result column, whatever the server calls it: a second copy of a column is
-/// `b.email`, and a column read into is `meta.keys`, `doc.a.b`, `c.nest.a` or the whole of a Nested
-/// (`nest` for `nest.a`). The strongest of those that apply; a name matches a little too much
-/// rather than too little.
+/// `b.email`, and in a subquery `email_1` (DuckDB) or `email:1` (SQLite); a column read into is
+/// `meta.keys`, `doc.a.b`, `c.nest.a` or the whole of a Nested (`nest` for `nest.a`). The strongest
+/// of those that apply; a name matches a little too much rather than too little.
 pub fn result_mask(masks: &[(String, Mask)], result: &str) -> Option<Mask> {
     masks.iter().filter(|(m, _)| names_masked(m, result)).map(|(_, how)| *how).reduce(Mask::stronger)
+}
+
+/// `email` of `email_1`, `email_1_2` or `email:1`.
+fn without_copy_number(name: &str) -> &str {
+    let mut n = name;
+    while let Some((head, tail)) = n.rsplit_once(['_', ':']) {
+        if head.is_empty() || tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+            break;
+        }
+        n = head;
+    }
+    n
 }
 
 fn names_masked(masked: &str, result: &str) -> bool {
     let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
     let want: Vec<&str> = masked.split('.').collect();
-    let got: Vec<&str> = result.split('.').collect();
+    let mut got: Vec<&str> = result.split('.').collect();
+    if let Some(last) = got.last_mut() {
+        *last = without_copy_number(last);
+    }
     got.windows(want.len()).any(|w| w.iter().zip(&want).all(|(a, b)| same(a, b))) || (got.len() < want.len() && got.iter().zip(&want).all(|(a, b)| same(a, b)))
 }
 
@@ -1944,10 +1959,10 @@ mod tests {
     fn a_result_column_is_masked_by_any_name_it_comes_back_under() {
         let hide = Mask::Hidden;
         let masks = vec![("email".to_string(), Mask::PARTIAL), ("meta".to_string(), hide), ("nest.a".to_string(), hide)];
-        for result in ["email", "EMAIL", "b.email", "shop.b.email", "meta", "meta.keys", "c.meta.values", "doc.meta.x", "nest.a", "c.nest.a", "nest"] {
+        for result in ["email", "EMAIL", "b.email", "shop.b.email", "email_1", "email_12", "email_1_1", "email:1", "b.email_1", "meta", "meta_1", "meta.keys", "c.meta.values", "doc.meta.x", "nest.a", "c.nest.a", "nest"] {
             assert!(result_mask(&masks, result).is_some(), "{result}");
         }
-        for result in ["id", "e_mail", "email2", "b.email2", "nest.b", "metadata", "a"] {
+        for result in ["id", "e_mail", "email2", "b.email2", "email_x", "1", "_1", "nest.b", "metadata", "a"] {
             assert_eq!(result_mask(&masks, result), None, "{result}");
         }
         let both = vec![("email".to_string(), Mask::PARTIAL), ("b.email".to_string(), hide)];
