@@ -16,6 +16,7 @@ pub enum Mode {
     Tree,
     Typing,
     Frames,
+    Statements,
     Demo,
 }
 
@@ -27,6 +28,7 @@ impl Mode {
             "--bench-tree" => Some(Mode::Tree),
             "--bench-typing" => Some(Mode::Typing),
             "--bench-frames" => Some(Mode::Frames),
+            "--bench-statements" => Some(Mode::Statements),
             "--demo" => Some(Mode::Demo),
             _ => None,
         })
@@ -197,8 +199,52 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
         Mode::Tree => tree(ws, window, cx),
         Mode::Typing => typing(ws, window, cx),
         Mode::Frames => frames(ws, window, cx),
+        Mode::Statements => statements(ws, window, cx),
         Mode::Demo => demo(ws, window, cx),
     }
+}
+
+/// A tab's statement from run to its last row, one after another on one session: what each
+/// costs on the wire (describe, then bind and execute) and on the server. `DATAMAN_BENCH_PG`
+/// picks the server (a pooler's port measures through it); `DATAMAN_BENCH_N` how many of each.
+fn statements(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    let (prof, pw) = bench_profile(None);
+    let id = prof.id.clone();
+    connect(&ws, prof, pw, cx);
+    let n: usize = std::env::var("DATAMAN_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
+    let (ws2, id2) = (ws.clone(), id.clone());
+    when(window, Duration::from_secs(30), move |cx| connected(&ws2, &id2, cx), move |_window, cx| {
+        let Some(ConnState::Connected(conn)) = ws.read(cx).connection_state(&id, cx) else { unreachable!() };
+        let kinds: [(&str, &str, Vec<Option<String>>); 3] = [
+            ("one-row", "SELECT 1", vec![]),
+            ("catalog-50", "SELECT oid, relname, relkind, reltuples FROM pg_catalog.pg_class ORDER BY oid LIMIT 50", vec![]),
+            ("param", "SELECT oid, relname FROM pg_catalog.pg_class WHERE oid > $1::oid ORDER BY oid LIMIT 10", vec![Some("1000".into())]),
+        ];
+        let handle = conn.handle().clone();
+        // Off the UI thread, which it leaves alone: the process ends when the numbers are out.
+        std::thread::spawn(move || {
+            let s = conn.session(None);
+            let mut lines = vec![format!("statements: pooler {:?}", conn.pooler)];
+            for (name, sql, params) in kinds {
+                let mut times = Vec::with_capacity(n);
+                for i in 0..n + 20 {
+                    let t0 = Instant::now();
+                    let rs = s.execute_with(sql, params.clone());
+                    rs.fetch_all();
+                    handle.block_on(rs.wait_finished());
+                    assert_eq!(rs.phase(), Phase::Done, "{sql}: {:?}", rs.status().error);
+                    if i >= 20 {
+                        times.push(t0.elapsed());
+                    }
+                }
+                lines.push(Stats(times).line(name));
+            }
+            for l in lines {
+                println!("{l}");
+            }
+            std::process::exit(0);
+        });
+    });
 }
 
 fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {

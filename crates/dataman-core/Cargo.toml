@@ -27,7 +27,8 @@ parking_lot.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
-tokio-postgres-rustls = "0.13"
+# 0.14: the channel binding (SCRAM-SHA-256-PLUS) reads the certificate right; 0.13 never bound.
+tokio-postgres-rustls = "0.14"
 log = "0.4"
 socket2 = "0.6"
 regex = "1"

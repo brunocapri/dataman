@@ -1758,6 +1758,7 @@ impl Workspace {
         });
         let db = tab.map(|t| t.database().to_string()).unwrap_or_default();
         let read_only = conn.as_ref().filter(|c| c.read_only_for(&db)).map(|_| div().text_color(t.tx2).child("read-only"));
+        let pooler = conn.as_ref().and_then(|c| c.pooler).map(|p| div().flex().text_color(t.tx2).child(p.name).child(", ").child(p.mode.label()));
         div()
             .h(px(metrics::STATUS_H))
             .flex_none()
@@ -1776,6 +1777,7 @@ impl Workspace {
             .child(div().flex().flex_row().items_center().gap(px(8.)).children(badge).child(version))
             .children(env)
             .children(read_only)
+            .children(pooler)
             .child(div().flex_1())
             .children(self.flash_notice.as_ref().map(|(m, _, err)| {
                 if *err {

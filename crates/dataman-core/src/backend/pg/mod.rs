@@ -71,14 +71,19 @@ mod no_verify {
     }
 }
 
-fn tls_for(mode: SslMode) -> Result<Tls> {
-    Ok(match rustls_config(mode)? {
+fn tls_for(mode: SslMode, host: &str) -> Result<Tls> {
+    Ok(match rustls_config_for(mode, host)? {
         None => Tls::None,
         Some(cfg) => Tls::Rustls(tokio_postgres_rustls::MakeRustlsConnect::new(cfg)),
     })
 }
 
 pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig>> {
+    rustls_config_for(mode, "")
+}
+
+/// Verified, a cloud's own CA (`config::CLOUD_TLS`) is trusted for its hosts too.
+fn rustls_config_for(mode: SslMode, host: &str) -> Result<Option<rustls::ClientConfig>> {
     if mode == SslMode::Disable {
         return Ok(None);
     }
@@ -89,6 +94,12 @@ pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig
         let found = rustls_native_certs::load_native_certs();
         for c in found.certs {
             let _ = roots.add(c);
+        }
+        if let Some(cloud) = crate::config::cloud_tls(host) {
+            use rustls::pki_types::pem::PemObject;
+            for c in rustls::pki_types::CertificateDer::pem_slice_iter(cloud.roots.as_bytes()) {
+                roots.add(c.context("a cloud's CA certificate")?).context("a cloud's CA certificate")?;
+            }
         }
         builder.with_root_certificates(roots).with_no_client_auth()
     } else {
@@ -145,6 +156,7 @@ pub(crate) struct Dedicated {
     pub tls_active: bool,
     pub notifications: tokio::sync::mpsc::UnboundedReceiver<Notification>,
     reach: Reach,
+    pub pooler: Option<crate::pooler::Pooler>,
 }
 
 impl Dedicated {
@@ -241,7 +253,7 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
     let (cfg, sslmode) = pg_config(p, password, database, via);
     let reach = Reach::of(p, via);
     let socket = reach.open().await.context("error connecting to server")?;
-    let tls = tls_for(sslmode)?;
+    let tls = tls_for(sslmode, &p.host)?;
     let (tx, notifications) = tokio::sync::mpsc::unbounded_channel();
     let used = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mark = Arc::new(Mutex::new(None));
@@ -260,12 +272,19 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
             client
         }
     };
-    own_mark(p, &mark, backend_pid(&client).await);
-    if p.read_only {
+    let pid = backend_pid(&client).await;
+    let pooler = pid.and_then(|b| crate::pooler::detect(&p.host, p.port, client.backend_key_pid(), b));
+    // Through a pooler that hands out server connections per transaction the backend is shared
+    // and changes: it is no one's own, and a session setting would land on whoever gets it next.
+    let shared = pooler.is_some_and(|x| x.per_transaction());
+    if !shared {
+        own_mark(p, &mark, pid);
+    }
+    if p.read_only && !shared {
         set_read_only(&client).await;
     }
     let tls_active = used.load(std::sync::atomic::Ordering::Acquire);
-    Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications, reach })
+    Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications, reach, pooler })
 }
 
 fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> (tokio_postgres::Config, SslMode) {
@@ -290,6 +309,20 @@ fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&st
         });
     if let Some(pw) = password {
         cfg.password(pw);
+    }
+    // From a pasted connection string: Neon's `channel_binding=require`, and `options` (Neon's
+    // `endpoint=…` for a client that sends no SNI, or `-c` settings).
+    match p.options.get("channel_binding").map(String::as_str) {
+        Some("require") => {
+            cfg.channel_binding(tokio_postgres::config::ChannelBinding::Require);
+        }
+        Some("disable") => {
+            cfg.channel_binding(tokio_postgres::config::ChannelBinding::Disable);
+        }
+        _ => {}
+    }
+    if let Some(o) = p.options.get("options") {
+        cfg.options(o);
     }
     (cfg, sslmode)
 }
@@ -395,17 +428,25 @@ pub(crate) struct Canceller {
 }
 
 impl Canceller {
+    /// Bounded: the request's connection is held until the other end closes it, which a pooler
+    /// does once it has passed the request on.
     pub(crate) async fn cancel(&self) -> Result<()> {
-        let s = self.reach.open().await?;
-        match &self.tls {
-            Tls::None => self.token.cancel_query_raw(s, NoTls).await?,
-            Tls::Rustls(m) => {
-                let mut m = m.clone();
-                let c = <tokio_postgres_rustls::MakeRustlsConnect as MakeTlsConnect<RawStream>>::make_tls_connect(&mut m, self.reach.domain())?;
-                self.token.cancel_query_raw(s, c).await?
+        let send = async {
+            let s = self.reach.open().await?;
+            match &self.tls {
+                Tls::None => self.token.cancel_query_raw(s, NoTls).await?,
+                Tls::Rustls(m) => {
+                    let mut m = m.clone();
+                    let c = <tokio_postgres_rustls::MakeRustlsConnect as MakeTlsConnect<RawStream>>::make_tls_connect(&mut m, self.reach.domain())?;
+                    self.token.cancel_query_raw(s, c).await?
+                }
             }
+            Ok(())
+        };
+        match tokio::time::timeout(Duration::from_secs(10), send).await {
+            Ok(r) => r,
+            Err(_) => anyhow::bail!("the cancel request was not answered in 10 s"),
         }
-        Ok(())
     }
 }
 
@@ -415,12 +456,13 @@ async fn connect_session(
     database: Option<&str>,
     via: Option<SocketAddr>,
     watch: &Arc<TxWatch>,
+    pooler: Option<crate::pooler::Pooler>,
 ) -> Result<(Client, Canceller)> {
     let (cfg, sslmode) = pg_config(p, password, database, via);
     let reach = Reach::of(p, via);
     let socket = reach.open().await.context("error connecting to server")?;
     let stream = Sniff::new(socket, watch.clone());
-    let tls = tls_for(sslmode)?;
+    let tls = tls_for(sslmode, &p.host)?;
     let mark = Arc::new(Mutex::new(None));
     let client = match &tls {
         Tls::None => {
@@ -437,8 +479,11 @@ async fn connect_session(
             client
         }
     };
-    own_mark(p, &mark, watch.pid());
-    if p.read_only {
+    // Behind a pooler BackendKeyData carries the pooler's number, not a server process's.
+    if pooler.is_none() {
+        own_mark(p, &mark, watch.pid());
+    }
+    if p.read_only && !pooler.is_some_and(|x| x.per_transaction()) {
         set_read_only(&client).await;
     }
     let cancel = Canceller { token: client.cancel_token(), tls, reach };
@@ -451,6 +496,7 @@ pub(crate) async fn connect_session_through(
     database: Option<&str>,
     tunnel: Option<&crate::ssh::Tunnel>,
     watch: &Arc<TxWatch>,
+    pooler: Option<crate::pooler::Pooler>,
 ) -> Result<(Client, Canceller)> {
     let via = match tunnel {
         Some(t) => {
@@ -459,7 +505,7 @@ pub(crate) async fn connect_session_through(
         }
         None => None,
     };
-    match connect_session(p, password, database, via, watch).await {
+    match connect_session(p, password, database, via, watch, pooler).await {
         Ok(c) => Ok(c),
         Err(e) => match tunnel.and_then(|t| t.take_error()) {
             Some(s) => Err(s.into()),
@@ -569,8 +615,12 @@ pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     Ok(info)
 }
 
+/// The login's own search path: what the role and database set, not what a session changed. The
+/// first query runs in one message, one implicit transaction, so through a pooler it reads one
+/// server connection, whatever another client left set on it.
 pub(crate) async fn search_path(client: &Client, user: &str) -> Vec<String> {
-    match first_ok(client, &["SELECT pg_catalog.current_schemas(false)", "SHOW search_path"]).await {
+    let reset = "SET LOCAL search_path TO DEFAULT; SELECT pg_catalog.current_schemas(false)";
+    match first_ok(client, &[reset, "SELECT pg_catalog.current_schemas(false)", "SHOW search_path"]).await {
         Ok(rows) => rows
             .first()
             .and_then(|r| r.first().cloned().flatten())
@@ -642,7 +692,7 @@ pub(crate) async fn run(
         }
         None => {}
     }
-    let r = match client.prepare(&rs.sql).await {
+    let r = match client.describe(&rs.sql).await {
         Ok(_) if aborted() => return Ran::NeverRan { settle: false },
         Ok(stmt) => {
             executing();
@@ -707,7 +757,8 @@ async fn fetch_copy_out(
 ) -> Result<Option<u64>, tokio_postgres::Error> {
     let cols = vec![ColumnInfo { name: "copy".into(), type_name: "text".into(), type_oid: 25, kind: Kind::Text }];
     rs.set_columns(cols.clone());
-    let stream = client.copy_out(rs.sql.as_str()).await?;
+    let stmt = client.describe(&rs.sql).await?;
+    let stream = client.copy_out(&stmt).await?;
     let mut rows = CopyRows { stream: Box::pin(stream), partial: Vec::new(), lines: std::collections::VecDeque::new(), ended: false };
     super::pump(&mut rows, rs, &cols, started, on_pause).await
 }

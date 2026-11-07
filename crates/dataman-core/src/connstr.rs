@@ -86,6 +86,12 @@ impl ConnSpec {
             "ssl" if value == "true" || value == "1" => self.sslmode = Some(SslMode::Require),
             "useSSL" => self.sslmode = Some(if value == "true" { SslMode::Require } else { SslMode::Disable }),
             "service" => self.service = Some(value.to_string()),
+            "channel_binding" if matches!(value, "require" | "prefer" | "disable") => {
+                self.options.insert(key.to_string(), value.to_string());
+            }
+            "options" if !value.is_empty() => {
+                self.options.insert(key.to_string(), value.to_string());
+            }
             _ => {}
         }
     }
@@ -747,6 +753,30 @@ mod tests {
         assert_eq!((p.engine, p.host.as_str(), p.port, p.database.as_str(), p.sslmode), (Engine::Redis, "cache", 6380, "2", SslMode::VerifyFull));
         assert_eq!(pw.as_deref(), Some("pw"));
         assert_eq!(p.url(), "rediss://cache:6380/2");
+    }
+
+    #[test]
+    fn neon_and_supabase_strings() {
+        // Neon's console: the pooled host, TLS and channel binding required.
+        let (p, pw) = parse_profile("postgresql://neondb_owner:npg_Ab3c@ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require").unwrap();
+        assert_eq!((p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()), (Engine::Postgres, "ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech", 5432, "neondb_owner", "neondb"));
+        assert_eq!((pw.as_deref(), p.sslmode, p.tls_mode()), (Some("npg_Ab3c"), SslMode::Require, SslMode::VerifyFull), "dialed verified");
+        assert_eq!(p.options.get("channel_binding").map(String::as_str), Some("require"));
+        let back = parse_profile(&p.url()).unwrap().0;
+        assert_eq!((back.url(), back.options), (p.url(), p.options.clone()), "read back");
+        // For a client without SNI, the endpoint rides in `options`.
+        let (p, _) = parse_profile("postgres://u:pw@ep-x-123.eu-central-1.aws.neon.tech/db?sslmode=require&options=endpoint%3Dep-x-123").unwrap();
+        assert_eq!(p.options.get("options").map(String::as_str), Some("endpoint=ep-x-123"));
+        assert_eq!(p.url(), "postgresql://u@ep-x-123.eu-central-1.aws.neon.tech:5432/db?sslmode=require&options=endpoint%3Dep-x-123");
+        // Supabase: the shared pooler's tenant user, transaction (6543) and session (5432) ports,
+        // and the direct host.
+        let (p, pw) = parse_profile("postgresql://postgres.abcdefghijklmnop:s%23cret@aws-0-eu-west-1.pooler.supabase.com:6543/postgres").unwrap();
+        assert_eq!((p.host.as_str(), p.port, p.user.as_str(), pw.as_deref()), ("aws-0-eu-west-1.pooler.supabase.com", 6543, "postgres.abcdefghijklmnop", Some("s#cret")));
+        assert_eq!(p.tls_mode(), SslMode::VerifyFull, "Supabase's own CA verifies it");
+        let (p, _) = parse_profile("postgresql://postgres:pw@db.abcdefghijklmnop.supabase.co:5432/postgres").unwrap();
+        assert_eq!((p.port, p.tls_mode()), (5432, SslMode::VerifyFull));
+        let (p, _) = parse_profile("postgresql://u@db.example.com/d?sslmode=require&channel_binding=sometimes").unwrap();
+        assert_eq!((p.tls_mode(), p.options.len()), (SslMode::Require, 0), "elsewhere the mode is the profile's; an unknown value is not kept");
     }
 
     #[test]

@@ -668,6 +668,13 @@ impl Connection {
         crate::own::is_own(&crate::own::server_key(&self.profile), pid)
     }
 
+    /// Whether the session may be doing Dataman's own work: its own, or, through a pooler per
+    /// transaction, any server connection of Dataman's login (each transaction of a tab or an
+    /// agent runs on whichever is free).
+    pub fn may_be_own(&self, s: &SessionRow) -> bool {
+        s.is_self || self.owns_backend(s.pid) || (self.per_transaction() && s.user.as_deref() == Some(self.info.user.as_str()))
+    }
+
     pub fn activity_sessions(self: &Arc<Self>, db: &str) -> Task<Vec<SessionRow>> {
         let (this, db) = (self.clone(), db.to_string());
         let sql = sessions_sql(self.info.major());
