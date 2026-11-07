@@ -1805,3 +1805,81 @@ fn an_export_that_fails_says_so_and_one_that_writes_does_not_start() {
     }
     ok(&e, &s, "DROP DATABASE dataman_ch_export2");
 }
+
+/// What a relation reads, from the catalog: every kind of relation, and what cannot be followed.
+#[test]
+fn view_sources_read_what_a_relation_reads() {
+    let e = env();
+    let name = format!("dataman_follow_{}", std::process::id());
+    let Some(c) = seeded(&e, &name) else { return };
+    let s = c.session(None);
+    let pw = password();
+    for sql in [
+        format!("CREATE TABLE {name}.base (id UInt64, v String) ENGINE = MergeTree ORDER BY id"),
+        format!("CREATE TABLE {name}.other (id UInt64, v String) ENGINE = MergeTree ORDER BY id"),
+        format!("CREATE VIEW {name}.a_view AS SELECT b.id, v FROM {name}.base b JOIN (SELECT id FROM {name}.other) o USING id"),
+        format!("CREATE VIEW {name}.in_view AS SELECT id FROM {name}.base WHERE id IN {name}.other"),
+        format!("CREATE VIEW {name}.of_nothing AS SELECT number FROM numbers(1)"),
+        format!("CREATE VIEW {name}.sys_view AS SELECT dummy FROM system.one"),
+        format!("CREATE VIEW {name}.fn_view AS SELECT * FROM merge('{name}', 'base')"),
+        format!("CREATE MATERIALIZED VIEW {name}.stored ENGINE = MergeTree ORDER BY id AS SELECT id FROM {name}.base"),
+        format!("CREATE MATERIALIZED VIEW {name}.into_other TO {name}.other AS SELECT id, v FROM {name}.base"),
+        format!("CREATE TABLE {name}.merged (id UInt64) ENGINE = Merge('{name}', '^(base|other)$')"),
+        format!("CREATE TABLE {name}.buffered (id UInt64) ENGINE = Buffer('{name}', 'base', 1, 10, 100, 10, 100, 1000, 10000)"),
+        format!("CREATE TABLE {name}.nowhere (id UInt64) ENGINE = Buffer('', '', 1, 10, 100, 10, 100, 1000, 10000)"),
+        format!("CREATE TABLE {name}.shards (id UInt64) ENGINE = Distributed(default, '{name}', 'base')"),
+        format!("CREATE DICTIONARY {name}.dict (id UInt64, v String) PRIMARY KEY id SOURCE(CLICKHOUSE(DB '{name}' TABLE 'base' USER 'default' PASSWORD '{pw}')) LAYOUT(FLAT()) LIFETIME(0)"),
+        format!("CREATE DICTIONARY {name}.dict_q (id UInt64, v String) PRIMARY KEY id SOURCE(CLICKHOUSE(QUERY 'SELECT id, v FROM {name}.other' USER 'default' PASSWORD '{pw}')) LAYOUT(FLAT()) LIFETIME(0)"),
+        format!("CREATE DICTIONARY {name}.dict_far (id UInt64, v String) PRIMARY KEY id SOURCE(CLICKHOUSE(HOST 'elsewhere' DB 'x' TABLE 'y')) LAYOUT(FLAT()) LIFETIME(0)"),
+        format!("CREATE DICTIONARY {name}.dict_null (id UInt64, v String) PRIMARY KEY id SOURCE(NULL()) LAYOUT(FLAT()) LIFETIME(0)"),
+        format!("CREATE TABLE {name}.dict_t (id UInt64, v String) ENGINE = Dictionary('{name}.dict')"),
+        format!("CREATE TABLE {name}.outside (id UInt64) ENGINE = S3('http://127.0.0.1:1/x.csv', 'CSV')"),
+    ] {
+        ok(&e, &s, &sql);
+    }
+    let read = |n: &str| e.core.block_on(c.view_sources(&name, &name, n));
+    let relations = |n: &str| {
+        let mut v: Vec<String> = read(n).unwrap().iter().map(|s| {
+            assert_eq!(s.kind, dataman_core::schema::ViewSourceKind::Relation, "{n}: {s:?}");
+            format!("{}.{}", s.schema, s.name)
+        }).collect();
+        v.sort();
+        v
+    };
+    let base = format!("{name}.base");
+    let other = format!("{name}.other");
+    assert_eq!(relations("a_view"), [base.as_str(), other.as_str()]);
+    assert_eq!(relations("in_view"), [base.as_str(), other.as_str()], "IN names a table with no FROM");
+    assert!(relations("of_nothing").is_empty());
+    assert!(relations("base").is_empty(), "a table with data of its own and nothing feeding it");
+    assert_eq!(relations("stored"), [base.as_str()]);
+    assert_eq!(relations("into_other"), [base.as_str(), other.as_str()]);
+    assert_eq!(relations("other"), [format!("{name}.into_other")], "a table a materialized view fills");
+    assert_eq!(relations("merged"), [base.as_str(), other.as_str()]);
+    assert_eq!(relations("buffered"), [base.as_str()]);
+    assert!(relations("nowhere").is_empty());
+    assert_eq!(relations("shards"), [base.as_str()]);
+    assert_eq!(relations("dict"), [base.as_str()]);
+    assert_eq!(relations("dict_q"), [other.as_str()]);
+    assert!(relations("dict_null").is_empty());
+    assert_eq!(relations("dict_t"), [format!("{name}.dict")]);
+    let stored = ok(&e, &s, &format!("SELECT name FROM system.tables WHERE database = '{name}' AND name LIKE '.inner%'"));
+    let stored = shown(&stored, 0, 0).unwrap();
+    assert_eq!(relations(&stored), [format!("{name}.stored")], "where a materialized view stores is that view");
+    for n in ["sys_view", "fn_view", "dict_far", "outside"] {
+        let got = read(n).unwrap();
+        assert!(got.iter().any(|s| s.kind == dataman_core::schema::ViewSourceKind::Unknown), "{n}: {got:?}");
+    }
+    assert!(read("no_such_relation").is_err(), "what the catalog does not show is not a relation with no sources");
+
+    // A failed read says so: past one row every catalog read of this login is refused.
+    let user = format!("{name}_small");
+    ok(&e, &s, &format!("CREATE USER {user} IDENTIFIED WITH plaintext_password BY 'x' SETTINGS max_result_rows = 1, result_overflow_mode = 'throw'"));
+    ok(&e, &s, &format!("GRANT SELECT ON {name}.* TO {user}"));
+    let p = ConnectionProfile { user: user.clone(), ..profile(&name) };
+    let small = open(&e, p, "x").expect("the login connects");
+    let err = e.core.block_on(small.view_sources(&name, &name, "a_view")).expect_err("no answer is not an empty answer");
+    assert!(format!("{err:#}").contains("max_result_rows") || format!("{err:#}").contains("Limit for result"), "{err:#}");
+    ok(&e, &s, &format!("DROP USER {user}"));
+    ok(&e, &s, &format!("DROP DATABASE {name}"));
+}

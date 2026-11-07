@@ -303,6 +303,8 @@ pub struct Opened {
     pub profile: ConnectionProfile,
     pub conn: Arc<Connection>,
     pub database: String,
+    /// The catalog that says what relations read, once per call, where it is one read for all.
+    pub read_through: Arc<tokio::sync::OnceCell<Arc<dataman_core::schema::objects::ReadThrough>>>,
 }
 
 impl Call {
@@ -410,7 +412,7 @@ impl Call {
         }
         let database = args.opt_str("database").map(str::to_string).unwrap_or_else(|| conn.database().to_string());
         self.note.lock().database = Some(database.clone());
-        let mut o = Opened { profile, conn, database };
+        let mut o = Opened { profile, conn, database, read_through: Default::default() };
         // Every tool reads the rules from here: generated columns take their sources' protection.
         o.profile.mcp_rules = crate::builtin::rules::effective_rules(self, &o).await?;
         o.conn.set_agent_rules(&o.profile.mcp_rules);

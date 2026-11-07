@@ -563,10 +563,10 @@ fn clickhouse_through_the_tools() {
     assert!(!got.to_string().contains("hash-ana"), "{got}");
     let got = e.ok("run_query", m(json!({"sql": "SELECT id, email FROM customers"})));
     assert_ne!(got["rows"][0][1], "ana-at-acme", "{got}");
-    // A scalar subquery may be compared in a filter; the server's error quotes what it answered.
+    // A scalar subquery is converted to the other side's type, and the server's error would quote it.
     for sql in ["SELECT id FROM users WHERE id = (SELECT email FROM customers LIMIT 1)", "SELECT id FROM users WHERE (SELECT email FROM customers LIMIT 1) = 1"] {
         let err = e.err("run_query", m(json!({"sql": sql})));
-        assert!(err.contains("‹value›") && !err.contains("ana-at-acme"), "{sql}: {err}");
+        assert!(err.contains("is masked") && !err.contains("ana-at-acme"), "{sql}: {err}");
     }
     for sql in [
         "SELECT password_hash FROM users",
