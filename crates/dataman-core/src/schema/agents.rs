@@ -1,15 +1,18 @@
 //! What agents' rules read of a database's catalog, per engine: generated columns and what they
 //! are computed from, DuckDB's macros, and the PostgreSQL searches the MCP tools run.
 
+use std::collections::HashSet;
 use std::future::Future;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde_json::Value;
 
+use super::objects::{ViewSource, ViewSourceKind};
 use crate::Connection;
 use crate::bounded::{Limits, Mode};
 use crate::config::Engine;
 use crate::privacy::Generated;
+use crate::sql::{Dialect, TokenKind, tokenize_in};
 
 const PG_GENERATED: &str = "SELECT n.nspname, c.relname, a.attname, d.attname FROM pg_catalog.pg_attribute a \
   JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
@@ -44,19 +47,97 @@ const MS_GENERATED_EXPR: &str = "SELECT s.name, t.name, c.name, COALESCE(c.defin
   JOIN sys.objects t ON t.object_id = c.object_id JOIN sys.schemas s ON s.schema_id = t.schema_id \
   LEFT JOIN sys.columns o ON c.definition IS NULL AND o.object_id = c.object_id AND o.column_id <> c.column_id";
 
-/// The names an expression may read: quoted (`` `a` ``, `[a]`, `"a"`) and bare words. MySQL
-/// keeps no dependencies for generated columns, so its expression is read, erring on more.
-fn expression_names(e: &str) -> Vec<String> {
+/// The names an expression may read: quoted (`` `a` ``, `[a]`, `"a"`), bare words, and for what
+/// is written with dots (`nest.a`, `t.x`) those whole too. MySQL keeps no dependencies for
+/// generated columns, so its expression is read, erring on more.
+fn expression_names(e: &str, d: Dialect) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for t in crate::sql::tokenize_in(e, crate::Dialect::MySql) {
-        if matches!(t.kind, crate::sql::TokenKind::Ident | crate::sql::TokenKind::QuotedIdent | crate::sql::TokenKind::Keyword) {
-            let w = t.text(e).trim_matches(['`', '"', '[', ']']).to_string();
-            if !out.contains(&w) {
-                out.push(w);
+    let mut chain: Option<String> = None;
+    let mut after_dot = false;
+    let add = |w: String, out: &mut Vec<String>| {
+        if !out.contains(&w) {
+            out.push(w);
+        }
+    };
+    for t in tokenize_in(e, d).into_iter().filter(|t| !t.kind.is_trivia()) {
+        if matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword) {
+            let w = if d == Dialect::ClickHouse { crate::sql::ident_value_in(e, &t, d) } else { t.text(e).trim_matches(['`', '"', '[', ']']).to_string() };
+            let whole = match chain.take() {
+                Some(c) if after_dot => format!("{c}.{w}"),
+                _ => w.clone(),
+            };
+            add(w, &mut out);
+            add(whole.clone(), &mut out);
+            chain = Some(whole);
+            after_dot = false;
+        } else if chain.is_some() && t.kind == TokenKind::Punct && t.text(e) == "." {
+            after_dot = true;
+        } else {
+            chain = None;
+            after_dot = false;
+        }
+    }
+    out
+}
+
+/// What a stored statement reads (a view's, a dictionary's), the way an agent's statement is read:
+/// what the guard would refuse an agent, or the analysis cannot follow, is one source that cannot
+/// be checked. `own`: where a name without its database is, when that is known; otherwise such a
+/// name cannot be followed. `known` says whether `db.name` is a relation, for the tables a server
+/// reads with no FROM (`x IN db.t`). `routines`: user functions, in lower case.
+pub(super) fn query_sources(query: &str, own: Option<&str>, d: Dialect, known: &dyn Fn(&str, &str) -> bool, routines: &HashSet<String>) -> Vec<ViewSource> {
+    let closed = |why: String| vec![ViewSource { schema: String::new(), name: format!("its definition ({why})"), kind: ViewSourceKind::Unknown }];
+    if let Some(why) = crate::guard::agent_read_refusal_in(query, d) {
+        return closed(why);
+    }
+    let toks: Vec<_> = tokenize_in(query, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    let a = crate::sql::scope::analyze_in(query, &toks, d);
+    if a.unsure {
+        return closed("a statement Dataman cannot follow".into());
+    }
+    if toks.iter().any(|t| t.kind == TokenKind::Param && t.text(query).contains("Identifier")) {
+        return closed("a name given as a parameter".into());
+    }
+    let mut out: Vec<ViewSource> = Vec::new();
+    let mut add = |s: ViewSource| {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    for (_, name, _) in &a.calls {
+        if routines.contains(&name.to_lowercase()) {
+            add(ViewSource { schema: String::new(), name: name.clone(), kind: ViewSourceKind::Function });
+        }
+    }
+    for (schema, name) in crate::agent_sql::tables_named(query, d) {
+        add(match schema.as_deref().or(own) {
+            Some(s) => ViewSource { schema: s.to_string(), name, kind: ViewSourceKind::Relation },
+            None => ViewSource { schema: String::new(), name, kind: ViewSourceKind::Unknown },
+        });
+    }
+    for w in toks.windows(3) {
+        if w[1].text(query) == "." && w[1].kind == TokenKind::Punct {
+            let value = |t: &crate::sql::Token| crate::sql::ident_value_in(query, t, d);
+            if matches!(w[0].kind, TokenKind::Ident | TokenKind::QuotedIdent) && matches!(w[2].kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword) && known(&value(&w[0]), &value(&w[2])) {
+                add(ViewSource { schema: value(&w[0]), name: value(&w[2]), kind: ViewSourceKind::Relation });
             }
         }
     }
     out
+}
+
+/// A `CREATE VIEW … AS <query>`'s query.
+pub(super) fn view_body(create: &str, d: Dialect) -> &str {
+    let mut depth = 0usize;
+    for t in tokenize_in(create, d).iter().filter(|t| !t.kind.is_trivia()) {
+        match (t.kind, t.text(create)) {
+            (TokenKind::Punct, "(") => depth += 1,
+            (TokenKind::Punct, ")") => depth = depth.saturating_sub(1),
+            (TokenKind::Keyword | TokenKind::Ident, w) if depth == 0 && w.eq_ignore_ascii_case("AS") => return &create[t.end..],
+            _ => {}
+        }
+    }
+    create
 }
 
 /// DuckDB's macros (`CREATE MACRO`) are kept in the file: the user's functions, like any other.
@@ -89,7 +170,17 @@ pub const PG_REFERENCED_BY: &str = "SELECT con.conname, n.nspname || '.' || t.re
   JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
   WHERE con.contype = 'f' AND con.confrelid = $1::oid ORDER BY 2, 1";
 
-const CH_GENERATED: &str = "SELECT database, table, name, default_expression FROM system.columns WHERE database = currentDatabase() AND default_kind IN ('MATERIALIZED', 'ALIAS')";
+/// A DEFAULT copies its value into the row as a generated column computes it. In every database:
+/// agents name a table in any of them.
+const CH_GENERATED: &str = "SELECT database, table, name, default_expression FROM system.columns \
+  WHERE default_kind IN ('DEFAULT', 'MATERIALIZED', 'ALIAS') AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')";
+
+/// An expression that reads past its own row (a dictionary, a Join table, a subquery): nothing
+/// says what from.
+fn ch_expression_reaches(e: &str) -> bool {
+    let d = Dialect::ClickHouse;
+    crate::guard::agent_read_refusal_in(&format!("SELECT {e}"), d).is_some() || tokenize_in(e, d).iter().any(|t| t.kind == TokenKind::Keyword && t.text(e).eq_ignore_ascii_case("SELECT"))
+}
 
 impl Connection {
     /// Generated (computed) columns of the database and the columns each is computed from, by the
@@ -117,6 +208,10 @@ impl Connection {
             }
             r => r.map_err(|e| anyhow!("{e}"))?,
         };
+        // A list cut short would read as columns with nothing to protect.
+        if out.truncated.is_some() {
+            bail!("too many generated columns to read");
+        }
         let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
         let mut cols: Vec<Generated> = Vec::new();
         // DuckDB: a row per table, its generated columns read from its SQL.
@@ -135,21 +230,29 @@ impl Connection {
         };
         for row in &rows {
             let (schema, table, column) = (text(&row[0]), text(&row[1]), text(&row[2]));
+            let names = if engine == Engine::ClickHouse { Dialect::ClickHouse } else { Dialect::MySql };
             let from = match engine {
                 Engine::Sqlite => {
                     let exprs = super::lite::generated_exprs(&text(&row[3]));
                     // An expression that cannot be read counts as reading every column of the table.
-                    exprs.get(&column.to_lowercase()).map(|e| expression_names(e)).unwrap_or_else(|| expression_names(&text(&row[3])))
+                    exprs.get(&column.to_lowercase()).map(|e| expression_names(e, names)).unwrap_or_else(|| expression_names(&text(&row[3]), names))
                 }
-                _ if by_expression => expression_names(&text(&row[3])),
+                _ if by_expression => expression_names(&text(&row[3]), names),
                 _ => vec![text(&row[3])],
             };
+            let opaque = engine == Engine::ClickHouse && (ch_expression_reaches(&text(&row[3])) || text(&row[3]).ends_with('…'));
             match cols.iter_mut().find(|g| g.schema == schema && g.table == table && g.column == column) {
                 Some(g) => g.from.extend(from),
-                None => cols.push(Generated { schema, table, column, from }),
+                None => cols.push(Generated { schema, table, column, from, opaque }),
             }
         }
         Ok(cols)
+    }
+
+    /// ClickHouse's user functions (`functions` has no catalog there). Lower case.
+    pub async fn clickhouse_user_functions(&self, db: &str) -> Result<Vec<String>> {
+        let client = self.meta(db).await?;
+        Ok(super::ch::user_functions(&client).await?.iter().map(|f| f.to_lowercase()).collect())
     }
 
     /// DuckDB's macros in `db` (none elsewhere: other engines' functions are `functions`').

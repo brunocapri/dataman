@@ -561,7 +561,7 @@ fn statement(
                 if refs > bare.len() {
                     return Err(refuse());
                 }
-                if bare.iter().any(|&i| !reaches(&a, si, i, col, reads, &eq)) {
+                if bare.iter().any(|&i| !reaches(&a, si, i, col, reads, &eq)) || (!bare.is_empty() && answers_one_value(sql, toks, s)) {
                     return Err(refuse());
                 }
             }
@@ -601,6 +601,10 @@ fn statement(
         let ends = |i: usize| toks.get(i).is_none_or(|t| t.text(sql) == ";" || word(sql, t).as_deref() == Some("SETTINGS"));
         if toks.iter().enumerate().any(|(i, t)| word(sql, t).as_deref() == Some("FORMAT") && toks.get(i + 1).is_some_and(|n| matches!(n.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword | TokenKind::Param | TokenKind::String)) && ends(i + 2)) {
             return Err(format!("FORMAT is not available to agents in Masked data on {conn}: masked columns come back masked only as columns"));
+        }
+        let kept: Vec<&str> = sensitive.iter().flat_map(|n| &n.sensitive).map(|(c, _)| c.as_str()).collect();
+        if let Some(c) = clickhouse_read_into(sql, toks, &kept, &eq) {
+            return Err(format!("{c} is masked for agents on {conn}: select it as it is, on its own in the select list; it cannot be renamed, copied, grouped, sorted, compared or computed"));
         }
         // EXPLAIN runs a scalar subquery and prints what it answered.
         if verb == "EXPLAIN" && a.scopes.len() > 1 {
@@ -693,6 +697,89 @@ fn reaches(a: &Analysis, si: usize, item: usize, col: &str, reads: bool, eq: &dy
         Role::Insert => false,
         Role::Expr(c) => matches!(c, Clause::Where | Clause::On),
     }
+}
+
+/// A subquery in a filter whose one value is compared or converted by the outer statement, not
+/// a set or a test (`IN`, `ANY`, `EXISTS`). A server converts that value to the other side's type,
+/// and its error says what it could not convert.
+fn answers_one_value(sql: &str, toks: &[Token], s: &scope::Scope) -> bool {
+    if !matches!(s.role, Role::Expr(_)) {
+        return false;
+    }
+    let Some(mut at) = toks.iter().position(|t| t.start >= s.range.start) else { return true };
+    while at > 0 && toks[at - 1].kind == TokenKind::Punct && toks[at - 1].text(sql) == "(" {
+        at -= 1;
+    }
+    let before = at.checked_sub(1).and_then(|p| word(sql, &toks[p]));
+    !before.is_some_and(|w| matches!(w.as_str(), "IN" | "ANY" | "ALL" | "SOME" | "EXISTS"))
+}
+
+/// ClickHouse reads into a column with a dot (`meta.keys`, `doc.a.b`, `t.x`, `doc.a.:Int64`), the
+/// parts of a Nested are columns with a dot (`nest.a`) and its name reads them all (`nest`). The
+/// analysis takes those for `alias.column`, so its rules for a column do not see them. Such a
+/// name comes back masked only as a column of the first SELECT's list, alone and with no alias;
+/// anywhere else: what it names.
+fn clickhouse_read_into(sql: &str, toks: &[Token], kept: &[&str], eq: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    let d = Dialect::ClickHouse;
+    let punct = |t: Option<&Token>, p: &str| t.is_some_and(|t| t.kind == TokenKind::Punct && t.text(sql) == p);
+    let name = |t: &Token| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword);
+    let first_select = toks.iter().position(|t| word(sql, t).as_deref() == Some("SELECT"))?;
+    let mut depth = 0usize;
+    let mut list_end = toks.len();
+    for (i, t) in toks.iter().enumerate().skip(first_select) {
+        match (t.kind, t.text(sql)) {
+            (TokenKind::Punct, "(") => depth += 1,
+            (TokenKind::Punct, ")") => depth = depth.saturating_sub(1),
+            _ if depth == 0 && word(sql, t).as_deref() == Some("FROM") => {
+                list_end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < toks.len() {
+        let t = &toks[i];
+        if punct(Some(t), "(") {
+            depth += 1;
+        } else if punct(Some(t), ")") {
+            depth = depth.saturating_sub(1);
+        }
+        if !name(t) || (i > 0 && punct(Some(&toks[i - 1]), ".")) {
+            i += 1;
+            continue;
+        }
+        let mut chain = vec![crate::sql::ident_value_in(sql, t, d)];
+        let mut end = i;
+        while punct(toks.get(end + 1), ".") && toks.get(end + 2).is_some_and(name) {
+            end += 2;
+            chain.push(crate::sql::ident_value_in(sql, &toks[end], d));
+        }
+        // `doc.a.:Int64`, `t.1`, `doc.^a`: read further than a name says.
+        let dangling = toks.get(end + 1).is_some_and(|n| n.text(sql).starts_with('.'));
+        let hit = kept.iter().find(|c| {
+            let want: Vec<&str> = c.split('.').collect();
+            let inside = chain.windows(want.len()).position(|w| w.iter().zip(&want).all(|(a, b)| eq(a, b)));
+            let parent = chain.len() < want.len() && chain.iter().zip(&want).all(|(a, b)| eq(a, b));
+            // The last name of a chain, a column with no dots: the analysis follows that.
+            let plain = want.len() == 1 && inside == Some(chain.len() - 1) && !dangling;
+            (inside.is_some() || parent) && !plain
+        });
+        if hit.is_some() {
+            let alone = depth == 0
+                && i > first_select
+                && end < list_end
+                && !dangling
+                && (i == first_select + 1 || punct(Some(&toks[i - 1]), ",") || word(sql, &toks[i - 1]).as_deref() == Some("DISTINCT"))
+                && (end + 1 == list_end || punct(toks.get(end + 1), ","));
+            if !alone {
+                return Some(chain.join("."));
+            }
+        }
+        i = end + 1;
+    }
+    None
 }
 
 /// Words a parenthesis may follow in a filter without being a call's (or a cast's) arguments.

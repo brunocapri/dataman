@@ -1,11 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use anyhow::anyhow;
+
+pub use super::ch::ReadThrough;
 use super::pg::objects as pg;
 use super::{RelKey, duck, lit, lite, ms, my, parse_bool};
 use crate::Task;
 use crate::config::Engine;
 use crate::conn::{Connection, first_ok};
+use crate::sql::Dialect;
 use crate::sqlgen::{qualified, quote_ident, quote_literal};
 
 pub(super) type Rows = Vec<Vec<Option<String>>>;
@@ -570,16 +574,30 @@ impl Connection {
                 Engine::Sqlite => {
                     let client = this.meta(&db).await?;
                     let q = format!("SELECT sql FROM {}.sqlite_master WHERE type = 'view' AND name = {}", lite::ident(&schema), lite::lit(&name));
-                    let Some(view) = first_ok(&client, &[&q]).await?.first().and_then(|r| get(r, 0)) else { return Ok(Vec::new()) };
-                    let known = this.load_relations(&db, &schema).await.unwrap_or_default();
+                    let Some(view) = first_ok(&client, &[&q]).await?.first().and_then(|r| get(r, 0)) else {
+                        return Err(anyhow!("{schema}.{name} is not in the catalog"));
+                    };
+                    let known = this.load_relations(&db, &schema).await?;
                     return Ok(lite::view_tables(&view)
                         .into_iter()
                         .filter_map(|t| known.iter().find(|r| r.name.eq_ignore_ascii_case(&t)))
                         .map(|r| ViewSource { schema: schema.clone(), name: r.name.clone(), kind: ViewSourceKind::Relation })
                         .collect());
                 }
-                // DuckDB keeps no dependencies either; its views are not read for them yet.
-                Engine::DuckDb | Engine::ClickHouse => return Ok(Vec::new()),
+                // DuckDB keeps no dependencies either: what its statement reads.
+                Engine::DuckDb => {
+                    let client = this.meta(&db).await?;
+                    let q = format!("SELECT sql FROM duckdb_views() WHERE database_name = current_database() AND schema_name = {s} AND view_name = {n}");
+                    let Some(view) = first_ok(&client, &[&q]).await?.first().and_then(|r| get(r, 0)) else {
+                        return Err(anyhow!("{schema}.{name} is not in the catalog"));
+                    };
+                    let macros: HashSet<String> = this.duckdb_macros(&db, std::future::pending()).await?.iter().map(|m| m.to_lowercase()).collect();
+                    return Ok(super::agents::query_sources(super::agents::view_body(&view, Dialect::DuckDb), Some(&schema), Dialect::DuckDb, &|_, _| false, &macros));
+                }
+                Engine::ClickHouse => {
+                    let client = this.meta(&db).await?;
+                    return ReadThrough::read(&client).await?.sources(&client, &schema, &name).await;
+                }
                 Engine::MySql => format!(
                     "SELECT TABLE_SCHEMA, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
                      UNION ALL SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}"
@@ -620,6 +638,24 @@ impl Connection {
                     },
                 })
                 .collect())
+        })
+    }
+
+    /// ClickHouse: the catalog [`ReadThrough`] follows, read once for all the relations of a call.
+    pub fn read_through(self: &Arc<Self>, db: &str) -> Task<Arc<ReadThrough>> {
+        let (this, db) = (self.clone(), db.to_string());
+        self.spawn(async move {
+            let client = this.meta(&db).await?;
+            Ok(Arc::new(ReadThrough::read(&client).await?))
+        })
+    }
+
+    /// What a relation of `catalog` reads, as `view_sources` says it for one.
+    pub fn sources_in(self: &Arc<Self>, catalog: Arc<ReadThrough>, db: &str, schema: &str, name: &str) -> Task<Vec<ViewSource>> {
+        let (this, db, schema, name) = (self.clone(), db.to_string(), schema.to_string(), name.to_string());
+        self.spawn(async move {
+            let client = this.meta(&db).await?;
+            catalog.sources(&client, &schema, &name).await
         })
     }
 

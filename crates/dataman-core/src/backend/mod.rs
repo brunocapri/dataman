@@ -114,6 +114,10 @@ pub struct Caps {
     pub agent_login: bool,
     /// Read-only is how the connection was made: changing it makes a new one, between transactions.
     pub read_only_on_connect: bool,
+    /// A table can read other tables, or be filled from them, whatever kind it says it is
+    /// (ClickHouse's Merge, Buffer, Dictionary, a materialized view's target): what agents may
+    /// reach through a relation is checked on every relation, not only on views.
+    pub tables_read_others: bool,
 }
 
 impl Caps {
@@ -145,6 +149,7 @@ impl Caps {
         row_edits: true,
         agent_login: true,
         read_only_on_connect: false,
+        tables_read_others: false,
     };
 
     pub(crate) const BASIC: Caps = Caps {
@@ -175,6 +180,7 @@ impl Caps {
         row_edits: true,
         agent_login: true,
         read_only_on_connect: false,
+        tables_read_others: false,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
@@ -184,7 +190,7 @@ impl Caps {
         Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, uuid_types: &["uniqueidentifier"], uuid_upper: true, ..Caps::BASIC };
     pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
     pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
-    pub const CLICKHOUSE: Caps = Caps { schemas: false, uuid_types: &["uuid"], row_edits: false, agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
+    pub const CLICKHOUSE: Caps = Caps { schemas: false, uuid_types: &["uuid"], row_edits: false, agent_login: false, read_only_on_connect: true, tables_read_others: true, ..Caps::BASIC };
 
     pub fn of(engine: Engine) -> Caps {
         engine.spec().caps

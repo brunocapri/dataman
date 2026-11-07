@@ -14,7 +14,7 @@ use dataman_core::audit::{Entry, Outcome, full, redact};
 use crate::hub::Hub;
 use crate::resources;
 use crate::tool::{Args, Call, Registry, Tool, ToolError};
-use dataman_core::privacy::{BUDGET, Counts, clean_error};
+use dataman_core::privacy::{BUDGET, Counts, clean_error, error_without_values};
 
 /// What an agent follows to set Dataman up for the user: in the server's instructions, and as the
 /// `quickstart` prompt where a client shows prompts as commands.
@@ -183,7 +183,14 @@ impl Server {
     /// `named`: the connection the call named, if any; one that does not resolve gets no reply
     /// (an error, with every type masked).
     fn privacy_pass(&self, call: &Call, named: Option<&str>, r: Result<Value, ToolError>) -> Result<Value, ToolError> {
-        let (types, lost) = match self.about(call, named) {
+        let about = self.about(call, named);
+        // What the server answered may quote what the rules keep (a Dataman refusal never does).
+        let keeps = match &about {
+            About::Found(p) => p.mcp_rules.restricted().then_some(p.engine),
+            About::Lost => Some(dataman_core::Engine::Postgres),
+            About::None => None,
+        };
+        let (types, lost) = match about {
             About::Found(p) => (self.hub.types_for(Some(&p)), false),
             About::None => (self.hub.types_for(None), false),
             About::Lost => (self.hub.types(), true),
@@ -207,6 +214,12 @@ impl Server {
                     m.insert("masked".into(), serde_json::json!(all));
                 }
                 Ok(v)
+            }
+            Err(ToolError::Failed(m)) if keeps.is_some() => {
+                let sql = call.note().sql;
+                let written = sql.as_deref().zip(keeps.filter(|e| e.is_sql()).map(|e| e.dialect()));
+                let clean = error_without_values(&m, written);
+                Err(ToolError::Failed(types.scrub(&clean, &mut counts).into_owned()))
             }
             Err(e) => Err(e.map_text(|m| {
                 let clean = clean_error(m);

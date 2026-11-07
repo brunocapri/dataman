@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use dataman_core::agent_nosql::{self, Shaped};
 use dataman_core::agent_sql::{self, Checked, Table};
-use dataman_core::privacy::{AgentRules, AgentView, Mask, Names, mask_value};
+use dataman_core::privacy::{AgentRules, AgentView, Mask, Names, mask_value, result_mask};
 use dataman_core::schema::{RelKind, ViewSourceKind};
 use dataman_core::{ConnectionProfile, bounded};
 use serde_json::{Value, json};
@@ -140,37 +140,56 @@ fn keeps(r: &AgentRules, t: &Table) -> bool {
         || (r.view == AgentView::Masked && t.columns.iter().any(|c| r.sensitive_mask(Some(&t.schema), &t.name, c, q).is_some()))
 }
 
-const VIEW_DEPTH: usize = 64;
+/// Relations followed for one, down all that it reads: a chain of views, a Merge table's months.
+const MOST_FOLLOWED: usize = 1024;
 
-/// A view reads what it is defined on, under its own names: through it an agent must not reach
-/// what the rules keep (`CREATE VIEW v AS SELECT password_hash AS h FROM users`). Followed down
-/// views of views; what cannot be followed is refused.
-pub async fn view_reads_kept(o: &Opened, r: &AgentRules, view: &Table, kind: RelKind) -> Result<(), String> {
+/// What a relation reads, by its engine's catalog. A failed read is an error, never "nothing".
+async fn sources_of(o: &Opened, schema: &str, name: &str, kind: RelKind) -> anyhow::Result<Vec<dataman_core::schema::ViewSource>> {
+    if !o.conn.caps().tables_read_others {
+        if !matches!(kind, RelKind::View | RelKind::MaterializedView) {
+            return Ok(Vec::new());
+        }
+        return o.conn.view_sources(&o.database, schema, name).await;
+    }
+    let catalog = o.read_through.get_or_try_init(|| o.conn.read_through(&o.database)).await?;
+    o.conn.sources_in(catalog.clone(), &o.database, schema, name).await
+}
+
+/// A view reads what it is defined on, under its own names, and on some engines a table does too:
+/// through it an agent must not reach what the rules keep
+/// (`CREATE VIEW v AS SELECT password_hash AS h FROM users`). Followed down what those read in
+/// turn; what cannot be followed is refused.
+pub async fn view_reads_kept(o: &Opened, r: &AgentRules, schema: &str, name: &str, kind: RelKind) -> Result<(), String> {
     let conn = &o.profile.name;
-    let mut todo = vec![(view.schema.clone(), view.name.clone(), kind)];
+    let asked = name;
+    let mut todo = vec![(schema.to_string(), name.to_string(), kind)];
     let mut seen: HashSet<(String, String)> = HashSet::new();
     while let Some((schema, name, kind)) = todo.pop() {
-        if !matches!(kind, RelKind::View | RelKind::MaterializedView) || !seen.insert((schema.clone(), name.clone())) {
+        if !seen.insert((schema.clone(), name.clone())) {
             continue;
         }
-        if seen.len() > VIEW_DEPTH {
-            return Err(format!("{} reads through more views than Dataman follows, and {conn} keeps some data from agents: query its tables directly", view.name));
+        if seen.len() > MOST_FOLLOWED {
+            return Err(format!("{asked} reads through more than Dataman follows, and {conn} keeps some data from agents: query its tables directly"));
         }
-        let sources = o.conn.view_sources(&o.database, &schema, &name).await.map_err(|e| format!("Dataman could not check what {} reads ({e:#}), and {conn} keeps some data from agents", view.name))?;
+        let sources = sources_of(o, &schema, &name, kind).await.map_err(|e| format!("Dataman could not check what {asked} reads ({e:#}), and {conn} keeps some data from agents"))?;
         for src in sources {
             match src.kind {
                 ViewSourceKind::Function => {
-                    return Err(format!("{} calls {}(), a function of your database; agents cannot read it on {conn} while some data is kept from them", view.name, src.name));
+                    return Err(format!("{asked} calls {}(), a function of your database; agents cannot read it on {conn} while some data is kept from them", src.name));
                 }
                 ViewSourceKind::Unknown => {
-                    return Err(format!("{} reads {}, which Dataman cannot check, and {conn} keeps some data from agents", view.name, src.name));
+                    return Err(format!("{asked} reads {}, which Dataman cannot check, and {conn} keeps some data from agents", src.name));
                 }
                 ViewSourceKind::Relation => {
                     let Some((t, k)) = lookup(o, Some(&src.schema), &src.name).await else {
-                        return Err(format!("{} reads {}.{}, which Dataman cannot check, and {conn} keeps some data from agents", view.name, src.schema, src.name));
+                        return Err(format!("{asked} reads {}.{}, which Dataman cannot check, and {conn} keeps some data from agents", src.schema, src.name));
                     };
+                    // Not by its name, if the name itself is kept.
+                    if !r.visible.table_visible(Some(&t.schema), &t.name, Names::Qualified) {
+                        return Err(format!("{asked} reads a table that keeps data from agents on {conn}"));
+                    }
                     if keeps(r, &t) {
-                        return Err(format!("{} reads {}.{}, which keeps data from agents on {conn}: query {} directly", view.name, t.schema, t.name, t.name));
+                        return Err(format!("{asked} reads {}.{}, which keeps data from agents on {conn}: query {} directly", t.schema, t.name, t.name));
                     }
                     todo.push((t.schema, t.name, k));
                 }
@@ -191,25 +210,23 @@ pub async fn effective_rules(cx: &Call, o: &Opened) -> Result<AgentRules, ToolEr
     Ok(r.with_generated(&cols, Names::Qualified))
 }
 
-async fn user_routines(cx: &Call, o: &Opened) -> HashSet<String> {
+/// The database's own functions, which a statement may not call while something is kept. A list
+/// that could not be read is an error: an empty one would let them all through.
+async fn user_routines(cx: &Call, o: &Opened) -> Result<HashSet<String>, ToolError> {
+    let failed = |e: anyhow::Error| ToolError::Failed(format!("Dataman could not read the functions of {} ({e:#}), and {} keeps some data from agents", o.database, o.profile.name));
+    match o.conn.engine() {
+        dataman_core::Engine::DuckDb => {
+            let names = o.conn.duckdb_macros(&o.database, cx.cancel.clone().cancelled_owned()).await.map_err(failed)?;
+            return Ok(names.iter().map(|n| n.to_lowercase()).collect());
+        }
+        dataman_core::Engine::ClickHouse => return Ok(o.conn.clickhouse_user_functions(&o.database).await.map_err(failed)?.into_iter().collect()),
+        _ => {}
+    }
     let mut out = HashSet::new();
-    if o.conn.engine() == dataman_core::Engine::DuckDb {
-        match o.conn.duckdb_macros(&o.database, cx.cancel.clone().cancelled_owned()).await {
-            Ok(names) => out.extend(names.iter().map(|n| n.to_lowercase())),
-            Err(e) => log::debug!("macros of {}: {e:#}", o.database),
-        }
-        return out;
+    for s in super::catalog::schemas_of(o, None, false).await? {
+        out.extend(o.conn.functions(&o.database, &s).await.map_err(failed)?.iter().map(|f| f.name.to_lowercase()));
     }
-    let Ok(schemas) = super::catalog::schemas_of(o, None, false).await else {
-        return out;
-    };
-    for s in schemas {
-        match o.conn.functions(&o.database, &s).await {
-            Ok(fs) => out.extend(fs.iter().map(|f| f.name.to_lowercase())),
-            Err(e) => log::debug!("functions of {s}: {e:#}"),
-        }
-    }
-    out
+    Ok(out)
 }
 
 pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, write: bool) -> Result<Checked, ToolError> {
@@ -223,11 +240,11 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
         for (s, n) in agent_sql::tables_named(sql, d) {
             let found = lookup(&o, s.as_deref(), &n).await;
             if let Some((t, kind)) = &found {
-                view_reads_kept(&o, &r, t, *kind).await.map_err(ToolError::Refused)?;
+                view_reads_kept(&o, &r, &t.schema, &t.name, *kind).await.map_err(ToolError::Refused)?;
             }
             tables.insert((s, n), found.map(|(t, _)| t));
         }
-        routines = user_routines(cx, &o).await;
+        routines = user_routines(cx, &o).await?;
         if write {
             triggers_keep_out(&o, sql).await?;
         }
@@ -267,7 +284,8 @@ async fn triggers_keep_out(o: &Opened, sql: &str) -> Result<(), ToolError> {
                 )));
             }
             Ok(_) => {}
-            Err(e) => log::debug!("triggers of {}: {e:#}", t.schema),
+            // No list is no answer: the write may have triggers.
+            Err(e) => return Err(ToolError::Failed(format!("Dataman could not read the triggers of {} ({e:#}), and {} keeps some data from agents", t.name, o.profile.name))),
         }
     }
     Ok(())
@@ -301,7 +319,7 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
     let mut used: Vec<(String, Mask)> = Vec::new();
     let was_cut = |s: &str| read.max_cell > agent.max_cell && s.ends_with('…') && s.chars().count() == read.max_cell + 1;
     let mut apply = |columns: &[bounded::Column], rows: &mut Vec<Vec<Value>>, cut_cells: &mut usize, counts: &mut dataman_core::privacy::Counts| {
-        let at: Vec<(usize, Mask)> = columns.iter().enumerate().filter_map(|(i, c)| masks.iter().find(|(m, _)| m.eq_ignore_ascii_case(&c.name)).map(|(_, how)| (i, *how))).collect();
+        let at: Vec<(usize, Mask)> = columns.iter().enumerate().filter_map(|(i, c)| result_mask(masks, &c.name).map(|how| (i, how))).collect();
         for (i, how) in &at {
             let name = columns[*i].name.clone();
             if !used.iter().any(|(n, _)| *n == name) {
@@ -432,7 +450,7 @@ async fn mongo_views(o: &Opened, r: &AgentRules, reads: Vec<(String, String)>) -
         if !seen.insert((db.clone(), coll.clone())) {
             continue;
         }
-        if seen.len() > VIEW_DEPTH {
+        if seen.len() > MOST_FOLLOWED {
             return Err(format!("{coll} reads through more views than Dataman follows, and {conn} keeps some data from agents"));
         }
         if !views.contains_key(&db) {

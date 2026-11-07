@@ -91,6 +91,13 @@ pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     }
 }
 
+/// A string literal's value as the dialect reads it.
+pub(crate) fn string_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
+    let s = t.text(src);
+    let inner = s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).unwrap_or(s);
+    if dialect.lex().backslash_quotes { backslash_unquoted(inner, b'\'') } else { inner.replace("''", "'") }
+}
+
 fn unicode_escapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;

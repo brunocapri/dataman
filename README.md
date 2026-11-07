@@ -338,7 +338,7 @@ SQLite and DuckDB never let an agent touch other files, not even with your Allow
 
 **Default:** Data.
 
-**Data.** Rows come back as the table holds them. Visible to agents still hides what it hides, and database errors never quote values, in every mode.
+**Data.** Rows come back as the table holds them. Visible to agents still hides what it hides, and database errors never quote values, in every mode. While anything is kept from agents, every quoted string in a database error goes, except what the agent wrote itself: the code and the wording stay.
 
 **Masked data.** On top of Data:
 
@@ -376,10 +376,11 @@ What happens to hidden things:
 - **Hidden columns:** the table is quietly replaced with only its visible columns, so `SELECT *` and `row_to_json(t)` never include them. Naming a hidden column anywhere (in the select list, `WHERE`, `JOIN`, `ORDER BY` or a function) is refused. So are writes that would touch it through `*`, `RETURNING *` or an `INSERT` without a column list.
 - **Other ways around it:** while anything is hidden or masked on a connection, Dataman refuses whatever could reach that data some other way:
   - views that read it (followed through views of views), user functions and procedures, catalog tables;
+  - on ClickHouse, whatever else reads it: a materialized view and the table it fills, Merge, Buffer and Distributed tables (followed to the local table they name), dictionaries, and any object or expression whose sources Dataman cannot establish, which stays closed. On a table an agent can read, a column whose `DEFAULT`, `MATERIALIZED` or `ALIAS` reads a dictionary or Join table is hidden;
   - dynamic SQL and `dblink`, queries on another database;
   - writes to tables with triggers;
   - statements it cannot follow.
-  - Generated columns are protected as strongly as the columns they are computed from.
+  - Generated columns, and on ClickHouse columns with a `DEFAULT`, are protected as strongly as the columns they are computed from.
 - **NoSQL:**
   - MongoDB strips hidden fields from documents at any depth, and refuses `$$ROOT`, `$where` and database commands.
   - Elasticsearch refuses SQL, ES|QL and searches across all fields.
@@ -393,7 +394,7 @@ These apply only when the agent sees **Masked data**.
 
 - **Which columns:** only the ones in this list. Dataman never decides by itself which column is sensitive.
 - **Scan again** suggests entries from column names: `password`, `token`, `api_key`, `ssn`, `cpf`, `passport` and `iban` as Hidden; `phone`, `birth`, `salary` and `address` as Partial. E-mails, card numbers and password hashes are left to the Masks, which already catch them in every value. Nothing is added until you add it.
-- **Entry format:** `table.column`, `schema.table.column`, or a pattern such as `*ssn*` to match the column in any table.
+- **Entry format:** `table.column`, `schema.table.column`, or a pattern such as `*ssn*` to match the column in any table. On ClickHouse, an entry for a `Nested` column covers its parts, and `table.nest.a` names one part.
 
 | Mask | Example | Notes |
 |---|---|---|
@@ -403,10 +404,10 @@ These apply only when the agent sees **Masked data**.
 
 **What an agent can do** with a masked column:
 
-- select it under its own name, and it comes back masked;
-- compare it in `WHERE` or `ON`, for example `WHERE email = 'ana@acme.co'`.
+- select it under its own name, and it comes back masked, under any name the server gives it: `b.email` in a self-join, or a part such as `meta.keys`, `doc.a.b` or `nest.a` on ClickHouse;
+- compare it in `WHERE` or `ON`, for example `WHERE email = 'ana@acme.co'`, or use it as a set, `IN (SELECT email …)`.
 
-**What it cannot do:** rename it, compute with it (`upper()`, `substring`, casts, `||`, JSON functions), aggregate it, group or sort by it, or copy it into another table. Writes containing masked text (`‹` or `•`) are refused, so a masked value can never be written back over the real one.
+**What it cannot do:** rename it, compute with it (`upper()`, `substring`, casts, `||`, JSON functions), aggregate it, group or sort by it, or copy it into another table. Nor can it be the single value of a subquery, `WHERE d = (SELECT email …)`: the server would convert that value and quote it in its error. A part of a ClickHouse column can only be selected alone, with no alias. Writes containing masked text (`‹` or `•`) are refused, so a masked value can never be written back over the real one.
 
 > **What masking does not stop:** filters can still probe a value, for example `WHERE email LIKE 'a%'` or a `BETWEEN` on a salary. Masking keeps values out of replies. To keep a column out of reach entirely, hide it.
 
@@ -500,7 +501,7 @@ Dataman checks this first and says what is missing, before showing any SQL.
 Every agent call is written to `~/.config/dataman/mcp-audit.jsonl`. What the agent received, after masking, goes to `mcp-replies.jsonl` next to it. Both files are readable only by you.
 
 - **Recorded:** time, agent, tool, connection and database, the statement, how long it took, how many rows, and the outcome (ran, refused, denied, timed out, failed). Also recorded: your decision on any Allow, the rewritten statement if Privacy narrowed it, which columns and how many values were masked, and the login it ran as (the agent login, or `you` for what you allowed).
-- **Never recorded:** passwords, which show as `••••••` even inside statements, bound parameter values, and values quoted in database errors.
+- **Never recorded:** passwords, which show as `••••••` even inside statements (ClickHouse's `remote(…, 'pw')`, `s3(…)` and `ENGINE = MySQL(…)` too), bound parameter values, and values quoted in database errors.
 - **Size:** past 8 MB, the log rolls over once, so it never grows past about 16 MB.
 - **Clearing:** only from the Audit screen. You can clear everything, everything before a date, or everything older than 30 days, 3 months or 6 months. No agent tool can clear it.
 
