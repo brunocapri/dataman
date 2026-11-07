@@ -477,7 +477,13 @@ fn identify(raw: &str, comment: &str) -> (crate::server::Flavor, String, String)
 }
 
 pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
-    let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1), @@version_comment").await?;
+    let rows = match client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1), @@version_comment").await {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::info!("@@version_comment not read, no flavor told by it: {e}");
+            client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)").await?
+        }
+    };
     let row = rows.into_iter().next().context("VERSION() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let (flavor, label, release) = identify(&get(0), &get(3));
