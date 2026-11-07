@@ -1145,8 +1145,7 @@ impl QueryTab {
         // A read-only database refuses writes before they reach the server (SQL Server has no
         // such session setting); a script stops there, like on an error. Asked per statement: a
         // toggle in the explorer counts at once.
-        let read_only = session.connection().read_only_for(&session.database);
-        let refusal = if read_only { guard::read_only_refusal_in(&sql, self.dialect()) } else { None };
+        let refusal = session.connection().read_only_refusal(&session.current_database(), &sql);
         let refusal = refusal.map(|m| (Some("25006".to_string()), m));
         if let Some((code, message)) = refusal {
             let err = ErrorInfo { code, message, ..Default::default() };

@@ -221,3 +221,78 @@ fn exports_and_bounded_statements() {
     assert_eq!(o.rows[0][0], serde_json::json!("x"));
     exec_quiet(&e, &c, &["DROP DATABASE dataman_t_mcp"]);
 }
+
+/// A database's name is data: a backslash must not take the literal's closing quote away. Run on a
+/// server whose own `sql_mode` has `NO_BACKSLASH_ESCAPES` as well (`DATAMAN_MYSQL` to one): the same
+/// literal must read as the same name there.
+#[test]
+fn a_database_name_cannot_close_a_literal() {
+    let e = env();
+    let Some(admin) = mysql_on(&e, mysql_profile("")) else { return };
+    let mode = run(&e, &admin, "SELECT @@GLOBAL.sql_mode").snapshot().text(0, 0).unwrap().into_owned();
+    eprintln!("sql_mode: {mode}");
+    let name = format!("d{}\\') UNION SELECT 0x70776e,1,2,3,4,5 #", std::process::id());
+    assert!(name.len() <= 64);
+    let q = Dialect::MySql.quote_ident(&name);
+    exec_quiet(&e, &admin, &[&format!("DROP DATABASE IF EXISTS {q}")]);
+    exec(&e, &admin, &[&format!("CREATE DATABASE {q}"), &format!("CREATE TABLE {q}.t (a INT PRIMARY KEY)")]);
+    let c = mysql_on(&e, mysql_profile(&name)).unwrap();
+    e.core.block_on(c.preload(&name)).unwrap();
+    assert!(c.schema.cached_columns(&name, "pwn", "1").is_none(), "the statement ran");
+    assert_eq!(c.schema.cached_columns(&name, &name, "t").expect("its own table's columns")[0].name, "a");
+    let rels = e.core.block_on(c.relations(&name, &name)).unwrap();
+    assert_eq!(rels.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["t"]);
+    assert!(c.schema.notes().is_empty(), "{:?}", c.schema.notes());
+    drop(c);
+    exec_quiet(&e, &admin, &[&format!("DROP DATABASE {q}")]);
+}
+
+/// The statement's target decides, not the database the connection is on, and a `USE` moves it.
+#[test]
+fn a_read_only_database_holds_against_a_write_from_another() {
+    let e = env();
+    let Some(admin) = mysql_on(&e, mysql_profile("")) else { return };
+    let pid = std::process::id();
+    let (w, ro) = (format!("dataman_t_w_{pid}"), format!("dataman_t_ro_{pid}"));
+    for d in [&w, &ro] {
+        exec_quiet(&e, &admin, &[&format!("DROP DATABASE IF EXISTS {d}")]);
+        exec(&e, &admin, &[&format!("CREATE DATABASE {d}"), &format!("CREATE TABLE {d}.items (id INT)"), &format!("INSERT INTO {d}.items VALUES (1)")]);
+    }
+    let count = |d: &str| run(&e, &admin, &format!("SELECT count(*) FROM {d}.items")).snapshot().text(0, 0).map(|t| t.into_owned());
+    let mut p = mysql_profile(&w);
+    p.set_read_only_for(&ro, true);
+    let c = mysql_on(&e, p).unwrap();
+    let call = |sql: &str| e.core.block_on(c.bounded(None, sql, vec![], Mode::Write, Limits::default(), std::future::pending::<()>()));
+    for sql in [
+        format!("INSERT INTO {ro}.items VALUES (2)"),
+        format!("UPDATE `{ro}`.items SET id = 9"),
+        format!("DELETE FROM {ro}.items"),
+        format!("REPLACE INTO {ro}.items VALUES (2)"),
+        format!("UPDATE {w}.items w JOIN {ro}.items r ON w.id = r.id SET r.id = 9"),
+        format!("/*! INSERT INTO {ro}.items VALUES (2) */"),
+        format!("USE {ro}; INSERT INTO items VALUES (2)"),
+        format!("INSERT INTO {w}.items VALUES (2); DELETE FROM {ro}.items"),
+    ] {
+        assert!(matches!(call(&sql), Err(Stop::Refused(r)) if r.contains("read-only")), "{sql}");
+    }
+    assert_eq!(count(&ro).as_deref(), Some("1"));
+    assert_eq!(count(&w).as_deref(), Some("1"), "nothing of a refused call runs");
+
+    call(&format!("INSERT INTO {w}.items SELECT id FROM {ro}.items")).unwrap();
+    assert_eq!(count(&w).as_deref(), Some("2"));
+
+    // A tab: the same check, with the database a `USE` left it on.
+    let tab = c.session(None);
+    let use_ro = tab.execute(format!("USE {ro}"));
+    e.core.block_on(use_ro.wait_finished());
+    assert_eq!(tab.current_database(), ro);
+    assert!(c.read_only_refusal(&tab.current_database(), "INSERT INTO items VALUES (2)").is_some());
+
+    // A `USE` must not stay on a connection the next call takes from the pool.
+    let other = format!("dataman_t_other_{pid}");
+    exec(&e, &admin, &[&format!("CREATE DATABASE {other}")]);
+    call(&format!("USE {other}")).unwrap();
+    let o = e.core.block_on(c.bounded(None, "SELECT DATABASE()", vec![], Mode::Read, Limits::default(), std::future::pending::<()>())).unwrap();
+    assert_eq!(o.rows[0][0], serde_json::json!(w));
+    exec_quiet(&e, &admin, &[&format!("DROP DATABASE {other}"), &format!("DROP DATABASE {w}"), &format!("DROP DATABASE {ro}")]);
+}

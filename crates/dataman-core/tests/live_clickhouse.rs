@@ -10,7 +10,7 @@ use dataman_core::edit::Editability;
 use dataman_core::result::{Cell, ErrorClass, format_cell};
 use dataman_core::schema::RelKind;
 use dataman_core::value::Kind;
-use dataman_core::sql::functions;
+use dataman_core::sql::{Dialect, functions};
 use dataman_core::{ResultSet, Session, guard};
 
 const DB: &str = "dataman_ch";
@@ -38,6 +38,8 @@ fn open(e: &Env, p: ConnectionProfile, pw: &str) -> Option<Arc<Connection>> {
     match e.core.block_on(e.core.connect(p.clone(), Some(pw.to_string()))) {
         Ok(c) => Some(c),
         Err(err) => {
+            // CI brings the server up for these: a skip there would pass untested.
+            assert!(std::env::var_os("DATAMAN_LIVE_REQUIRED").is_none(), "no server: {} ({err:#})", p.summary());
             eprintln!("skipping: cannot reach {} ({err:#})", p.summary());
             None
         }
@@ -1882,4 +1884,161 @@ fn view_sources_read_what_a_relation_reads() {
     assert!(format!("{err:#}").contains("max_result_rows") || format!("{err:#}").contains("Limit for result"), "{err:#}");
     ok(&e, &s, &format!("DROP USER {user}"));
     ok(&e, &s, &format!("DROP DATABASE {name}"));
+}
+
+/// A value reaches the server as it was given, through the form: every byte a cell may hold, next to
+/// other values, on a read-only connection and a session's, with a statement past one field's limit.
+#[test]
+fn bound_values_reach_the_server_whole() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let value = "tab\there\nnewline\r\\back'quote\"é☃--boundary\r\n";
+    let run = |s: &Arc<Session>, sql: &str, values: Vec<Option<String>>| {
+        let rs = s.execute_with(sql.to_string(), values);
+        rs.fetch_all();
+        e.core.block_on(rs.wait_finished());
+        assert_eq!(rs.phase(), Phase::Done, "{sql}: {:?}", rs.status().error);
+        rs
+    };
+    let rs = run(&s, "SELECT {a:String}, {b:UInt8}, {c:Nullable(String)} IS NULL", vec![Some(value.into()), Some("7".into()), None]);
+    let snap = rs.snapshot();
+    assert_eq!(snap.text(0, 0).as_deref(), Some(value));
+    assert_eq!(snap.text(0, 1).as_deref(), Some("7"));
+    assert_eq!(snap.text(0, 2).as_deref(), Some("1"));
+
+    // 100 KB of statement, past what a form field takes in one, with a character across the cut.
+    let long = format!("SELECT '{}', {{a:String}}", "é".repeat(50_000));
+    let rs = run(&s, &long, vec![Some("v".into())]);
+    assert_eq!(rs.snapshot().text(0, 1).as_deref(), Some("v"));
+
+    // A read-only connection, the one agents read on.
+    let o = e.core.block_on(c.bounded(None, "SELECT {a:String}", vec![Some(value.into())], Mode::Read, Limits::default(), std::future::pending::<()>())).unwrap();
+    assert_eq!(o.rows[0][0], serde_json::json!(value));
+}
+
+fn drop_db(e: &Env, s: &Arc<Session>, name: &str) {
+    ok(e, s, &format!("DROP DATABASE IF EXISTS {}", Dialect::ClickHouse.quote_ident(name)));
+}
+
+/// A database's name is data: whoever may create one must not run a statement as whoever opens it.
+#[test]
+fn a_database_name_cannot_close_a_literal() {
+    let e = env();
+    let Some(admin) = open(&e, profile(""), &password()) else { return };
+    let s = admin.session(None);
+    let pid = std::process::id();
+    let secrets = format!("dataman_ch_secret_{pid}");
+    drop_db(&e, &s, &secrets);
+    ok(&e, &s, &format!("CREATE DATABASE {secrets}"));
+    ok(&e, &s, &format!("CREATE TABLE {secrets}.payments (card String) ENGINE = Memory"));
+    ok(&e, &s, &format!("INSERT INTO {secrets}.payments VALUES ('4111')"));
+    let name = format!("aud{pid}\\') UNION ALL SELECT card, hex(1), hex(2), hex(3), hex(4), toUInt64(5) FROM {secrets}.payments -- ");
+    drop_db(&e, &s, &name);
+    let q = Dialect::ClickHouse.quote_ident(&name);
+    ok(&e, &s, &format!("CREATE DATABASE {q}"));
+    ok(&e, &s, &format!("CREATE TABLE {q}.t (a Int32) ENGINE = Memory"));
+
+    let c = open(&e, profile(&name), &password()).unwrap();
+    assert_eq!(c.database(), name);
+    e.core.block_on(c.preload(&name)).unwrap();
+    assert!(c.schema.cached_columns(&name, "4111", "01").is_none(), "the statement ran");
+    let cols = c.schema.cached_columns(&name, &name, "t").expect("its own table's columns");
+    assert_eq!(cols[0].name, "a");
+    assert!(c.schema.notes().is_empty(), "{:?}", c.schema.notes());
+    drop_db(&e, &s, &name);
+    drop_db(&e, &s, &secrets);
+}
+
+/// The statement's target decides, not the database the connection is on.
+#[test]
+fn a_read_only_database_holds_against_a_write_from_another() {
+    let e = env();
+    let Some(admin) = open(&e, profile(""), &password()) else { return };
+    let s = admin.session(None);
+    let pid = std::process::id();
+    let (w, ro) = (format!("dataman_ch_w_{pid}"), format!("dataman_ch_ro_{pid}"));
+    for d in [&w, &ro] {
+        drop_db(&e, &s, d);
+        ok(&e, &s, &format!("CREATE DATABASE {d}"));
+        ok(&e, &s, &format!("CREATE TABLE {d}.items (id UInt64) ENGINE = MergeTree ORDER BY id"));
+    }
+    ok(&e, &s, &format!("INSERT INTO {ro}.items VALUES (1)"));
+    let count = |d: &str| shown(&ok(&e, &s, &format!("SELECT count() FROM {d}.items")), 0, 0);
+
+    let mut p = profile(&w);
+    p.set_read_only_for(&ro, true);
+    let c = open(&e, p, &password()).unwrap();
+    let call = |sql: &str, mode: Mode| e.core.block_on(c.bounded(None, sql, vec![], mode, Limits::default(), std::future::pending::<()>()));
+    for sql in [
+        format!("INSERT INTO {ro}.items VALUES (2)"),
+        format!("INSERT INTO `{ro}`.`items` VALUES (2)"),
+        format!("ALTER TABLE {ro}.items DELETE WHERE 1"),
+        format!("ALTER TABLE {ro}.items UPDATE id = 9 WHERE 1"),
+        format!("DROP TABLE {ro}.items"),
+        format!("TRUNCATE TABLE {ro}.items"),
+        format!("DROP DATABASE {ro}"),
+        format!("RENAME TABLE {ro}.items TO {w}.taken"),
+        format!("/* a comment */ INSERT /* here too */ INTO {ro} . items VALUES (2)"),
+    ] {
+        assert!(matches!(call(&sql, Mode::Autocommit), Err(Stop::Refused(r)) if r.contains(&format!("read-only database {ro}"))), "{sql}");
+    }
+    assert_eq!(count(&ro).as_deref(), Some("1"));
+
+    // The database itself stays writable, and what is only read of the other one stays allowed.
+    call(&format!("INSERT INTO {w}.items VALUES (5)"), Mode::Autocommit).unwrap();
+    call("INSERT INTO items VALUES (6)", Mode::Autocommit).unwrap();
+    call(&format!("INSERT INTO {w}.items SELECT id FROM {ro}.items"), Mode::Autocommit).unwrap();
+    assert_eq!(count(&w).as_deref(), Some("3"));
+    assert_eq!(call(&format!("SELECT count() FROM {ro}.items"), Mode::Read).unwrap().rows.len(), 1);
+
+    // A tab: the same check, with the database a `USE` left it on.
+    let tab = c.session(None);
+    assert_eq!(c.read_only_refusal(&tab.current_database(), "INSERT INTO items VALUES (7)"), None);
+    assert!(c.read_only_refusal(&tab.current_database(), &format!("ALTER TABLE {ro}.items DELETE WHERE 1")).is_some());
+    ok(&e, &tab, &format!("USE {ro}"));
+    assert_eq!(tab.current_database(), ro);
+    assert!(c.read_only_refusal(&tab.current_database(), "INSERT INTO items VALUES (7)").is_some());
+    assert_eq!(c.read_only_refusal(&tab.current_database(), "SELECT * FROM items"), None);
+    ok(&e, &tab, &format!("USE {w}"));
+    assert_eq!(c.read_only_refusal(&tab.current_database(), "INSERT INTO items VALUES (7)"), None);
+
+    // The toggle counts at once.
+    c.set_read_only_for(&ro, false);
+    call(&format!("INSERT INTO {ro}.items VALUES (2)"), Mode::Autocommit).unwrap();
+
+    // Read-only by default with one database let out: every other one holds, and a table's name in
+    // front of its column is no database.
+    let mut p = profile(&w);
+    p.read_only = true;
+    p.set_read_only_for(&w, false);
+    let c = open(&e, p, &password()).unwrap();
+    let call = |sql: &str, mode: Mode| e.core.block_on(c.bounded(None, sql, vec![], mode, Limits::default(), std::future::pending::<()>()));
+    assert!(matches!(call(&format!("INSERT INTO {ro}.items VALUES (3)"), Mode::Autocommit), Err(Stop::Refused(r)) if r.contains("read-only")));
+    assert_eq!(c.read_only_refusal(&w, "ALTER TABLE items DELETE WHERE items.id = 0"), None);
+    drop_db(&e, &s, &w);
+    drop_db(&e, &s, &ro);
+}
+
+/// What the row cap does on the server's real stream: the rows before it stay, the statement stops.
+#[test]
+fn a_long_cell_stops_the_statement_on_the_server() {
+    let e = env();
+    let Some(c) = open(&e, profile(""), &password()) else { return };
+    let s = c.session(None);
+    let tag = uuid_tag();
+    let sql = format!("SELECT number, if(number < 2, '{tag}', arrayStringConcat(arrayMap(x -> repeat('x', 1000000), range(140)))) FROM numbers(100000000) SETTINGS max_block_size = 1");
+    let rs = run(&e, &s, &sql);
+    assert_eq!(rs.phase(), Phase::Failed);
+    assert!(rs.status().error.unwrap().message.contains("larger than 128 MiB"));
+    assert_eq!(rs.rows(), 2, "the rows before it stay");
+    let probe = c.session(None);
+    let running = format!("SELECT count() FROM system.processes WHERE query LIKE '%{tag}%' AND query NOT LIKE '%system.processes%'");
+    let t0 = Instant::now();
+    while shown(&ok(&e, &probe, &running), 0, 0).as_deref() != Some("0") {
+        assert!(t0.elapsed() < Duration::from_secs(10), "still running on the server");
+    }
+    // Just under the cap is a row like any other.
+    let rs = ok(&e, &s, "SELECT length(a), a FROM (SELECT arrayStringConcat(arrayMap(x -> repeat('x', 1000000), range(120))) AS a)");
+    assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("120000000"));
 }

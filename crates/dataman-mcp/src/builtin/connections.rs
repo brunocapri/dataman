@@ -19,7 +19,7 @@ fn fields(s: Schema, mcp: Value) -> Schema {
         .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": format!("Default: the engine's own ({}).", Engine::port_list())}))
         .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux, the Credential Manager on Windows); never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: postgres (postgres), empty (mysql, sql-server: the login's default); redis takes 0–15."}))
-        .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket) or through an SSH tunnel, require anywhere else."}))
+        .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket) or through an SSH tunnel, require anywhere else (verify-full on ClickHouse)."}))
         .prop("color", false, json!({"type": "string", "description": "A swatch name shown in the explorer and on tabs; default: picked from the id."}))
         .prop("env", false, json!({"type": "string", "enum": ["none", "dev", "staging", "production"], "description": "production asks before every write and DDL, and gets the red accent."}))
         .prop("read_only", false, json!({"type": "boolean", "description": "Sessions start with default_transaction_read_only on; Dataman also refuses writes client-side."}))

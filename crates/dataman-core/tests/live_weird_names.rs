@@ -141,3 +141,23 @@ fn mssql_weird_names() {
     assert_eq!(rs.rows(), 2);
     mssql_drop(&e, db);
 }
+
+/// A database may read `\'` as an escape (`standard_conforming_strings = off`): the catalog's literals
+/// must still read as written.
+#[test]
+fn postgres_schema_name_under_old_string_rules() {
+    let e = env();
+    let Some(admin) = pg(&e) else { return };
+    let db = format!("dataman_t_scs_{}", std::process::id());
+    exec_quiet(&e, &admin, &[&format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")]);
+    exec(&e, &admin, &[&format!("CREATE DATABASE {db}"), &format!("ALTER DATABASE {db} SET standard_conforming_strings = off")]);
+    let p = dataman_core::ConnectionProfile { database: db.clone(), ..pg_profile() };
+    let c = e.core.block_on(e.core.connect(p, Some(pg_password()))).unwrap();
+    let schema = "s\\') OR 1 = 1 --";
+    let q = dataman_core::sql::Dialect::Postgres.quote_ident(schema);
+    exec(&e, &c, &[&format!("CREATE SCHEMA {q}"), &format!("CREATE TABLE {q}.t (a int)")]);
+    let rels = e.core.block_on(c.relations(&db, schema)).unwrap();
+    assert_eq!(rels.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["t"]);
+    drop(c);
+    exec_quiet(&e, &admin, &[&format!("DROP DATABASE {db} WITH (FORCE)")]);
+}

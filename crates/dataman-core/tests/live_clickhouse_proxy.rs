@@ -18,6 +18,7 @@ fn a_proxy_in_the_environment_is_not_taken() {
     }
     let addr = std::env::var("DATAMAN_CLICKHOUSE").unwrap_or_else(|_| "127.0.0.1:18123".into());
     if std::net::TcpStream::connect(&addr).is_err() {
+        assert!(std::env::var_os("DATAMAN_LIVE_REQUIRED").is_none(), "nothing at {addr}");
         eprintln!("skipping: nothing at {addr}");
         return;
     }

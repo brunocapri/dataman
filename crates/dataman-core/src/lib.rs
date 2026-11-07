@@ -76,7 +76,7 @@ use tokio::sync::oneshot;
 
 pub use backend::{Caps, ConnectError, needs_password, server_error, server_error_class};
 pub use backend::duck::EXTERNAL_ACCESS as DUCKDB_EXTERNAL_ACCESS;
-pub use config::{Auth, AuthKind, ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
+pub use config::{Auth, AuthKind, ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host, is_loopback_host};
 pub use engine::{EngineSpec, Nouns};
 pub use sql::Dialect;
 pub use conn::TxEnd;

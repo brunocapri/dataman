@@ -145,6 +145,8 @@ impl ConnSpec {
         }
         if let Some(m) = self.sslmode.or(mssql_mode.filter(|_| self.engine == Engine::SqlServer)) {
             p.sslmode = m;
+        } else if self.engine.spec().strict_tls {
+            p.sslmode = crate::config::default_sslmode(self.engine, &p.host, false);
         }
         p.name = match &self.service {
             Some(s) => s.clone(),
@@ -682,13 +684,16 @@ mod tests {
 
     #[test]
     fn one_string_per_engine() {
-        let cases: [(&str, Engine, &str, u16, &str, &str, SslMode, Option<&str>); 12] = [
+        let cases: [(&str, Engine, &str, u16, &str, &str, SslMode, Option<&str>); 15] = [
             ("postgresql://app:pw@db.internal:6543/shop?sslmode=require", Engine::Postgres, "db.internal", 6543, "app", "shop", SslMode::Require, Some("pw")),
             ("host=db.internal port=6543 dbname=shop user=app password=pw sslmode=disable", Engine::Postgres, "db.internal", 6543, "app", "shop", SslMode::Disable, Some("pw")),
             ("jdbc:postgresql://db.internal/shop?user=app&password=pw&ssl=true", Engine::Postgres, "db.internal", 5432, "app", "shop", SslMode::Require, Some("pw")),
             ("mysql://app:pw@db.internal:3307/shop?ssl-mode=DISABLED", Engine::MySql, "db.internal", 3307, "app", "shop", SslMode::Disable, Some("pw")),
-            ("clickhouse://app:pw@ch.internal:8124/events", Engine::ClickHouse, "ch.internal", 8124, "app", "events", SslMode::Prefer, Some("pw")),
-            ("ch://app@ch.internal/events", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::Prefer, None),
+            ("clickhouse://app:pw@ch.internal:8124/events", Engine::ClickHouse, "ch.internal", 8124, "app", "events", SslMode::VerifyFull, Some("pw")),
+            ("ch://app@ch.internal/events", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::VerifyFull, None),
+            ("clickhouse://app@ch.internal/events?sslmode=require", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::Require, None),
+            ("clickhouse://app@ch.internal/events?sslmode=disable", Engine::ClickHouse, "ch.internal", 8123, "app", "events", SslMode::Disable, None),
+            ("clickhouse://app@localhost/events", Engine::ClickHouse, "localhost", 8123, "app", "events", SslMode::Prefer, None),
             ("mariadb://app@db.internal/shop", Engine::MySql, "db.internal", 3306, "app", "shop", SslMode::Prefer, None),
             ("jdbc:mysql://db.internal:3307/shop?user=app&password=pw&useSSL=false", Engine::MySql, "db.internal", 3307, "app", "shop", SslMode::Disable, Some("pw")),
             ("sqlserver://app:pw@db.internal:14330/shop?encrypt=false", Engine::SqlServer, "db.internal", 14330, "app", "shop", SslMode::Disable, Some("pw")),

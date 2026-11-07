@@ -89,6 +89,8 @@ windows-sys = { version = "0.61", features = ["Win32_System_JobObjects", "Win32_
 
 [dev-dependencies]
 tempfile = "3"
+# Certificates for the fake TLS servers, made as the tests start: no private key in the repository.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # The tests' resident memory, without `ps`.

@@ -246,15 +246,15 @@ fn snakeoil_certificate() {
     eprintln!("verify-full, snakeoil: {err}");
 }
 
-/// The bastion reaches the host's ClickHouse by a name only it can resolve: the URL keeps the name
-/// and takes the tunnel's port.
+/// The bastion reaches ClickHouse by its compose service's name, which only it can resolve: the URL
+/// keeps the name and takes the tunnel's port.
 #[test]
 fn clickhouse_through_the_tunnel() {
     let Some(((h, p), keys)) = setup().ssh.clone() else { return };
-    if answers("127.0.0.1:18123").is_none() {
+    if answers(&std::env::var("DATAMAN_CLICKHOUSE").unwrap_or_else(|_| "127.0.0.1:18123".into())).is_none() {
         return;
     }
-    let db = std::env::var("DATAMAN_SSH_CLICKHOUSE").unwrap_or_else(|_| "host.docker.internal:18123".into());
+    let db = std::env::var("DATAMAN_SSH_CLICKHOUSE").unwrap_or_else(|_| "clickhouse:8123".into());
     let (dh, dp) = db.rsplit_once(':').unwrap();
     let ssh = SshSettings { host: h, port: Some(p), user: "dataman".into(), auth: SshAuth::Key, key_file: keys.join("k_ed").display().to_string() };
     let prof = ConnectionProfile {
@@ -272,6 +272,9 @@ fn clickhouse_through_the_tunnel() {
     assert!(c.tunneled() && !c.tls_in_use());
     let s = c.session(None);
     assert_eq!(ok(&e, &s, "SELECT currentDatabase()"), "system");
+    // The tunnel is the crossing: `Prefer` may fall back here, as on this machine.
+    let c = connect(&e, &ConnectionProfile { sslmode: SslMode::Prefer, ..prof }).unwrap();
+    assert!(c.tunneled() && !c.tls_in_use());
 }
 
 /// A certificate someone vouches for is taken under verify-full. `DATAMAN_TLS_CA` is the compose

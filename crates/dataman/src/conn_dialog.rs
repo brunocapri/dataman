@@ -855,6 +855,7 @@ impl ConnDialog {
         let remote = !self.ssh.on && !dataman_core::is_local_host(self.host.read(cx).text());
         match (remote, self.sslmode, self.engine.is_sql()) {
             (true, SslMode::Disable, _) => Some((true, "Not encrypted: data, and maybe the password, cross the network in clear.")),
+            (true, SslMode::Prefer | SslMode::Require, _) if self.engine.spec().strict_tls => Some((false, "Encrypted, but nothing checks who answers.")),
             (true, SslMode::Prefer, true) => Some((false, "Encrypted only if the server offers it; the server is not verified.")),
             _ => None,
         }
