@@ -86,7 +86,8 @@ pub fn tools() -> Vec<Builtin> {
 pub(super) fn engine_of(s: &str) -> Result<(Engine, Flavor), ToolError> {
     server::named(s).ok_or_else(|| {
         let shown: String = s.chars().take(40).collect();
-        ToolError::Invalid(format!("unknown engine {shown:?}; known: {}", server::names().join(", ")))
+        let known: Vec<&str> = Engine::slugs().into_iter().chain(FLAVORS.iter().map(|f| f.slug)).collect();
+        ToolError::Invalid(format!("unknown engine {shown:?}; known: {}", known.join(", ")))
     })
 }
 

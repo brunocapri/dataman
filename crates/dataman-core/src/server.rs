@@ -142,9 +142,12 @@ pub fn named(s: &str) -> Option<(Engine, Flavor)> {
     flavor.map(|f| (f.engine, f.flavor)).or_else(|| Engine::parse(&s).map(|e| (e, Flavor::Standard)))
 }
 
-/// Every name `named` takes first: the engines' slugs, then the flavors'.
+/// Every name `named` takes as it is written: the engines' slugs, the flavors', then the aliases
+/// of both (what a schema's `enum` lists).
 pub fn names() -> Vec<&'static str> {
-    Engine::slugs().into_iter().chain(FLAVORS.iter().map(|f| f.slug)).collect()
+    let engines = crate::engine::SPECS.iter().map(|e| e.slug);
+    let aliases = crate::engine::SPECS.iter().flat_map(|e| e.aliases.iter().copied()).chain(FLAVORS.iter().flat_map(|f| f.aliases.iter().copied()));
+    engines.chain(FLAVORS.iter().map(|f| f.slug)).chain(aliases).collect()
 }
 
 /// A URL of a flavor's own scheme (`yugabytedb://…`) as its engine's (`postgresql://…`), with
@@ -359,7 +362,10 @@ mod tests {
             assert!(Engine::parse(f.slug).is_none(), "{}: one table names it", f.slug);
         }
         let all = names();
-        assert!(all.starts_with(&Engine::slugs()) && all.contains(&"ferretdb") && all.len() == Engine::ALL.len() + FLAVORS.len());
+        assert!(all.contains(&"ferretdb") && all.contains(&"yugabyte") && all.contains(&"pg"));
+        assert!(all.iter().all(|n| named(n).is_some()), "every name listed is taken");
+        let unique: std::collections::BTreeSet<&str> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "no name is two things");
         assert_eq!((Flavor::Yugabyte.default_port(Engine::Postgres), Flavor::Timescale.default_port(Engine::Postgres)), (5433, 5432));
         // A flavor saved on a connection of another engine (a hand edit) is none of it.
         assert_eq!((Flavor::Timescale.label(Engine::MySql), Flavor::Yugabyte.default_port(Engine::MySql)), ("MySQL", 3306));
