@@ -29,7 +29,8 @@ use std::fmt;
 use std::future;
 #[cfg(feature = "runtime")]
 use std::net::IpAddr;
-#[cfg(feature = "runtime")]
+// Dataman: only Unix sockets use it (upstream warns on Windows; a path dependency is not capped).
+#[cfg(all(feature = "runtime", unix))]
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::Arc;
