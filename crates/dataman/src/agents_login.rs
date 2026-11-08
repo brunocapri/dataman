@@ -155,7 +155,7 @@ impl AgentsPage {
         // Changes found on the server (a table made since) are applied on their own too, unless
         // that just failed for these rules.
         let auto = l.auto_sync && self.login_auto.get(&p.id).is_none_or(|a| a.hash != hash);
-        self.login.drift_rules = Some(hash);
+        self.login.drift_rules = Some(hash.clone());
         self.login.drift = None;
         self.login.reading = true;
         let pa = p.clone();
@@ -172,6 +172,12 @@ impl AgentsPage {
                 })
             },
             move |v, r: Result<(Option<Plan>, live::Drift), String>, cx| {
+                // A read of other rules (or of another connection) started since: this one is
+                // stale. Shown, Apply would run its plan and keep the newer rules as applied.
+                if v.login.conn.as_deref() != Some(pa.id.as_str()) || v.login.drift_rules.as_deref() != Some(hash.as_str()) {
+                    log::info!("{}: a read of the agent login for older rules came back after a newer one: dropped", pa.name);
+                    return;
+                }
                 v.login.reading = false;
                 let r = match r {
                     Ok((back, d)) => {

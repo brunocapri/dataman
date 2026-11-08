@@ -108,8 +108,8 @@ pub static SPECS: [EngineSpec; 10] = [
         engine: Engine::MySql,
         slug: "mysql",
         label: "MySQL",
-        aliases: &["mariadb"],
-        search: "mysql mariadb",
+        aliases: &[],
+        search: "mysql",
         default_port: 3306,
         default_user: "root",
         family: Family::Sql,
@@ -239,7 +239,7 @@ pub static SPECS: [EngineSpec; 10] = [
         slug: "redis",
         label: "Redis",
         aliases: &[],
-        search: "redis valkey cache",
+        search: "redis cache",
         default_port: 6379,
         default_user: "",
         family: Family::KeyValue,
@@ -381,7 +381,8 @@ impl Engine {
 
     pub fn is_system_schema(self, schema: &str) -> bool {
         let s = self.spec();
-        s.system_schemas.iter().any(|p| match p.strip_suffix('*') {
+        let flavors = crate::server::FLAVORS.iter().filter(|f| f.engine == self).flat_map(|f| f.system_schemas);
+        s.system_schemas.iter().chain(flavors).any(|p| match p.strip_suffix('*') {
             Some(prefix) => schema.starts_with(prefix),
             None if s.db_names_ignore_case => schema.eq_ignore_ascii_case(p),
             None => schema == *p,
@@ -429,6 +430,8 @@ mod tests {
         assert!(Engine::Postgres.is_system_schema("pg_toast_temp_3") && !Engine::Postgres.is_system_schema("public"));
         assert!(Engine::SqlServer.is_system_schema("information_schema") && !Engine::SqlServer.is_system_schema("dbo"));
         assert!(Engine::MySql.is_system_schema("performance_schema") && !Engine::DuckDb.is_system_schema("sys"));
+        assert!(Engine::Postgres.is_system_schema("_timescaledb_internal") && Engine::Postgres.is_system_schema("timescaledb_information"));
+        assert!(!Engine::Postgres.is_system_schema("timescaledb_app") && !Engine::MySql.is_system_schema("_timescaledb_internal"));
         assert_eq!((Engine::Redis.nouns().many, Engine::Sqlite.nouns().one), ("keys", "table"));
         assert_eq!((Engine::Redis.spec().form.database_label, Engine::MongoDb.spec().form.database_label), ("DB", "Database"));
     }

@@ -203,7 +203,7 @@ pub(crate) async fn call(c: &Client, a: &[String]) -> Result<crate::backend::red
 
 pub(crate) async fn probe(c: &Client, user: &str, conn: &str) -> Result<(Probe, Persist)> {
     let mut p = Probe { version: c.version.clone(), tls: c.tls_active, ..Default::default() };
-    p.flavor.major = c.version.split_whitespace().nth(1).and_then(|v| v.split('.').next()).and_then(|v| v.parse().ok()).unwrap_or(0);
+    p.flavor.major = crate::server::parse_release(&c.release).0;
     let who = call(c, &["ACL".into(), "WHOAMI".into()]).await;
     let login = match who {
         Ok(r) => r.text().unwrap_or_default(),

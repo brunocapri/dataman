@@ -206,7 +206,7 @@ fn invisible(c: char) -> bool {
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// Each person's own, never in the file.
-const PERSONAL: [&str; 5] = ["save_password", "agent_made", "from_project", "agent_login", "agents_refused"];
+const PERSONAL: [&str; 6] = ["save_password", "agent_made", "from_project", "agent_login", "agents_refused", "flavor"];
 
 /// A driver option that names a secret (a key's passphrase, a token…) stays local too.
 pub fn secret_option(key: &str) -> bool {
@@ -325,6 +325,7 @@ fn shareable(p: &ConnectionProfile, agents: bool, root: &Path) -> ConnectionProf
     p.save_password = false;
     p.agent_made = false;
     p.from_project = false;
+    p.flavor = Default::default();
     (p.agent_login, p.agents_refused) = (None, false);
     p.options.retain(|k, _| !secret_option(k));
     p.auth = p.auth.shared();
@@ -342,6 +343,8 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
     let mut p = theirs.clone();
     p.path = theirs.path.as_deref().map(|path| from_project_path(path, root));
     p.agent_made = false;
+    // What this person's own connects told of the server; a file neither brings nor takes it.
+    p.flavor = mine.filter(|m| m.engine == theirs.engine).map_or_else(Default::default, |m| m.flavor);
     // The agent login is this person's: a file can neither bring one nor take one away.
     (p.agent_login, p.agents_refused) = mine.map(|m| (m.agent_login.clone(), m.agents_refused)).unwrap_or((None, false));
     p.options.retain(|k, _| !secret_option(k));
@@ -1180,6 +1183,21 @@ mod tests {
         assert!(text.contains("authSource") && text.contains("shop.db.internal"), "{text}");
         let back = ProjectFile::parse(&text).unwrap();
         assert_eq!(back, f, "round trip");
+    }
+
+    #[test]
+    fn the_server_flavor_stays_each_persons() {
+        let root = Path::new("/team/app");
+        let mine = ConnectionProfile { flavor: crate::server::Flavor::Timescale, ..conn("tsdb") };
+        let local = Local { connections: vec![mine.clone()], ..Local::default() };
+        let text = export(&local, Share::default(), &BTreeSet::from([mine.id.clone()]), root).to_text();
+        assert!(!text.contains("flavor") && !text.contains("timescale"), "{text}");
+        // A teammate's file says another, or none: this person's own connects told it.
+        let theirs = ConnectionProfile { flavor: crate::server::Flavor::Yugabyte, ..shareable(&mine, false, root) };
+        assert_eq!(merged(Some(&mine), &theirs, false, root).flavor, crate::server::Flavor::Timescale);
+        assert_eq!(merged(None, &theirs, false, root).flavor, crate::server::Flavor::Standard);
+        let other_engine = ConnectionProfile { engine: Engine::MySql, ..theirs };
+        assert_eq!(merged(Some(&mine), &other_engine, false, root).flavor, crate::server::Flavor::Standard);
     }
 
     #[test]

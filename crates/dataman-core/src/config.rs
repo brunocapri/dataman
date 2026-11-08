@@ -305,6 +305,11 @@ pub struct ConnectionProfile {
     /// Left out of the file for PostgreSQL, so files of older versions load unchanged.
     #[serde(default, skip_serializing_if = "Engine::is_postgres")]
     pub engine: Engine,
+    /// The server as it was picked or last told itself on connect (TimescaleDB on PostgreSQL),
+    /// for its logo and name while not connected. Only shown: what Dataman does goes by the
+    /// engine and what the server says once connected (`ServerInfo`). Each person's own.
+    #[serde(default, skip_serializing_if = "crate::server::Flavor::is_standard")]
+    pub flavor: crate::server::Flavor,
     #[serde(default)]
     pub host: String,
     #[serde(default)]
@@ -496,6 +501,9 @@ impl ConnectionProfile {
     /// plain text instead of `prefer` for the engines that have no opportunistic TLS.
     pub fn normalize(&mut self) {
         let spec = self.engine.spec();
+        if self.flavor.spec_on(self.engine).is_none() {
+            self.flavor = Default::default();
+        }
         if spec.form.file {
             return;
         }
@@ -578,6 +586,7 @@ impl ConnectionProfile {
             id: uuid::Uuid::new_v4().simple().to_string(),
             name: name.into(),
             engine: Engine::Postgres,
+            flavor: Default::default(),
             host: "127.0.0.1".into(),
             port: 5432,
             user: "postgres".into(),
@@ -608,6 +617,16 @@ impl ConnectionProfile {
     /// Painted production's red: production, and no colour of this person's own.
     pub fn prod_red(&self) -> bool {
         self.env.is_production() && !self.color_picked
+    }
+
+    /// Its server's logo: its flavor's, else its engine's.
+    pub fn logo(&self) -> &'static str {
+        self.flavor.logo(self.engine)
+    }
+
+    /// What its server is called: its flavor's name, else its engine's.
+    pub fn server_label(&self) -> &'static str {
+        self.flavor.label(self.engine)
     }
 
     pub fn new_file(engine: Engine, path: impl Into<String>) -> Self {
@@ -654,6 +673,8 @@ impl ConnectionProfile {
             mcp_rules: Default::default(),
             agent_login: None,
             agents_refused: false,
+            // Only shown: telling it again on connect is no reason to connect again.
+            flavor: Default::default(),
             ..p.clone()
         };
         strip(self) == strip(other)
@@ -1165,6 +1186,21 @@ impl ConfigStore {
         g.stamp = mtime(&self.path);
         g.resolve();
         Ok(())
+    }
+
+    /// What the server told itself as on connect, kept by the saved connection `id` (none: one
+    /// not saved, or of another engine since). Written only when it changed.
+    pub fn note_flavor(&self, id: &str, info: &crate::server::ServerInfo) -> Result<bool> {
+        let differs = |c: &ConnectionProfile| c.id == id && c.engine == info.engine && c.flavor != info.flavor;
+        if !self.connections().iter().any(differs) {
+            return Ok(false);
+        }
+        self.change(|g| {
+            if let Some(c) = g.iter_mut().find(|c| differs(c)) {
+                c.flavor = info.flavor;
+            }
+        })?;
+        Ok(true)
     }
 
     pub fn upsert(&self, profile: ConnectionProfile) -> Result<()> {
@@ -1731,5 +1767,38 @@ mod tests {
         let home = crate::os::home().unwrap().display().to_string();
         assert_eq!(expand_home("~/x.db"), PathBuf::from(&home).join("x.db"));
         assert_eq!(tilde(&format!("{home}/x.db")), format!("~{}x.db", std::path::MAIN_SEPARATOR));
+    }
+
+    #[test]
+    fn the_server_flavor_is_kept_and_older_files_load_as_they_were() {
+        use crate::server::Flavor;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        // A file of a version before flavors, and one with a flavor this version does not know.
+        let old = "[[connection]]\nid = \"a\"\nname = \"tsdb\"\nhost = \"h\"\nport = 5432\nuser = \"u\"\n\n[[connection]]\nid = \"b\"\nname = \"later\"\nflavor = \"cockroachdb\"\nhost = \"h\"\nport = 26257\nuser = \"u\"\n";
+        std::fs::write(dirs.connections_file(), old).unwrap();
+        let store = ConfigStore::open(&dirs).unwrap();
+        let got = store.connections();
+        assert_eq!(got.iter().map(|p| (p.id.as_str(), p.flavor)).collect::<Vec<_>>(), [("a", Flavor::Standard), ("b", Flavor::Standard)]);
+        assert_eq!((got[0].logo(), got[0].server_label()), (Engine::Postgres.logo(), "PostgreSQL"));
+        let timescale = crate::ServerInfo::of(Engine::Postgres, Flavor::Timescale, "TimescaleDB 2.31.0 (PostgreSQL 17.11)".into(), "17.11");
+        assert!(store.note_flavor("a", &timescale).unwrap());
+        assert!(!store.note_flavor("a", &timescale).unwrap(), "written only when it changed");
+        assert!(!store.note_flavor("gone", &timescale).unwrap(), "only a saved connection");
+        let mysql = crate::ServerInfo::of(Engine::MySql, Flavor::MariaDb, "MariaDB 11".into(), "11.4");
+        assert!(!store.note_flavor("b", &mysql).unwrap(), "only a server of its engine");
+        let again = ConfigStore::open(&dirs).unwrap().get("a").unwrap();
+        assert_eq!((again.flavor, again.logo(), again.server_label()), (Flavor::Timescale, "logos/timescale.svg", "TimescaleDB"));
+        assert!(std::fs::read_to_string(dirs.connections_file()).unwrap().contains("flavor = \"timescaledb\""));
+        // Told otherwise on a later connect: that one.
+        assert!(store.note_flavor("a", &crate::ServerInfo::of(Engine::Postgres, Flavor::Standard, "PostgreSQL 17.11".into(), "17.11")).unwrap());
+        assert_eq!(ConfigStore::open(&dirs).unwrap().get("a").unwrap().flavor, Flavor::Standard);
+        assert!(!std::fs::read_to_string(dirs.connections_file()).unwrap().contains("flavor = \"\""), "none is left out of the file");
+        // Only shown: nothing reconnects for it, and a form's save drops one of another engine.
+        assert!(ConnectionProfile { flavor: Flavor::Timescale, ..again.clone() }.same_but_agents(&again));
+        let mut wrong = ConnectionProfile { engine: Engine::MySql, flavor: Flavor::Timescale, ..again };
+        wrong.normalize();
+        assert_eq!(wrong.flavor, Flavor::Standard);
     }
 }

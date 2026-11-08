@@ -1444,10 +1444,11 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     r.check("turned off, a rule change waits for Apply: the login keeps its grants", off && waits && !in_sync(&core) && still.as_deref() == Some("0") && probed("agents-login-state-changes", cx).is_some(), format!("{off} {waits} {still:?}"));
     pause(cx, 200).await;
     shoot("03b-auto-off", cx);
-    tap(a, "agents-login-apply", cx).await;
+    let label = login_ui(a, cx, |l| l.drift.as_ref().map(|d| d.as_ref().map(|d| d.changes.len()).map_err(Clone::clone))).flatten();
+    let tapped = tap(a, "agents-login-apply", cx).await;
     let applied = until(cx, 30, |_| in_sync(&core)).await;
     let back = sql1(&core, pg, pw, &writes_q, cx).await;
-    r.check("…and Apply runs it", applied && back == before, format!("{back:?}"));
+    r.check("…and Apply runs it", tapped && applied && back == before, format!("tapped {tapped}, changes {label:?}, in sync {applied}: {before:?} → {back:?}"));
     tap(a, "agents-login-auto", cx).await;
     r.check("…on again", until(cx, 5, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_some_and(|l| l.auto_sync))).await, "");
     // The in-app hub (the agents' tabs and the MCP) connects as the login.

@@ -538,8 +538,27 @@ impl Hub {
         if let Some(l) = &p.agent_login {
             c.set_agent_views(&l.views);
         }
+        self.note_flavor(p, &c.info);
         self.open.lock().insert(p.id.clone(), (p.clone(), c.clone()));
         Ok(c)
+    }
+
+    /// What the server told itself as, kept by the saved connection (shown while it is not
+    /// connected). Its own write: a failure only leaves the old one shown.
+    fn note_flavor(&self, p: &ConnectionProfile, info: &dataman_core::ServerInfo) {
+        if p.flavor == info.flavor || p.engine != info.engine {
+            return;
+        }
+        let noted = dataman_core::off_runtime(|| ConfigStore::open_with(&self.dirs, self.core.approved.clone())?.note_flavor(&p.id, info));
+        match noted {
+            Ok(true) => {
+                if let Some(f) = self.front() {
+                    f.connections_changed();
+                }
+            }
+            Ok(false) => {}
+            Err(e) => log::warn!("{}: what the server is ({}) not kept: {e:#}", p.name, info.flavor.label(p.engine)),
+        }
     }
 
     /// The agent login put back in its database made again, with the user's login, where the

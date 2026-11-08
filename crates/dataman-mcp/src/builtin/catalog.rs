@@ -14,7 +14,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "list_connections",
-            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: new tables, indexes, views and schemas too, and destructive writes, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). engine (postgres, mysql, sql-server, mongodb…), language (sql, or the engine's own: use nosql_query / nosql_execute). Never returns passwords.",
+            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: new tables, indexes, views and schemas too, and destructive writes, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). engine (postgres, mysql, sql-server, mongodb…) and flavor (the server's own: timescaledb…), language (sql, or the engine's own: use nosql_query / nosql_execute). Never returns passwords.",
             schema: crate::tool::Schema::new().prop("probe", false, json!({"type": "boolean", "description": "Connect to each usable connection first to fill version."})),
             need: None,
             run: list_connections,
@@ -103,6 +103,10 @@ fn language(e: dataman_core::Engine) -> &'static str {
     }
 }
 
+fn flavor(engine: dataman_core::Engine, f: dataman_core::server::Flavor) -> Value {
+    f.spec_on(engine).map_or(Value::Null, |s| json!(s.slug))
+}
+
 fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
@@ -114,7 +118,7 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             if access == McpAccess::Off {
                 let mut row = vec![json!(p.name), json!(p.env.label()), json!("off")];
                 row.resize(14, Value::Null);
-                row.extend([json!(p.engine.slug()), json!(language(p.engine)), Value::Null]);
+                row.extend([json!(p.engine.slug()), flavor(p.engine, p.flavor), json!(language(p.engine)), Value::Null]);
                 rows.push(row);
                 continue;
             }
@@ -146,11 +150,13 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 if p.mcp_allowed_on().is_empty() { Value::Null } else { json!(p.mcp_allowed_on()) },
                 json!(p.mcp_yolo_on()),
                 json!(p.engine.slug()),
+                // What the server says once connected, else what the connection keeps of it.
+                flavor(p.engine, conn.as_ref().map_or(p.flavor, |c| c.info.flavor)),
                 json!(language(p.engine)),
                 super::rules::summary(p),
             ]);
         }
-        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "version", "row_limit", "allowed", "yolo", "engine", "language", "agents"], rows))
+        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "version", "row_limit", "allowed", "yolo", "engine", "flavor", "language", "agents"], rows))
     })
 }
 

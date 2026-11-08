@@ -1832,12 +1832,12 @@ impl HistoryPanel {
         let store = self.store.read(cx);
         let profile = |id: &str| store.profiles.iter().find(|p| p.id == id);
         let db_label = |p: &dataman_core::ConnectionProfile, d: &str| p.engine.db_label(d);
-        let (color, logo, label): (gpui::Hsla, Option<dataman_core::Engine>, SharedString) = match scope {
+        let (color, logo, label): (gpui::Hsla, Option<&'static str>, SharedString) = match scope {
             None => (t.tx4, None, "All connections".into()),
             Some((c, d)) => match profile(c) {
                 Some(p) => (
                     t.profile_color(p),
-                    Some(p.engine),
+                    Some(p.logo()),
                     match d {
                         Some(d) => format!("{} · {}", p.name, db_label(p, d)).into(),
                         None => p.name.clone().into(),
@@ -1865,7 +1865,7 @@ impl HistoryPanel {
             .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
             .when(!open, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
             .when(scope.is_some(), |d| d.child(div().flex_none().size(px(7.)).bg(color)))
-            .children(logo.and_then(|e| crate::assets::small_logo(e, 12.)))
+            .children(logo.and_then(|l| crate::assets::small_logo_at(l, 12.)))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
             .child(ui::dropdown_arrow("history-scope-arrow", open, 8., t.tx3))
             .on_click(cx.listener(move |h, _, _, cx| {
@@ -1920,7 +1920,7 @@ impl HistoryPanel {
                                 .items_center()
                                 .gap(px(8.))
                                 .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
-                                .children(crate::assets::small_logo(p.engine, 12.))
+                                .children(crate::assets::profile_logo(p, 12.))
                                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone())),
                         )
                         .relative()

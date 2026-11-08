@@ -308,7 +308,7 @@ pub(crate) async fn probe(c: &Client, p: &ConnectionProfile, user: &str) -> Resu
             on_admin && p["actions"].as_array().is_some_and(|a| a.iter().any(|x| x == action))
         })
     };
-    let version = backend::version(c).await.unwrap_or_else(|_| "MongoDB".into());
+    let version = backend::version(c).await.map(|(_, label, _)| label).unwrap_or_else(|_| "MongoDB".into());
     let mut probe = Probe { login: login.clone(), version, tls: c.tls_active, ..Default::default() };
     if atlas(p) {
         probe.manual = Some(Manual::Atlas);

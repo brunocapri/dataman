@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gpui::{Context, EventEmitter};
+use gpui::{AppContext as _, Context, EventEmitter};
 use dataman_core::{ConnFolder, ConnectionProfile, Connection, Core, SshError};
 
 #[derive(Clone)]
@@ -147,6 +147,7 @@ impl ConnStore {
                         let db = c.database().to_string();
                         // (Dropping the task handle does not stop the work.)
                         drop(c.preload(&db));
+                        s.note_flavor(&id, &c.info, cx);
                         s.states.insert(id.clone(), ConnState::Connected(c));
                         if s.quiet.remove(&id) {
                             cx.emit(ConnEvent::Arrived(id));
@@ -171,6 +172,20 @@ impl ConnStore {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// What the server told itself as on connect, kept by the saved connection: shown while it is
+    /// not connected. Written off the UI thread; a failure leaves the old one shown.
+    fn note_flavor(&mut self, id: &str, info: &dataman_core::ServerInfo, cx: &mut Context<Self>) {
+        let Some(p) = self.profiles.iter_mut().find(|p| p.id == id && p.engine == info.engine && p.flavor != info.flavor) else { return };
+        p.flavor = info.flavor;
+        let (core, id, info) = (self.core.clone(), id.to_string(), info.clone());
+        cx.background_spawn(async move {
+            if let Err(e) = core.config.note_flavor(&id, &info) {
+                log::warn!("what the server is ({}) not kept: {e:#}", info.flavor.label(info.engine));
+            }
         })
         .detach();
     }
