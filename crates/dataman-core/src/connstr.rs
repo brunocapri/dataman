@@ -15,6 +15,8 @@ pub struct ConnSpec {
     pub options: std::collections::BTreeMap<String, String>,
     pub path: Option<String>,
     pub read_only: bool,
+    /// Named by the URL's own scheme (`jdbc:yugabytedb://`).
+    pub flavor: crate::server::Flavor,
 }
 
 impl std::fmt::Debug for ConnSpec {
@@ -131,7 +133,8 @@ impl ConnSpec {
         p.engine = self.engine;
         p.options = self.options.clone();
         p.host = self.host.unwrap_or_else(|| "localhost".into());
-        p.port = self.port.unwrap_or(self.engine.default_port());
+        p.port = self.port.unwrap_or(self.flavor.default_port(self.engine));
+        p.flavor = self.flavor;
         match self.engine {
             Engine::Postgres => {
                 p.user = self.user.filter(|u| !u.is_empty()).unwrap_or_else(local_user);
@@ -182,6 +185,9 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
     };
+    if let Some((flavor, url)) = crate::server::url_of_scheme(s) {
+        return parse_url(&url).map(|spec| ConnSpec { flavor, ..spec });
+    }
     if ["postgres://", "postgresql://", "mysql://", "mariadb://", "clickhouse://", "ch://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
@@ -757,5 +763,18 @@ mod tests {
         assert_eq!(parse_profile(&p.url()).unwrap().0.url(), "http://elastic@127.0.0.1:9201");
         let (p, _) = parse_profile("https://search.example/").unwrap();
         assert_eq!((p.port, p.database.as_str(), p.sslmode), (9200, "", SslMode::VerifyFull));
+    }
+
+    #[test]
+    fn flavor_urls() {
+        let (p, pw) = parse_profile("jdbc:yugabytedb://yb.internal/yugabyte?user=app&password=pw1&load-balance=true").unwrap();
+        assert_eq!((p.engine, p.flavor, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str(), pw.as_deref()), (Engine::Postgres, crate::server::Flavor::Yugabyte, "yb.internal", 5433, "app", "yugabyte", Some("pw1")));
+        let (p, _) = parse_profile("jdbc:yugabytedb://yb1:5434,yb2:5434/db").unwrap();
+        assert_eq!((p.flavor, p.host.as_str(), p.port), (crate::server::Flavor::Yugabyte, "yb1", 5434));
+        let (p, _) = parse_profile("valkeys://default@cache.example:6380/2").unwrap();
+        assert_eq!((p.engine, p.flavor, p.port, p.database.as_str(), p.sslmode), (Engine::Redis, crate::server::Flavor::Valkey, 6380, "2", SslMode::VerifyFull));
+        let (p, _) = parse_profile("jdbc:mariadb://db/shop").unwrap();
+        assert_eq!((p.engine, p.flavor, p.port), (Engine::MySql, crate::server::Flavor::MariaDb, 3306));
+        assert_eq!(parse_profile("postgres://h/db").unwrap().0.flavor, crate::server::Flavor::Standard);
     }
 }

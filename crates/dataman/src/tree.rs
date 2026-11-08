@@ -780,11 +780,10 @@ impl SchemaTree {
             r.tip_err = true;
         }
         r.tunnel = p.ssh.is_some();
-        let flavor = match state {
-            Some(ConnState::Connected(c)) => c.info.flavor,
-            _ => Default::default(),
-        };
-        r.logo = Some(flavor.logo(p.engine));
+        r.logo = Some(match state {
+            Some(ConnState::Connected(c)) => c.info.flavor.logo(p.engine),
+            _ => p.logo(),
+        });
         r
     }
 

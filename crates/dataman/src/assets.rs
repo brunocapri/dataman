@@ -299,8 +299,9 @@ pub fn agent_logo_mono(path: &'static str) -> Svg {
     svg().path(path).flex_none().size(crate::theme::px(16.))
 }
 
-pub fn small_logo(e: dataman_core::Engine, size: f32) -> Option<gpui::Img> {
-    small_logo_at(e.logo(), size)
+/// A connection's: its server's flavor's when it has one (TimescaleDB), else its engine's.
+pub fn profile_logo(p: &dataman_core::ConnectionProfile, size: f32) -> Option<gpui::Img> {
+    small_logo_at(p.logo(), size)
 }
 
 pub fn small_logo_at(path: &'static str, size: f32) -> Option<gpui::Img> {

@@ -1018,7 +1018,7 @@ impl Workspace {
         let db = v.db.clone();
         let want = v.want.clone();
         let wanted = want.as_ref().and_then(|(id, db)| self.store.read(cx).profile(id).map(|p| (p.clone(), db.clone().unwrap_or_else(|| p.database.clone()))));
-        let logo = v.conn.as_ref().map(|c| c.info.flavor.logo(c.engine())).or_else(|| wanted.as_ref().map(|(p, _)| p.engine.logo()));
+        let logo = v.conn.as_ref().map(|c| c.info.flavor.logo(c.engine())).or_else(|| wanted.as_ref().map(|(p, _)| p.logo()));
         let (color, label): (Hsla, SharedString) = match (&v.conn, wanted) {
             (Some(c), _) if db.is_empty() => (t.profile_color(&c.profile), c.profile.name.clone().into()),
             (Some(c), _) => (t.profile_color(&c.profile), format!("{} · {}", c.profile.name, c.engine().db_label(&db)).into()),
@@ -1076,7 +1076,7 @@ impl Workspace {
                         .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.tx3)
                         .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
-                        .children(crate::assets::small_logo(p.engine, 12.))
+                        .children(crate::assets::profile_logo(p, 12.))
                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
                         .when(p.env.is_production(), |d| d.child(div().flex_none().text_size(px(9.)).text_color(t.tx4).opacity(0.6).child("PROD")))
                         .into_any_element(),

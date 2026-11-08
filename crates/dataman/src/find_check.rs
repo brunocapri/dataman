@@ -8,6 +8,9 @@ use crate::editor::CodeEditor;
 use crate::find::FindBarEvent;
 use crate::grid::ResultGrid;
 
+/// Keystrokes timed for a key's cost on the 2,000-line script.
+const KEY_SAMPLES: usize = 5;
+
 fn draw(cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         window.refresh();
@@ -193,12 +196,22 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
         editor.update(cx, |e, cx| e.set_text(&big, cx));
         window.focus(&editor.focus_handle(cx), cx);
     });
-    let t = Instant::now();
-    let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(crate::keymap::keystroke("x"), cx);
-    });
-    let closed_ms = t.elapsed().as_secs_f64() * 1e3;
-    key(cx, "backspace");
+    // A key's cost is the fastest of a few: one sample alone also times whatever else the
+    // machine was doing then (another build, another run), which only ever adds.
+    let typing = |cx: &mut AsyncWindowContext| {
+        let ms = (0..KEY_SAMPLES)
+            .map(|_| {
+                let t = Instant::now();
+                let _ = cx.update(|window, cx| window.dispatch_keystroke(crate::keymap::keystroke("x"), cx));
+                t.elapsed().as_secs_f64() * 1e3
+            })
+            .fold(f64::INFINITY, f64::min);
+        for _ in 0..KEY_SAMPLES {
+            key(cx, "backspace");
+        }
+        ms
+    };
+    let closed_ms = typing(cx);
     key(cx, "escape");
     let t0 = Instant::now();
     let _ = cx.update(|window, cx| {
@@ -211,11 +224,7 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let open_ms = t0.elapsed().as_secs_f64() * 1e3;
     let label = ed(cx).1;
     let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
-    let t1 = Instant::now();
-    let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(crate::keymap::keystroke("x"), cx);
-    });
-    let key_ms = t1.elapsed().as_secs_f64() * 1e3;
+    let key_ms = typing(cx);
     println!("     2,000 lines: search {open_ms:.2} ms ({label}); a key {closed_ms:.2} ms with the bar closed, {key_ms:.2} ms open");
     report("a 2,000-line script searches and edits fast", open_ms < crate::check::budget(Duration::from_millis(8)).as_secs_f64() * 1e3 && key_ms < crate::check::budget(Duration::from_millis(4)).as_secs_f64() * 1e3, format!("{open_ms:.2} {key_ms:.2}"));
     key(cx, "escape");

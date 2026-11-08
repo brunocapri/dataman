@@ -424,7 +424,7 @@ impl ConnDialog {
         let shown = |v: &'_ str| if blank { String::new() } else { v.to_string() };
         let name = text_field("", &profile.name, PLAIN, window, cx);
         let host = text_field("localhost", &shown(&profile.host), IN_BOTH, window, cx);
-        let port = text_field(&profile.engine.default_port().to_string(), &profile.port.to_string(), IN_BOTH, window, cx);
+        let port = text_field(&profile.flavor.default_port(profile.engine).to_string(), &profile.port.to_string(), IN_BOTH, window, cx);
         let (user_placeholder, _) = user_hint(profile.engine, profile.auth.kind());
         let user = text_field(user_placeholder, &shown(&profile.user), IN_BOTH, window, cx);
         let database = text_field(profile.engine.spec().form.database_placeholder, &shown(&profile.database), IN_STRING, window, cx);
@@ -556,7 +556,7 @@ impl ConnDialog {
             mcp: profile.mcp,
             advanced,
             engine: profile.engine,
-            flavor: Flavor::Standard,
+            flavor: profile.flavor,
             engine_picked: !blank,
             profile,
             is_new,
@@ -727,8 +727,11 @@ impl ConnDialog {
         // A port left at the old pick's default follows the new one (YugabyteDB's 5433).
         let port = self.port.read(cx).text().trim().to_string();
         if !e.is_file() && (port.is_empty() || port == old_port.to_string() || port == e.default_port().to_string()) {
-            let new = self.default_port();
-            self.port.update(cx, |t, cx| t.set_text(new.to_string(), cx));
+            let new = self.default_port().to_string();
+            self.port.update(cx, |t, cx| {
+                t.set_placeholder(new.clone(), cx);
+                t.set_text(new, cx)
+            });
         }
         self.engine_picked = true;
         self.seen[Step::Connection as usize] = true;
@@ -980,9 +983,10 @@ impl ConnDialog {
         // An http(s) URL reads as Elasticsearch; on an OpenSearch sheet it is OpenSearch's.
         let engine = if p.engine == Engine::Elasticsearch && self.engine == Engine::OpenSearch { Engine::OpenSearch } else { p.engine };
         self.engine = engine;
-        self.flavor = Flavor::Standard;
+        self.flavor = if engine == p.engine { p.flavor } else { Flavor::Standard };
         self.engine_picked = true;
-        self.port.update(cx, |t, cx| t.set_placeholder(engine.default_port().to_string(), cx));
+        let port = self.default_port().to_string();
+        self.port.update(cx, |t, cx| t.set_placeholder(port, cx));
         self.database.update(cx, |t, cx| t.set_placeholder(engine.spec().form.database_placeholder, cx));
         self.conn_str.update(cx, |t, cx| t.set_placeholder(string_placeholder(engine), cx));
         if engine.is_file() {
@@ -1190,7 +1194,7 @@ impl ConnDialog {
         }
         let mut p = self.fields(cx);
         let port = self.port.read(cx).text().trim().to_string();
-        p.port = if port.is_empty() { p.engine.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
+        p.port = if port.is_empty() { self.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
         (p.color, p.color_picked) = (Some(SWATCHES[self.color].to_string()), picked);
         if p.name.is_empty() {
             p.name = host_stem(&p.host).to_string();
@@ -1245,8 +1249,9 @@ impl ConnDialog {
         p.user = text(&self.user);
         p.database = text(&self.database);
         p.engine = self.engine;
+        p.flavor = self.flavor;
         p.port = match text(&self.port) {
-            t if t.is_empty() => p.engine.default_port(),
+            t if t.is_empty() => self.default_port(),
             t => t.parse().unwrap_or(p.port),
         };
         // The core's rules, as the MCP tools take them: PostgreSQL's default database, no TLS
@@ -1288,7 +1293,7 @@ impl ConnDialog {
 
     /// The port a new connection to the pick goes to: the flavor's own, else its engine's.
     fn default_port(&self) -> u16 {
-        self.flavor.spec().and_then(|f| f.default_port).unwrap_or(self.engine.default_port())
+        self.flavor.default_port(self.engine)
     }
 
     fn set_engine(&mut self, e: Engine, cx: &mut Context<Self>) {

@@ -4,11 +4,11 @@
 //! place it can send anyone, and what comes back says no more of a connection than
 //! list_connections does.
 
-use dataman_core::{ConnectionProfile, Engine, McpAccess, agent_login};
+use dataman_core::{ConnectionProfile, McpAccess, agent_login};
 use serde_json::{Value, json};
 
 use super::Builtin;
-use super::connections::{apply, guarded_twin};
+use super::connections::{apply, engine_prop, guarded_twin};
 use crate::hub::{Place, SHOW_NEEDS_APP, invisible, refusal};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Schema, ToolError};
@@ -30,7 +30,7 @@ const DESTINATIONS: [(&str, Build); 7] = [
 const FILLS: [&str; 6] = ["name", "engine", "host", "port", "user", "database"];
 
 pub fn tools() -> Vec<Builtin> {
-    let engines: Vec<&str> = Engine::ALL.into_iter().filter(|e| !e.is_file()).map(Engine::slug).collect();
+    let engines: Vec<&str> = dataman_core::server::names().into_iter().filter(|n| dataman_core::server::named(n).is_some_and(|(e, _)| !e.is_file())).collect();
     vec![Builtin {
         name: "show_in_dataman",
         description: "Takes the user to a place in Dataman and brings its window forward, when you need them there. Answers at once, without waiting for them: check afterwards (list_connections). It only opens the place: nothing is saved until the user clicks, and it changes no setting. Dataman must be open; if it is closed this says so, and you ask the user to open it. Refused on a connection with MCP access off or agents refused, while a sheet is open in Dataman, and past a few times a minute.",
@@ -42,7 +42,7 @@ pub fn tools() -> Vec<Builtin> {
             )
             .prop("connection", false, json!({"type": "string", "description": "connection, agents_protection, agent_login: the connection's name (or id) from list_connections."}))
             .prop("name", false, json!({"type": "string", "maxLength": 200, "description": "new_connection: a short label, unique (case-insensitive)."}))
-            .prop("engine", false, json!({"type": "string", "enum": engines, "description": "new_connection: default postgres. A sqlite or duckdb file has no password: use create_connection."}))
+            .prop("engine", false, engine_prop(engines, "new_connection: default postgres. A sqlite or duckdb file has no password: use create_connection."))
             .prop("host", false, json!({"type": "string", "maxLength": 255, "description": "new_connection: the host."}))
             .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "new_connection: default: the engine's own."}))
             .prop("user", false, json!({"type": "string", "maxLength": 200, "description": "new_connection: the database user."}))

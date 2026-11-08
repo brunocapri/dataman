@@ -886,9 +886,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
 
     crate::assets::set_logos(false);
-    let hidden = crate::assets::small_logo(Engine::MongoDb, 13.).is_none();
+    let hidden = crate::assets::small_logo_at(Engine::MongoDb.logo(), 13.).is_none();
     crate::assets::set_logos(true);
-    check("Settings › Database logos hides them", hidden && crate::assets::small_logo(Engine::MongoDb, 13.).is_some(), String::new());
+    check("Settings › Database logos hides them", hidden && crate::assets::small_logo_at(Engine::MongoDb.logo(), 13.).is_some(), String::new());
 
     core.block_on(async {
         if let Ok(c) = core.connect(mongo.clone(), Some(mpw.clone())).await {

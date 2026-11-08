@@ -108,7 +108,7 @@ pub static SPECS: [EngineSpec; 10] = [
         engine: Engine::MySql,
         slug: "mysql",
         label: "MySQL",
-        aliases: &["mariadb"],
+        aliases: &[],
         search: "mysql",
         default_port: 3306,
         default_user: "root",

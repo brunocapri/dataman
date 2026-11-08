@@ -6,17 +6,31 @@
 //! good for every database of the user's at a host of its choosing.
 
 use dataman_core::cloudauth::{self, host_allowed};
+use dataman_core::server::{self, FLAVORS, Flavor};
 use dataman_core::{Auth, AuthKind, ConfigStore, ConnectionProfile, Engine, Environment, McpAccess, SshAuth, SshSettings, SslMode};
 use serde_json::{Value, json};
 
 use super::Builtin;
 use crate::tool::{Args, BoxFut, Call, Schema, ToolError};
 
+/// The `engine` field: the engines, and the servers that speak one's protocol by their own names
+/// (what each one is, from `server::FLAVORS`).
+pub(super) fn engine_prop(engines: Vec<&'static str>, lead: &str) -> Value {
+    let flavors: Vec<String> = FLAVORS.iter().filter(|f| engines.contains(&f.slug)).map(|f| format!("{} ({})", f.slug, f.engine.slug())).collect();
+    json!({"type": "string", "enum": engines, "description": format!("{lead} A server that speaks an engine's protocol by its own name is that engine's connection, shown as that server, with its defaults: {}.", flavors.join(", "))})
+}
+
+/// The flavors' own ports, after the engines' (`yugabytedb 5433`).
+pub(super) fn port_text() -> String {
+    let own: Vec<String> = FLAVORS.iter().filter_map(|f| Some(format!("{} {}", f.slug, f.default_port?))).collect();
+    format!("Default: the engine's own ({}; {}).", Engine::port_list(), own.join(", "))
+}
+
 fn fields(s: Schema, mcp: Value) -> Schema {
     s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver://, sqlite:///path, duckdb:///path URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
-        .prop("engine", false, json!({"type": "string", "enum": Engine::slugs(), "description": "Default postgres; sqlite and duckdb are files (see path)."}))
+        .prop("engine", false, engine_prop(server::names(), "Default postgres; sqlite and duckdb are files (see path)."))
         .prop("path", false, json!({"type": "string", "description": "The database file of a sqlite or duckdb connection: an existing file (~ is the home folder). A file outside the home folder waits for the user's Allow."}))
-        .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": format!("Default: the engine's own ({}).", Engine::port_list())}))
+        .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": port_text()}))
         .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux, the Credential Manager on Windows); never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: postgres (postgres), empty (mysql, sql-server: the login's default); redis takes 0–15."}))
         .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket) or through an SSH tunnel, require anywhere else (verify-full on ClickHouse)."}))
@@ -40,7 +54,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "create_connection",
-            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server, sqlite, duckdb, mongodb, elasticsearch, opensearch, redis; sqlite and duckdb take a path to an existing file instead of host and user). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
+            description: "Saves a new database connection, for every engine Dataman speaks and the servers that speak one's protocol (see engine; sqlite and duckdb take a path to an existing file instead of host and user). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
             schema: fields(
                 Schema::new()
                     .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "A short label; must be unique (case-insensitive) unless overwrite is true."}))
@@ -69,8 +83,11 @@ pub fn tools() -> Vec<Builtin> {
     ]
 }
 
-fn engine_of(s: &str) -> Result<Engine, ToolError> {
-    Engine::parse(s).ok_or_else(|| ToolError::Invalid(format!("unknown engine {s:?}")))
+pub(super) fn engine_of(s: &str) -> Result<(Engine, Flavor), ToolError> {
+    server::named(s).ok_or_else(|| {
+        let shown: String = s.chars().take(40).collect();
+        ToolError::Invalid(format!("unknown engine {shown:?}; known: {}", server::names().join(", ")))
+    })
 }
 
 fn sslmode_of(s: &str) -> Result<SslMode, ToolError> {
@@ -178,6 +195,10 @@ pub(super) fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<
         }
         profile.path = p.path;
         profile.read_only |= p.read_only && p.engine.is_file();
+        // A string of a flavor's own scheme names it; one of the engine's leaves the connection's.
+        if !p.flavor.is_standard() || p.engine != profile.engine {
+            profile.flavor = p.flavor;
+        }
         profile.engine = p.engine;
         profile.host = p.host;
         profile.port = p.port;
@@ -186,17 +207,15 @@ pub(super) fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<
         password = pw;
     }
     if let Some(e) = a.opt_str("engine") {
-        let before = profile.engine;
-        profile.engine = engine_of(e)?;
-        // What the other engine's defaults filled in (a new profile's 5432, `postgres`) follows
-        // this one's; given fields below still win.
-        if profile.engine != before {
-            if profile.port == before.default_port() {
-                profile.port = profile.engine.default_port();
-            }
-            if profile.database == before.spec().default_database {
-                profile.database = profile.engine.spec().default_database.to_string();
-            }
+        let (before, before_flavor) = (profile.engine, profile.flavor);
+        (profile.engine, profile.flavor) = engine_of(e)?;
+        // What the other engine's (or flavor's) defaults filled in (a new profile's 5432,
+        // `postgres`) follows this one's; given fields below still win.
+        if profile.port == before_flavor.default_port(before) {
+            profile.port = profile.flavor.default_port(profile.engine);
+        }
+        if profile.engine != before && profile.database == before.spec().default_database {
+            profile.database = profile.engine.spec().default_database.to_string();
         }
     }
     if let Some(h) = a.opt_str("host") {
@@ -506,6 +525,7 @@ fn changed_fields(old: &ConnectionProfile, new: &ConnectionProfile) -> Vec<&'sta
     };
     f("name", old.name != new.name);
     f("engine", old.engine != new.engine);
+    f("flavor", old.flavor != new.flavor);
     f("host", old.host != new.host);
     f("port", old.port != new.port);
     f("user", old.user != new.user);
@@ -528,7 +548,7 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if name.is_empty() {
             return Err(ToolError::Invalid("\"name\" must not be empty".into()));
         }
-        let file = a.opt_str("engine").and_then(Engine::parse).is_some_and(Engine::is_file)
+        let file = a.opt_str("engine").and_then(server::named).is_some_and(|(e, _)| e.is_file())
             || a.opt_str("connection_string").and_then(dataman_core::connstr::parse).is_some_and(|s| s.engine.is_file());
         if file && a.opt_str("path").is_none() && a.opt_str("connection_string").is_none() {
             return Err(ToolError::Invalid("\"path\" is required for a sqlite or duckdb connection".into()));
@@ -583,7 +603,7 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         check_file(cx, existing, &profile).await?;
         settle_secrets(cx, existing, &mut profile, password)?;
         save(cx, existing, &profile)?;
-        Ok(json!({"id": profile.id, "name": profile.name, "overwritten": existing.is_some()}))
+        Ok(json!({"id": profile.id, "name": profile.name, "engine": profile.engine.slug(), "flavor": Some(profile.flavor.slug()).filter(|s| !s.is_empty()), "overwritten": existing.is_some()}))
     })
 }
 
@@ -624,8 +644,9 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
             let state = if old.save_password { "kept" } else { "none" };
             return Ok(json!({"id": old.id, "name": old.name, "changed": [], "password": state}));
         }
-        // The app reconnects an edited connection; a transaction open on it would end.
-        if let Some(f) = cx.hub.front() {
+        // The app reconnects an edited connection; a transaction open on it would end. The
+        // flavor alone is only shown: nothing reconnects for it.
+        if let Some(f) = cx.hub.front().filter(|_| changed.iter().any(|f| *f != "flavor")) {
             let open = f.open_transactions(&old.id).await;
             if !open.is_empty() {
                 let tabs: Vec<String> = open.iter().map(|t| format!("{t:?}")).collect();
@@ -691,6 +712,55 @@ mod tests {
         apply(&mut r, &args(json!({"mcp": "read"}))).unwrap();
         assert_eq!(r.mcp, None);
         assert!(changed_fields(&old, &r).is_empty());
+    }
+
+    #[test]
+    fn flavor_names_are_engines_with_their_defaults() {
+        let mut p = ConnectionProfile::new("yb");
+        apply(&mut p, &args(json!({"engine": "yugabytedb", "host": "yb.internal", "user": "yugabyte"}))).unwrap();
+        p.normalize();
+        assert_eq!((p.engine, p.flavor, p.port, p.database.as_str()), (Engine::Postgres, Flavor::Yugabyte, 5433, "postgres"));
+        // Its port given, it stays; back to plain PostgreSQL, the default port follows.
+        let mut q = ConnectionProfile::new("yb2");
+        apply(&mut q, &args(json!({"engine": "YugabyteDB", "port": 6000}))).unwrap();
+        assert_eq!((q.flavor, q.port), (Flavor::Yugabyte, 6000));
+        let mut r = p.clone();
+        apply(&mut r, &args(json!({"engine": "postgres"}))).unwrap();
+        assert_eq!((r.flavor, r.port), (Flavor::Standard, 5432));
+        assert_eq!(changed_fields(&p, &r), ["flavor", "port"]);
+        let mut m = ConnectionProfile::new("maria");
+        apply(&mut m, &args(json!({"engine": "mariadb"}))).unwrap();
+        assert_eq!((m.engine, m.flavor, m.port, m.database.as_str()), (Engine::MySql, Flavor::MariaDb, 3306, ""));
+        let mut k = ConnectionProfile::new("cache");
+        apply(&mut k, &args(json!({"engine": "dragonflydb"}))).unwrap();
+        assert_eq!((k.engine, k.flavor, k.port), (Engine::Redis, Flavor::Dragonfly, 6379));
+        // Only the flavor changes on a connection already there: shown, not a move.
+        let mut t = base();
+        apply(&mut t, &args(json!({"engine": "timescaledb"}))).unwrap();
+        assert_eq!((changed_fields(&base(), &t), target_changed(&base(), &t)), (vec!["flavor"], false));
+        let mut s = base();
+        apply(&mut s, &args(json!({"connection_string": "jdbc:yugabytedb://yb.internal/shop"}))).unwrap();
+        assert_eq!((s.engine, s.flavor, s.port), (Engine::Postgres, Flavor::Yugabyte, 5433));
+        // A string of the engine's own scheme keeps the flavor the connection has.
+        let mut kept = t.clone();
+        apply(&mut kept, &args(json!({"connection_string": "postgres://app@db1/shop"}))).unwrap();
+        assert_eq!(kept.flavor, Flavor::Timescale);
+        let e = apply(&mut base(), &args(json!({"engine": "cockroachdb"}))).unwrap_err();
+        let ToolError::Invalid(text) = e else { panic!("{e:?}") };
+        assert!(text.contains("\"cockroachdb\"") && text.contains("yugabytedb") && text.contains("postgres"), "{text}");
+        let long = "x".repeat(5000);
+        let ToolError::Invalid(text) = apply(&mut base(), &args(json!({"engine": long}))).unwrap_err() else { panic!() };
+        assert!(text.len() < 400, "{text}");
+    }
+
+    #[test]
+    fn the_engine_field_names_every_flavor() {
+        let v = engine_prop(server::names(), "Lead.");
+        let listed: Vec<&str> = v["enum"].as_array().unwrap().iter().map(|x| x.as_str().unwrap()).collect();
+        assert!(FLAVORS.iter().all(|f| listed.contains(&f.slug)) && Engine::ALL.iter().all(|e| listed.contains(&e.slug())));
+        let d = v["description"].as_str().unwrap();
+        assert!(d.starts_with("Lead.") && d.contains("yugabytedb (postgres)") && d.contains("ferretdb (mongodb)"), "{d}");
+        assert!(port_text().contains("yugabytedb 5433"), "{}", port_text());
     }
 
     #[test]

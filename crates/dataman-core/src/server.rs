@@ -24,6 +24,10 @@ pub enum Flavor {
 pub struct FlavorSpec {
     pub flavor: Flavor,
     pub engine: Engine,
+    /// Stored with a connection and taken by the MCP tools as an engine: must not change.
+    pub slug: &'static str,
+    /// Other names the MCP tools take for it.
+    pub aliases: &'static [&'static str],
     pub label: &'static str,
     /// Words the engine picker matches: its names and its vendor's. Empty: no tile of its own.
     pub search: &'static str,
@@ -36,6 +40,9 @@ pub struct FlavorSpec {
     /// Schemas it keeps for itself, as `EngineSpec::system_schemas`. They hide on every server of
     /// the engine: the names are the flavor's own, and the extension may be in another database.
     pub system_schemas: &'static [&'static str],
+    /// The URL schemes of its own drivers, each with the engine's scheme it reads as (`jdbc:` is
+    /// dropped first): `jdbc:yugabytedb://` is a PostgreSQL URL of YugabyteDB's.
+    pub schemes: &'static [(&'static str, &'static str)],
 }
 
 /// What in a server's report names the flavor.
@@ -55,29 +62,37 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
     Some(Clue { fact, holds, own_release })
 }
 
-const fn row(flavor: Flavor, engine: Engine, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, label, search, logo: None, clue, default_port: None, system_schemas: &[] }
+const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[] }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
 /// order: the first whose clue the report holds names the server.
 pub static FLAVORS: [FlavorSpec; 10] = [
-    row(Flavor::MariaDb, Engine::MySql, "MariaDB", "mariadb maria", clue("", "MariaDB", false)),
-    row(Flavor::Azure, Engine::SqlServer, "Azure SQL", "", None),
-    row(Flavor::Valkey, Engine::Redis, "Valkey", "valkey", clue("valkey_version", "", true)),
+    FlavorSpec { aliases: &["maria"], schemes: &[("mariadb", "mysql")], ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
+    FlavorSpec { aliases: &["azuresql", "azure"], ..row(Flavor::Azure, Engine::SqlServer, "azure-sql", "Azure SQL", "", None) },
+    // valkey-py's own schemes.
+    FlavorSpec { schemes: &[("valkey", "redis"), ("valkeys", "rediss")], ..row(Flavor::Valkey, Engine::Redis, "valkey", "Valkey", "valkey", clue("valkey_version", "", true)) },
     FlavorSpec {
+        aliases: &["timescale", "tigerdata"],
         logo: Some("logos/timescale.svg"),
         system_schemas: &["_timescaledb_*", "timescaledb_information", "timescaledb_experimental"],
-        ..row(Flavor::Timescale, Engine::Postgres, "TimescaleDB", "timescaledb timescale tigerdata tiger", clue("timescaledb", "", true))
+        ..row(Flavor::Timescale, Engine::Postgres, "timescaledb", "TimescaleDB", "timescaledb timescale tigerdata tiger", clue("timescaledb", "", true))
     },
-    FlavorSpec { default_port: Some(5433), ..row(Flavor::Yugabyte, Engine::Postgres, "YugabyteDB", "yugabytedb yugabyte ysql", clue("", "-YB-", true)) },
-    row(Flavor::Percona, Engine::MySql, "Percona Server", "percona", clue("version_comment", "Percona Server", false)),
-    row(Flavor::Dragonfly, Engine::Redis, "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)),
+    // Its JDBC smart driver's scheme.
+    FlavorSpec {
+        aliases: &["yugabyte"],
+        default_port: Some(5433),
+        schemes: &[("yugabytedb", "postgresql")],
+        ..row(Flavor::Yugabyte, Engine::Postgres, "yugabytedb", "YugabyteDB", "yugabytedb yugabyte ysql", clue("", "-YB-", true))
+    },
+    FlavorSpec { aliases: &["percona-server"], ..row(Flavor::Percona, Engine::MySql, "percona", "Percona Server", "percona", clue("version_comment", "Percona Server", false)) },
+    FlavorSpec { aliases: &["dragonflydb"], ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
     // KeyDB reports Redis' fields with its own release in `redis_version`; only its own INFO
     // section (`# KeyDB`, in the default INFO) is its.
-    row(Flavor::KeyDb, Engine::Redis, "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
-    row(Flavor::Garnet, Engine::Redis, "Garnet", "garnet microsoft", clue("garnet_version", "", true)),
-    row(Flavor::FerretDb, Engine::MongoDb, "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)),
+    row(Flavor::KeyDb, Engine::Redis, "keydb", "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
+    row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)),
+    FlavorSpec { aliases: &["ferret"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
 ];
 
 impl Flavor {
@@ -85,14 +100,81 @@ impl Flavor {
         (self != Flavor::Standard).then(|| &FLAVORS[self as usize - 1])
     }
 
+    /// Its row when it is a flavor of `engine`: one of another engine (a hand-edited file) is
+    /// none of this connection's.
+    pub fn spec_on(self, engine: Engine) -> Option<&'static FlavorSpec> {
+        self.spec().filter(|s| s.engine == engine)
+    }
+
     /// Its logo, else its engine's.
     pub fn logo(self, engine: Engine) -> &'static str {
-        self.spec().and_then(|s| s.logo).unwrap_or(engine.logo())
+        self.spec_on(engine).and_then(|s| s.logo).unwrap_or(engine.logo())
     }
 
     /// Its name, else its engine's.
     pub fn label(self, engine: Engine) -> &'static str {
-        self.spec().map_or(engine.label(), |s| s.label)
+        self.spec_on(engine).map_or(engine.label(), |s| s.label)
+    }
+
+    /// Where a new connection to it goes: its own port, else its engine's.
+    pub fn default_port(self, engine: Engine) -> u16 {
+        self.spec_on(engine).and_then(|s| s.default_port).unwrap_or(engine.default_port())
+    }
+
+    pub fn is_standard(&self) -> bool {
+        *self == Flavor::Standard
+    }
+
+    pub fn slug(self) -> &'static str {
+        self.spec().map_or("", |s| s.slug)
+    }
+
+    pub fn from_slug(s: &str) -> Option<Flavor> {
+        FLAVORS.iter().find(|f| f.slug == s).map(|f| f.flavor)
+    }
+}
+
+/// An engine by any of its names, or a server that speaks one's protocol by its own (the MCP
+/// tools' `engine`): `yugabytedb` is PostgreSQL as YugabyteDB.
+pub fn named(s: &str) -> Option<(Engine, Flavor)> {
+    let s = s.trim().to_ascii_lowercase();
+    let flavor = FLAVORS.iter().find(|f| f.slug == s || f.aliases.contains(&s.as_str()) || f.label.eq_ignore_ascii_case(&s));
+    flavor.map(|f| (f.engine, f.flavor)).or_else(|| Engine::parse(&s).map(|e| (e, Flavor::Standard)))
+}
+
+/// Every name `named` takes first: the engines' slugs, then the flavors'.
+pub fn names() -> Vec<&'static str> {
+    Engine::slugs().into_iter().chain(FLAVORS.iter().map(|f| f.slug)).collect()
+}
+
+/// A URL of a flavor's own scheme (`yugabytedb://…`) as its engine's (`postgresql://…`), with
+/// the flavor it names.
+pub fn url_of_scheme(s: &str) -> Option<(Flavor, String)> {
+    FLAVORS.iter().find_map(|f| {
+        f.schemes.iter().find_map(|(own, engine)| {
+            let rest = s.get(..own.len()).filter(|p| p.eq_ignore_ascii_case(own)).and_then(|_| s[own.len()..].strip_prefix("://"))?;
+            Some((f.flavor, format!("{engine}://{rest}")))
+        })
+    })
+}
+
+/// Saved with a connection by its slug. One this version does not know (a newer Dataman's, a
+/// hand edit) reads as none, so the connection still loads: it is told again on connect.
+impl serde::Serialize for Flavor {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.slug())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Flavor {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Flavor, D::Error> {
+        // Any value: one that is not a known slug must not make the whole connection unreadable.
+        let v = serde_json::Value::deserialize(d)?;
+        Ok(v.as_str().and_then(Flavor::from_slug).unwrap_or_else(|| {
+            let shown: String = v.to_string().chars().take(40).collect();
+            log::warn!("a connection's server flavor {shown} is not one this version knows: shown as its engine");
+            Flavor::Standard
+        }))
     }
 }
 
@@ -259,5 +341,49 @@ mod tests {
         assert_eq!(parse_search_path("{public,app}", "u"), vec!["public", "app"]);
         assert_eq!(parse_search_path("[public]", "app"), vec!["public"]);
         assert_eq!(parse_search_path("\"$user\", public", "bruno"), vec!["bruno", "public"]);
+    }
+
+    #[test]
+    fn names_take_engines_and_flavors_from_their_tables() {
+        assert_eq!(named("yugabytedb"), Some((Engine::Postgres, Flavor::Yugabyte)));
+        assert_eq!(named(" TimescaleDB "), Some((Engine::Postgres, Flavor::Timescale)));
+        assert_eq!(named("mariadb"), Some((Engine::MySql, Flavor::MariaDb)), "the flavor's name, not an alias of MySQL's");
+        assert_eq!(named("percona-server"), Some((Engine::MySql, Flavor::Percona)));
+        assert_eq!(named("azure-sql"), Some((Engine::SqlServer, Flavor::Azure)));
+        assert_eq!((named("pg"), named("redis")), (Some((Engine::Postgres, Flavor::Standard)), Some((Engine::Redis, Flavor::Standard))));
+        assert_eq!(named("oracle"), None);
+        for f in &FLAVORS {
+            assert_eq!(named(f.slug), Some((f.engine, f.flavor)), "{}", f.slug);
+            assert!(f.aliases.iter().all(|a| named(a) == Some((f.engine, f.flavor))), "{}", f.slug);
+            assert_eq!(Flavor::from_slug(f.slug), Some(f.flavor));
+            assert!(Engine::parse(f.slug).is_none(), "{}: one table names it", f.slug);
+        }
+        let all = names();
+        assert!(all.starts_with(&Engine::slugs()) && all.contains(&"ferretdb") && all.len() == Engine::ALL.len() + FLAVORS.len());
+        assert_eq!((Flavor::Yugabyte.default_port(Engine::Postgres), Flavor::Timescale.default_port(Engine::Postgres)), (5433, 5432));
+        // A flavor saved on a connection of another engine (a hand edit) is none of it.
+        assert_eq!((Flavor::Timescale.label(Engine::MySql), Flavor::Yugabyte.default_port(Engine::MySql)), ("MySQL", 3306));
+    }
+
+    #[test]
+    fn flavor_schemes_read_as_their_engines() {
+        assert_eq!(url_of_scheme("yugabytedb://h:5433/yugabyte"), Some((Flavor::Yugabyte, "postgresql://h:5433/yugabyte".into())));
+        assert_eq!(url_of_scheme("valkeys://cache:6380"), Some((Flavor::Valkey, "rediss://cache:6380".into())));
+        assert_eq!(url_of_scheme("MariaDB://h/shop"), Some((Flavor::MariaDb, "mysql://h/shop".into())));
+        assert_eq!(url_of_scheme("valkeyx://h"), None);
+        assert_eq!(url_of_scheme("postgres://h"), None);
+    }
+
+    #[test]
+    fn flavors_save_by_slug_and_unknown_ones_read_as_none() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct S {
+            flavor: Flavor,
+        }
+        assert_eq!(toml::to_string(&S { flavor: Flavor::Yugabyte }).unwrap().trim(), "flavor = \"yugabytedb\"");
+        assert_eq!(toml::from_str::<S>("flavor = \"timescaledb\"").unwrap().flavor, Flavor::Timescale);
+        for odd in ["flavor = \"cockroachdb\"", "flavor = 7", "flavor = { x = 1 }", "flavor = \"\""] {
+            assert_eq!(toml::from_str::<S>(odd).unwrap().flavor, Flavor::Standard, "{odd}");
+        }
     }
 }
