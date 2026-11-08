@@ -216,11 +216,13 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
     key(cx, &crate::keymap::effective("fetch_more")[0]);
-    let (phase, rows, _) = settle(&tab, cx).await;
+    let (phase, _, _) = settle(&tab, cx).await;
     pause(cx, 150).await;
     draw(cx);
+    // Rows and selection from one read: once the new row is in view the grid asks for the rows
+    // around it, so the result can still grow after `settle`.
     let v = view(&tab, cx);
-    check("⌘↓ fetches more; the new row follows the result", rows > page && v.pending == 1 && v.sel.map(|s| s.0) == Some(rows), format!("{phase:?} {rows} sel {:?} pending {}", v.sel, v.pending));
+    check("⌘↓ fetches more; the new row follows the result", v.rows > page && v.pending == 1 && v.sel.map(|s| s.0) == Some(v.rows), format!("{phase:?} {} sel {:?} pending {}", v.rows, v.sel, v.pending));
     check("the typed values survive the fetch", new_value(&tab, 0, 1, cx).as_deref() == Some("novo um"), format!("{:?}", new_value(&tab, 0, 1, cx)));
 
     plus(&tab, cx).await;
