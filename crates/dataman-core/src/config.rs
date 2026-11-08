@@ -130,6 +130,15 @@ pub fn is_loopback_host(host: &str) -> bool {
     h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Hosted services that refuse plain text and present publicly signed certificates for their host
+/// (PlanetScale's `aws.connect.psdb.cloud`): a new connection verifies them, through a tunnel too.
+const VERIFIED_HOSTS: &[&str] = &[".psdb.cloud"];
+
+pub fn verified_host(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    VERIFIED_HOSTS.iter().any(|s| h.ends_with(s))
+}
+
 /// What a new connection starts with until the user picks: opportunistic (`prefer`, which is
 /// plain text for the document engines) on this machine or through an SSH tunnel (already
 /// encrypted up to the bastion), TLS required anywhere else, and verified where the engine's
@@ -137,6 +146,9 @@ pub fn is_loopback_host(host: &str) -> bool {
 pub fn default_sslmode(engine: Engine, host: &str, tunnel: bool) -> SslMode {
     if engine.is_file() {
         return SslMode::Disable;
+    }
+    if verified_host(host) {
+        return SslMode::VerifyFull;
     }
     match (tunnel || is_local_host(host), engine.is_sql()) {
         (false, _) if engine.spec().strict_tls => SslMode::VerifyFull,
@@ -1305,6 +1317,12 @@ mod tests {
                 assert_eq!(default_sslmode(e, h, true), if e.is_sql() { SslMode::Prefer } else { SslMode::Disable }, "{h} {e:?} tunnel");
             }
         }
+        for h in ["aws.connect.psdb.cloud", "GCP.connect.psdb.cloud.", "us-east.connect.psdb.cloud"] {
+            assert_eq!(default_sslmode(Engine::MySql, h, false), SslMode::VerifyFull, "{h}");
+            assert_eq!(default_sslmode(Engine::MySql, h, true), SslMode::VerifyFull, "{h} tunnel");
+        }
+        assert_eq!(default_sslmode(Engine::MySql, "psdb.cloud.evil.example", false), SslMode::Require);
+        assert_eq!(default_sslmode(Engine::MySql, "notpsdb.cloud", false), SslMode::Require);
     }
 
     #[test]

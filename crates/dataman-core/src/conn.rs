@@ -125,7 +125,7 @@ impl Connection {
     }
 
     pub fn caps(&self) -> Caps {
-        Caps::of(self.profile.engine)
+        Caps::of_server(self.profile.engine, self.info.flavor)
     }
 
     pub fn read_only_for(&self, database: &str) -> bool {
@@ -512,6 +512,9 @@ impl Session {
             let client = self.client().await;
             return self.run_on(client, rs, false).await;
         }
+        if let Some(r) = self.conn.unheld_read_refusal(&rs.sql) {
+            return self.run_on(Err(anyhow::anyhow!(r)), rs, true).await;
+        }
         let d = self.conn.dialect();
         let ro = self.conn.read_only_for(&self.database) || d == Dialect::Sqlite || !d.has_transactions();
         let client = match self.conn.agent_take(&self.database, ro).await {
@@ -572,6 +575,21 @@ impl Session {
             });
             return;
         }
+        // Nothing on such a server keeps the session read-only: what a tab asks before sending
+        // holds for every caller, and the rest runs in a READ ONLY transaction (below).
+        if !agent
+            && self.unheld_read_only()
+            && let Some(message) = self.conn.read_only_refusal(&self.current_database(), &rs.sql)
+        {
+            let info = ErrorInfo { code: Some("25006".into()), message, ..Default::default() };
+            self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
+            rs.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.elapsed = Some(Duration::ZERO);
+                s.error = Some(info);
+            });
+            return;
+        }
         // Rolled back: a transaction of its own, or a savepoint inside the open one (whose work
         // must survive).
         let wrap = if rollback && dialect.has_transactions() {
@@ -589,12 +607,23 @@ impl Session {
                 });
                 return;
             }
-            let begin = if read_only { dialect.begin_read_only().unwrap_or(dialect.begin()) } else { dialect.begin() };
+            let begin = match self.read_only_hold(&rs.sql) {
+                Some(hold) if !agent => hold,
+                _ if read_only => dialect.begin_read_only().unwrap_or(dialect.begin()),
+                _ => dialect.begin(),
+            };
             let sql = if savepoint { dialect.savepoint(ROLLBACK_SAVEPOINT) } else { begin.to_string() };
             if !self.wrapper(&client, rs, &sql, agent).await {
                 return;
             }
             Some(savepoint)
+        } else if !agent && let Some(begin) = self.read_only_hold(&rs.sql) {
+            // The server keeps no read-only session (Vitess) but holds a READ ONLY transaction:
+            // outside the user's own transaction, each run is one.
+            if !self.wrapper(&client, rs, begin, agent).await {
+                return;
+            }
+            Some(false)
         } else {
             None
         };
@@ -676,6 +705,22 @@ impl Session {
                 s.error = error;
             }
         });
+    }
+
+    /// How `sql` begins the read-only transaction of Dataman's it runs in: on a read-only database
+    /// whose server keeps no read-only session, outside a transaction, when it is no transaction
+    /// control itself (which `guard::read_only_refusal_held` lets run only alone there).
+    fn read_only_hold(&self, sql: &str) -> Option<&'static str> {
+        let d = self.conn.dialect();
+        let outside = !self.tx.get().status.is_open() && crate::guard::classify_in(sql, d).tx.is_none();
+        if outside && self.unheld_read_only() { d.begin_read_only() } else { None }
+    }
+
+    /// A read-only database whose server keeps no read-only session but holds a READ ONLY
+    /// transaction (Vitess; SQL Server has neither).
+    fn unheld_read_only(&self) -> bool {
+        let ro = self.conn.read_only_for(&self.database) || self.conn.read_only_for(&self.current_database());
+        ro && !self.conn.caps().read_only_held && self.conn.dialect().begin_read_only().is_some()
     }
 
     fn record(&self, rs: &ResultSet, elapsed: Duration) {

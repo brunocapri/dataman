@@ -1,6 +1,5 @@
 #![allow(dead_code, unused_imports)]
 
-
 pub use std::sync::Arc;
 pub use std::time::{Duration, Instant};
 
@@ -77,6 +76,26 @@ pub fn mysql_seeded(e: &Env, database: &str) -> Option<Arc<Connection>> {
     assert!(stmts.len() > 15, "{}", stmts.len());
     exec(e, &c, &stmts);
     mysql_on(e, mysql_profile(database))
+}
+
+/// A vtgate (vttestserver's MySQL port is its `--port` + 3) on the keyspace
+/// `DATAMAN_VITESS_KEYSPACE` (`dataman`). vttestserver takes any password.
+pub fn vitess_profile(var: &str, default: &str) -> ConnectionProfile {
+    let (host, port) = addr(var, default);
+    let keyspace = std::env::var("DATAMAN_VITESS_KEYSPACE").unwrap_or_else(|_| "dataman".into());
+    ConnectionProfile {
+        host,
+        port,
+        user: "root".into(),
+        database: keyspace,
+        sslmode: SslMode::Disable,
+        engine: dataman_core::config::Engine::MySql,
+        ..ConnectionProfile::new("vitess")
+    }
+}
+
+pub fn connect_with(e: &Env, p: ConnectionProfile, password: Option<&str>) -> Option<Arc<Connection>> {
+    connect(e, p, password)
 }
 
 pub fn mssql_profile(database: &str) -> ConnectionProfile {

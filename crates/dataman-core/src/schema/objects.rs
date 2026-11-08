@@ -599,8 +599,10 @@ impl Connection {
                     return ReadThrough::read(&client).await?.sources(&client, &schema, &name).await;
                 }
                 Engine::MySql => format!(
-                    "SELECT TABLE_SCHEMA, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
-                     UNION ALL SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}"
+                    "SELECT {}, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
+                     UNION ALL SELECT {}, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}",
+                    my::named("TABLE_SCHEMA", "VIEW_SCHEMA", &schema),
+                    my::named("SPECIFIC_SCHEMA", "TABLE_SCHEMA", &schema)
                 ),
                 Engine::SqlServer => format!(
                     "SELECT COALESCE(d.referenced_schema_name, SCHEMA_NAME(o.schema_id)), d.referenced_entity_name, \

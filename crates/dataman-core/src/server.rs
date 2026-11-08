@@ -16,6 +16,8 @@ pub enum Flavor {
     KeyDb,
     Garnet,
     FerretDb,
+    /// Vitess' vtgate in front of MySQL (PlanetScale's too).
+    Vitess,
 }
 
 /// A server that speaks an engine's protocol and is its own product (or an extension that makes
@@ -43,6 +45,8 @@ pub struct FlavorSpec {
     /// The URL schemes of its own drivers, each with the engine's scheme it reads as (`jdbc:` is
     /// dropped first): `jdbc:yugabytedb://` is a PostgreSQL URL of YugabyteDB's.
     pub schemes: &'static [(&'static str, &'static str)],
+    /// The server keeps a read-only connection from writing, as its engine does (`Caps::read_only_held`).
+    pub read_only_held: bool,
 }
 
 /// What in a server's report names the flavor.
@@ -63,12 +67,12 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[] }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
 /// order: the first whose clue the report holds names the server.
-pub static FLAVORS: [FlavorSpec; 10] = [
+pub static FLAVORS: [FlavorSpec; 11] = [
     FlavorSpec { aliases: &["maria"], schemes: &[("mariadb", "mysql")], ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
     FlavorSpec { aliases: &["azuresql", "azure"], ..row(Flavor::Azure, Engine::SqlServer, "azure-sql", "Azure SQL", "", None) },
     // valkey-py's own schemes.
@@ -93,6 +97,10 @@ pub static FLAVORS: [FlavorSpec; 10] = [
     row(Flavor::KeyDb, Engine::Redis, "keydb", "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
     row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)),
     FlavorSpec { aliases: &["ferret"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
+    // vtgate answers `@@version` and `@@version_comment` itself and the MySQL behind it the rest:
+    // the backend reads both (`vitess_label`). It takes `SET SESSION TRANSACTION READ ONLY` and
+    // keeps nothing of it; its READ ONLY transactions the tablets do hold.
+    FlavorSpec { aliases: &["planetscale"], read_only_held: false, ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
 ];
 
 impl Flavor {

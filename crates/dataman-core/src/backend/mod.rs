@@ -118,6 +118,10 @@ pub struct Caps {
     /// (ClickHouse's Merge, Buffer, Dictionary, a materialized view's target): what agents may
     /// reach through a relation is checked on every relation, not only on views.
     pub tables_read_others: bool,
+    /// The server keeps a read-only connection from writing (a read-only session, or the way it
+    /// was opened). Where it does not, Dataman's check is all there is: what is not known to read
+    /// is refused, and a read-only tab's statements run in read-only transactions.
+    pub read_only_held: bool,
 }
 
 impl Caps {
@@ -150,6 +154,7 @@ impl Caps {
         agent_login: true,
         read_only_on_connect: false,
         tables_read_others: false,
+        read_only_held: true,
     };
 
     pub(crate) const BASIC: Caps = Caps {
@@ -181,19 +186,27 @@ impl Caps {
         agent_login: true,
         read_only_on_connect: false,
         tables_read_others: false,
+        read_only_held: true,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
 
     pub const MYSQL: Caps = Caps { schemas: false, functions: true, triggers: true, uuid_types: &["uuid"], ..Caps::BASIC };
     pub const SQL_SERVER: Caps =
-        Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, uuid_types: &["uniqueidentifier"], uuid_upper: true, ..Caps::BASIC };
+        Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, uuid_types: &["uniqueidentifier"], uuid_upper: true, read_only_held: false, ..Caps::BASIC };
     pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, uuid_types: &["uuid"], rowid_key: true, agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
     pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, uuid_types: &["uuid"], agent_login: false, read_only_on_connect: true, ..Caps::BASIC };
     pub const CLICKHOUSE: Caps = Caps { schemas: false, uuid_types: &["uuid"], row_edits: false, agent_login: false, read_only_on_connect: true, tables_read_others: true, ..Caps::BASIC };
 
     pub fn of(engine: Engine) -> Caps {
         engine.spec().caps
+    }
+
+    /// What the server that answered can do: its engine's, less what its flavor lacks.
+    pub fn of_server(engine: Engine, flavor: crate::server::Flavor) -> Caps {
+        let caps = Caps::of(engine);
+        let held = flavor.spec_on(engine).is_none_or(|f| f.read_only_held);
+        Caps { read_only_held: caps.read_only_held && held, ..caps }
     }
 }
 

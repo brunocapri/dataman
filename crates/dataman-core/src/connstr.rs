@@ -86,6 +86,13 @@ impl ConnSpec {
             "sslmode" => self.sslmode = sslmode(value),
             "ssl-mode" | "ssl_mode" | "sslMode" => self.sslmode = sslmode(&value.to_ascii_lowercase()),
             "ssl" if value == "true" || value == "1" => self.sslmode = Some(SslMode::Require),
+            // mysql2's `ssl={"rejectUnauthorized":true}`, as PlanetScale shows it for Node.
+            "ssl" if value.trim_start().starts_with('{') => {
+                let off = value.split_whitespace().collect::<String>().contains("\"rejectUnauthorized\":false");
+                self.sslmode = Some(if off { SslMode::Require } else { SslMode::VerifyFull });
+            }
+            // Prisma's, as PlanetScale shows it (`?sslaccept=strict`).
+            "sslaccept" => self.sslmode = Some(if value == "strict" { SslMode::VerifyFull } else { SslMode::Require }),
             "useSSL" => self.sslmode = Some(if value == "true" { SslMode::Require } else { SslMode::Disable }),
             "service" => self.service = Some(value.to_string()),
             _ => {}
@@ -148,7 +155,7 @@ impl ConnSpec {
         }
         if let Some(m) = self.sslmode.or(mssql_mode.filter(|_| self.engine == Engine::SqlServer)) {
             p.sslmode = m;
-        } else if self.engine.spec().strict_tls {
+        } else if self.engine.spec().strict_tls || crate::config::verified_host(&p.host) {
             p.sslmode = crate::config::default_sslmode(self.engine, &p.host, false);
         }
         p.name = match &self.service {
@@ -643,6 +650,23 @@ mod tests {
         assert_eq!(q.url(), "mysql://a%40b@db:3310/shop?ssl-mode=DISABLED");
         let (r, _) = parse(&q.url()).unwrap().into_profile();
         assert_eq!((r.engine, r.host, r.port, r.user, r.database, r.sslmode), (q.engine, q.host, q.port, q.user, q.database, q.sslmode));
+    }
+
+    #[test]
+    fn planetscale_urls() {
+        // As PlanetScale's Connect page shows them: Prisma's, mysql2's, and with nothing said.
+        let (p, pw) = parse("mysql://k3x9:pscale_pw_AbC@aws.connect.psdb.cloud/shop?sslaccept=strict").unwrap().into_profile();
+        assert_eq!(
+            (p.host.as_str(), p.port, p.user.as_str(), p.database.as_str(), p.sslmode, pw.as_deref()),
+            ("aws.connect.psdb.cloud", 3306, "k3x9", "shop", SslMode::VerifyFull, Some("pscale_pw_AbC"))
+        );
+        assert_eq!(url(r#"mysql://u:p@aws.connect.psdb.cloud/shop?ssl={"rejectUnauthorized":true}"#).sslmode, Some(SslMode::VerifyFull));
+        assert_eq!(url("mysql://u:p@h/shop?ssl=%7B%22rejectUnauthorized%22%3A%20false%7D").sslmode, Some(SslMode::Require));
+        assert_eq!(url("mysql://u:p@h/shop?sslaccept=accept_invalid_certs").sslmode, Some(SslMode::Require));
+        let (p, _) = parse("mysql://u:p@gcp.connect.psdb.cloud/shop").unwrap().into_profile();
+        assert_eq!(p.sslmode, SslMode::VerifyFull, "PlanetScale refuses plain text and signs its certificates publicly");
+        let (p, _) = parse("mysql://u:p@aws.connect.psdb.cloud/shop?ssl-mode=REQUIRED").unwrap().into_profile();
+        assert_eq!(p.sslmode, SslMode::Require, "what the string says wins");
     }
 
     #[test]
