@@ -261,7 +261,7 @@ pub async fn create(core: &crate::Core, admin: &Arc<Connection>, p: &ConnectionP
 /// the user's, nor a `.pgpass` line).
 pub fn agent_profile(p: &ConnectionProfile, user: &str) -> ConnectionProfile {
     let mut a = p.clone();
-    a.user = user.to_string();
+    a.user = crate::pooler::login_user(&p.host, &p.user, user);
     a.save_password = false;
     // The agent signs in with its own password, never the user's cloud sign-in; the TLS a token
     // required stays, since `tls_mode` only raises it for a token.

@@ -48,6 +48,15 @@ async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd
 # stream also yields a statement's error as QueryItem::Error where the server sent it. `money` is
 # read as an exact Numeric instead of an f64 (src/tds/codec/column_data/money.rs).
 tiberius = { path = "vendor/tiberius" }
+# tokio-postgres 0.7.18 from crates.io, patched so nothing Dataman runs leaves a named statement on
+# the server between two Syncs (a transaction-mode pooler, PgBouncer without
+# max_prepared_statements or Supavisor, gives each Sync to any server connection): the type
+# lookups run as unnamed statements (src/prepare.rs, src/client.rs), and `Client::describe`
+# returns, once `keep_statements(false)` says so, a statement parsed again with each bind
+# (src/statement.rs, src/query.rs `encode_bind`, `bind_complete`). `Client::backend_key_pid` reads BackendKeyData. A cancel request waits for
+# the other end to close (src/cancel_query_raw.rs), as libpq's does. Search for `Dataman:` in
+# vendor/tokio-postgres/src; upgrading means applying that again.
+tokio-postgres = { path = "vendor/tokio-postgres" }
 
 # The edit-build loop (`cargo run`, `cargo test`, scripts/dev.sh): the workspace's crates build
 # unoptimized and the dependencies optimized, so a rebuild is quick and the UI still draws at full

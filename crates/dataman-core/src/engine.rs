@@ -83,7 +83,7 @@ pub static SPECS: [EngineSpec; 10] = [
         slug: "postgres",
         label: "PostgreSQL",
         aliases: &["pg", "postgresql"],
-        search: "postgresql postgres pg",
+        search: "postgresql postgres pg neon supabase",
         default_port: 5432,
         default_user: "postgres",
         family: Family::Sql,

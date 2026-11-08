@@ -342,6 +342,11 @@ impl Connection {
         let task = self.spawn(async move {
             let d = this.dedicated(Some(&db)).await?;
             let client = d.db();
+            // Read-only held by the transaction where no session can hold it; the connection is
+            // this count's own and closes with it.
+            if this.read_only_per_transaction(&db) {
+                client.execute("BEGIN READ ONLY").await.map_err(|e| anyhow!(e.to_string()))?;
+            }
             let q = text_rows(&client, &sql);
             tokio::pin!(q);
             tokio::select! {

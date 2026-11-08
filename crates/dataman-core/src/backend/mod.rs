@@ -334,7 +334,7 @@ impl Db {
     pub(crate) async fn prepare(&self, sql: &str) -> Result<Prepared, ErrorInfo> {
         match self {
             Db::Pg(c) => {
-                let stmt = c.prepare(sql).await.map_err(|e| pg::error_info(&e))?;
+                let stmt = c.describe(sql).await.map_err(|e| pg::error_info(&e))?;
                 Ok(Prepared { columns: pg::column_infos(&stmt), stmt: PreparedStmt::Pg(c.clone(), stmt, sql.to_string()) })
             }
             Db::My(c) => {
@@ -437,6 +437,14 @@ impl Dedicated {
         }
     }
 
+    /// A pooler between this connection and the server (PostgreSQL only).
+    pub(crate) fn pooler(&self) -> Option<crate::pooler::Pooler> {
+        match self {
+            Dedicated::Pg(d) => d.pooler,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) | Dedicated::Ch(_) => None,
+        }
+    }
+
     pub(crate) fn pg_mut(&mut self) -> Option<&mut pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
@@ -490,10 +498,11 @@ pub(crate) async fn session(
     database: Option<&str>,
     tunnel: Option<&Tunnel>,
     watch: &Arc<TxWatch>,
+    pooler: Option<crate::pooler::Pooler>,
 ) -> Result<(Db, Canceller)> {
     match p.engine {
         Engine::Postgres => {
-            let (client, cancel) = pg::connect_session_through(p, password, database, tunnel, watch).await?;
+            let (client, cancel) = pg::connect_session_through(p, password, database, tunnel, watch, pooler).await?;
             Ok((Db::Pg(Arc::new(client)), Canceller::Pg(cancel)))
         }
         Engine::MySql => {

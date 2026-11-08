@@ -158,6 +158,31 @@ pub fn default_sslmode(engine: Engine, host: &str, tunnel: bool) -> SslMode {
     }
 }
 
+/// A cloud whose servers always take TLS with a certificate a client can check: a connection
+/// there verifies it, whatever mode the profile says. `roots` are the cloud's own certificate
+/// authorities (PEM), trusted beside the system's for its hosts only.
+pub struct CloudTls {
+    pub suffix: &'static str,
+    pub roots: &'static str,
+}
+
+/// Supabase signs its servers' certificates with a CA of its own ("Supabase Root 2021 CA",
+/// SHA-256 80:70:25:AD:…:CA:FA, the `prod-ca-2021.crt` its dashboard hands out).
+const SUPABASE_ROOT: &str = include_str!("certs/supabase-root-2021.crt");
+
+pub const CLOUD_TLS: &[CloudTls] = &[
+    // Neon: certificates of a public CA (Let's Encrypt), for the endpoint's name (SNI).
+    CloudTls { suffix: ".neon.tech", roots: "" },
+    // Supabase: `db.<ref>.supabase.co` and the shared pooler `*.pooler.supabase.com`.
+    CloudTls { suffix: ".supabase.co", roots: SUPABASE_ROOT },
+    CloudTls { suffix: ".supabase.com", roots: SUPABASE_ROOT },
+];
+
+pub fn cloud_tls(host: &str) -> Option<&'static CloudTls> {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    CLOUD_TLS.iter().find(|c| h.ends_with(c.suffix))
+}
+
 impl SslMode {
     pub const ALL: [SslMode; 4] = [SslMode::Disable, SslMode::Prefer, SslMode::Require, SslMode::VerifyFull];
 
@@ -726,8 +751,11 @@ impl ConnectionProfile {
 
     /// The TLS a connection dials with: at least `require` for a cloud token (every cloud
     /// demands it, and a token must not cross the network in clear), whatever the file says.
+    /// A cloud in `CLOUD_TLS` is always verified: its certificate can be, and a `require` there
+    /// (what Neon's and Supabase's strings say) would take any certificate.
     pub fn tls_mode(&self) -> SslMode {
         match self.sslmode {
+            _ if !self.is_socket() && cloud_tls(&self.host).is_some() => SslMode::VerifyFull,
             SslMode::Disable | SslMode::Prefer if self.auth.is_token() => SslMode::Require,
             m => m,
         }
@@ -804,8 +832,9 @@ impl ConnectionProfile {
             let db = if self.database.is_empty() { String::new() } else { format!(";database={}", self.database) };
             return format!("sqlserver://{}:{}{db};user={};{enc}", self.host, self.port, self.user);
         }
+        let options: String = self.options.iter().map(|(k, v)| format!("&{k}={}", percent_encode(v))).collect();
         format!(
-            "postgresql://{user}{host}:{}/{}?sslmode={}",
+            "postgresql://{user}{host}:{}/{}?sslmode={}{options}",
             self.port,
             percent_encode(&self.database),
             self.sslmode.label()

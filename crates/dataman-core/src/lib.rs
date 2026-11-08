@@ -45,6 +45,7 @@ pub mod pgpass;
 mod pgtypes;
 pub mod pgservice;
 pub mod pins;
+pub mod pooler;
 pub mod privacy;
 pub mod project;
 pub mod relations;

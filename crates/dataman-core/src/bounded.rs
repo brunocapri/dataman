@@ -316,6 +316,8 @@ fn my_lexed_sql_mode() -> String {
 /// whatever the server or the database has as its own.
 pub(crate) async fn strings_as_written(d: &Dedicated) -> anyhow::Result<()> {
     match d {
+        // Shared per transaction, it would reach other clients: agents set it on each transaction.
+        Dedicated::Pg(p) if p.pooler.is_some_and(|x| x.per_transaction()) => {}
         Dedicated::Pg(p) => {
             p.client.simple_query("SET standard_conforming_strings = on").await?;
         }
@@ -421,6 +423,7 @@ impl Connection {
         // PostgreSQL lets only a superuser set lc_messages.
         strings_as_written(&d).await?;
         match &d {
+            Dedicated::Pg(p) if p.pooler.is_some_and(|x| x.per_transaction()) => {}
             Dedicated::Pg(p) => {
                 let _ = p.client.simple_query("SET application_name = 'Dataman MCP'").await;
                 let _ = p.client.simple_query("SET lc_messages = 'C'").await;
@@ -482,6 +485,9 @@ impl Connection {
         {
             return Err(Stop::Refused(r));
         }
+        if let Some(r) = self.pooler.and_then(|p| crate::pooler::session_state_refusal(sql, &p)) {
+            return Err(Stop::Refused(r));
+        }
         if mode != Mode::Read {
             if self.profile.read_only && self.engine().spec().db_in_name.is_some() {
                 self.load_databases().await;
@@ -506,7 +512,10 @@ impl Connection {
         let ran = {
             let work = async {
                 match &d {
-                    Dedicated::Pg(p) => in_transaction(&p.client, &stmts, &params, mode, &limits).await,
+                    Dedicated::Pg(p) => {
+                        let shared = p.pooler.is_some_and(|x| x.per_transaction());
+                        in_transaction(&p.client, &stmts, &params, mode, &limits, PgTx { read_only: mode == Mode::Read || (shared && ro), shared }).await
+                    }
                     Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, ro, &limits).await,
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Lite(c) => lite_in_transaction(c, &stmts, &params, mode, &limits).await,
@@ -979,8 +988,16 @@ fn keep_row(cols: &[ColumnInfo], chunk: &crate::result::Chunk, mode: Mode, more:
 
 type Failed = (Stop, bool);
 
-async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
-    begin(client, mode, limits).await?;
+/// How an agent's transaction opens. Through a pooler per transaction (`shared`) the session
+/// holds nothing: what the server must enforce is set on the transaction itself.
+#[derive(Clone, Copy)]
+struct PgTx {
+    read_only: bool,
+    shared: bool,
+}
+
+async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits, tx: PgTx) -> Result<(Outcome, bool), Failed> {
+    begin(client, mode, limits, tx).await?;
     let mut out = Outcome::default();
     for (i, s) in stmts.iter().enumerate() {
         let last = i + 1 == stmts.len();
@@ -989,7 +1006,7 @@ async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<Stri
         if mode == Mode::Read {
             out.start_part();
         }
-        let r = statement(client, s, p, mode, !last, limits, &mut out).await;
+        let r = statement(client, s, p, mode, !last, limits, tx, &mut out).await;
         if mode == Mode::Read && r.is_ok() {
             out.end_part(i, s, cut0, t0.elapsed());
         }
@@ -1005,14 +1022,20 @@ async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<Stri
     Ok((out, true))
 }
 
-async fn begin(client: &Client, mode: Mode, limits: &Limits) -> Result<(), Failed> {
+async fn begin(client: &Client, mode: Mode, limits: &Limits, tx: PgTx) -> Result<(), Failed> {
     if mode == Mode::Autocommit {
-        let timeout = format!("SET statement_timeout = {}", limits.timeout.as_millis().max(1));
-        let _ = client.simple_query(&timeout).await;
+        // Shared, a session's timeout would reach other clients: the caller's timer cancels.
+        if !tx.shared {
+            let timeout = format!("SET statement_timeout = {}", limits.timeout.as_millis().max(1));
+            let _ = client.simple_query(&timeout).await;
+        }
         return Ok(());
     }
-    let begin = Dialect::Postgres.begin_for(mode == Mode::Read);
+    let begin = Dialect::Postgres.begin_for(tx.read_only);
     client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
+    if tx.shared {
+        client.simple_query(crate::pooler::AGENT_TX_LOCALS).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
+    }
     let timeout = format!("SET LOCAL statement_timeout = {}", limits.timeout.as_millis().max(1));
     if client.simple_query(&timeout).await.is_err() {
         client.simple_query(Dialect::Postgres.rollback()).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
@@ -1021,16 +1044,16 @@ async fn begin(client: &Client, mode: Mode, limits: &Limits) -> Result<(), Faile
     Ok(())
 }
 
-async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, tx: PgTx, out: &mut Outcome) -> Result<bool, Stop> {
     let verb = crate::guard::classify(sql).verb;
-    let stmt = match client.prepare(sql).await {
+    let stmt = match client.describe(sql).await {
         Ok(s) => s,
         // Statements the server cannot prepare run through the simple protocol (text results).
         // A failed prepare aborted the transaction: start it again first. Never with parameters.
         Err(e) if e.as_db_error().is_some() && params.is_empty() && out.statements.is_empty() && !crate::backend::pg::several_commands(&e) => {
             if mode != Mode::Autocommit {
                 client.simple_query(Dialect::Postgres.rollback()).await.map_err(|e| Stop::Server(error_info(&e)))?;
-                begin(client, mode, limits).await.map_err(|(e, _)| e)?;
+                begin(client, mode, limits, tx).await.map_err(|(e, _)| e)?;
             }
             return simple(client, sql, verb, mode, more, limits, out).await.map_err(|e2| {
                 let first = error_info(&e);
