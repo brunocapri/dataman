@@ -1230,17 +1230,24 @@ fn lifts_read_only(sql: &str, d: Dialect) -> Option<String> {
     let names = READ_ONLY_SETTINGS.iter().find(|(x, _)| *x == d)?.1;
     for text in crate::sql::exec_readings(sql, d) {
         let all = significant(&text, d);
-        let t = Toks { src: &text, t: &all, dialect: d };
-        let setting = |i: usize| t.is_name(i) && names.contains(&t.name_at(i).trim_matches(['@', '`', '"']));
-        let lifts = (0..all.len()).any(|i| {
-            let assigned = setting(i) && (t.op(i + 1, "=") || t.punct(i + 1, ":") && t.op(i + 2, "=") || t.is(i + 1, "TO"));
-            let reset = t.is(i, "RESET") && (setting(i + 1) || t.is(i + 1, "ALL")) || t.is(i, "DISCARD") && t.is(i + 1, "ALL");
-            let named = |j: usize| all.get(j).is_some_and(|x| x.kind == TokenKind::String && names.iter().any(|n| x.text(&text).trim_matches('\'').eq_ignore_ascii_case(n)));
-            let configured = t.is_name(i) && t.name_at(i) == "set_config" && t.punct(i + 1, "(") && !(all.get(i + 2).is_some_and(|x| x.kind == TokenKind::String) && !named(i + 2));
-            assigned || reset || configured || t.is(i, "READ") && t.is(i + 1, "WRITE")
-        });
-        if lifts {
-            return Some("read-only connection: it would take the session out of read-only".into());
+        let whole = Toks { src: &text, t: &all, dialect: d };
+        for r in statements(&whole).into_iter().filter(|r| !r.is_empty()) {
+            let t = whole.sub(r);
+            let n = t.t.len();
+            let setting = |i: usize| t.is_name(i) && names.contains(&t.name_at(i).trim_matches(['@', '`', '"']));
+            // What a statement sets (a SELECT only compares `@@transaction_read_only = 0`).
+            let sets = t.is(0, "SET");
+            let starts = sets || t.is(0, "START") || t.is(0, "BEGIN");
+            let lifts = (0..n).any(|i| {
+                let assigned = sets && setting(i) && (t.op(i + 1, "=") || t.punct(i + 1, ":") && t.op(i + 2, "=") || t.is(i + 1, "TO"));
+                let named = |j: usize| t.t.get(j).is_some_and(|x| x.kind == TokenKind::String && names.iter().any(|n| x.text(&text).trim_matches('\'').eq_ignore_ascii_case(n)));
+                let configured = t.is_name(i) && t.name_at(i) == "set_config" && t.punct(i + 1, "(") && !(t.t.get(i + 2).is_some_and(|x| x.kind == TokenKind::String) && !named(i + 2));
+                assigned || configured || starts && t.is(i, "READ") && t.is(i + 1, "WRITE")
+            });
+            let reset = t.is(0, "RESET") && (setting(1) || t.is(1, "ALL")) || t.is(0, "DISCARD") && t.is(1, "ALL");
+            if lifts || reset {
+                return Some("read-only connection: it would take the session out of read-only".into());
+            }
         }
     }
     None
@@ -3076,6 +3083,8 @@ mod tests {
         }
         for (d, sql) in [
             (my, "SELECT @@transaction_read_only"),
+            (my, "SELECT @@session.transaction_read_only = 0 AS writable"),
+            (my, "SELECT 'READ WRITE' AS mode, `read` write FROM t"),
             (my, "SET SESSION TRANSACTION READ ONLY"),
             (my, "SET @transaction_read_only_x = 0"),
             (pg, "SHOW default_transaction_read_only"),
