@@ -736,7 +736,7 @@ pub(crate) async fn run(
                         let infos = rows.columns(&cols);
                         cur.set_columns(infos);
                         let ci = cur.columns().unwrap_or_default();
-                        let _ = super::pump(&mut rows, &cur, &ci, started, on_pause).await;
+                        let _ = super::pump(&mut rows, &cur, &ci, started, on_pause, 0).await;
                         if cur.demand().borrow().abort && !cur.status().partial {
                             stopping = true;
                             let _ = client.cancel().await;

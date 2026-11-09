@@ -270,6 +270,35 @@ fn cancel(e: &Env, c: &Arc<Connection>, k: &str) {
     ok(e, &s, "SELECT 1");
 }
 
+/// Results the grid has paused hold no server connection of the pooler's past their end: they
+/// are read ahead (up to a cap), so other clients get the connections. Read ahead or not, every
+/// row arrives once, in order.
+fn paused_results_free_the_pool(e: &Env, c: &Arc<Connection>) {
+    let tabs: Vec<Arc<Session>> = (0..CLIENTS).map(|_| c.session(None)).collect();
+    let big = "SELECT g, repeat('x', 100) AS pad FROM generate_series(1, 200000) g";
+    let paused: Vec<_> = tabs.iter().map(|s| s.execute(big)).collect();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while paused.iter().any(|r| r.phase() != Phase::Paused) {
+        assert!(Instant::now() < deadline, "{:?}", paused.iter().map(|r| r.phase()).collect::<Vec<_>>());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let other = c.session(None);
+    let rs = other.execute("SELECT 1");
+    e.core.block_on(async { tokio::time::timeout(Duration::from_secs(20), rs.wait_finished()).await.expect("a paused result keeps the pooler's server connections") });
+    assert_eq!(rs.phase(), Phase::Done);
+    for rs in &paused {
+        wait(e, rs);
+        assert_eq!((rs.phase(), rs.rows()), (Phase::Done, 200000));
+        let snap = rs.snapshot();
+        assert!([0, 9999, 10000, 123456, 199999].iter().all(|&r| snap.text(r, 0).as_deref() == Some(&(r + 1).to_string())));
+    }
+    // Past the cap a result waits for the grid again, and still ends whole.
+    let rs = tabs[0].execute("SELECT g, repeat('y', 1000) AS pad FROM generate_series(1, 120000) g");
+    wait(e, &rs);
+    assert_eq!((rs.phase(), rs.rows()), (Phase::Done, 120000));
+    assert_eq!(rs.snapshot().text(119999, 0).as_deref(), Some("120000"));
+}
+
 fn suite(e: &Env, c: &Arc<Connection>, read_only: &Arc<Connection>, k: &str) {
     setup(e, c, k);
     statements_under_contention(e, c, k);
@@ -277,6 +306,7 @@ fn suite(e: &Env, c: &Arc<Connection>, read_only: &Arc<Connection>, k: &str) {
     read_only_under_contention(e, read_only, c, k);
     session_state_refused(e, c);
     cancel(e, c, k);
+    paused_results_free_the_pool(e, c);
     teardown(e, c, k);
 }
 

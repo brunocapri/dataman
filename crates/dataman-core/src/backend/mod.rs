@@ -67,7 +67,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 
 use crate::config::{ConnectionProfile, Engine};
-use crate::result::{CHUNK, ChunkBuilder, ColumnInfo, Demand, ErrorInfo, Phase, ResultSet};
+use crate::result::{CHUNK, Chunk, ChunkBuilder, ColumnInfo, Demand, ErrorInfo, Phase, ResultSet};
 use crate::server::ServerInfo;
 use crate::ssh::Tunnel;
 use crate::tx::TxWatch;
@@ -687,32 +687,94 @@ pub(crate) async fn wait_for_demand(
     }
 }
 
+/// What a paused result reads on while its server connection is not its own (a pooler per
+/// transaction hands it to the next client only once the result has ended).
+pub(crate) const SHARED_READ_AHEAD_BYTES: usize = 64 * 1024 * 1024;
+
+/// Rows read past what the grid asked for, not shown yet.
+#[derive(Default)]
+struct Ahead {
+    chunks: std::collections::VecDeque<(Chunk, usize)>,
+    bytes: usize,
+    ended: bool,
+}
+
+/// While the grid has what it asked for: reads on into `ahead`, up to `cap` bytes or the end of
+/// the result, until the grid asks for more.
+async fn read_ahead<S: RowSource>(src: &mut S, cols: &[ColumnInfo], demand: &mut tokio::sync::watch::Receiver<Demand>, ahead: &mut Ahead, cap: usize) -> Result<(), S::Error> {
+    let mut b = ChunkBuilder::new(cols);
+    let keep = |b: &mut ChunkBuilder, ahead: &mut Ahead| {
+        let n = b.bytes();
+        ahead.bytes += n;
+        ahead.chunks.push_back((b.finish(), n));
+    };
+    while !ahead.ended && ahead.bytes + b.bytes() < cap {
+        let more = tokio::select! {
+            biased;
+            _ = demand.changed() => break,
+            r = src.next_into(&mut b) => r?,
+        };
+        if !more {
+            ahead.ended = true;
+        } else if b.len() >= CHUNK {
+            keep(&mut b, ahead);
+        }
+    }
+    if !b.is_empty() {
+        keep(&mut b, ahead);
+    }
+    Ok(())
+}
+
+/// `read_ahead`: bytes read past the grid's demand while it is paused (0: none, the server
+/// connection waits with it).
 pub(crate) async fn pump<S: RowSource>(
     src: &mut S,
     rs: &Arc<ResultSet>,
     cols: &[ColumnInfo],
     started: Instant,
     on_pause: &(dyn Fn() + Sync),
+    read_ahead_bytes: usize,
 ) -> Result<Option<u64>, S::Error> {
     let mut b = ChunkBuilder::new(cols);
     let mut demand = rs.demand();
     let mut last_flush = Instant::now();
     let mut first = true;
     let mut draining = false;
+    let mut ahead = Ahead::default();
     loop {
         if !draining && !wants_more(&demand, rs.rows() + b.len()) {
             rs.push_chunk(b.finish());
             last_flush = Instant::now();
+            if read_ahead_bytes > 0
+                && let Err(e) = read_ahead(src, cols, &mut demand, &mut ahead, read_ahead_bytes).await
+            {
+                for (c, _) in ahead.chunks.drain(..) {
+                    rs.push_chunk(c);
+                }
+                return Err(e);
+            }
             if !wait_for_demand(rs, &mut demand, rs.rows(), on_pause).await {
                 draining = true;
             }
         }
         if draining {
+            if ahead.ended {
+                return Ok(src.affected());
+            }
             match src.skip().await {
                 Ok(true) => continue,
                 Err(e) => return Err(e),
                 Ok(false) => return Ok(src.affected()),
             }
+        }
+        if let Some((c, n)) = ahead.chunks.pop_front() {
+            ahead.bytes -= n;
+            rs.push_chunk(c);
+            continue;
+        }
+        if ahead.ended {
+            return Ok(if cols.is_empty() { src.affected() } else { None });
         }
         let was_empty = b.is_empty();
         let next = if was_empty {

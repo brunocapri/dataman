@@ -570,6 +570,12 @@ fn sendless(ty: &Type) -> bool {
 
 /// The server read more than one statement where the splitter saw one: the text protocol would
 /// run them all, unseen by the agents' checks.
+/// A paused result's server connection is shared through a pooler per transaction: it reads on
+/// (bounded), so that the pooler gets the connection back when the result ends.
+fn read_ahead(client: &Client) -> usize {
+    if client.keeps_statements() { 0 } else { super::SHARED_READ_AHEAD_BYTES }
+}
+
 pub(crate) fn several_commands(e: &tokio_postgres::Error) -> bool {
     e.as_db_error().is_some_and(|d| d.code() == &tokio_postgres::error::SqlState::SYNTAX_ERROR && d.message().contains("multiple commands"))
 }
@@ -785,7 +791,7 @@ async fn fetch_copy_out(
     let stmt = client.describe(&rs.sql).await?;
     let stream = client.copy_out(&stmt).await?;
     let mut rows = CopyRows { stream: Box::pin(stream), partial: Vec::new(), lines: std::collections::VecDeque::new(), ended: false };
-    super::pump(&mut rows, rs, &cols, started, on_pause).await
+    super::pump(&mut rows, rs, &cols, started, on_pause, read_ahead(client)).await
 }
 
 struct CopyRows {
@@ -878,7 +884,7 @@ async fn fetch_extended(
         let stream = client.query_raw(stmt, params.iter().map(|p| p as &(dyn ToSql + Sync))).await?;
         PgRows::new(stream, stmt, &cols)
     };
-    super::pump(&mut rows, rs, &cols, started, on_pause).await
+    super::pump(&mut rows, rs, &cols, started, on_pause, read_ahead(client)).await
 }
 
 pub(crate) struct PgRows {

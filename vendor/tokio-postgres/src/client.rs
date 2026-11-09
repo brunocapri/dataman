@@ -215,6 +215,11 @@ impl Client {
         self.inner.unnamed.store(!keep, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Dataman: what `keep_statements` was told last.
+    pub fn keeps_statements(&self) -> bool {
+        !self.inner.unnamed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Dataman: the process ID the server (or a pooler in front of it) gave in BackendKeyData.
     pub fn backend_key_pid(&self) -> i32 {
         self.process_id

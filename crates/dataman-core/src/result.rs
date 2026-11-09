@@ -152,6 +152,22 @@ impl ChunkBuilder {
         self.rows == 0
     }
 
+    /// What its rows hold so far.
+    pub fn bytes(&self) -> usize {
+        self.cols
+            .iter()
+            .map(|c| {
+                c.nulls.len() * 8
+                    + match &c.data {
+                        ColData::Bool(v) => v.len(),
+                        ColData::I64(v) => v.len() * 8,
+                        ColData::F64(v) => v.len() * 8,
+                        ColData::Text { text, ends } => text.len() + ends.len() * 4,
+                    }
+            })
+            .sum()
+    }
+
     pub fn kind(&self, col: usize) -> Kind {
         self.kinds[col]
     }
