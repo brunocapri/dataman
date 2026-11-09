@@ -59,6 +59,8 @@ pub struct FlavorSpec {
     /// as if there were none, and creates a plain collection for a view, a capped one, one with
     /// a validator or a time series.
     pub ignores: &'static [&'static str],
+    /// Why Dataman makes no agent login on it, where its engine's would not work there.
+    pub no_agent_login: Option<&'static str>,
 }
 
 impl FlavorSpec {
@@ -90,7 +92,7 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, defaults_as_sql: false, targets: &[], ignores: &[] }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, defaults_as_sql: false, targets: &[], ignores: &[], no_agent_login: None }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
@@ -116,16 +118,22 @@ pub static FLAVORS: [FlavorSpec; 11] = [
         ..row(Flavor::Yugabyte, Engine::Postgres, "yugabytedb", "YugabyteDB", "yugabytedb yugabyte ysql", clue("", "-YB-", true))
     },
     FlavorSpec { aliases: &["percona-server"], ..row(Flavor::Percona, Engine::MySql, "percona", "Percona Server", "percona", clue("version_comment", "Percona Server", false)) },
-    FlavorSpec { aliases: &["dragonflydb"], logo: Some("logos/dragonfly.svg"), ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
+    // Measured: ACL SETUSER answers "Unrecognized parameter" to a selector.
+    FlavorSpec { aliases: &["dragonflydb"], logo: Some("logos/dragonfly.svg"), no_agent_login: Some("its ACL has no selectors, which mark Dataman's users"), ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
     // KeyDB reports Redis' fields with its own release in `redis_version`; only its own INFO
     // section (`# KeyDB`, in the default INFO) is its.
     row(Flavor::KeyDb, Engine::Redis, "keydb", "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
-    row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)),
-    FlavorSpec { aliases: &["ferret"], ignores: &["collation", "viewOn", "capped", "validator", "timeseries"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
+    // Its ACL (only under `--auth Acl`) takes no selector and keeps no key pattern.
+    FlavorSpec { no_agent_login: Some("its ACL has no selectors and no key patterns"), ..row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)) },
+    FlavorSpec { aliases: &["ferret"], no_agent_login: Some("it has no roles (rolesInfo, createRole)"), ignores: &["collation", "viewOn", "capped", "validator", "timeseries"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
     // vtgate answers `@@version` and `@@version_comment` itself and the MySQL behind it the rest:
     // the backend reads both (`vitess_label`). It takes `SET SESSION TRANSACTION READ ONLY` and
     // keeps nothing of it; its READ ONLY transactions the tablets do hold.
-    FlavorSpec { aliases: &["planetscale"], logo: Some("logos/vitess.svg"), read_only_held: false, targets: &['@', ':', '['], ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
+    FlavorSpec {
+        aliases: &["planetscale"],
+        logo: Some("logos/vitess.svg"),
+        no_agent_login: Some("vtgate runs no CREATE USER (PlanetScale makes passwords in its console)"),
+        read_only_held: false, targets: &['@', ':', '['], ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
 ];
 
 impl Flavor {

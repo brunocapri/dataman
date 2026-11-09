@@ -227,6 +227,16 @@ fn nosql(e: &Env, c: &Arc<Connection>, text: &str) -> Result<Output, String> {
     e.core.block_on(c.run_nosql(&db, text, Page::default())).map(|r| r.output).map_err(|err| format!("{err:#}"))
 }
 
+/// Dataman offers no agent login where the server could not hold one, and says why before
+/// anything runs: Dragonfly's ACL refuses a selector, Garnet's keeps no key pattern, FerretDB has
+/// no roles (all measured).
+fn no_agent_login(e: &Env, c: &Arc<Connection>) {
+    let p = c.profile.clone();
+    assert!(!e.core.block_on(live::has_logins(c, &p)).unwrap());
+    let err = format!("{:#}", e.core.block_on(live::probe(c, &p)).err().expect("no probe"));
+    assert!(err.starts_with(&format!("Dataman makes no agent login on {}", c.info.flavor.label(p.engine))), "{err}");
+}
+
 /// A Redis-wire server: told apart, reads and writes as Redis, read-only holds, and an agent
 /// login is judged by the Redis release it answers as.
 fn redis_like(var: &str, flavor: Flavor, label: &str) -> Option<(Env, Arc<Connection>)> {
@@ -238,9 +248,14 @@ fn redis_like(var: &str, flavor: Flavor, label: &str) -> Option<(Env, Arc<Connec
     let (e2, ro) = server(var, true).expect("reached once");
     assert!(nosql(&e2, &ro, "SET dataman_flavor x").unwrap_err().contains("read-only"));
     let p: ConnectionProfile = c.profile.clone();
-    let (probe, _) = e.core.block_on(live::probe(&c, &p)).unwrap();
-    assert_eq!(probe.flavor.major, c.info.major(), "{:?}", probe);
-    assert_eq!(probe.lacks.iter().any(|l| l.contains("Redis 7 or later")), c.info.major() < 7, "{:?}", probe.lacks);
+    if flavor.spec().is_some_and(|f| f.no_agent_login.is_some()) {
+        no_agent_login(&e, &c);
+    } else {
+        let (probe, _) = e.core.block_on(live::probe(&c, &p)).unwrap();
+        assert_eq!(probe.flavor.major, c.info.major(), "{:?}", probe);
+        assert_eq!(probe.lacks.iter().any(|l| l.contains("Redis 7 or later")), c.info.major() < 7, "{:?}", probe.lacks);
+        assert!(e.core.block_on(live::has_logins(&c, &p)).unwrap());
+    }
     nosql(&e, &c, "DEL dataman_flavor").unwrap();
     Some((e, c))
 }
@@ -268,6 +283,7 @@ fn garnet_is_told_by_its_info_and_streams_fail_clean() {
 fn ferretdb_is_told_by_its_build_info() {
     let Some((e, c)) = server("DATAMAN_FERRETDB", false) else { return };
     told(&c, Flavor::FerretDb, "FerretDB 2.", 5..=9);
+    no_agent_login(&e, &c);
     assert!(c.info.version.contains(" (MongoDB "), "{}", c.info.version);
     nosql(&e, &c, "db.dataman_flavor.drop()").unwrap();
     nosql(&e, &c, "db.dataman_flavor.insertOne({ a: 1, s: 'x' })").unwrap();

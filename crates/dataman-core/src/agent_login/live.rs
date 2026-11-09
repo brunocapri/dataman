@@ -59,23 +59,25 @@ fn flavor_db(spec: &Spec) -> Option<&str> {
 /// Whether Dataman could make a login here: false on a PostgreSQL-protocol server without
 /// logins (MotherDuck, by its host, without asking).
 pub async fn has_logins(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<bool> {
+    if c.info.flavor.spec_on(p.engine).is_some_and(|f| f.no_agent_login.is_some()) {
+        return Ok(false);
+    }
     match p.engine {
         Engine::Postgres if pg::motherduck(p) => Ok(false),
         Engine::Postgres => pg::has_roles(&admin_db(c, Some(&p.database)).await?).await,
-        Engine::MySql if c.info.flavor == crate::server::Flavor::Vitess => Ok(false),
         e => Ok(supported(e)),
     }
 }
 
 pub async fn probe(c: &Arc<Connection>, p: &ConnectionProfile) -> Result<(Probe, Option<redis::Persist>)> {
     let user = login_name(&p.id);
+    if let Some(f) = c.info.flavor.spec_on(p.engine)
+        && let Some(why) = f.no_agent_login
+    {
+        bail!("Dataman makes no agent login on {}: {why}. The connection's own login and its rules apply", f.label);
+    }
     Ok(match p.engine {
         Engine::Postgres => (pg::probe(&admin_db(c, Some(&p.database)).await?, &user, &p.id).await?, None),
-        Engine::MySql if c.info.flavor == crate::server::Flavor::Vitess => {
-            bail!(
-                "Dataman makes no agent login on Vitess: vtgate runs no CREATE USER (PlanetScale makes passwords in its console). The connection's own login and its rules apply"
-            )
-        }
         Engine::MySql => (my::probe(&admin_db(c, None).await?, &user, &p.id).await?, None),
         Engine::SqlServer => (ms::probe(&admin_db(c, Some(&p.database)).await?, &user, &p.id).await?, None),
         Engine::MongoDb => match nosql(c)? {
