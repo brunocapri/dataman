@@ -241,7 +241,7 @@ pub fn params_schema() -> Value {
         "type": "array",
         "maxItems": 100,
         "items": {"type": ["string", "number", "integer", "boolean", "null", "array", "object"]},
-        "description": "Values for $1, $2, … in order (bound by the server, never spliced into the SQL; null is NULL)."
+        "description": "Values for $1, $2, … ({name:Type} on ClickHouse) in order (bound by the server, never spliced into the SQL; null is NULL)."
     })
 }
 

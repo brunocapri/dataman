@@ -16,7 +16,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "run_query",
-            description: "Runs read-only SQL (SELECT, WITH … SELECT, TABLE, VALUES, SHOW, EXPLAIN) inside a read-only transaction that is rolled back. Writes, row locks, transaction control and functions with side effects are refused before reaching the server. One statement returns {columns: [[name, type]], rows: [[…]], row_count, truncated?, ms}: JSON values, null is SQL NULL (distinct from \"\"), numeric/dates/times as text, json embedded. Several reads separated by ; (or a T-SQL batch returning several result sets) return {results: [{statement, sql, columns, rows, row_count, truncated?, ms}], statements, ms}. At most max_rows rows (default 200) per result; text over 2000 chars is cut with …. Pass values as params ($1, $2, …; one statement only).",
+            description: "Runs read-only SQL (SELECT, WITH … SELECT, TABLE, VALUES, SHOW, EXPLAIN) inside a read-only transaction that is rolled back. Writes, row locks, transaction control and functions with side effects are refused before reaching the server. One statement returns {columns: [[name, type]], rows: [[…]], row_count, truncated?, ms}: JSON values, null is SQL NULL (distinct from \"\"), numeric/dates/times as text, json embedded. Several reads separated by ; (or a T-SQL batch returning several result sets) return {results: [{statement, sql, columns, rows, row_count, truncated?, ms}], statements, ms}. At most max_rows rows (default 200) per result; text over 2000 chars is cut with …. Pass values as params ($1, $2, …, {name:Type} on ClickHouse; one statement only).",
             schema: limits_props(conn_schema().prop("sql", true, sql_prop("Read-only statements, separated by ;.")).prop("params", false, params_schema()), 200),
             need: Some(Need::Read),
             run: run_query,
@@ -37,7 +37,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "explain",
-            description: "Shows the plan of one statement without running it: EXPLAIN (FORMAT JSON, VERBOSE, COSTS) on PostgreSQL, EXPLAIN QUERY PLAN on SQLite, EXPLAIN on DuckDB; MySQL and SQL Server have no plans here. format: text (default, compact, as psql prints it) or json (PostgreSQL's plan). A write is planned, never run.",
+            description: "Shows the plan of one statement without running it: EXPLAIN (FORMAT JSON, VERBOSE, COSTS) on PostgreSQL, EXPLAIN QUERY PLAN on SQLite, EXPLAIN on DuckDB; MySQL, SQL Server and ClickHouse have no plans here (on ClickHouse, run_query takes EXPLAIN). format: text (default, compact, as psql prints it) or json (PostgreSQL's plan). A write is planned, never run.",
             schema: conn_schema()
                 .prop("sql", true, sql_prop("The statement to plan."))
                 .prop("params", false, params_schema())

@@ -105,18 +105,48 @@ impl ConnSpec {
         }
     }
 
-    pub fn set_mongo(&mut self, key: &str, value: &str) {
-        let yes = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
-        match key {
-            "tls" | "ssl" => {
-                self.sslmode = Some(if !yes {
-                    SslMode::Disable
-                } else if self.sslmode == Some(SslMode::Require) {
-                    SslMode::Require
-                } else {
-                    SslMode::VerifyFull
-                })
+    /// A driver's TLS switch: on, it checks the certificate unless the string already said not to.
+    fn set_tls(&mut self, value: &str) {
+        self.sslmode = Some(if !is_yes(value) {
+            SslMode::Disable
+        } else if self.sslmode == Some(SslMode::Require) {
+            SslMode::Require
+        } else {
+            SslMode::VerifyFull
+        });
+    }
+
+    /// A driver's own TLS switch also moves its default port (ClickHouse's 8123 to 8443); a port
+    /// the string names stays.
+    fn tls_port(&mut self) {
+        if self.port.is_none() {
+            self.port = self.engine.spec().form.tls_port;
+        }
+    }
+
+    /// As the ClickHouse drivers read these: the JDBC driver's `ssl` and `sslmode=strict|none`, and
+    /// `secure` for the others. The JDBC `sslmode` says how to check a certificate, so it never
+    /// turns on TLS that `ssl=false` turned off.
+    fn set_clickhouse(&mut self, key: &str, value: &str) {
+        let off = self.sslmode == Some(SslMode::Disable);
+        match (key, value.to_ascii_lowercase().as_str()) {
+            ("ssl" | "secure", _) => {
+                self.set_tls(value);
+                if is_yes(value) {
+                    self.tls_port();
+                }
             }
+            ("sslmode", "strict") if !off => self.sslmode = Some(SslMode::VerifyFull),
+            ("sslmode", "none") if !off => self.sslmode = Some(SslMode::Require),
+            ("sslmode", "strict" | "none") => {}
+            _ => self.set(key, value),
+        }
+    }
+
+    pub fn set_mongo(&mut self, key: &str, value: &str) {
+        let yes = is_yes(value);
+        match key {
+            "tls" | "ssl" => self.set_tls(value),
             "tlsAllowInvalidCertificates" | "tlsInsecure" if yes => self.sslmode = Some(SslMode::Require),
             "authSource" | "replicaSet" | "authMechanism" | "directConnection" | "srv" => {
                 self.options.insert(key.to_string(), value.to_string());
@@ -189,6 +219,10 @@ pub fn sslmode(v: &str) -> Option<SslMode> {
     })
 }
 
+fn is_yes(value: &str) -> bool {
+    matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+}
+
 pub fn parse(s: &str) -> Option<ConnSpec> {
     let s = s.trim();
     if let Some(spec) = parse_file(s) {
@@ -201,7 +235,9 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
     if let Some((flavor, url)) = crate::server::url_of_scheme(s) {
         return parse_url(&url).map(|spec| ConnSpec { flavor, ..spec });
     }
-    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "clickhouse://", "ch://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
+    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p))
+        || CLICKHOUSE_SCHEMES.iter().any(|(p, _)| s.starts_with(p))
+    {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
         parse_sqlserver(rest)
@@ -390,12 +426,24 @@ pub fn tls_given(s: &str) -> bool {
     parse(s).is_some_and(|spec| spec.sslmode.is_some() || spec.mssql_sslmode().is_some())
 }
 
+/// What a ClickHouse scheme says of TLS: the JDBC driver's names the protocol, `jdbc:ch:https://host`.
+const CLICKHOUSE_SCHEMES: [(&str, Option<SslMode>); 6] = [
+    ("clickhouse://", None),
+    ("ch://", None),
+    ("clickhouse:https://", Some(SslMode::VerifyFull)),
+    ("ch:https://", Some(SslMode::VerifyFull)),
+    ("clickhouse:http://", Some(SslMode::Disable)),
+    ("ch:http://", Some(SslMode::Disable)),
+];
+
 pub fn parse_url(s: &str) -> Option<ConnSpec> {
+    let mut scheme_tls = None;
     let (engine, rest) = if let Some(r) = s.strip_prefix("mongodb+srv://").or_else(|| s.strip_prefix("mongodb://")) {
         (Engine::MongoDb, r)
     } else if let Some(r) = s.strip_prefix("rediss://").or_else(|| s.strip_prefix("redis://")) {
         (Engine::Redis, r)
-    } else if let Some(r) = s.strip_prefix("clickhouse://").or_else(|| s.strip_prefix("ch://")) {
+    } else if let Some((r, tls)) = CLICKHOUSE_SCHEMES.iter().find_map(|(p, tls)| Some((s.strip_prefix(p)?, *tls))) {
+        scheme_tls = tls;
         (Engine::ClickHouse, r)
     } else if let Some(r) = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://")) {
         // What the sheet shows for Elasticsearch and OpenSearch; the sheet keeps OpenSearch.
@@ -423,7 +471,10 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
         (None, Some(i)) => (Some(&authority[..i]), &authority[i + 1..]),
         (None, None) => (None, authority),
     };
-    let mut spec = ConnSpec { engine, ..Default::default() };
+    // The address the ClickHouse Cloud console shows is an https:// one.
+    let cloud = hosts.rsplit_once(':').map_or(hosts, |(h, _)| h).to_ascii_lowercase().ends_with(".clickhouse.cloud");
+    let engine = if engine == Engine::Elasticsearch && cloud { Engine::ClickHouse } else { engine };
+    let mut spec = ConnSpec { engine, sslmode: scheme_tls, ..Default::default() };
     if s.starts_with("mongodb+srv://") {
         spec.options.insert("srv".into(), "true".into());
         spec.sslmode = Some(SslMode::VerifyFull);
@@ -472,15 +523,20 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
     if let Some(p) = port.filter(|p| !p.is_empty()) {
         spec.port = Some(p.parse().ok()?);
     }
+    // A scheme that says https has HTTPS's port.
+    if spec.sslmode == Some(SslMode::VerifyFull) {
+        spec.tls_port();
+    }
     if !path.is_empty() && engine != Engine::Elasticsearch {
         spec.database = Some(decode(path)?);
     }
     for kv in query.split('&').filter(|kv| !kv.is_empty() && engine != Engine::Elasticsearch) {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        if engine == Engine::MongoDb {
-            spec.set_mongo(&decode(k)?, &decode(v)?);
-        } else {
-            spec.set(&decode(k)?, &decode(v)?);
+        let (k, v) = (decode(k)?, decode(v)?);
+        match engine {
+            Engine::MongoDb => spec.set_mongo(&k, &v),
+            Engine::ClickHouse => spec.set_clickhouse(&k, &v),
+            _ => spec.set(&k, &v),
         }
     }
     Some(spec)
@@ -716,6 +772,40 @@ mod tests {
         }
         assert_eq!(parse("host=h dbname=d").unwrap().engine, Engine::Postgres);
         assert!(parse("a=1;b=2").is_none());
+    }
+
+    #[test]
+    fn a_clickhouse_string_means_what_its_driver_means() {
+        let cloud = "h.clickhouse.cloud";
+        let cases: [(&str, Engine, &str, u16, SslMode); 20] = [
+            ("jdbc:clickhouse://h.clickhouse.cloud:8443/default?user=default&ssl=true", Engine::ClickHouse, cloud, 8443, SslMode::VerifyFull),
+            ("jdbc:ch://h.clickhouse.cloud:8443/default?ssl=true", Engine::ClickHouse, cloud, 8443, SslMode::VerifyFull),
+            ("jdbc:clickhouse://h.clickhouse.cloud:8443/default?user=default", Engine::ClickHouse, cloud, 8443, SslMode::VerifyFull),
+            ("jdbc:clickhouse://h.clickhouse.cloud:8443/default?ssl=true&sslmode=strict", Engine::ClickHouse, cloud, 8443, SslMode::VerifyFull),
+            ("jdbc:clickhouse://h.clickhouse.cloud:8443/default?ssl=true&sslmode=none", Engine::ClickHouse, cloud, 8443, SslMode::Require),
+            ("jdbc:clickhouse://h.clickhouse.cloud:8443/default?sslmode=none&ssl=true", Engine::ClickHouse, cloud, 8443, SslMode::Require),
+            ("jdbc:clickhouse://db.local:8123/x?ssl=false", Engine::ClickHouse, "db.local", 8123, SslMode::Disable),
+            ("jdbc:clickhouse:https://db.local/x", Engine::ClickHouse, "db.local", 8443, SslMode::VerifyFull),
+            ("jdbc:ch:https://db.local:9443/x", Engine::ClickHouse, "db.local", 9443, SslMode::VerifyFull),
+            ("jdbc:clickhouse:http://db.local/x", Engine::ClickHouse, "db.local", 8123, SslMode::Disable),
+            ("jdbc:ch:https://db.local/x?sslmode=none", Engine::ClickHouse, "db.local", 8443, SslMode::Require),
+            ("clickhouse://localhost:8443/x?secure=true", Engine::ClickHouse, "localhost", 8443, SslMode::VerifyFull),
+            ("clickhouse://db.local:8123/x?secure=false", Engine::ClickHouse, "db.local", 8123, SslMode::Disable),
+            ("jdbc:clickhouse://db.local/x?ssl=false&sslmode=none", Engine::ClickHouse, "db.local", 8123, SslMode::Disable),
+            ("jdbc:clickhouse:http://db.local/x?sslmode=strict", Engine::ClickHouse, "db.local", 8123, SslMode::Disable),
+            ("jdbc:clickhouse://db.local/x?ssl=true", Engine::ClickHouse, "db.local", 8443, SslMode::VerifyFull),
+            ("clickhouse://db.local/x?secure=true", Engine::ClickHouse, "db.local", 8443, SslMode::VerifyFull),
+            ("https://default:pw@h.clickhouse.cloud:8443", Engine::ClickHouse, cloud, 8443, SslMode::VerifyFull),
+            ("https://H.ClickHouse.Cloud", Engine::ClickHouse, "H.ClickHouse.Cloud", 8443, SslMode::VerifyFull),
+            ("https://es.example.com:9200", Engine::Elasticsearch, "es.example.com", 9200, SslMode::VerifyFull),
+        ];
+        for (s, engine, host, port, ssl) in cases {
+            let (p, _) = parse_profile(s).unwrap_or_else(|| panic!("{s}"));
+            assert_eq!((p.engine, p.host.as_str(), p.port, p.sslmode), (engine, host, port, ssl), "{s}");
+        }
+        let (p, pw) = parse_profile("https://default:pw@h.clickhouse.cloud:8443").unwrap();
+        assert_eq!((p.user.as_str(), pw.as_deref()), ("default", Some("pw")));
+        assert!(tls_given("jdbc:clickhouse://h:8443/d?ssl=true"), "a default must not replace what the string says");
     }
 
     #[test]

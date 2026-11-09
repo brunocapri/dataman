@@ -91,7 +91,8 @@ services:
       retries: 30
 
   # HTTP on 18123, HTTPS on 18443 with a certificate of a CA of its own, both made when the
-  # container starts (the CA is /etc/clickhouse-server/ca.crt, for the verify-full test).
+  # container starts (the CA is /etc/clickhouse-server/ca.crt, for the verify-full test). The
+  # native port on 19000, for what a connection there is told.
   clickhouse:
     image: clickhouse/clickhouse-server:25.8
     entrypoint:
@@ -113,7 +114,7 @@ services:
       CLICKHOUSE_PASSWORD: dataman
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     # This machine's only: the password is in this file. The bastion reaches it by its service name.
-    ports: ["127.0.0.1:18123:8123", "127.0.0.1:18443:8443"]
+    ports: ["127.0.0.1:18123:8123", "127.0.0.1:18443:8443", "127.0.0.1:19000:9000"]
     ulimits:
       nofile: 262144
     healthcheck:
