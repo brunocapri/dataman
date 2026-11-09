@@ -130,6 +130,23 @@ fn failed_transaction_and_recovery() {
     assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
 }
 
+/// Several statements in one text run inside an open transaction too, and leave it open: the
+/// server refuses to prepare them, and a refused prepare would abort the transaction.
+#[test]
+fn several_statements_inside_a_transaction() {
+    let e = env();
+    let Some(c) = open(&e, pg_profile(), Some(&pg_password())) else { return };
+    let s = c.session(None);
+    ok(&e, &s, "BEGIN");
+    ok(&e, &s, "CREATE TEMP TABLE dataman_several (a int)");
+    ok(&e, &s, "INSERT INTO dataman_several VALUES (1); INSERT INTO dataman_several VALUES (2)");
+    let rs = ok(&e, &s, "SELECT count(*) FROM dataman_several");
+    assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("2"));
+    assert_eq!(s.tx().status, TxStatus::Open);
+    ok(&e, &s, "SELECT 1");
+    assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
+}
+
 #[test]
 fn paused_result_and_cancel_inside_a_transaction() {
     let e = env();

@@ -704,26 +704,39 @@ pub(crate) async fn run(
         }
         None => {}
     }
-    let r = match client.describe(&rs.sql).await {
-        Ok(_) if aborted() => return Ran::NeverRan { settle: false },
-        Ok(stmt) => {
-            executing();
-            fetch_extended(client, &stmt, rs, started, on_pause).await
+    // Several statements go straight to the simple protocol: the server refuses to prepare them,
+    // and a refused prepare aborts the transaction they were to run in. An agent's text has one
+    // statement per call.
+    let several = rs.params().is_empty() && rs.agent().is_none() && crate::sql::split_in(&rs.sql, crate::sql::Dialect::Postgres).len() > 1;
+    let r = if several {
+        if aborted() {
+            return Ran::NeverRan { settle: false };
         }
-        Err(e) if aborted() || e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => return Ran::NeverRan { settle: true },
-        // With parameters there is no such fallback: values are never spliced into SQL.
-        Err(e) if e.as_db_error().is_some() && rs.params().is_empty() && !(rs.agent().is_some() && several_commands(&e)) => {
-            rs.update_status(|s| s.text_mode = true);
-            executing();
-            match fetch_simple(client, rs, started, on_pause).await {
-                Err(e2) if e2.code() == Some(&tokio_postgres::error::SqlState::IN_FAILED_SQL_TRANSACTION) => {
-                    rs.update_status(|s| s.text_mode = false);
-                    Err(e)
-                }
-                r => r,
+        rs.update_status(|s| s.text_mode = true);
+        executing();
+        fetch_simple(client, rs, started, on_pause).await
+    } else {
+        match client.describe(&rs.sql).await {
+            Ok(_) if aborted() => return Ran::NeverRan { settle: false },
+            Ok(stmt) => {
+                executing();
+                fetch_extended(client, &stmt, rs, started, on_pause).await
             }
+            Err(e) if aborted() || e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => return Ran::NeverRan { settle: true },
+            // With parameters there is no such fallback: values are never spliced into SQL.
+            Err(e) if e.as_db_error().is_some() && rs.params().is_empty() && !(rs.agent().is_some() && several_commands(&e)) => {
+                rs.update_status(|s| s.text_mode = true);
+                executing();
+                match fetch_simple(client, rs, started, on_pause).await {
+                    Err(e2) if e2.code() == Some(&tokio_postgres::error::SqlState::IN_FAILED_SQL_TRANSACTION) => {
+                        rs.update_status(|s| s.text_mode = false);
+                        Err(e)
+                    }
+                    r => r,
+                }
+            }
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
     };
     match r {
         Ok(affected) => Ran::Done(affected),
