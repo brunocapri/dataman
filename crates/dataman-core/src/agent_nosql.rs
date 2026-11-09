@@ -270,9 +270,10 @@ fn op_values(op: &mql::Op, out: &mut Vec<Bson>) {
             out.extend([d(filter), d(options)]);
             out.extend(projection.iter().chain(sort.iter()).map(d));
         }
-        Op::Aggregate { pipeline, .. } => out.extend(pipeline.iter().map(d)),
-        Op::Count { filter, .. } => out.extend(filter.iter().map(d)),
-        Op::Distinct { field, filter, .. } => out.extend([Bson::String(field.clone()), d(filter)]),
+        // Options hold expressions too (`let`).
+        Op::Aggregate { pipeline, options, .. } => out.extend(pipeline.iter().chain([options]).map(d)),
+        Op::Count { filter, options, .. } => out.extend(filter.iter().chain([options]).map(d)),
+        Op::Distinct { field, filter, options, .. } => out.extend([Bson::String(field.clone()), d(filter), d(options)]),
         Op::Insert { docs, .. } => out.extend(docs.iter().map(d)),
         Op::Update { filter, update, options, .. } => out.extend([d(filter), update.clone(), d(options)]),
         Op::Replace { filter, doc, options, .. } => out.extend([d(filter), d(doc), d(options)]),
@@ -577,7 +578,7 @@ fn redis_check(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> 
     if !restricted(r) {
         return Ok(Shaped { listing, ..Default::default() });
     }
-    if matches!(first, "RANDOMKEY" | "EVAL" | "EVALSHA" | "EVAL_RO" | "EVALSHA_RO" | "FCALL" | "FCALL_RO" | "SORT" | "MIGRATE" | "DUMP") {
+    if cat == RedisCat::Scripting || matches!(first, "RANDOMKEY" | "SORT" | "MIGRATE" | "DUMP") {
         return Err(format!("{name} is not available to agents on {conn} while some keys are kept from them"));
     }
     let names = Names::Flat;
@@ -887,6 +888,14 @@ mod tests {
         let mut off = AgentRules::default();
         off.redis.scripting = false;
         assert!(check("EVAL \"return 1\" 0", true, &cx(&off, Engine::Redis)).unwrap_err().contains("@scripting"));
+        // Each flavor's own: KeyDB's cron runs a script (measured: it SETs a key), Garnet's
+        // REGISTERCS loads code, Dragonfly's REPLTAKEOVER answers OK on a primary.
+        for cmd in ["KEYDB.CRON j SINGLE 100 \"redis.call('set','x','1')\" 0", "RUNTXP 1"] {
+            assert!(check(cmd, true, &cx(&off, Engine::Redis)).unwrap_err().contains("@scripting"), "{cmd}");
+        }
+        for cmd in ["REGISTERCS TXN x y z", "REPLTAKEOVER 1", "SECONDARYOF NO ONE", "REPLCONF listening-port 1", "DFLY THREAD", "COMMITAOF"] {
+            assert!(check(cmd, true, &c).unwrap_err().contains("never runs"), "{cmd}");
+        }
         let v = AgentRules { visible: Visible { mode: VisibleMode::Except, items: vec![item("session:*", ItemKind::Table), item("user:*.password", ItemKind::Column)] }, ..Default::default() };
         let c = cx(&v, Engine::Redis);
         assert!(check("GET session:9", false, &c).unwrap_err().contains("not visible"));
@@ -894,6 +903,8 @@ mod tests {
         assert!(check("HGET user:1 password", false, &c).unwrap_err().contains("hidden"));
         assert!(check("HVALS user:1", false, &c).is_err());
         assert!(check("RANDOMKEY", false, &c).is_err());
+        // A script reads any key, however it is scheduled.
+        assert!(check("KEYDB.CRON j SINGLE 100 \"return redis.call('get','session:1')\" 0", true, &c).is_err());
         let s = check("HGETALL user:1", false, &c).unwrap();
         let mut out = json!({"value": ["name", "Ana", "password", "x"]});
         shape(&mut out, &s, &|_| true);

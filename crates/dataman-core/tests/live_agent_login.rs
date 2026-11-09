@@ -956,9 +956,13 @@ fn mysql_redteam() {
     let space = agent_login::space_of(&user);
     let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
     let rs = root.session(None);
+    // MariaDB has no mandatory roles.
+    let maria = root.info.is_mariadb();
+    if !maria {
+        ok(&e, &rs, "SET GLOBAL mandatory_roles = ''");
+    }
     for sql in [
-        "SET GLOBAL mandatory_roles = ''".to_string(),
-        "DROP DATABASE IF EXISTS au_rt".into(),
+        "DROP DATABASE IF EXISTS au_rt".to_string(),
         format!("DROP DATABASE IF EXISTS {space}"),
         format!("DROP USER IF EXISTS '{user}'@'%'"),
         "DROP ROLE IF EXISTS 'au_reader'".into(),
@@ -983,30 +987,35 @@ fn mysql_redteam() {
     r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
     r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "we`ird.e`mail".into(), how: Mask::PARTIAL, on: true }];
     // A role every account gets: the review says the database can't keep the agent from it.
-    ok(&e, &rs, "SET GLOBAL mandatory_roles = 'au_reader'");
-    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
-    assert!(rv.plan.exposed.iter().any(|x| x.object.contains("au_reader")), "{:?}", rv.plan.exposed);
-    assert!(rv.plan.shown().contains("PASSWORD REQUIRE CURRENT"));
+    if !maria {
+        ok(&e, &rs, "SET GLOBAL mandatory_roles = 'au_reader'");
+        let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+        assert!(rv.plan.exposed.iter().any(|x| x.object.contains("au_reader")), "{:?}", rv.plan.exposed);
+        assert!(rv.plan.shown().contains("PASSWORD REQUIRE CURRENT"));
+    }
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
-    let g = agent.session(None);
-    ok(&e, &g, "SET ROLE 'au_reader'");
-    assert_eq!(first(&ok(&e, &g, "SELECT s FROM au_rt.secrets")), "top-secret", "what mandatory_roles gives, said in the review");
-    ok(&e, &g, "SET ROLE NONE");
-    ok(&e, &rs, "SET GLOBAL mandatory_roles = ''");
-    drop(g);
+    if !maria {
+        let g = agent.session(None);
+        ok(&e, &g, "SET ROLE 'au_reader'");
+        assert_eq!(first(&ok(&e, &g, "SELECT s FROM au_rt.secrets")), "top-secret", "what mandatory_roles gives, said in the review");
+        ok(&e, &g, "SET ROLE NONE");
+        ok(&e, &rs, "SET GLOBAL mandatory_roles = ''");
+    }
     drop(agent);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     let g = agent.session(None);
     let x = run(&e, &g, "SET ROLE 'au_reader'").unwrap_err();
-    assert!(x.contains("not granted"), "{x}");
+    assert!(x.contains("not granted") || x.contains("Invalid role specification"), "{x}");
     denied(&e, &g, "SELECT * FROM au_rt.secrets");
     // Its own password: never by itself (it would then hold one Dataman doesn't).
-    let x = run(&e, &g, "ALTER USER USER() IDENTIFIED BY 'mine-now-123'").unwrap_err();
-    assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
-    let x = run(&e, &g, "SET PASSWORD = 'mine-now-123'").unwrap_err();
-    assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
+    // (MariaDB lets every account change its own: there the guard keeps both to the user's
+    // Allow, and an allowed one runs on the user's own login.)
+    for sql in ["ALTER USER USER() IDENTIFIED BY 'mine-now-123'", "SET PASSWORD = 'mine-now-123'"].into_iter().filter(|_| !maria) {
+        let x = run(&e, &g, sql).unwrap_err();
+        assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
+    }
     assert_eq!(ok(&e, &g, "SELECT LOAD_FILE('/etc/passwd')")[0][0], None, "no FILE privilege");
     denied(&e, &g, "SELECT 1 INTO OUTFILE '/tmp/au_out.txt'");
     denied(&e, &g, "SELECT * FROM mysql.user");
@@ -1019,7 +1028,12 @@ fn mysql_redteam() {
     let users = login.view_for("au_rt", "users").unwrap().view.clone();
     assert!(ok(&e, &g, &format!("SELECT id FROM {users} WHERE email = 'alice@acme.com'")).is_empty(), "a filter on the view compares the masked value");
     denied(&e, &g, &format!("CREATE OR REPLACE VIEW {users} AS SELECT 1"));
-    denied(&e, &g, &format!("ALTER USER '{user}'@'%' ATTRIBUTE '{{\"dataman\": \"x\"}}'"));
+    // Dataman's mark: the user's attribute on MySQL, a table in its own database on MariaDB.
+    if maria {
+        denied(&e, &g, &format!("UPDATE `{space}`.`dataman_views` SET hash = 'x'"));
+    } else {
+        denied(&e, &g, &format!("ALTER USER '{user}'@'%' ATTRIBUTE '{{\"dataman\": \"x\"}}'"));
+    }
     let weird = login.view_for("au_rt", "we`ird").unwrap().view.clone();
     assert_eq!(first(&ok(&e, &g, &format!("SELECT `e``mail` FROM {weird}"))), "••••••••••.com");
     ok(&e, &g, "SELECT id FROM au_rt.`x'; DROP USER root; --`");

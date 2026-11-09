@@ -882,6 +882,13 @@ impl ResultSet {
         rs
     }
 
+    /// The server refused the cancel (vtgate without `--allow-kill-statement`): the statement
+    /// runs to its end, so it is shown as what it did, its rows as far as they were read.
+    pub(crate) fn cancel_refused(&self, why: &str) {
+        self.status.lock().partial = true;
+        self.push_message(format!("The server did not cancel it ({why}): it ran to its end."));
+    }
+
     pub fn abort(&self) {
         self.demand.send_if_modified(|d| !std::mem::replace(&mut d.abort, true));
     }

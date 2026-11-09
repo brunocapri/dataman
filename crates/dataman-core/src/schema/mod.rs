@@ -61,10 +61,10 @@ async fn read_relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
     }
 }
 
-async fn read_columns(c: &Db, rel: &Relation) -> Option<Vec<Column>> {
+async fn read_columns(c: &Db, rel: &Relation, flavor: Option<&crate::server::FlavorSpec>) -> Option<Vec<Column>> {
     match c {
         Db::Pg(_) => pg::columns(c, rel.oid?).await,
-        Db::My(_) => my::columns(c, &rel.schema, &rel.name).await,
+        Db::My(_) => my::columns(c, &rel.schema, &rel.name, flavor.is_some_and(|f| f.defaults_as_sql)).await,
         Db::Ms(_) => ms::columns(c, &rel.schema, &rel.name).await,
         Db::Lite(_) => lite::columns(c, &rel.schema, &rel.name).await,
         Db::Duck(_) => duck::columns(c, "", &rel.schema, &rel.name).await,
@@ -434,7 +434,7 @@ impl Connection {
         let relation = self.relation(db, schema, rel);
         let client = self.meta(db).await?;
         let cols = match &relation {
-            Some(r) => read_columns(&client, r).await,
+            Some(r) => read_columns(&client, r, self.info.flavor.spec_on(self.engine())).await,
             None => None,
         };
         let cols = match cols {

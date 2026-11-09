@@ -51,8 +51,9 @@ pub(super) async fn relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
 }
 
 // MySQL 8 reports literal defaults bare (`new`), expressions as written; `extra`
-// (`DEFAULT_GENERATED`) says which.
-fn default_of(default: Option<String>, extra: &str, generation: Option<String>) -> Option<String> {
+// (`DEFAULT_GENERATED`) says which. `as_sql`: the server reports every default as SQL already
+// (MariaDB: `'new'`, `current_timestamp()`, `NULL` for none).
+fn default_of(default: Option<String>, extra: &str, generation: Option<String>, as_sql: bool) -> Option<String> {
     let extra = extra.to_ascii_lowercase();
     if extra.contains("auto_increment") {
         return Some("AUTO_INCREMENT".into());
@@ -64,6 +65,9 @@ fn default_of(default: Option<String>, extra: &str, generation: Option<String>) 
         });
     }
     let d = default?;
+    if as_sql {
+        return (!d.eq_ignore_ascii_case("NULL")).then_some(d);
+    }
     let expression = extra.contains("default_generated")
         || d.eq_ignore_ascii_case("CURRENT_TIMESTAMP")
         || d.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP(")
@@ -73,7 +77,7 @@ fn default_of(default: Option<String>, extra: &str, generation: Option<String>) 
 
 const COLUMNS: &str = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA";
 
-pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Column>> {
+pub(super) async fn columns(c: &Db, schema: &str, table: &str, defaults_as_sql: bool) -> Option<Vec<Column>> {
     let from = format!("FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} ORDER BY ORDINAL_POSITION", lit(schema), lit(table));
     // GENERATION_EXPRESSION is MySQL 5.7+ and MariaDB 10.2+.
     let q1 = format!("{COLUMNS}, GENERATION_EXPRESSION {from}");
@@ -87,7 +91,7 @@ pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Col
                     type_name: get(&r, 1).unwrap_or_default(),
                     nullable: get(&r, 2).map(|n| n == "YES"),
                     primary_key: get(&r, 4).as_deref() == Some("PRI"),
-                    default: default_of(get(&r, 3), &get(&r, 5).unwrap_or_default(), get(&r, 6)),
+                    default: default_of(get(&r, 3), &get(&r, 5).unwrap_or_default(), get(&r, 6), defaults_as_sql),
                 })
             })
             .collect(),
@@ -319,12 +323,19 @@ mod tests {
 
     #[test]
     fn defaults() {
-        assert_eq!(default_of(Some("new".into()), "", None).as_deref(), Some("'new'"));
-        assert_eq!(default_of(Some("0.00".into()), "", None).as_deref(), Some("0.00"));
-        assert_eq!(default_of(Some("CURRENT_TIMESTAMP".into()), "DEFAULT_GENERATED", None).as_deref(), Some("CURRENT_TIMESTAMP"));
-        assert_eq!(default_of(None, "auto_increment", None).as_deref(), Some("AUTO_INCREMENT"));
-        assert_eq!(default_of(None, "STORED GENERATED", Some("(`a` + 1)".into())).as_deref(), Some("GENERATED ((`a` + 1))"));
-        assert_eq!(default_of(None, "", None), None);
+        assert_eq!(default_of(Some("new".into()), "", None, false).as_deref(), Some("'new'"));
+        assert_eq!(default_of(Some("0.00".into()), "", None, false).as_deref(), Some("0.00"));
+        assert_eq!(default_of(Some("CURRENT_TIMESTAMP".into()), "DEFAULT_GENERATED", None, false).as_deref(), Some("CURRENT_TIMESTAMP"));
+        assert_eq!(default_of(None, "auto_increment", None, false).as_deref(), Some("AUTO_INCREMENT"));
+        assert_eq!(default_of(None, "STORED GENERATED", Some("(`a` + 1)".into()), false).as_deref(), Some("GENERATED ((`a` + 1))"));
+        assert_eq!(default_of(None, "", None, false), None);
+        // MariaDB's, as its catalog reports them (11.8).
+        assert_eq!(default_of(Some("'it''s'".into()), "", None, true).as_deref(), Some("'it''s'"));
+        assert_eq!(default_of(Some("'NULL'".into()), "", None, true).as_deref(), Some("'NULL'"));
+        assert_eq!(default_of(Some("NULL".into()), "", None, true), None);
+        assert_eq!(default_of(Some("curdate()".into()), "", None, true).as_deref(), Some("curdate()"));
+        assert_eq!(default_of(Some("(`b` + 1)".into()), "", None, true).as_deref(), Some("(`b` + 1)"));
+        assert_eq!(default_of(None, "VIRTUAL GENERATED", Some("`b` * 2".into()), true).as_deref(), Some("GENERATED (`b` * 2)"));
         assert_eq!(lit("a\\b'c"), "'a\\\\b''c'");
         assert!(is_system("sys") && !is_system("shop"));
     }

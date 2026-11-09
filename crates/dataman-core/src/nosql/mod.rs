@@ -363,6 +363,9 @@ async fn run_script(conn: Arc<Connection>, client: Arc<mongo::Client>, db: Strin
     }
     impl js::Server for Server {
         fn run(&mut self, db: &str, op: &mql::Op, page: Page) -> Result<Output, String> {
+            if let Some(why) = self.conn.ignored(op) {
+                return Err(why);
+            }
             self.block(mongo::run(&self.client, db, op, page))
         }
         fn command(&mut self, db: &str, cmd: Document, admin: bool) -> Result<Document, String> {
@@ -521,6 +524,9 @@ impl Connection {
                     if class.is_write() && this.read_only_for(&db) {
                         return Err(Failed { message: format!("{db} is read-only: writes are refused"), at: None });
                     }
+                    if let Some(why) = this.ignored(&parsed.op) {
+                        return Err(Failed { message: why, at: None });
+                    }
                     let output = mongo::run(&c, &db, &parsed.op, page).await?;
                     Ok(Ran::of(output, started.elapsed(), class))
                 }
@@ -539,6 +545,14 @@ impl Connection {
                     let class = redis::class(&args);
                     if class.is_write() && this.read_only_for(&db) {
                         return Err(Failed { message: format!("database {db} is read-only: writes are refused"), at: None });
+                    }
+                    // MOVE, COPY … DB, SWAPDB and FLUSHALL write to other databases too.
+                    let reached = redis::databases_reached(&args);
+                    if let Some(ro) = reached.as_ref().and_then(|dbs| dbs.iter().find(|d| this.read_only_for(d))) {
+                        return Err(Failed { message: format!("database {ro} is read-only: writes are refused"), at: None });
+                    }
+                    if reached.is_none() && this.any_read_only() {
+                        return Err(Failed { message: format!("{} reaches every database, and some are read-only", redis::name(&args)), at: None });
                     }
                     let output = rds::run(&c, &db, &args, &raw, page).await?;
                     Ok(Ran::of(output, started.elapsed(), class))
@@ -687,6 +701,13 @@ impl Connection {
                 Client::Redis(_) => Ok(rds::affects(&redis::parse(&text).map_err(Failed::from)?)),
             }
         })
+    }
+
+    /// Why `op` must not run here: it carries an option the server would not apply.
+    fn ignored(&self, op: &mql::Op) -> Option<String> {
+        let spec = self.info.flavor.spec_on(self.engine())?;
+        let key = spec.ignores.iter().find(|k| op.takes(k))?;
+        Some(format!("{} does not apply {key}: it would run as if it were not there", spec.label))
     }
 
     fn refuse_read_only(&self, db: &str) -> Result<()> {

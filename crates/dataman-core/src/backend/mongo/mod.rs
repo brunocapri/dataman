@@ -29,7 +29,7 @@ impl Client {
         match &mut op {
             Op::Find { coll, .. } | Op::Distinct { coll, .. } => *coll = view(coll)?,
             Op::Aggregate { coll: Some(coll), .. } => *coll = view(coll)?,
-            Op::Count { coll, filter } => {
+            Op::Count { coll, filter, .. } => {
                 *coll = view(coll)?;
                 filter.get_or_insert_with(Document::new);
             }
@@ -265,6 +265,20 @@ fn cmd_err(e: mongodb::error::Error) -> anyhow::Error {
     anyhow!(message(&e.into()))
 }
 
+/// A command's reply. FerretDB answers some (`dropIndexes`) with `ok: true` where MongoDB says
+/// `ok: 1`, which the driver takes for an invalid reply: that reply says the command ran.
+async fn exec(d: &mongodb::Database, cmd: Document) -> mongodb::error::Result<Document> {
+    match d.run_command(cmd).await {
+        Err(e) if matches!(*e.kind, mongodb::error::ErrorKind::InvalidResponse { .. }) && e.server_response().is_some_and(|r| r.get_bool("ok") == Ok(true)) => {
+            match e.server_response().map(|r| Document::try_from(r.to_owned())) {
+                Some(Ok(reply)) => Ok(reply),
+                _ => Err(e),
+            }
+        }
+        r => r,
+    }
+}
+
 pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Output> {
     let mapped = c.on_view(db, op);
     let op = mapped.as_ref().unwrap_or(op);
@@ -320,9 +334,9 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                 if let Some(l) = limit {
                     q.insert("limit", l.abs());
                 }
-                d.run_command(q).await.ok().and_then(|r| number(r.get("n"))).map(|n| n as u64)
+                exec(&d, q).await.ok().and_then(|r| number(r.get("n"))).map(|n| n as u64)
             };
-            let (found, total) = futures_util::join!(std::future::IntoFuture::into_future(d.run_command(cmd)), count);
+            let (found, total) = futures_util::join!(std::future::IntoFuture::into_future(exec(&d, cmd)), count);
             let found = found.map_err(cmd_err)?;
             close_cursor(&d, coll, &found).await;
             let found = first_batch(&found);
@@ -331,7 +345,7 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
             let source = projection.is_none().then(|| Source::Mongo { db: db.into(), coll: coll.clone() });
             Output::Docs(docs_of(found, page, source, total))
         }
-        Op::Aggregate { coll, pipeline } => {
+        Op::Aggregate { coll, pipeline, options } => {
             let mut stages = pipeline.clone();
             let writes = pipeline.last().is_some_and(|s| s.contains_key("$out") || s.contains_key("$merge"));
             if page.skip > 0 && !writes {
@@ -346,20 +360,28 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
             };
             // `$currentOp` (and the cluster's own stages) run on admin.
             let on = if coll.is_none() && pipeline.first().is_some_and(|s| s.contains_key("$currentOp") || s.contains_key("$listSessions")) { c.client.database("admin") } else { d.clone() };
-            let cmd = doc! { "aggregate": target, "pipeline": stages, "cursor": { "batchSize": page.limit as i64 + 1 } };
-            let r = on.run_command(cmd).await.map_err(cmd_err)?;
+            let mut cmd = doc! { "aggregate": target, "pipeline": stages, "cursor": { "batchSize": page.limit as i64 + 1 } };
+            // The page decides how many come back; the server checks the rest of the options.
+            cmd.extend(options.iter().filter(|(k, _)| !matches!(k.as_str(), "aggregate" | "pipeline" | "cursor" | "batchSize")).map(|(k, v)| (k.clone(), v.clone())));
+            let r = exec(&on, cmd).await.map_err(cmd_err)?;
             Output::Docs(docs_of(first_batch(&r), page, None, None))
         }
-        Op::Count { coll, filter } => {
-            let n = match filter {
-                Some(f) => d.collection::<Document>(coll).count_documents(f.clone()).await.map_err(cmd_err)?,
-                None => d.collection::<Document>(coll).estimated_document_count().await.map_err(cmd_err)?,
-            };
-            Output::Value(Body::Bson(Bson::Int64(n as i64)))
+        // As commands, with their options for the server to check (the driver's own drops a
+        // field it does not know).
+        Op::Count { coll, filter, options } => {
+            let mut cmd = doc! { "count": coll.clone() };
+            if let Some(f) = filter {
+                cmd.insert("query", f.clone());
+            }
+            cmd.extend(options.iter().filter(|(k, _)| !matches!(k.as_str(), "count" | "query")).map(|(k, v)| (k.clone(), v.clone())));
+            let r = exec(&d, cmd).await.map_err(cmd_err)?;
+            Output::Value(Body::Bson(Bson::Int64(number(r.get("n")).ok_or_else(|| anyhow!("count answered no n"))? as i64)))
         }
-        Op::Distinct { coll, field, filter } => {
-            let v = d.collection::<Document>(coll).distinct(field, filter.clone()).await.map_err(cmd_err)?;
-            Output::Value(Body::Bson(Bson::Array(v)))
+        Op::Distinct { coll, field, filter, options } => {
+            let mut cmd = doc! { "distinct": coll.clone(), "key": field.clone(), "query": filter.clone() };
+            cmd.extend(options.iter().filter(|(k, _)| !matches!(k.as_str(), "distinct" | "key" | "query")).map(|(k, v)| (k.clone(), v.clone())));
+            let r = exec(&d, cmd).await.map_err(cmd_err)?;
+            Output::Value(Body::Bson(Bson::Array(r.get_array("values").map_err(|_| anyhow!("distinct answered no values"))?.clone())))
         }
         Op::Insert { coll, docs } => {
             let r = d.collection::<Document>(coll).insert_many(docs.clone()).await.map_err(cmd_err)?;
@@ -477,15 +499,15 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                 index.insert("name", name.join("_"));
             }
             let name = index.get_str("name").unwrap_or("").to_string();
-            d.run_command(doc! { "createIndexes": coll.clone(), "indexes": [index] }).await.map_err(cmd_err)?;
+            exec(&d, doc! { "createIndexes": coll.clone(), "indexes": [index] }).await.map_err(cmd_err)?;
             Output::Written { affected: 0, summary: format!("index {name} created"), detail: None }
         }
         Op::DropIndex { coll, index } => {
-            d.run_command(doc! { "dropIndexes": coll.clone(), "index": index.clone() }).await.map_err(cmd_err)?;
+            exec(&d, doc! { "dropIndexes": coll.clone(), "index": index.clone() }).await.map_err(cmd_err)?;
             Output::Written { affected: 0, summary: "index dropped".into(), detail: None }
         }
         Op::Indexes { coll } => {
-            let r = d.run_command(doc! { "listIndexes": coll.clone() }).await.map_err(cmd_err)?;
+            let r = exec(&d, doc! { "listIndexes": coll.clone() }).await.map_err(cmd_err)?;
             Output::Value(Body::Bson(Bson::Array(first_batch(&r).into_iter().map(Bson::Document).collect())))
         }
         Op::DropCollection { coll } => {
@@ -495,11 +517,11 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
         Op::CreateCollection { name, options } => {
             let mut cmd = doc! { "create": name.clone() };
             cmd.extend(options.clone());
-            d.run_command(cmd).await.map_err(cmd_err)?;
+            exec(&d, cmd).await.map_err(cmd_err)?;
             Output::Written { affected: 0, summary: format!("{name} created"), detail: None }
         }
         Op::RenameCollection { coll, to } => {
-            c.client.database("admin").run_command(doc! { "renameCollection": format!("{db}.{coll}"), "to": format!("{db}.{to}") }).await.map_err(cmd_err)?;
+            exec(&c.client.database("admin"), doc! { "renameCollection": format!("{db}.{coll}"), "to": format!("{db}.{to}") }).await.map_err(cmd_err)?;
             Output::Written { affected: 0, summary: format!("{coll} renamed to {to}"), detail: None }
         }
         Op::DropDatabase => {
@@ -511,11 +533,11 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                 Some(c) => doc! { "collStats": c.clone() },
                 None => doc! { "dbStats": 1 },
             };
-            Output::Value(Body::doc(d.run_command(cmd).await.map_err(cmd_err)?))
+            Output::Value(Body::doc(exec(&d, cmd).await.map_err(cmd_err)?))
         }
         Op::Command { doc, admin } => {
             let target = if *admin { c.client.database("admin") } else { d };
-            let r = target.run_command(doc.clone()).await.map_err(cmd_err)?;
+            let r = exec(&target, doc.clone()).await.map_err(cmd_err)?;
             if r.get_document("cursor").is_ok_and(|c| c.contains_key("firstBatch")) && op.class() == WriteClass::Read {
                 let found = first_batch(&r);
                 let n = found.len();
@@ -529,7 +551,7 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
 
 pub(crate) async fn command(c: &Client, db: &str, cmd: Document, admin: bool) -> Result<Document> {
     let target = c.client.database(if admin { "admin" } else { db });
-    target.run_command(cmd).await.map_err(cmd_err)
+    exec(&target, cmd).await.map_err(cmd_err)
 }
 
 pub(crate) async fn affects(c: &Client, db: &str, op: &Op) -> Result<Option<u64>> {

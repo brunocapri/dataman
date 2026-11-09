@@ -49,6 +49,31 @@ pub struct FlavorSpec {
     pub read_only_held: bool,
     /// A rollback undoes DDL and TRUNCATE, as its engine's does (`Caps::transactional_ddl`).
     pub transactional_ddl: bool,
+    /// Its catalog reports a column's default as SQL (`'it''s'`, `NULL`, `current_timestamp()`),
+    /// not as the value MySQL's `information_schema.COLUMNS.COLUMN_DEFAULT` holds.
+    pub defaults_as_sql: bool,
+    /// A database's name may carry a routing target after one of these (Vitess: `` `ks@primary` ``,
+    /// `` `ks:-80` ``, `` `ks[-80]` ``): the database is the part before it, and with none
+    /// (`@replica`, or no database at all) a table's name is looked up in every one.
+    pub targets: &'static [char],
+    /// Options it takes and does not apply: a request with one is refused rather than answered
+    /// without it. FerretDB 2.7 answers a find, count, distinct or aggregate with a `collation`
+    /// as if there were none, and creates a plain collection for a view, a capped one, one with
+    /// a validator or a time series.
+    pub ignores: &'static [&'static str],
+    /// Why Dataman makes no agent login on it, where its engine's would not work there.
+    pub no_agent_login: Option<&'static str>,
+}
+
+impl FlavorSpec {
+    /// The database `name` reaches: itself, or what is before its routing target. None: any.
+    pub fn database_of<'a>(&self, name: &'a str) -> Option<&'a str> {
+        if self.targets.is_empty() {
+            return Some(name);
+        }
+        let db = name.split(self.targets).next().unwrap_or(name);
+        (!db.is_empty()).then_some(db)
+    }
 }
 
 /// What in a server's report names the flavor.
@@ -69,13 +94,14 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true, defaults_as_sql: false, targets: &[], ignores: &[], no_agent_login: None }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
 /// order: the first whose clue the report holds names the server.
 pub static FLAVORS: [FlavorSpec; 11] = [
-    FlavorSpec { aliases: &["maria"], logo: Some("logos/mariadb.svg"), schemes: &[("mariadb", "mysql")], ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
+    // MariaDB 10.2.7 and later quote a default in its catalog.
+    FlavorSpec { aliases: &["maria"], logo: Some("logos/mariadb.svg"), schemes: &[("mariadb", "mysql")], defaults_as_sql: true, ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
     FlavorSpec { aliases: &["azuresql", "azure"], ..row(Flavor::Azure, Engine::SqlServer, "azure-sql", "Azure SQL", "", None) },
     // valkey-py's own schemes.
     FlavorSpec { logo: Some("logos/valkey.svg"), schemes: &[("valkey", "redis"), ("valkeys", "rediss")], ..row(Flavor::Valkey, Engine::Redis, "valkey", "Valkey", "valkey", clue("valkey_version", "", true)) },
@@ -96,16 +122,22 @@ pub static FLAVORS: [FlavorSpec; 11] = [
         ..row(Flavor::Yugabyte, Engine::Postgres, "yugabytedb", "YugabyteDB", "yugabytedb yugabyte ysql", clue("", "-YB-", true))
     },
     FlavorSpec { aliases: &["percona-server"], ..row(Flavor::Percona, Engine::MySql, "percona", "Percona Server", "percona", clue("version_comment", "Percona Server", false)) },
-    FlavorSpec { aliases: &["dragonflydb"], logo: Some("logos/dragonfly.svg"), ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
+    // Measured: ACL SETUSER answers "Unrecognized parameter" to a selector.
+    FlavorSpec { aliases: &["dragonflydb"], logo: Some("logos/dragonfly.svg"), no_agent_login: Some("its ACL has no selectors, which mark Dataman's users"), ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
     // KeyDB reports Redis' fields with its own release in `redis_version`; only its own INFO
     // section (`# KeyDB`, in the default INFO) is its.
     row(Flavor::KeyDb, Engine::Redis, "keydb", "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
-    row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)),
-    FlavorSpec { aliases: &["ferret"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
+    // Its ACL (only under `--auth Acl`) takes no selector and keeps no key pattern.
+    FlavorSpec { no_agent_login: Some("its ACL has no selectors and no key patterns"), ..row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)) },
+    FlavorSpec { aliases: &["ferret"], no_agent_login: Some("it has no roles (rolesInfo, createRole)"), ignores: &["collation", "viewOn", "capped", "validator", "timeseries"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
     // vtgate answers `@@version` and `@@version_comment` itself and the MySQL behind it the rest:
     // the backend reads both (`vitess_label`). It takes `SET SESSION TRANSACTION READ ONLY` and
     // keeps nothing of it; its READ ONLY transactions the tablets do hold.
-    FlavorSpec { aliases: &["planetscale"], logo: Some("logos/vitess.svg"), read_only_held: false, ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
+    FlavorSpec {
+        aliases: &["planetscale"],
+        logo: Some("logos/vitess.svg"),
+        no_agent_login: Some("vtgate runs no CREATE USER (PlanetScale makes passwords in its console)"),
+        read_only_held: false, targets: &['@', ':', '['], ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
 ];
 
 impl Flavor {
