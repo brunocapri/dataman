@@ -54,6 +54,11 @@ pub struct FlavorSpec {
     /// `` `ks:-80` ``, `` `ks[-80]` ``): the database is the part before it, and with none
     /// (`@replica`, or no database at all) a table's name is looked up in every one.
     pub targets: &'static [char],
+    /// Options it takes and does not apply: a request with one is refused rather than answered
+    /// without it. FerretDB 2.7 answers a find, count, distinct or aggregate with a `collation`
+    /// as if there were none, and creates a plain collection for a view, a capped one, one with
+    /// a validator or a time series.
+    pub ignores: &'static [&'static str],
 }
 
 impl FlavorSpec {
@@ -85,7 +90,7 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, defaults_as_sql: false, targets: &[] }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, defaults_as_sql: false, targets: &[], ignores: &[] }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
@@ -116,7 +121,7 @@ pub static FLAVORS: [FlavorSpec; 11] = [
     // section (`# KeyDB`, in the default INFO) is its.
     row(Flavor::KeyDb, Engine::Redis, "keydb", "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
     row(Flavor::Garnet, Engine::Redis, "garnet", "Garnet", "garnet microsoft", clue("garnet_version", "", true)),
-    FlavorSpec { aliases: &["ferret"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
+    FlavorSpec { aliases: &["ferret"], ignores: &["collation", "viewOn", "capped", "validator", "timeseries"], ..row(Flavor::FerretDb, Engine::MongoDb, "ferretdb", "FerretDB", "ferretdb ferret", clue("ferretdb", "", true)) },
     // vtgate answers `@@version` and `@@version_comment` itself and the MySQL behind it the rest:
     // the backend reads both (`vitess_label`). It takes `SET SESSION TRANSACTION READ ONLY` and
     // keeps nothing of it; its READ ONLY transactions the tablets do hold.

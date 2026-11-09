@@ -270,9 +270,10 @@ fn op_values(op: &mql::Op, out: &mut Vec<Bson>) {
             out.extend([d(filter), d(options)]);
             out.extend(projection.iter().chain(sort.iter()).map(d));
         }
-        Op::Aggregate { pipeline, .. } => out.extend(pipeline.iter().map(d)),
-        Op::Count { filter, .. } => out.extend(filter.iter().map(d)),
-        Op::Distinct { field, filter, .. } => out.extend([Bson::String(field.clone()), d(filter)]),
+        // Options hold expressions too (`let`).
+        Op::Aggregate { pipeline, options, .. } => out.extend(pipeline.iter().chain([options]).map(d)),
+        Op::Count { filter, options, .. } => out.extend(filter.iter().chain([options]).map(d)),
+        Op::Distinct { field, filter, options, .. } => out.extend([Bson::String(field.clone()), d(filter), d(options)]),
         Op::Insert { docs, .. } => out.extend(docs.iter().map(d)),
         Op::Update { filter, update, options, .. } => out.extend([d(filter), update.clone(), d(options)]),
         Op::Replace { filter, doc, options, .. } => out.extend([d(filter), d(doc), d(options)]),

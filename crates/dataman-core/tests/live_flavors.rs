@@ -3,7 +3,8 @@
 //! reads its server's connection string (as pasted in the connection sheet) from an environment
 //! variable and skips itself without one, or when the server does not answer:
 //! `DATAMAN_TIMESCALE=postgres://postgres:pw@127.0.0.1:5432/postgres`, `DATAMAN_YUGABYTE`,
-//! `DATAMAN_PERCONA`, `DATAMAN_MARIADB`, `DATAMAN_DRAGONFLY`, `DATAMAN_KEYDB`, `DATAMAN_GARNET`, `DATAMAN_FERRETDB`.
+//! `DATAMAN_PERCONA`, `DATAMAN_MARIADB`, `DATAMAN_DRAGONFLY`, `DATAMAN_KEYDB`, `DATAMAN_GARNET`, `DATAMAN_FERRETDB`,
+//! and `DATAMAN_MONGODB` (MongoDB itself, for what FerretDB is compared with).
 
 mod common;
 
@@ -268,8 +269,45 @@ fn ferretdb_is_told_by_its_build_info() {
     let Some((e, c)) = server("DATAMAN_FERRETDB", false) else { return };
     told(&c, Flavor::FerretDb, "FerretDB 2.", 5..=9);
     assert!(c.info.version.contains(" (MongoDB "), "{}", c.info.version);
-    nosql(&e, &c, "db.dataman_flavor.insertOne({ a: 1 })").unwrap();
+    nosql(&e, &c, "db.dataman_flavor.drop()").unwrap();
+    nosql(&e, &c, "db.dataman_flavor.insertOne({ a: 1, s: 'x' })").unwrap();
     let Output::Docs(d) = nosql(&e, &c, "db.dataman_flavor.find({ a: 1 })").unwrap() else { panic!() };
     assert_eq!(d.docs.len(), 1);
+    // It answers `ok: true` to dropIndexes, which the driver takes for an invalid reply.
+    nosql(&e, &c, "db.dataman_flavor.createIndex({ a: 1 }, { name: 'dataman_a' })").unwrap();
+    nosql(&e, &c, "db.dataman_flavor.dropIndex('dataman_a')").unwrap();
+    let Output::Value(Body::Bson(ix)) = nosql(&e, &c, "db.dataman_flavor.getIndexes()").unwrap() else { panic!() };
+    assert!(!format!("{ix:?}").contains("dataman_a"), "{ix:?}");
+    assert!(nosql(&e, &c, "db.dataman_flavor.dropIndex('dataman_none')").unwrap_err().contains("IndexNotFound"));
+    // What it takes and does not apply is refused, not answered without it.
+    for text in [
+        "db.dataman_flavor.find({ s: 'X' }).collation({ locale: 'en', strength: 2 })",
+        "db.dataman_flavor.countDocuments({ s: 'X' }, { collation: { locale: 'en', strength: 2 } })",
+        "db.dataman_flavor.aggregate([{ $match: { s: 'X' } }], { collation: { locale: 'en', strength: 2 } })",
+        "db.runCommand({ find: 'dataman_flavor', filter: { s: 'X' }, collation: { locale: 'en', strength: 2 } })",
+        "db.createView('dataman_flavor_v', 'dataman_flavor', [])",
+        "db.createCollection('dataman_flavor_c', { capped: true, size: 4096, max: 1 })",
+    ] {
+        assert!(nosql(&e, &c, text).unwrap_err().contains("does not apply"), "{text}");
+    }
     nosql(&e, &c, "db.dataman_flavor.drop()").unwrap();
+}
+
+/// What the shell passes beside a pipeline, a filter or a field reaches the server, which checks
+/// it: a collation counts, an unknown option fails.
+#[test]
+fn mongo_options_reach_the_server() {
+    let Some((e, c)) = server("DATAMAN_MONGODB", false) else { return };
+    nosql(&e, &c, "db.dataman_opts.drop()").unwrap();
+    nosql(&e, &c, "db.dataman_opts.insertMany([{ s: 'x' }, { s: 'y' }])").unwrap();
+    const CI: &str = "{ collation: { locale: 'en', strength: 2 } }";
+    let Output::Docs(d) = nosql(&e, &c, &format!("db.dataman_opts.aggregate([{{ $match: {{ s: 'X' }} }}], {CI})")).unwrap() else { panic!() };
+    assert_eq!(d.docs.len(), 1);
+    assert_eq!(nosql(&e, &c, &format!("db.dataman_opts.countDocuments({{ s: 'X' }}, {CI})")).unwrap(), Output::Value(Body::Bson(mongodb::bson::Bson::Int64(1))));
+    assert_eq!(nosql(&e, &c, "db.dataman_opts.find({ s: 'X' }).collation({ locale: 'en', strength: 2 }).count()").unwrap(), Output::Value(Body::Bson(mongodb::bson::Bson::Int64(1))));
+    let Output::Value(Body::Bson(v)) = nosql(&e, &c, &format!("db.dataman_opts.distinct('s', {{ s: 'X' }}, {CI})")).unwrap() else { panic!() };
+    assert_eq!(v, mongodb::bson::Bson::Array(vec!["x".into()]));
+    assert_eq!(nosql(&e, &c, "db.dataman_opts.countDocuments({}, { limit: 1 })").unwrap(), Output::Value(Body::Bson(mongodb::bson::Bson::Int64(1))));
+    assert!(nosql(&e, &c, "db.dataman_opts.aggregate([], { bogus: 1 })").unwrap_err().contains("bogus"));
+    nosql(&e, &c, "db.dataman_opts.drop()").unwrap();
 }
