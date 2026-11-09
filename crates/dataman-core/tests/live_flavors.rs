@@ -11,6 +11,7 @@ mod common;
 use common::*;
 use dataman_core::agent_login::live;
 use dataman_core::nosql::{Body, Output, Page};
+use dataman_core::schema::ViewSourceKind;
 use dataman_core::server::Flavor;
 use dataman_core::{ConnectionProfile, Engine, ResultSet};
 
@@ -199,6 +200,32 @@ fn percona_read_only_holds() {
 #[test]
 fn mariadb_read_only_holds() {
     mysql_read_only_holds("DATAMAN_MARIADB", Flavor::MariaDb);
+}
+
+/// MariaDB keeps no VIEW_TABLE_USAGE: what a view reads comes from its definition, or agents
+/// were refused every view on a connection with rules.
+#[test]
+fn mariadb_views_say_what_they_read() {
+    let Some((e, c)) = server("DATAMAN_MARIADB", false) else { return };
+    for sql in [
+        "DROP DATABASE IF EXISTS dataman_flavor_v",
+        "DROP DATABASE IF EXISTS dataman_flavor_o",
+        "CREATE DATABASE dataman_flavor_v",
+        "CREATE DATABASE dataman_flavor_o",
+        "CREATE TABLE dataman_flavor_v.users (id INT, email TEXT)",
+        "CREATE TABLE dataman_flavor_o.secrets (id INT, s TEXT)",
+        "CREATE FUNCTION dataman_flavor_v.tag(x INT) RETURNS INT DETERMINISTIC RETURN x + 1",
+        "CREATE VIEW dataman_flavor_v.v AS SELECT u.id, dataman_flavor_v.tag(u.id) AS t, s.s FROM dataman_flavor_v.users u JOIN dataman_flavor_o.secrets s ON s.id = u.id",
+    ] {
+        ok(&e, &c, sql);
+    }
+    let src = e.core.block_on(c.view_sources("dataman_flavor_v", "dataman_flavor_v", "v")).unwrap();
+    let has = |schema: &str, name: &str, kind: ViewSourceKind| src.iter().any(|s| s.schema == schema && s.name.eq_ignore_ascii_case(name) && s.kind == kind);
+    assert!(has("dataman_flavor_v", "users", ViewSourceKind::Relation) && has("dataman_flavor_o", "secrets", ViewSourceKind::Relation), "{src:?}");
+    assert!(src.iter().any(|s| s.name.eq_ignore_ascii_case("tag") && s.kind == ViewSourceKind::Function), "{src:?}");
+    assert!(e.core.block_on(c.view_sources("dataman_flavor_v", "dataman_flavor_v", "none")).is_err());
+    ok(&e, &c, "DROP DATABASE dataman_flavor_v");
+    ok(&e, &c, "DROP DATABASE dataman_flavor_o");
 }
 
 /// MariaDB's catalog writes a default as SQL: `'bronze'`, `curdate()`, and `NULL` for none.

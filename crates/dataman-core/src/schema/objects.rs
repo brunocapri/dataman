@@ -598,12 +598,30 @@ impl Connection {
                     let client = this.meta(&db).await?;
                     return ReadThrough::read(&client).await?.sources(&client, &schema, &name).await;
                 }
-                Engine::MySql => format!(
-                    "SELECT {}, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
-                     UNION ALL SELECT {}, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}",
-                    my::named("TABLE_SCHEMA", "VIEW_SCHEMA", &schema),
-                    my::named("SPECIFIC_SCHEMA", "TABLE_SCHEMA", &schema)
-                ),
+                Engine::MySql => {
+                    let sql = format!(
+                        "SELECT {}, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
+                         UNION ALL SELECT {}, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}",
+                        my::named("TABLE_SCHEMA", "VIEW_SCHEMA", &schema),
+                        my::named("SPECIFIC_SCHEMA", "TABLE_SCHEMA", &schema)
+                    );
+                    let client = this.meta(&db).await?;
+                    match first_ok(&client, &[&sql]).await {
+                        Ok(rows) => return Ok(rows.iter().map(view_source).collect()),
+                        // MariaDB (and MySQL before 8.0.13) keeps no such tables: what its
+                        // definition reads, read the way an agent's statement is.
+                        Err(e) if format!("{e:#}").contains("VIEW_TABLE_USAGE") => {
+                            let q = format!("SELECT VIEW_DEFINITION FROM information_schema.VIEWS WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}");
+                            let Some(body) = first_ok(&client, &[&q]).await?.first().and_then(|r| get(r, 0)) else {
+                                return Err(anyhow!("{schema}.{name} is not in the catalog"));
+                            };
+                            let q = format!("SELECT LOWER(ROUTINE_NAME) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = {s} AND ROUTINE_TYPE = 'FUNCTION'");
+                            let routines: HashSet<String> = first_ok(&client, &[&q]).await?.iter().filter_map(|r| get(r, 0)).collect();
+                            return Ok(super::agents::query_sources(&body, Some(&schema), Dialect::MySql, &|_, _| false, &routines));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
                 Engine::SqlServer => format!(
                     "SELECT COALESCE(d.referenced_schema_name, SCHEMA_NAME(o.schema_id)), d.referenced_entity_name, \
                      CASE WHEN d.referenced_database_name IS NOT NULL OR d.referenced_server_name IS NOT NULL THEN 'remote' \
@@ -628,18 +646,7 @@ impl Connection {
             };
             let client = this.meta(&db).await?;
             let rows = first_ok(&client, &[&sql]).await?;
-            Ok(rows
-                .iter()
-                .map(|r| ViewSource {
-                    schema: get(r, 0).unwrap_or_default(),
-                    name: get(r, 1).unwrap_or_default(),
-                    kind: match get(r, 2).as_deref() {
-                        Some("relation") => ViewSourceKind::Relation,
-                        Some("function") => ViewSourceKind::Function,
-                        _ => ViewSourceKind::Unknown,
-                    },
-                })
-                .collect())
+            Ok(rows.iter().map(view_source).collect())
         })
     }
 
@@ -1127,5 +1134,18 @@ mod tests {
         let d = role_ddl(&r, &[("readers".into(), false), ("ops".into(), true)]);
         assert!(d.starts_with("CREATE ROLE app WITH\n    LOGIN\n    NOSUPERUSER"), "{d}");
         assert!(d.contains("CONNECTION LIMIT 5;") && d.contains("GRANT readers TO app;") && d.contains("GRANT ops TO app WITH ADMIN OPTION;"), "{d}");
+    }
+}
+
+/// A row of (schema, name, kind) as the catalogs' queries answer it.
+fn view_source(r: &Vec<Option<String>>) -> ViewSource {
+    ViewSource {
+        schema: get(r, 0).unwrap_or_default(),
+        name: get(r, 1).unwrap_or_default(),
+        kind: match get(r, 2).as_deref() {
+            Some("relation") => ViewSourceKind::Relation,
+            Some("function") => ViewSourceKind::Function,
+            _ => ViewSourceKind::Unknown,
+        },
     }
 }
