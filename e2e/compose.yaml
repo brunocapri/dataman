@@ -148,6 +148,53 @@ services:
       interval: 2s
       retries: 150
 
+  # PgBouncer in front of `pg`, for crates/dataman-core/tests/live_pooler.rs: transaction mode
+  # without protocol-level prepared statements (as Supavisor) and with them (as Neon's), 1.18
+  # (which leaves a session's SET on the server connection for the next client), and session
+  # mode. Two server connections for eight clients move each client between them.
+  pgbouncer-tx: &pgbouncer
+    image: edoburu/pgbouncer:v1.26.1-p0
+    depends_on:
+      pg:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        printf '"postgres" "dataman"\n' > /tmp/users.txt
+        {
+          printf '[databases]\n* = host=pg port=5432\n[pgbouncer]\n'
+          printf 'listen_addr = 0.0.0.0\nlisten_port = 6432\nauth_type = scram-sha-256\nauth_file = /tmp/users.txt\n'
+          printf 'pool_mode = %s\ndefault_pool_size = %s\nmax_client_conn = 200\n' "$$POOL_MODE" "$$POOL_SIZE"
+          [ -z "$$PREPARED" ] || printf 'max_prepared_statements = %s\n' "$$PREPARED"
+          printf 'ignore_startup_parameters = extra_float_digits,options\n'
+        } > /tmp/pgbouncer.ini
+        exec /usr/bin/pgbouncer /tmp/pgbouncer.ini
+    environment: { POOL_MODE: transaction, POOL_SIZE: "2", PREPARED: "0" }
+    ports: ["127.0.0.1:55433:6432"]
+    healthcheck:
+      test: PGPASSWORD=dataman psql -h 127.0.0.1 -p 6432 -U postgres -d dataman -Atc 'SELECT 1'
+      interval: 2s
+      retries: 30
+
+  pgbouncer-tx-ps:
+    <<: *pgbouncer
+    environment: { POOL_MODE: transaction, POOL_SIZE: "2", PREPARED: "1000" }
+    ports: ["127.0.0.1:55434:6432"]
+
+  pgbouncer-session:
+    <<: *pgbouncer
+    environment: { POOL_MODE: session, POOL_SIZE: "20", PREPARED: "" }
+    ports: ["127.0.0.1:55435:6432"]
+
+  pgbouncer-old:
+    <<: *pgbouncer
+    image: edoburu/pgbouncer:1.18.0
+    platform: linux/amd64
+    environment: { POOL_MODE: transaction, POOL_SIZE: "2", PREPARED: "" }
+    ports: ["127.0.0.1:55436:6432"]
+
 volumes:
   pg:
   mysql:

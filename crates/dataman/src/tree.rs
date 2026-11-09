@@ -277,7 +277,8 @@ struct Row {
     /// The tip is an error: it can be copied from there.
     tip_err: bool,
     tunnel: bool,
-    logo: Option<dataman_core::Engine>,
+    /// Its server's logo: a connected flavor's (TimescaleDB's), else its engine's.
+    logo: Option<&'static str>,
     lock: bool,
     meta: SharedString,
     meta_short: Option<SharedString>,
@@ -779,7 +780,10 @@ impl SchemaTree {
             r.tip_err = true;
         }
         r.tunnel = p.ssh.is_some();
-        r.logo = Some(p.engine);
+        r.logo = Some(match state {
+            Some(ConnState::Connected(c)) => c.info.flavor.logo(p.engine),
+            _ => p.logo(),
+        });
         r
     }
 
@@ -1657,7 +1661,7 @@ impl SchemaTree {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_logo(&self, conn_id: &str) -> Option<dataman_core::Engine> {
+    pub fn demo_logo(&self, conn_id: &str) -> Option<&'static str> {
         let id = cid(conn_id);
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
@@ -3313,7 +3317,7 @@ impl SchemaTree {
             )
             .when_some(r.tip.clone(), |d, tip| if r.tip_err { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
             .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
-            .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
+            .children(r.logo.and_then(|p| crate::assets::small_logo_at(p, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
             .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
                 let c = c.unwrap_or(t.tx3);
                 if i != Icon::Schema {

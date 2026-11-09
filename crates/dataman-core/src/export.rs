@@ -322,6 +322,11 @@ impl Connection {
                 bail!("only SELECT, WITH, TABLE and VALUES statements can be exported by running them again");
             }
             let d = this.dedicated(db.as_deref()).await?;
+            // Read-only held by the transaction where no session can hold it; the connection is
+            // this export's own and closes with it.
+            if this.read_only_per_transaction(db.as_deref().unwrap_or(this.database())) {
+                d.db().execute("BEGIN READ ONLY").await.map_err(|e| anyhow!(e.to_string()))?;
+            }
             let stmt = d.db().prepare(&sql).await.map_err(|e| anyhow!(e.to_string()))?;
             let cols = stmt.columns.clone();
             if cols.is_empty() {

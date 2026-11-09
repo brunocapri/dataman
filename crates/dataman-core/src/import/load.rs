@@ -449,7 +449,7 @@ pub(crate) async fn run(
             loader.exec(&opts.truncate_sql()).await?;
         }
         if method == Method::Copy {
-            loader.copy = Some(client.prepare(&opts.copy_sql()).await.map_err(|e| Fail::of(&e, None))?);
+            loader.copy = Some(client.describe(&opts.copy_sql()).await.map_err(|e| Fail::of(&e, None))?);
         }
         Ok::<(), Fail>(())
     };

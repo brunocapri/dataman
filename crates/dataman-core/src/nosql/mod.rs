@@ -43,8 +43,11 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     match p.engine {
         Engine::MongoDb => {
             let c = mongo::connect(p, password, tunnel).await?;
-            let v = mongo::version(&c).await.unwrap_or_else(|_| "MongoDB".into());
-            let info = ServerInfo { database: c.default_db.clone(), user: p.user.clone(), ..ServerInfo::of(p.engine, Default::default(), v.clone(), &v) };
+            let (flavor, label, release) = mongo::version(&c).await.unwrap_or_else(|e| {
+                log::info!("{}: buildInfo not read, so neither the release nor a flavor: {e:#}", p.name);
+                (Default::default(), "MongoDB".into(), String::new())
+            });
+            let info = ServerInfo { database: c.default_db.clone(), user: p.user.clone(), ..ServerInfo::of(p.engine, flavor, label, &release) };
             Ok((Client::Mongo(Arc::new(c)), info))
         }
         Engine::Elasticsearch | Engine::OpenSearch => {
@@ -54,7 +57,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
         }
         Engine::Redis => {
             let c = rds::connect(p, password, tunnel).await?;
-            let info = ServerInfo { database: c.default_db.to_string(), user: p.user.clone(), ..ServerInfo::of(p.engine, Default::default(), c.version.clone(), &c.version) };
+            let info = ServerInfo { database: c.default_db.to_string(), user: p.user.clone(), ..ServerInfo::of(p.engine, c.flavor, c.version.clone(), &c.release) };
             Ok((Client::Redis(Arc::new(c)), info))
         }
         e => Err(anyhow!("{} has no documents", e.label())),

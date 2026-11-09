@@ -15,6 +15,8 @@ pub struct ConnSpec {
     pub options: std::collections::BTreeMap<String, String>,
     pub path: Option<String>,
     pub read_only: bool,
+    /// Named by the URL's own scheme (`jdbc:yugabytedb://`).
+    pub flavor: crate::server::Flavor,
 }
 
 impl std::fmt::Debug for ConnSpec {
@@ -84,8 +86,21 @@ impl ConnSpec {
             "sslmode" => self.sslmode = sslmode(value),
             "ssl-mode" | "ssl_mode" | "sslMode" => self.sslmode = sslmode(&value.to_ascii_lowercase()),
             "ssl" if value == "true" || value == "1" => self.sslmode = Some(SslMode::Require),
+            // mysql2's `ssl={"rejectUnauthorized":true}`, as PlanetScale shows it for Node.
+            "ssl" if value.trim_start().starts_with('{') => {
+                let off = value.split_whitespace().collect::<String>().contains("\"rejectUnauthorized\":false");
+                self.sslmode = Some(if off { SslMode::Require } else { SslMode::VerifyFull });
+            }
+            // Prisma's, as PlanetScale shows it (`?sslaccept=strict`).
+            "sslaccept" => self.sslmode = Some(if value == "strict" { SslMode::VerifyFull } else { SslMode::Require }),
             "useSSL" => self.sslmode = Some(if value == "true" { SslMode::Require } else { SslMode::Disable }),
             "service" => self.service = Some(value.to_string()),
+            "channel_binding" if matches!(value, "require" | "prefer" | "disable") => {
+                self.options.insert(key.to_string(), value.to_string());
+            }
+            "options" if !value.is_empty() => {
+                self.options.insert(key.to_string(), value.to_string());
+            }
             _ => {}
         }
     }
@@ -131,7 +146,8 @@ impl ConnSpec {
         p.engine = self.engine;
         p.options = self.options.clone();
         p.host = self.host.unwrap_or_else(|| "localhost".into());
-        p.port = self.port.unwrap_or(self.engine.default_port());
+        p.port = self.port.unwrap_or(self.flavor.default_port(self.engine));
+        p.flavor = self.flavor;
         match self.engine {
             Engine::Postgres => {
                 p.user = self.user.filter(|u| !u.is_empty()).unwrap_or_else(local_user);
@@ -145,7 +161,7 @@ impl ConnSpec {
         }
         if let Some(m) = self.sslmode.or(mssql_mode.filter(|_| self.engine == Engine::SqlServer)) {
             p.sslmode = m;
-        } else if self.engine.spec().strict_tls {
+        } else if self.engine.spec().strict_tls || crate::config::verified_host(&p.host) {
             p.sslmode = crate::config::default_sslmode(self.engine, &p.host, false);
         }
         p.name = match &self.service {
@@ -182,6 +198,9 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
     };
+    if let Some((flavor, url)) = crate::server::url_of_scheme(s) {
+        return parse_url(&url).map(|spec| ConnSpec { flavor, ..spec });
+    }
     if ["postgres://", "postgresql://", "mysql://", "mariadb://", "clickhouse://", "ch://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
@@ -640,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn planetscale_urls() {
+        // As PlanetScale's Connect page shows them: Prisma's, mysql2's, and with nothing said.
+        let (p, pw) = parse("mysql://k3x9:pscale_pw_AbC@aws.connect.psdb.cloud/shop?sslaccept=strict").unwrap().into_profile();
+        assert_eq!(
+            (p.host.as_str(), p.port, p.user.as_str(), p.database.as_str(), p.sslmode, pw.as_deref()),
+            ("aws.connect.psdb.cloud", 3306, "k3x9", "shop", SslMode::VerifyFull, Some("pscale_pw_AbC"))
+        );
+        assert_eq!(url(r#"mysql://u:p@aws.connect.psdb.cloud/shop?ssl={"rejectUnauthorized":true}"#).sslmode, Some(SslMode::VerifyFull));
+        assert_eq!(url("mysql://u:p@h/shop?ssl=%7B%22rejectUnauthorized%22%3A%20false%7D").sslmode, Some(SslMode::Require));
+        assert_eq!(url("mysql://u:p@h/shop?sslaccept=accept_invalid_certs").sslmode, Some(SslMode::Require));
+        let (p, _) = parse("mysql://u:p@gcp.connect.psdb.cloud/shop").unwrap().into_profile();
+        assert_eq!(p.sslmode, SslMode::VerifyFull, "PlanetScale refuses plain text and signs its certificates publicly");
+        let (p, _) = parse("mysql://u:p@aws.connect.psdb.cloud/shop?ssl-mode=REQUIRED").unwrap().into_profile();
+        assert_eq!(p.sslmode, SslMode::Require, "what the string says wins");
+    }
+
+    #[test]
     fn key_values() {
         assert!(parse("host=db.internal password='it''s' sslmode=disable").is_none());
         let s = url(r"host=db.internal port = 6543 dbname='my db' user=app password='it\'s \\ ok' sslmode=disable");
@@ -750,6 +786,30 @@ mod tests {
     }
 
     #[test]
+    fn neon_and_supabase_strings() {
+        // Neon's console: the pooled host, TLS and channel binding required.
+        let (p, pw) = parse_profile("postgresql://neondb_owner:npg_Ab3c@ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require").unwrap();
+        assert_eq!((p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()), (Engine::Postgres, "ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech", 5432, "neondb_owner", "neondb"));
+        assert_eq!((pw.as_deref(), p.sslmode, p.tls_mode()), (Some("npg_Ab3c"), SslMode::Require, SslMode::VerifyFull), "dialed verified");
+        assert_eq!(p.options.get("channel_binding").map(String::as_str), Some("require"));
+        let back = parse_profile(&p.url()).unwrap().0;
+        assert_eq!((back.url(), back.options), (p.url(), p.options.clone()), "read back");
+        // For a client without SNI, the endpoint rides in `options`.
+        let (p, _) = parse_profile("postgres://u:pw@ep-x-123.eu-central-1.aws.neon.tech/db?sslmode=require&options=endpoint%3Dep-x-123").unwrap();
+        assert_eq!(p.options.get("options").map(String::as_str), Some("endpoint=ep-x-123"));
+        assert_eq!(p.url(), "postgresql://u@ep-x-123.eu-central-1.aws.neon.tech:5432/db?sslmode=require&options=endpoint%3Dep-x-123");
+        // Supabase: the shared pooler's tenant user, transaction (6543) and session (5432) ports,
+        // and the direct host.
+        let (p, pw) = parse_profile("postgresql://postgres.abcdefghijklmnop:s%23cret@aws-0-eu-west-1.pooler.supabase.com:6543/postgres").unwrap();
+        assert_eq!((p.host.as_str(), p.port, p.user.as_str(), pw.as_deref()), ("aws-0-eu-west-1.pooler.supabase.com", 6543, "postgres.abcdefghijklmnop", Some("s#cret")));
+        assert_eq!(p.tls_mode(), SslMode::VerifyFull, "Supabase's own CA verifies it");
+        let (p, _) = parse_profile("postgresql://postgres:pw@db.abcdefghijklmnop.supabase.co:5432/postgres").unwrap();
+        assert_eq!((p.port, p.tls_mode()), (5432, SslMode::VerifyFull));
+        let (p, _) = parse_profile("postgresql://u@db.example.com/d?sslmode=require&channel_binding=sometimes").unwrap();
+        assert_eq!((p.tls_mode(), p.options.len()), (SslMode::Require, 0), "elsewhere the mode is the profile's; an unknown value is not kept");
+    }
+
+    #[test]
     fn search_urls_read_back() {
         let (p, pw) = parse_profile("http://elastic:s3cret@127.0.0.1:9201").unwrap();
         assert_eq!((p.engine, p.host.as_str(), p.port, p.user.as_str(), p.sslmode), (Engine::Elasticsearch, "127.0.0.1", 9201, "elastic", SslMode::Disable));
@@ -757,5 +817,18 @@ mod tests {
         assert_eq!(parse_profile(&p.url()).unwrap().0.url(), "http://elastic@127.0.0.1:9201");
         let (p, _) = parse_profile("https://search.example/").unwrap();
         assert_eq!((p.port, p.database.as_str(), p.sslmode), (9200, "", SslMode::VerifyFull));
+    }
+
+    #[test]
+    fn flavor_urls() {
+        let (p, pw) = parse_profile("jdbc:yugabytedb://yb.internal/yugabyte?user=app&password=pw1&load-balance=true").unwrap();
+        assert_eq!((p.engine, p.flavor, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str(), pw.as_deref()), (Engine::Postgres, crate::server::Flavor::Yugabyte, "yb.internal", 5433, "app", "yugabyte", Some("pw1")));
+        let (p, _) = parse_profile("jdbc:yugabytedb://yb1:5434,yb2:5434/db").unwrap();
+        assert_eq!((p.flavor, p.host.as_str(), p.port), (crate::server::Flavor::Yugabyte, "yb1", 5434));
+        let (p, _) = parse_profile("valkeys://default@cache.example:6380/2").unwrap();
+        assert_eq!((p.engine, p.flavor, p.port, p.database.as_str(), p.sslmode), (Engine::Redis, crate::server::Flavor::Valkey, 6380, "2", SslMode::VerifyFull));
+        let (p, _) = parse_profile("jdbc:mariadb://db/shop").unwrap();
+        assert_eq!((p.engine, p.flavor, p.port), (Engine::MySql, crate::server::Flavor::MariaDb, 3306));
+        assert_eq!(parse_profile("postgres://h/db").unwrap().0.flavor, crate::server::Flavor::Standard);
     }
 }

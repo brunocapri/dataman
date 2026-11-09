@@ -462,24 +462,59 @@ impl Canceller {
     }
 }
 
+/// MySQL's own label; a flavor's (MariaDB, Percona Server) comes from `server::detect`.
 pub(crate) fn version_label(v: &str) -> String {
-    if v.contains("MariaDB") {
-        // Old MariaDB releases put a replication prefix in front (`5.5.5-10.6.12-MariaDB`).
-        let v = v.strip_prefix("5.5.5-").unwrap_or(v);
-        format!("MariaDB {}", v.split('-').next().unwrap_or(v))
+    format!("MySQL {}", v.split('-').next().unwrap_or(v))
+}
+
+/// What `VERSION()` and `@@version_comment` say the server is: its flavor, label and release.
+fn identify(raw: &str, comment: &str) -> (crate::server::Flavor, String, String) {
+    // Old MariaDB releases put a replication prefix in front (`5.5.5-10.6.12-MariaDB`).
+    let release = raw.strip_prefix("5.5.5-").unwrap_or(raw).to_string();
+    let detected = crate::server::detect(crate::config::Engine::MySql, &release, |n| (n == "version_comment").then_some(comment));
+    let (flavor, label) = detected.unwrap_or_else(|| (crate::server::Flavor::Standard, version_label(raw)));
+    (flavor, label, release)
+}
+
+/// Vitess' vtgate answers `@@version` (`8.4.6-Vitess`) and `@@version_comment` (`Version: 22.0.1
+/// (Git revision …)`) itself, while a VERSION() beside CURRENT_USER() reaches the MySQL behind it:
+/// the first two name the flavor, the last the release.
+fn vitess_label(gate: &str, comment: &str, release: &str) -> Option<String> {
+    let said = |s: &str| s.to_ascii_lowercase();
+    let (gate, comment) = (said(gate), said(comment));
+    let product = if gate.contains("planetscale") || comment.contains("planetscale") {
+        "PlanetScale"
+    } else if gate.contains("vitess") || comment.contains("vitess") {
+        "Vitess"
     } else {
-        format!("MySQL {}", v.split('-').next().unwrap_or(v))
-    }
+        return None;
+    };
+    let mysql = release.split('-').next().unwrap_or(release);
+    let own = comment.strip_prefix("version: ").and_then(|v| v.split(['-', ' ']).next()).filter(|v| v.starts_with(|c: char| c.is_ascii_digit()));
+    Some(match own {
+        Some(v) => format!("{product} {v} (MySQL {mysql})"),
+        None => format!("{product} (MySQL {mysql})"),
+    })
 }
 
 pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
-    let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)").await?;
+    const WHO: &str = "SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)";
+    // A fork without these variables tells no flavor by them (vtgate answers both itself).
+    let rows = match client.text_rows(&format!("{WHO}, @@version_comment, @@version")).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::info!("@@version_comment not read, no flavor told by it: {e}");
+            client.text_rows(WHO).await?
+        }
+    };
     let row = rows.into_iter().next().context("VERSION() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
-    let raw = get(0);
-    let flavor = if raw.contains("MariaDB") { crate::server::Flavor::MariaDb } else { crate::server::Flavor::Standard };
-    let release = raw.strip_prefix("5.5.5-").unwrap_or(&raw).to_string();
-    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, version_label(&raw), &release) };
+    let (flavor, label, release) = identify(&get(0), &get(3));
+    let (flavor, label) = match vitess_label(&get(4), &get(3), &release) {
+        Some(label) => (crate::server::Flavor::Vitess, label),
+        None => (flavor, label),
+    };
+    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, label, &release) };
     info.search_path = if info.database.is_empty() { vec![] } else { vec![info.database.clone()] };
     Ok(info)
 }
@@ -491,11 +526,20 @@ pub(crate) async fn search_path(client: &Client) -> Vec<String> {
     }
 }
 
+/// vtgate wraps a tablet's error in where it came from, then the statement with its values
+/// (`target: ks.0.primary: vttablet: rpc error: code = Unknown desc = <message> (errno 1792)
+/// (sqlstate 25006) (CallerID: u): Sql: "…", BindVars: {…}`), once per shard: the message alone.
+fn tablet_message(m: &str) -> Option<&str> {
+    let rest = &m[m.find("vttablet: ")?..];
+    let desc = &rest[rest.find("desc = ")? + "desc = ".len()..];
+    Some(desc.split(" (errno ").next().unwrap_or(desc).trim())
+}
+
 pub(crate) fn error_info(e: &MyError) -> ErrorInfo {
     match e {
         MyError::Server(se) => ErrorInfo {
             code: Some(se.code.to_string()),
-            message: se.message.clone(),
+            message: tablet_message(&se.message).unwrap_or(&se.message).to_string(),
             severity: Some("ERROR".into()),
             ..Default::default()
         },
@@ -626,8 +670,31 @@ mod tests {
     fn versions() {
         assert_eq!(version_label("8.4.6"), "MySQL 8.4.6");
         assert_eq!(version_label("8.0.39-0ubuntu0.22.04.1"), "MySQL 8.0.39");
-        assert_eq!(version_label("11.4.2-MariaDB-ubu2404"), "MariaDB 11.4.2");
-        assert_eq!(version_label("5.5.5-10.6.12-MariaDB-log"), "MariaDB 10.6.12");
+        use crate::server::Flavor;
+        let maria = identify("5.5.5-10.6.12-MariaDB-log", "mariadb.org binary distribution");
+        assert_eq!(maria, (Flavor::MariaDb, "MariaDB 10.6.12".into(), "10.6.12-MariaDB-log".into()));
+        assert_eq!(identify("11.4.2-MariaDB-ubu2404", "").1, "MariaDB 11.4.2");
+        let percona = identify("8.4.11-11", "Percona Server (GPL), Release 11, Revision 57878ff8");
+        assert_eq!(percona, (Flavor::Percona, "Percona Server 8.4.11".into(), "8.4.11-11".into()));
+        assert_eq!(identify("8.0.39-0ubuntu0.22.04.1", "(Ubuntu)"), (Flavor::Standard, "MySQL 8.0.39".into(), "8.0.39-0ubuntu0.22.04.1".into()));
+    }
+
+    #[test]
+    fn tablet_errors_keep_the_message() {
+        let m = "target: shop.-80.primary: vttablet: rpc error: code = Unknown desc = Cannot execute statement in a READ ONLY transaction. (errno 1792) (sqlstate 25006) (CallerID: u): Sql: \"update t set pw = :vtg1\", BindVars: {vtg1: \"type:VARCHAR value:\\\"s3cret\\\"\"}\ntarget: shop.80-.primary: vttablet: rpc error: code = Unknown desc = Cannot execute statement in a READ ONLY transaction. (errno 1792)";
+        assert_eq!(tablet_message(m), Some("Cannot execute statement in a READ ONLY transaction."));
+        assert_eq!(tablet_message("VT12001: unsupported: correlated subquery is only supported for EXISTS"), None);
+        assert_eq!(tablet_message("Duplicate entry 'a' for key 't.PRIMARY'"), None);
+    }
+
+    #[test]
+    fn vitess() {
+        let comment =
+            "Version: 25.0.0-SNAPSHOT (Git revision bbccb8e branch 'main') built on 2026-11-07T12:12:44Z by vitess@buildkitsandbox using go1.27.3 linux/amd64";
+        assert_eq!(vitess_label("8.4.6-Vitess", comment, "8.0.43").as_deref(), Some("Vitess 25.0.0 (MySQL 8.0.43)"));
+        assert_eq!(vitess_label("8.0.34-PlanetScale", "", "8.0.34-PlanetScale").as_deref(), Some("PlanetScale (MySQL 8.0.34)"));
+        assert_eq!(vitess_label("8.4.6", "MySQL Community Server - GPL", "8.4.6"), None);
+        assert_eq!(vitess_label("11.4.2-MariaDB-ubu2404", "mariadb.org binary distribution", "11.4.2-MariaDB-ubu2404"), None);
     }
 
     #[test]

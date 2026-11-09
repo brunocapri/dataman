@@ -127,9 +127,18 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     Ok(Client { client, default_db, tls_active, views: Default::default() })
 }
 
-pub(crate) async fn version(c: &Client) -> Result<String> {
+/// What buildInfo says the server is: its flavor, its label and the MongoDB release it answers as.
+pub(crate) async fn version(c: &Client) -> Result<(crate::server::Flavor, String, String)> {
     let r = c.client.database("admin").run_command(doc! { "buildInfo": 1 }).await?;
-    Ok(format!("MongoDB {}", r.get_str("version").unwrap_or("")).trim().to_string())
+    Ok(identify(&r))
+}
+
+fn identify(build_info: &Document) -> (crate::server::Flavor, String, String) {
+    let release = build_info.get_str("version").unwrap_or("");
+    // A flavor's own release is the `version` of its own key (FerretDB's `ferretdb.version`).
+    let fact = |k: &str| build_info.get_document(k).ok()?.get_str("version").ok();
+    let (flavor, label) = crate::server::detect(crate::config::Engine::MongoDb, release, fact).unwrap_or_else(|| (Default::default(), format!("MongoDB {release}").trim().to_string()));
+    (flavor, label, release.to_string())
 }
 
 pub(crate) fn message(e: &anyhow::Error) -> String {

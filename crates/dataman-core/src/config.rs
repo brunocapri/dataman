@@ -130,6 +130,15 @@ pub fn is_loopback_host(host: &str) -> bool {
     h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// Hosted services that refuse plain text and present publicly signed certificates for their host
+/// (PlanetScale's `aws.connect.psdb.cloud`): a new connection verifies them, through a tunnel too.
+const VERIFIED_HOSTS: &[&str] = &[".psdb.cloud"];
+
+pub fn verified_host(host: &str) -> bool {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    VERIFIED_HOSTS.iter().any(|s| h.ends_with(s))
+}
+
 /// What a new connection starts with until the user picks: opportunistic (`prefer`, which is
 /// plain text for the document engines) on this machine or through an SSH tunnel (already
 /// encrypted up to the bastion), TLS required anywhere else, and verified where the engine's
@@ -138,12 +147,40 @@ pub fn default_sslmode(engine: Engine, host: &str, tunnel: bool) -> SslMode {
     if engine.is_file() {
         return SslMode::Disable;
     }
+    if verified_host(host) {
+        return SslMode::VerifyFull;
+    }
     match (tunnel || is_local_host(host), engine.is_sql()) {
         (false, _) if engine.spec().strict_tls => SslMode::VerifyFull,
         (false, _) => SslMode::Require,
         (true, true) => SslMode::Prefer,
         (true, false) => SslMode::Disable,
     }
+}
+
+/// A cloud whose servers always take TLS with a certificate a client can check: a connection
+/// there verifies it, whatever mode the profile says. `roots` are the cloud's own certificate
+/// authorities (PEM), trusted beside the system's for its hosts only.
+pub struct CloudTls {
+    pub suffix: &'static str,
+    pub roots: &'static str,
+}
+
+/// Supabase signs its servers' certificates with a CA of its own ("Supabase Root 2021 CA",
+/// SHA-256 80:70:25:AD:…:CA:FA, the `prod-ca-2021.crt` its dashboard hands out).
+const SUPABASE_ROOT: &str = include_str!("certs/supabase-root-2021.crt");
+
+pub const CLOUD_TLS: &[CloudTls] = &[
+    // Neon: certificates of a public CA (Let's Encrypt), for the endpoint's name (SNI).
+    CloudTls { suffix: ".neon.tech", roots: "" },
+    // Supabase: `db.<ref>.supabase.co` and the shared pooler `*.pooler.supabase.com`.
+    CloudTls { suffix: ".supabase.co", roots: SUPABASE_ROOT },
+    CloudTls { suffix: ".supabase.com", roots: SUPABASE_ROOT },
+];
+
+pub fn cloud_tls(host: &str) -> Option<&'static CloudTls> {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    CLOUD_TLS.iter().find(|c| h.ends_with(c.suffix))
 }
 
 impl SslMode {
@@ -305,6 +342,11 @@ pub struct ConnectionProfile {
     /// Left out of the file for PostgreSQL, so files of older versions load unchanged.
     #[serde(default, skip_serializing_if = "Engine::is_postgres")]
     pub engine: Engine,
+    /// The server as it was picked or last told itself on connect (TimescaleDB on PostgreSQL),
+    /// for its logo and name while not connected. Only shown: what Dataman does goes by the
+    /// engine and what the server says once connected (`ServerInfo`). Each person's own.
+    #[serde(default, skip_serializing_if = "crate::server::Flavor::is_standard")]
+    pub flavor: crate::server::Flavor,
     #[serde(default)]
     pub host: String,
     #[serde(default)]
@@ -496,6 +538,9 @@ impl ConnectionProfile {
     /// plain text instead of `prefer` for the engines that have no opportunistic TLS.
     pub fn normalize(&mut self) {
         let spec = self.engine.spec();
+        if self.flavor.spec_on(self.engine).is_none() {
+            self.flavor = Default::default();
+        }
         if spec.form.file {
             return;
         }
@@ -578,6 +623,7 @@ impl ConnectionProfile {
             id: uuid::Uuid::new_v4().simple().to_string(),
             name: name.into(),
             engine: Engine::Postgres,
+            flavor: Default::default(),
             host: "127.0.0.1".into(),
             port: 5432,
             user: "postgres".into(),
@@ -608,6 +654,16 @@ impl ConnectionProfile {
     /// Painted production's red: production, and no colour of this person's own.
     pub fn prod_red(&self) -> bool {
         self.env.is_production() && !self.color_picked
+    }
+
+    /// Its server's logo: its flavor's, else its engine's.
+    pub fn logo(&self) -> &'static str {
+        self.flavor.logo(self.engine)
+    }
+
+    /// What its server is called: its flavor's name, else its engine's.
+    pub fn server_label(&self) -> &'static str {
+        self.flavor.label(self.engine)
     }
 
     pub fn new_file(engine: Engine, path: impl Into<String>) -> Self {
@@ -654,6 +710,8 @@ impl ConnectionProfile {
             mcp_rules: Default::default(),
             agent_login: None,
             agents_refused: false,
+            // Only shown: telling it again on connect is no reason to connect again.
+            flavor: Default::default(),
             ..p.clone()
         };
         strip(self) == strip(other)
@@ -693,8 +751,11 @@ impl ConnectionProfile {
 
     /// The TLS a connection dials with: at least `require` for a cloud token (every cloud
     /// demands it, and a token must not cross the network in clear), whatever the file says.
+    /// A cloud in `CLOUD_TLS` is always verified: its certificate can be, and a `require` there
+    /// (what Neon's and Supabase's strings say) would take any certificate.
     pub fn tls_mode(&self) -> SslMode {
         match self.sslmode {
+            _ if !self.is_socket() && cloud_tls(&self.host).is_some() => SslMode::VerifyFull,
             SslMode::Disable | SslMode::Prefer if self.auth.is_token() => SslMode::Require,
             m => m,
         }
@@ -771,8 +832,9 @@ impl ConnectionProfile {
             let db = if self.database.is_empty() { String::new() } else { format!(";database={}", self.database) };
             return format!("sqlserver://{}:{}{db};user={};{enc}", self.host, self.port, self.user);
         }
+        let options: String = self.options.iter().map(|(k, v)| format!("&{k}={}", percent_encode(v))).collect();
         format!(
-            "postgresql://{user}{host}:{}/{}?sslmode={}",
+            "postgresql://{user}{host}:{}/{}?sslmode={}{options}",
             self.port,
             percent_encode(&self.database),
             self.sslmode.label()
@@ -1167,6 +1229,21 @@ impl ConfigStore {
         Ok(())
     }
 
+    /// What the server told itself as on connect, kept by the saved connection `id` (none: one
+    /// not saved, or of another engine since). Written only when it changed.
+    pub fn note_flavor(&self, id: &str, info: &crate::server::ServerInfo) -> Result<bool> {
+        let differs = |c: &ConnectionProfile| c.id == id && c.engine == info.engine && c.flavor != info.flavor;
+        if !self.connections().iter().any(differs) {
+            return Ok(false);
+        }
+        self.change(|g| {
+            if let Some(c) = g.iter_mut().find(|c| differs(c)) {
+                c.flavor = info.flavor;
+            }
+        })?;
+        Ok(true)
+    }
+
     pub fn upsert(&self, profile: ConnectionProfile) -> Result<()> {
         self.change(|g| match g.iter_mut().find(|c| c.id == profile.id) {
             Some(c) => *c = profile,
@@ -1269,6 +1346,12 @@ mod tests {
                 assert_eq!(default_sslmode(e, h, true), if e.is_sql() { SslMode::Prefer } else { SslMode::Disable }, "{h} {e:?} tunnel");
             }
         }
+        for h in ["aws.connect.psdb.cloud", "GCP.connect.psdb.cloud.", "us-east.connect.psdb.cloud"] {
+            assert_eq!(default_sslmode(Engine::MySql, h, false), SslMode::VerifyFull, "{h}");
+            assert_eq!(default_sslmode(Engine::MySql, h, true), SslMode::VerifyFull, "{h} tunnel");
+        }
+        assert_eq!(default_sslmode(Engine::MySql, "psdb.cloud.evil.example", false), SslMode::Require);
+        assert_eq!(default_sslmode(Engine::MySql, "notpsdb.cloud", false), SslMode::Require);
     }
 
     #[test]
@@ -1731,5 +1814,38 @@ mod tests {
         let home = crate::os::home().unwrap().display().to_string();
         assert_eq!(expand_home("~/x.db"), PathBuf::from(&home).join("x.db"));
         assert_eq!(tilde(&format!("{home}/x.db")), format!("~{}x.db", std::path::MAIN_SEPARATOR));
+    }
+
+    #[test]
+    fn the_server_flavor_is_kept_and_older_files_load_as_they_were() {
+        use crate::server::Flavor;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        // A file of a version before flavors, and one with a flavor this version does not know.
+        let old = "[[connection]]\nid = \"a\"\nname = \"tsdb\"\nhost = \"h\"\nport = 5432\nuser = \"u\"\n\n[[connection]]\nid = \"b\"\nname = \"later\"\nflavor = \"cockroachdb\"\nhost = \"h\"\nport = 26257\nuser = \"u\"\n";
+        std::fs::write(dirs.connections_file(), old).unwrap();
+        let store = ConfigStore::open(&dirs).unwrap();
+        let got = store.connections();
+        assert_eq!(got.iter().map(|p| (p.id.as_str(), p.flavor)).collect::<Vec<_>>(), [("a", Flavor::Standard), ("b", Flavor::Standard)]);
+        assert_eq!((got[0].logo(), got[0].server_label()), (Engine::Postgres.logo(), "PostgreSQL"));
+        let timescale = crate::ServerInfo::of(Engine::Postgres, Flavor::Timescale, "TimescaleDB 2.31.0 (PostgreSQL 17.11)".into(), "17.11");
+        assert!(store.note_flavor("a", &timescale).unwrap());
+        assert!(!store.note_flavor("a", &timescale).unwrap(), "written only when it changed");
+        assert!(!store.note_flavor("gone", &timescale).unwrap(), "only a saved connection");
+        let mysql = crate::ServerInfo::of(Engine::MySql, Flavor::MariaDb, "MariaDB 11".into(), "11.4");
+        assert!(!store.note_flavor("b", &mysql).unwrap(), "only a server of its engine");
+        let again = ConfigStore::open(&dirs).unwrap().get("a").unwrap();
+        assert_eq!((again.flavor, again.logo(), again.server_label()), (Flavor::Timescale, "logos/timescale.svg", "TimescaleDB"));
+        assert!(std::fs::read_to_string(dirs.connections_file()).unwrap().contains("flavor = \"timescaledb\""));
+        // Told otherwise on a later connect: that one.
+        assert!(store.note_flavor("a", &crate::ServerInfo::of(Engine::Postgres, Flavor::Standard, "PostgreSQL 17.11".into(), "17.11")).unwrap());
+        assert_eq!(ConfigStore::open(&dirs).unwrap().get("a").unwrap().flavor, Flavor::Standard);
+        assert!(!std::fs::read_to_string(dirs.connections_file()).unwrap().contains("flavor = \"\""), "none is left out of the file");
+        // Only shown: nothing reconnects for it, and a form's save drops one of another engine.
+        assert!(ConnectionProfile { flavor: Flavor::Timescale, ..again.clone() }.same_but_agents(&again));
+        let mut wrong = ConnectionProfile { engine: Engine::MySql, flavor: Flavor::Timescale, ..again };
+        wrong.normalize();
+        assert_eq!(wrong.flavor, Flavor::Standard);
     }
 }

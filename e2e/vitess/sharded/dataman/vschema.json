@@ -1,0 +1,16 @@
+{
+  "sharded": true,
+  "vindexes": { "hash": { "type": "hash" } },
+  "tables": {
+    "vt_items": {
+      "column_vindexes": [{ "column": "id", "name": "hash" }],
+      "columns": [
+        { "name": "id", "type": "INT64" },
+        { "name": "name", "type": "VARCHAR" },
+        { "name": "email", "type": "VARCHAR" },
+        { "name": "code", "type": "VARCHAR" }
+      ],
+      "column_list_authoritative": true
+    }
+  }
+}

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use chrono::Local;
 use dataman_core::privacy::{Mask, Validator};
-use dataman_core::{ConnectionProfile, Core, Engine};
+use dataman_core::{ConnectionProfile, Core};
 use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, Point,
@@ -724,8 +724,8 @@ impl AgentsPage {
         s.profiles.iter().find(|p| p.name == name).or_else(|| s.profile(name)).cloned()
     }
 
-    pub(crate) fn engine_of(&self, name: &str, cx: &App) -> Option<Engine> {
-        self.profile_named(name, cx).map(|p| p.engine)
+    fn logo_of(&self, name: &str, cx: &App) -> Option<&'static str> {
+        self.profile_named(name, cx).map(|p| p.logo())
     }
 
     pub(crate) fn filtered(&self, cx: &App) -> Vec<usize> {
@@ -982,7 +982,7 @@ impl AgentsPage {
             .items_center()
             .gap(px(7.))
             .min_w_0()
-            .children(self.engine_of(name, cx).and_then(|e| crate::assets::small_logo(e, 14.)))
+            .children(self.logo_of(name, cx).and_then(|l| crate::assets::small_logo_at(l, 14.)))
             .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(name.to_string()))
     }
 

@@ -11,6 +11,7 @@ use gpui::{
 };
 use crate::theme::{Pt, px};
 use dataman_core::config::Engine;
+use dataman_core::server::{FLAVORS, Flavor};
 use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
 use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode, connstr};
 use dataman_mcp::agents::{self, AGENTS, Added, Listing};
@@ -78,10 +79,36 @@ pub fn engines_matching(q: &str) -> Vec<Engine> {
         .collect()
 }
 
+/// A tile of the engine picker: an engine, or a flavor of one under its own name (it connects as
+/// the engine does).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Tile {
+    pub engine: Engine,
+    pub flavor: Flavor,
+}
+
+impl Tile {
+    fn label(self) -> &'static str {
+        self.flavor.label(self.engine)
+    }
+}
+
+/// The flavors a search names: by their own words only (the empty search shows the engines).
+fn flavors_matching(q: &str) -> impl Iterator<Item = Tile> + '_ {
+    FLAVORS
+        .iter()
+        .filter(move |f| !q.is_empty() && (f.search.split_whitespace().any(|w| w.starts_with(q)) || (q.len() >= 3 && !f.search.is_empty() && f.label.to_lowercase().contains(q))))
+        .map(|f| Tile { engine: f.engine, flavor: f.flavor })
+}
+
 /// The Database step's tiles for what is in its search: none for a connection string, which either
 /// reads (and goes on to Connection) or does not.
-fn tiles_for(search: &str) -> Vec<Engine> {
-    if search.contains("://") { Vec::new() } else { engines_matching(search) }
+fn tiles_for(search: &str) -> Vec<Tile> {
+    if search.contains("://") {
+        return Vec::new();
+    }
+    let q = search.trim().to_lowercase();
+    engines_matching(&q).into_iter().map(|engine| Tile { engine, flavor: Flavor::Standard }).chain(flavors_matching(&q)).collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -276,6 +303,8 @@ pub struct ConnDialog {
     profile: ConnectionProfile,
     is_new: bool,
     engine: Engine,
+    /// The tile picked was a flavor's: the header shows its logo, a new connection its port.
+    flavor: Flavor,
     /// The Database step was answered (or skipped by a filled sheet): the header shows its logo.
     engine_picked: bool,
     name: Entity<TextInput>,
@@ -395,7 +424,7 @@ impl ConnDialog {
         let shown = |v: &'_ str| if blank { String::new() } else { v.to_string() };
         let name = text_field("", &profile.name, PLAIN, window, cx);
         let host = text_field("localhost", &shown(&profile.host), IN_BOTH, window, cx);
-        let port = text_field(&profile.engine.default_port().to_string(), &profile.port.to_string(), IN_BOTH, window, cx);
+        let port = text_field(&profile.flavor.default_port(profile.engine).to_string(), &profile.port.to_string(), IN_BOTH, window, cx);
         let (user_placeholder, _) = user_hint(profile.engine, profile.auth.kind());
         let user = text_field(user_placeholder, &shown(&profile.user), IN_BOTH, window, cx);
         let database = text_field(profile.engine.spec().form.database_placeholder, &shown(&profile.database), IN_STRING, window, cx);
@@ -527,6 +556,7 @@ impl ConnDialog {
             mcp: profile.mcp,
             advanced,
             engine: profile.engine,
+            flavor: profile.flavor,
             engine_picked: !blank,
             profile,
             is_new,
@@ -682,10 +712,27 @@ impl ConnDialog {
         self.name.update(cx, |t, cx| t.set_placeholder(shown, cx));
     }
 
+    #[cfg(feature = "checks")]
     pub fn pick_engine(&mut self, e: Engine, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick(Tile { engine: e, flavor: Flavor::Standard }, window, cx);
+    }
+
+    fn pick(&mut self, tile: Tile, window: &mut Window, cx: &mut Context<Self>) {
+        let e = tile.engine;
         let same_kind = !self.engine_picked || self.engine.is_file() == e.is_file();
         let back = self.return_to.take();
+        let old_port = self.default_port();
         self.set_engine(e, cx);
+        self.flavor = tile.flavor;
+        // A port left at the old pick's default follows the new one (YugabyteDB's 5433).
+        let port = self.port.read(cx).text().trim().to_string();
+        if !e.is_file() && (port.is_empty() || port == old_port.to_string() || port == e.default_port().to_string()) {
+            let new = self.default_port().to_string();
+            self.port.update(cx, |t, cx| {
+                t.set_placeholder(new.clone(), cx);
+                t.set_text(new, cx)
+            });
+        }
         self.engine_picked = true;
         self.seen[Step::Connection as usize] = true;
         if !same_kind || e.is_file() {
@@ -712,7 +759,7 @@ impl ConnDialog {
         self.seen[to as usize] = true;
         self.body_scroll.set_offset(gpui::Point::default());
         match to {
-            Step::Database => self.pick_hi = tiles_for(self.search.read(cx).text()).iter().position(|e| *e == self.engine).unwrap_or(0),
+            Step::Database => self.pick_hi = tiles_for(self.search.read(cx).text()).iter().position(|t| *t == Tile { engine: self.engine, flavor: self.flavor }).unwrap_or(0),
             Step::SignIn => {
                 if !self.auth_picked {
                     let host = self.host.read(cx).text().trim().to_string();
@@ -750,8 +797,8 @@ impl ConnDialog {
             return;
         }
         let found = tiles_for(&text);
-        if let Some(e) = found.get(self.pick_hi.min(found.len().saturating_sub(1))) {
-            self.pick_engine(*e, window, cx);
+        if let Some(tile) = found.get(self.pick_hi.min(found.len().saturating_sub(1))) {
+            self.pick(*tile, window, cx);
         }
     }
 
@@ -936,8 +983,10 @@ impl ConnDialog {
         // An http(s) URL reads as Elasticsearch; on an OpenSearch sheet it is OpenSearch's.
         let engine = if p.engine == Engine::Elasticsearch && self.engine == Engine::OpenSearch { Engine::OpenSearch } else { p.engine };
         self.engine = engine;
+        self.flavor = if engine == p.engine { p.flavor } else { Flavor::Standard };
         self.engine_picked = true;
-        self.port.update(cx, |t, cx| t.set_placeholder(engine.default_port().to_string(), cx));
+        let port = self.default_port().to_string();
+        self.port.update(cx, |t, cx| t.set_placeholder(port, cx));
         self.database.update(cx, |t, cx| t.set_placeholder(engine.spec().form.database_placeholder, cx));
         self.conn_str.update(cx, |t, cx| t.set_placeholder(string_placeholder(engine), cx));
         if engine.is_file() {
@@ -1145,7 +1194,7 @@ impl ConnDialog {
         }
         let mut p = self.fields(cx);
         let port = self.port.read(cx).text().trim().to_string();
-        p.port = if port.is_empty() { p.engine.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
+        p.port = if port.is_empty() { self.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
         (p.color, p.color_picked) = (Some(SWATCHES[self.color].to_string()), picked);
         if p.name.is_empty() {
             p.name = host_stem(&p.host).to_string();
@@ -1200,8 +1249,9 @@ impl ConnDialog {
         p.user = text(&self.user);
         p.database = text(&self.database);
         p.engine = self.engine;
+        p.flavor = self.flavor;
         p.port = match text(&self.port) {
-            t if t.is_empty() => p.engine.default_port(),
+            t if t.is_empty() => self.default_port(),
             t => t.parse().unwrap_or(p.port),
         };
         // The core's rules, as the MCP tools take them: PostgreSQL's default database, no TLS
@@ -1239,6 +1289,11 @@ impl ConnDialog {
     /// Never includes the password.
     fn url(&self, cx: &App) -> String {
         self.fields(cx).url()
+    }
+
+    /// The port a new connection to the pick goes to: the flavor's own, else its engine's.
+    fn default_port(&self) -> u16 {
+        self.flavor.default_port(self.engine)
     }
 
     fn set_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
@@ -1982,11 +2037,11 @@ impl ConnDialog {
         let found = tiles_for(text);
         let hi = found.get(self.pick_hi.min(found.len().saturating_sub(1))).copied();
         let nothing = found.is_empty() && !text.contains("://");
-        let tile = |e: Engine| {
-            let on = Some(e) == hi;
-            let (hov, line) = (t.hov, t.line2);
+        let tile = |tile: Tile| {
+            let on = Some(tile) == hi;
+            let (hov, line, e) = (t.hov, t.line2, tile.engine);
             div()
-                .id(("engine-tile", e as usize))
+                .id(("engine-tile", e as usize * 32 + tile.flavor as usize))
                 .w(px(127.))
                 .h(px(96.))
                 .flex()
@@ -1999,16 +2054,16 @@ impl ConnDialog {
                 .when(on, |d| d.bg(t.acc_s))
                 .when(!on, |d| d.hover(move |s| s.bg(hov).border_color(line)))
                 .cursor_pointer()
-                .child(crate::assets::logo(e).size(px(30.)))
-                .child(div().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(e.label()))
+                .child(crate::assets::logo_at(tile.flavor.logo(e)).size(px(30.)))
+                .child(div().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(tile.label()))
                 .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(e.family_label()))
-                .on_click(cx.listener(move |d, _, window, cx| d.pick_engine(e, window, cx)))
+                .on_click(cx.listener(move |d, _, window, cx| d.pick(tile, window, cx)))
         };
-        let tile = |e: Engine| ui::probe(format!("engine-{}", e.label()), tile(e));
-        let section = |label: &'static str, engines: Vec<Engine>| {
-            (!engines.is_empty()).then(|| div().flex().flex_col().gap(px(8.)).child(caption(t, label)).child(div().flex().flex_row().flex_wrap().gap(px(10.)).children(engines.into_iter().map(tile))))
+        let tile = |x: Tile| ui::probe(format!("engine-{}", x.label()), tile(x));
+        let section = |label: &'static str, tiles: Vec<Tile>| {
+            (!tiles.is_empty()).then(|| div().flex().flex_col().gap(px(8.)).child(caption(t, label)).child(div().flex().flex_row().flex_wrap().gap(px(10.)).children(tiles.into_iter().map(tile))))
         };
-        let (sql, other): (Vec<Engine>, Vec<Engine>) = found.iter().partition(|e| e.is_sql());
+        let (sql, other): (Vec<Tile>, Vec<Tile>) = found.iter().partition(|x| x.engine.is_sql());
         panel()
             .key_context("EnginePicker")
             .on_action(cx.listener(|d, _: &PickNext, _, cx| d.move_pick(1, cx)))
@@ -2430,7 +2485,7 @@ impl ConnDialog {
     }
 
     fn header(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let logo = div().flex_none().size(px(16.)).mr(px(8.)).when(self.engine_picked, |d| d.child(crate::assets::logo(self.engine).size(px(16.))));
+        let logo = div().flex_none().size(px(16.)).mr(px(8.)).when(self.engine_picked, |d| d.child(crate::assets::logo_at(self.flavor.logo(self.engine)).size(px(16.))));
         let middle = if self.is_new {
             let file = self.engine_picked && self.is_file();
             let mut crumbs = div().flex_1().min_w_0().flex().flex_row().items_center().gap(px(6.));
@@ -2721,10 +2776,33 @@ mod tests {
         assert_eq!(engines_matching("mongo"), vec![Engine::MongoDb]);
         assert_eq!(engines_matching("ES"), vec![Engine::Elasticsearch]);
         assert_eq!(engines_matching("pg"), vec![Engine::Postgres]);
-        assert_eq!(engines_matching("maria"), vec![Engine::MySql]);
+        assert!(engines_matching("maria").is_empty() && engines_matching("valkey").is_empty(), "their own tiles");
         assert_eq!(engines_matching("nosql"), vec![Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis]);
         assert_eq!(engines_matching("search"), vec![Engine::Elasticsearch, Engine::OpenSearch]);
         assert!(engines_matching("oracle").is_empty());
+    }
+
+    /// Servers that speak an engine's protocol are found by their own names, each its own tile
+    /// that connects as the engine; the empty search shows only the engines.
+    #[test]
+    fn flavors_are_found_by_their_own_names() {
+        let one = |q: &str| match tiles_for(q).as_slice() {
+            [t] => (t.engine, t.flavor, t.label()),
+            other => panic!("{q}: {other:?}"),
+        };
+        assert_eq!(one("timescale"), (Engine::Postgres, Flavor::Timescale, "TimescaleDB"));
+        assert_eq!(one("Tiger"), (Engine::Postgres, Flavor::Timescale, "TimescaleDB"));
+        assert_eq!(one("yugabyte"), (Engine::Postgres, Flavor::Yugabyte, "YugabyteDB"));
+        assert_eq!(one("percona"), (Engine::MySql, Flavor::Percona, "Percona Server"));
+        assert_eq!(one("maria"), (Engine::MySql, Flavor::MariaDb, "MariaDB"));
+        assert_eq!(one("dragonfly"), (Engine::Redis, Flavor::Dragonfly, "Dragonfly"));
+        assert_eq!(one("keydb"), (Engine::Redis, Flavor::KeyDb, "KeyDB"));
+        assert_eq!(one("garnet"), (Engine::Redis, Flavor::Garnet, "Garnet"));
+        assert_eq!(one("valkey"), (Engine::Redis, Flavor::Valkey, "Valkey"));
+        assert_eq!(one("ferret"), (Engine::MongoDb, Flavor::FerretDb, "FerretDB"));
+        assert_eq!(tiles_for("microsoft").iter().map(|t| t.label()).collect::<Vec<_>>(), ["SQL Server", "Garnet"]);
+        assert_eq!(tiles_for(""), ENGINES.map(|engine| Tile { engine, flavor: Flavor::Standard }).to_vec());
+        assert!(tiles_for("azure").iter().all(|t| t.flavor == Flavor::Standard), "Azure SQL has no tile: it is told from SQL Server once connected");
     }
 
     #[test]
@@ -2735,7 +2813,7 @@ mod tests {
         assert!(connstr::resolved("postgres://ana@db.internal/orders").is_some());
         assert!(connstr::resolved("oracle://db.internal/orders").is_none(), "no message, no tiles");
         assert!(tiles_for("oracle://db.internal/orders").is_empty());
-        assert_eq!(tiles_for("redi"), vec![Engine::Redis]);
+        assert_eq!(tiles_for("redi"), vec![Tile { engine: Engine::Redis, flavor: Flavor::Standard }]);
     }
 
     #[test]

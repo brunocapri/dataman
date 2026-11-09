@@ -22,9 +22,15 @@ const PG_GENERATED: &str = "SELECT n.nspname, c.relname, a.attname, d.attname FR
   JOIN pg_catalog.pg_attribute d ON d.attrelid = a.attrelid AND d.attnum = dep.refobjsubid \
   WHERE a.attgenerated <> '' AND NOT a.attisdropped";
 
-const MY_GENERATED: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, GENERATION_EXPRESSION FROM information_schema.COLUMNS \
+/// Read on `db`, whose name is how Vitess' tablets' own reads back.
+fn my_generated(db: &str) -> String {
+    format!(
+        "SELECT {}, TABLE_NAME, COLUMN_NAME, GENERATION_EXPRESSION FROM information_schema.COLUMNS \
   WHERE (EXTRA LIKE '%VIRTUAL GENERATED%' OR EXTRA LIKE '%STORED GENERATED%') \
-   AND TABLE_SCHEMA NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')";
+   AND TABLE_SCHEMA NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')",
+        super::my::named("TABLE_SCHEMA", "DATABASE()", db)
+    )
+}
 
 /// Each generated column with its table's `CREATE TABLE`, where its expression is (SQLite keeps
 /// no dependencies).
@@ -188,9 +194,13 @@ impl Connection {
     /// generation expression elsewhere. Read as a bounded read on `db`.
     pub async fn generated_columns(&self, db: &str, cancel: impl Future<Output = ()> + Send) -> Result<Vec<Generated>> {
         let engine = self.engine();
+        let mine;
         let (sql, by_expression) = match engine {
             Engine::Postgres => (PG_GENERATED, false),
-            Engine::MySql => (MY_GENERATED, true),
+            Engine::MySql => {
+                mine = my_generated(db);
+                (mine.as_str(), true)
+            }
             Engine::SqlServer => (MS_GENERATED, false),
             Engine::Sqlite => (LITE_GENERATED, true),
             Engine::DuckDb => (DUCK_GENERATED, true),
@@ -236,6 +246,15 @@ impl Connection {
                     let exprs = super::lite::generated_exprs(&text(&row[3]));
                     // An expression that cannot be read counts as reading every column of the table.
                     exprs.get(&column.to_lowercase()).map(|e| expression_names(e, names)).unwrap_or_else(|| expression_names(&text(&row[3]), names))
+                }
+                // MySQL shows the expression's quotes escaped (`concat(_utf8mb4\'x\',`email`)`),
+                // which lexes as one string to its end; MariaDB does not: both readings.
+                Engine::MySql if by_expression => {
+                    let e = text(&row[3]);
+                    let mut from = expression_names(&e, names);
+                    let more: Vec<String> = expression_names(&e.replace("\\'", "'"), names).into_iter().filter(|n| !from.contains(n)).collect();
+                    from.extend(more);
+                    from
                 }
                 _ if by_expression => expression_names(&text(&row[3]), names),
                 _ => vec![text(&row[3])],

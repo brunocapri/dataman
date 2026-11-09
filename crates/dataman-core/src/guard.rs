@@ -1134,7 +1134,14 @@ pub fn read_only_refusal(sql: &str) -> Option<String> {
     read_only_refusal_in(sql, Dialect::Postgres)
 }
 
+/// On the server the dialect is spoken by (`Caps::read_only_held` of its engine).
 pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
+    let held = crate::engine::SPECS.iter().find(|s| s.dialect == Some(dialect)).is_none_or(|s| s.caps.read_only_held);
+    read_only_refusal_held(sql, dialect, held)
+}
+
+/// `held`: the server keeps a read-only connection from writing (`Caps::read_only_held`).
+pub fn read_only_refusal_held(sql: &str, dialect: Dialect, held: bool) -> Option<String> {
     let f = classify_in(sql, dialect);
     if f.is_write() {
         return Some(format!("read-only connection: {} is not run", f.verb));
@@ -1143,25 +1150,41 @@ pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     if dialect == Dialect::ClickHouse && f.verb == "KILL" {
         return Some("read-only connection: KILL is not run".into());
     }
-    if dialect == Dialect::TSql { tsql_read_only_refusal(sql) } else { None }
+    if held { None } else { unheld_read_only_refusal(sql, dialect) }
 }
 
-/// SQL Server has no read-only session, so this is the only check: what is not known to read
-/// is refused (KILL, SHUTDOWN, RECONFIGURE, DBCC, BACKUP, DISABLE TRIGGER…), as on the agent's
-/// reads. Transaction control and session settings stay the user's.
-fn tsql_read_only_refusal(sql: &str) -> Option<String> {
-    let d = Dialect::TSql;
+/// Where the server keeps no read-only session (SQL Server has none, Vitess takes the setting and
+/// drops it), this is the only check: what is not known to read is refused (KILL, SHUTDOWN,
+/// RECONFIGURE, DBCC, BACKUP, DISABLE TRIGGER, a CALL, an engine's own verbs…), as on the agent's
+/// reads. Transaction control and session settings stay the user's, but where the engine has
+/// read-only transactions (which such a server does hold) a transaction opens read-only.
+fn unheld_read_only_refusal(sql: &str, d: Dialect) -> Option<String> {
     for text in crate::sql::exec_readings(sql, d) {
         let all = significant(&text, d);
         let t = Toks { src: &text, t: &all, dialect: d };
-        for r in statements(&t).into_iter().filter(|r| !r.is_empty()) {
+        let ranges: Vec<_> = statements(&t).into_iter().filter(|r| !r.is_empty()).collect();
+        for r in &ranges {
             let one = &text[all[r.start].start..all[r.end - 1].end];
             let toks = significant(one, d);
             let st = Toks { src: one, t: &toks, dialect: d };
             let f = classify_in(one, d);
             let showplan = f.verb == "SET" && st.word(1).is_some_and(|w| w.starts_with("SHOWPLAN_") || matches!(w.as_str(), "LANGUAGE" | "TRANSACTION"));
+            if let (Some(tx), Some(ro)) = (f.tx, d.begin_read_only()) {
+                if tx == TxCmd::Begin && !(0..toks.len()).any(|i| st.is(i, "READ") && st.is(i + 1, "ONLY")) {
+                    return Some(format!("read-only connection: a transaction opens read-only here ({ro})"));
+                }
+                // The rest of the text would run outside the read-only transaction each run gets.
+                if ranges.len() > 1 {
+                    return Some(format!("read-only connection: {} runs alone here", f.verb));
+                }
+            }
             if f.tx.is_some() || neutral(&st, &f) || showplan || toks.iter().all(|x| x.kind == TokenKind::Punct) {
                 continue;
+            }
+            // Vitess' `SELECT NEXT n VALUES FROM seq` hands out values inside a READ ONLY
+            // transaction (from the tablet's cache). On MySQL it is a column `next` named `value`.
+            if d == Dialect::MySql && st.is(0, "SELECT") && st.is(1, "NEXT") && (st.is(2, "VALUE") || st.is(3, "VALUES") || st.is(3, "VALUE")) {
+                return Some("SELECT NEXT … VALUES takes values from a sequence".into());
             }
             // The user's own reads: the agents' further limits (functions, lock hints) are theirs.
             if !is_read(&f, d) {
@@ -2800,6 +2823,71 @@ mod tests {
         }
         // Other engines keep the session's own read-only.
         assert_eq!(read_only_refusal_in("VACUUM", Dialect::Postgres), None);
+    }
+
+    /// Vitess drops `SET SESSION TRANSACTION READ ONLY` and holds a READ ONLY transaction.
+    #[test]
+    fn unheld_mysql_read_only_is_an_allowlist() {
+        let d = Dialect::MySql;
+        let unheld = |sql: &str| read_only_refusal_held(sql, d, false);
+        for sql in [
+            "CALL p()",
+            "DO bump()",
+            "HANDLER t OPEN",
+            "LOCK TABLES t WRITE",
+            "SET autocommit = 0",
+            "SET SESSION TRANSACTION READ WRITE",
+            "SET @@session.transaction_read_only = 0",
+            "VEXPLAIN QUERIES UPDATE t SET a = 1 WHERE id = 1",
+            "VEXPLAIN ALL DELETE FROM t WHERE id = 1",
+            "VSTREAM * FROM t",
+            "ALTER VITESS_MIGRATION 'x' CANCEL",
+            "ALTER VSCHEMA ADD TABLE t",
+            "REVERT VITESS_MIGRATION 'x'",
+            "FLUSH TABLES",
+            "KILL 5",
+            "XA START 'x'",
+            "BEGIN",
+            "START TRANSACTION",
+            "START TRANSACTION READ WRITE",
+            "START TRANSACTION READ ONLY; UPDATE t SET a = 1 WHERE id = 1",
+            "START TRANSACTION READ ONLY; SELECT bump()",
+            "SELECT 1; CALL p()",
+            "SELECT 1; COMMIT",
+            "/*!50000 CALL p() */",
+            "PREPARE s FROM 'CALL p()'",
+            "EXECUTE s",
+            "USE other",
+            "SELECT * FROM t INTO OUTFILE '/tmp/x'",
+            "SELECT NEXT VALUE FROM seq",
+            "select next 5 values from seq",
+            "SELECT NEXT ? VALUES FROM seq",
+        ] {
+            assert!(unheld(sql).is_some(), "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM t",
+            "select bump()",
+            "SELECT 'CALL p()' AS s -- CALL p()",
+            "SHOW VITESS_SHARDS",
+            "SHOW VITESS_MIGRATIONS",
+            "EXPLAIN SELECT * FROM t",
+            "DESCRIBE t",
+            "WITH c AS (SELECT 1 AS a) SELECT a FROM c",
+            "START TRANSACTION READ ONLY",
+            "start transaction with consistent snapshot, read only",
+            "COMMIT",
+            "ROLLBACK",
+            "SET @x = 1",
+            "SELECT 1; SELECT 2",
+            "SELECT next FROM t",
+        ] {
+            assert_eq!(unheld(sql), None, "{sql}");
+        }
+        // A server that holds the session decides the rest, as before.
+        for sql in ["BEGIN", "SET autocommit = 0", "USE other", "SHOW VITESS_SHARDS", "SELECT next value FROM t"] {
+            assert_eq!(read_only_refusal_in(sql, d), None, "{sql}");
+        }
     }
 
     #[test]

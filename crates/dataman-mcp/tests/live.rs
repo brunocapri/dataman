@@ -352,7 +352,9 @@ fn postgres_tools() {
         }
     });
     let took = t.elapsed();
-    assert!(took >= Duration::from_millis(590) && took < Duration::from_secs(3), "4 sleeps of 0.3 s through 2 slots: {took:?}");
+    // Two waves of 0.3 s, not one: the server's clock (a VM's on Windows) may run a little ahead
+    // of this process's, so the floor sits between one wave and two.
+    assert!(took >= Duration::from_millis(450) && took < Duration::from_secs(3), "4 sleeps of 0.3 s through 2 slots: {took:?}");
 
     let r = e.ok("list_tables", c(json!({"schema": s})));
     assert_eq!(r["rows"].as_array().unwrap().iter().map(|r| r[1].as_str().unwrap()).collect::<Vec<_>>(), ["customer", "orders"]);

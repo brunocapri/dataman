@@ -35,6 +35,7 @@ fn connects_and_decodes_every_type() {
     assert_eq!(c.info.database, "dataman_t_types");
     assert_eq!(c.info.user, "root");
     assert!(!c.caps().schemas);
+    assert!(c.caps().read_only_held && c.info.flavor != dataman_core::server::Flavor::Vitess, "{:?}", c.info.flavor);
 
     let s = c.session(None);
     let rs = ok(&e, &s, "SELECT id, name, tier, balance, created, profile, photo, code, tags, birth_date, at_time, yr, flags, score, weight FROM customer ORDER BY id");

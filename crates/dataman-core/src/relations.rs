@@ -90,10 +90,11 @@ impl Connection {
 
     async fn my_graph(&self, db: &str, schema: &str) -> Result<RelationGraph> {
         let sql = format!(
-            "SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+            "SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, {}, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
              FROM information_schema.KEY_COLUMN_USAGE \
              WHERE TABLE_SCHEMA = {} AND REFERENCED_TABLE_NAME IS NOT NULL \
              ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION",
+            crate::schema::my::named("REFERENCED_TABLE_SCHEMA", "TABLE_SCHEMA", schema),
             crate::schema::my::lit(schema)
         );
         self.key_column_graph(db, schema, &sql).await

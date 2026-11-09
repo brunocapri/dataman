@@ -41,6 +41,8 @@ pub struct Connection {
     /// The rules for agents as the last agent call read them: SQLite's agent connections check
     /// what triggers and views read against them.
     pub(crate) agent_rules: Arc<parking_lot::RwLock<crate::privacy::AgentRules>>,
+    /// A pooler between Dataman and the server, as the first connection found it.
+    pub pooler: Option<crate::pooler::Pooler>,
 }
 
 impl Connection {
@@ -70,12 +72,13 @@ impl Connection {
                 tunnel,
                 caches: Default::default(),
                 agent_pools: Default::default(),
+                pooler: None,
             }));
         }
         let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&profile, e))?;
         drop(password);
         let strings = crate::bounded::strings_as_written(&d).await;
-        let (client, tls_active) = (d.db(), d.tls_active());
+        let (client, tls_active, pooler) = (d.db(), d.tls_active(), d.pooler());
         drop(d);
         let info = backend::server_info(&client).await?;
         let db = if info.database.is_empty() { profile.database.clone() } else { info.database.clone() };
@@ -98,6 +101,7 @@ impl Connection {
             caches: Default::default(),
             agent_pools: Default::default(),
             nosql: None,
+            pooler,
         }))
     }
 
@@ -125,7 +129,7 @@ impl Connection {
     }
 
     pub fn caps(&self) -> Caps {
-        Caps::of(self.profile.engine)
+        Caps::of_server(self.profile.engine, self.info.flavor)
     }
 
     pub fn read_only_for(&self, database: &str) -> bool {
@@ -145,6 +149,19 @@ impl Connection {
             p.read_only = p.read_only_for(database);
         }
         p
+    }
+
+    /// Each transaction may run on another server connection, shared with other clients: nothing
+    /// set on a session lasts or stays private.
+    pub fn per_transaction(&self) -> bool {
+        self.pooler.is_some_and(|p| p.per_transaction())
+    }
+
+    /// Read-only held by the server on every transaction Dataman starts (`BEGIN READ ONLY`), and
+    /// nothing run outside one: through a pooler per transaction a session's
+    /// `default_transaction_read_only` would land on a server connection others get next.
+    pub(crate) fn read_only_per_transaction(&self, database: &str) -> bool {
+        self.per_transaction() && self.read_only_for(database)
     }
 
     pub fn tls_in_use(&self) -> bool {
@@ -313,7 +330,12 @@ impl Session {
         self.used.lock().clone().unwrap_or_else(|| self.database.clone())
     }
 
+    /// None behind a pooler: BackendKeyData carries the pooler's number, and per transaction the
+    /// server process changes anyway.
     pub fn backend_pid(&self) -> Option<i32> {
+        if self.conn.pooler.is_some() {
+            return None;
+        }
         self.tx.pid()
     }
 
@@ -451,7 +473,7 @@ impl Session {
         self.tx.closed();
         let p = self.conn.profile_for(&self.database);
         let password = self.conn.cred.secret(&p).await?;
-        let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
+        let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx, self.conn.pooler).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
         *self.cancel.lock() = Some(cancel);
         *self.ro_applied.lock() = Some(self.conn.read_only_for(&self.database));
         *self.used.lock() = None;
@@ -461,7 +483,8 @@ impl Session {
 
     async fn sync_read_only(&self, client: &Db) {
         let want = self.conn.read_only_for(&self.database);
-        if *self.ro_applied.lock() == Some(want) || self.tx.get().status.is_open() {
+        // Per transaction instead (`run_on`): a session setting would reach other clients.
+        if *self.ro_applied.lock() == Some(want) || self.tx.get().status.is_open() || self.conn.per_transaction() {
             return;
         }
         let Some(sql) = self.conn.dialect().session_read_only(want) else { return };
@@ -512,6 +535,9 @@ impl Session {
             let client = self.client().await;
             return self.run_on(client, rs, false).await;
         }
+        if let Some(r) = self.conn.unheld_read_refusal(&rs.sql) {
+            return self.run_on(Err(anyhow::anyhow!(r)), rs, true).await;
+        }
         let d = self.conn.dialect();
         let ro = self.conn.read_only_for(&self.database) || d == Dialect::Sqlite || !d.has_transactions();
         let client = match self.conn.agent_take(&self.database, ro).await {
@@ -559,11 +585,44 @@ impl Session {
         }
         let dialect = self.conn.dialect();
         let facts = crate::guard::classify_in(&rs.sql, dialect);
-        let rollback = rs.rolled_back();
+        let refuse = |message: String| {
+            let info = ErrorInfo { message, ..Default::default() };
+            self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
+            rs.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.elapsed = Some(Duration::ZERO);
+                s.error = Some(info);
+            });
+        };
+        if let Some(why) = self.conn.pooler.and_then(|p| crate::pooler::session_state_refusal(&rs.sql, &p)) {
+            return refuse(why);
+        }
+        // A read-only tab through a pooler per transaction: each statement runs in a read-only
+        // transaction of its own, and a transaction the user opens is made read-only.
+        let ro_pooled = !agent && self.conn.read_only_per_transaction(&self.database);
+        if ro_pooled && let Some(why) = tx_control_mixed(&rs.sql) {
+            return refuse(why);
+        }
+        let rollback = rs.rolled_back() || (ro_pooled && facts.tx.is_none() && !self.tx.get().status.is_open());
         // Nothing would undo it: it does not run. A read has nothing to undo (and an agent's runs
         // on a read-only connection).
         if rollback && !dialect.has_transactions() && (facts.is_write() || facts.effect == crate::guard::Effect::Other) {
             let info = ErrorInfo { message: format!("{} has no transactions: {} cannot be rolled back, so it did not run", self.conn.engine().label(), facts.verb), ..Default::default() };
+            self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
+            rs.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.elapsed = Some(Duration::ZERO);
+                s.error = Some(info);
+            });
+            return;
+        }
+        // Nothing on such a server keeps the session read-only: what a tab asks before sending
+        // holds for every caller, and the rest runs in a READ ONLY transaction (below).
+        if !agent
+            && self.unheld_read_only()
+            && let Some(message) = self.conn.read_only_refusal(&self.current_database(), &rs.sql)
+        {
+            let info = ErrorInfo { code: Some("25006".into()), message, ..Default::default() };
             self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
             rs.update_status(|s| {
                 s.phase = Some(Phase::Failed);
@@ -589,12 +648,29 @@ impl Session {
                 });
                 return;
             }
-            let begin = if read_only { dialect.begin_read_only().unwrap_or(dialect.begin()) } else { dialect.begin() };
-            let sql = if savepoint { dialect.savepoint(ROLLBACK_SAVEPOINT) } else { begin.to_string() };
+            let begin = match self.read_only_hold(&rs.sql) {
+                Some(hold) if !agent => hold,
+                _ if read_only || ro_pooled => dialect.begin_read_only().unwrap_or(dialect.begin()),
+                _ => dialect.begin(),
+            };
+            let sql = if savepoint {
+                dialect.savepoint(ROLLBACK_SAVEPOINT)
+            } else if agent && self.conn.per_transaction() {
+                format!("{begin}; {}", crate::pooler::AGENT_TX_LOCALS)
+            } else {
+                begin.to_string()
+            };
             if !self.wrapper(&client, rs, &sql, agent).await {
                 return;
             }
             Some(savepoint)
+        } else if !agent && let Some(begin) = self.read_only_hold(&rs.sql) {
+            // The server keeps no read-only session (Vitess) but holds a READ ONLY transaction:
+            // outside the user's own transaction, each run is one.
+            if !self.wrapper(&client, rs, begin, agent).await {
+                return;
+            }
+            Some(false)
         } else {
             None
         };
@@ -634,6 +710,16 @@ impl Session {
                 }
                 return never_ran(rs);
             }
+            r => r,
+        };
+        let r = match r {
+            Ran::Done(n) if ro_pooled && facts.tx == Some(crate::guard::TxCmd::Begin) => match client.execute("SET TRANSACTION READ ONLY").await {
+                Ok(_) => Ran::Done(n),
+                Err(info) => {
+                    end_rollback(&client, dialect, Some(false)).await;
+                    Ran::Failed(info)
+                }
+            },
             r => r,
         };
         let rs = &last.lock().clone();
@@ -678,6 +764,22 @@ impl Session {
         });
     }
 
+    /// How `sql` begins the read-only transaction of Dataman's it runs in: on a read-only database
+    /// whose server keeps no read-only session, outside a transaction, when it is no transaction
+    /// control itself (which `guard::read_only_refusal_held` lets run only alone there).
+    fn read_only_hold(&self, sql: &str) -> Option<&'static str> {
+        let d = self.conn.dialect();
+        let outside = !self.tx.get().status.is_open() && crate::guard::classify_in(sql, d).tx.is_none();
+        if outside && self.unheld_read_only() { d.begin_read_only() } else { None }
+    }
+
+    /// A read-only database whose server keeps no read-only session but holds a READ ONLY
+    /// transaction (Vitess; SQL Server has neither).
+    fn unheld_read_only(&self) -> bool {
+        let ro = self.conn.read_only_for(&self.database) || self.conn.read_only_for(&self.current_database());
+        ro && !self.conn.caps().read_only_held && self.conn.dialect().begin_read_only().is_some()
+    }
+
     fn record(&self, rs: &ResultSet, elapsed: Duration) {
         let st = rs.status();
         self.record_as(rs, elapsed, st.phase, st.affected, st.error);
@@ -706,6 +808,18 @@ impl Session {
 }
 
 const ROLLBACK_SAVEPOINT: &str = "dataman_rollback";
+
+/// A statement that ends or starts a transaction, among others in one text: the ones after it
+/// would run outside the read-only transaction they were sent in.
+fn tx_control_mixed(sql: &str) -> Option<String> {
+    let d = Dialect::Postgres;
+    let stmts = crate::sql::split_in(sql, d);
+    if stmts.len() < 2 {
+        return None;
+    }
+    let f = stmts.iter().map(|s| crate::guard::classify_in(&sql[s.range.clone()], d)).find(|f| f.tx.is_some())?;
+    Some(format!("read-only through a pooler: {} runs alone, not with other statements", f.verb))
+}
 
 /// Ends the transaction (`Some(false)`) or savepoint (`Some(true)`) a rolled-back statement ran
 /// in. After an error the server refuses all but this, which is what it is for.

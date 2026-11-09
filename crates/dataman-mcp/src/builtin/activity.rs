@@ -68,7 +68,7 @@ fn sessions(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let (idle, bg) = (a.bool("include_idle"), a.bool("include_background"));
         let out: Vec<Vec<Value>> = rows
             .into_iter()
-            .filter(|s| !s.is_self && !o.conn.owns_backend(s.pid))
+            .filter(|s| !o.conn.may_be_own(s))
             .filter(|s| (idle || !s.is_idle()) && (bg || !s.is_background()))
             .map(|s| {
                 vec![
@@ -144,6 +144,12 @@ fn signal(cx: &Call, a: Args, s: Signal) -> BoxFut<'_, Result<Value, ToolError>>
         let o = cx.open(&a, Need::Write).await?;
         if o.conn.owns_backend(pid) {
             return Err(ToolError::Refused("that backend is Dataman's own".into()));
+        }
+        if o.conn.per_transaction() {
+            let rows = o.conn.activity_sessions(&o.database).await.map_err(failed)?;
+            if rows.iter().any(|s| s.pid == pid && o.conn.may_be_own(s)) {
+                return Err(ToolError::Refused("through a pooler per transaction, that server connection may be running one of Dataman's own transactions".into()));
+            }
         }
         cx.gate(&o, &class, &sql, None).await?;
         let o = cx.as_user(o, &class).await?;

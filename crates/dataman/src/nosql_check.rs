@@ -376,7 +376,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         ((t.demo_logo(&mid), t.demo_logo(&pid)), t.demo_children(&db_id))
     })
     .unwrap();
-    check("each connection's row has its engine's logo", logos == (Some(Engine::MongoDb), Some(Engine::Postgres)), format!("{logos:?}"));
+    check("each connection's row has its engine's logo", logos == (Some(Engine::MongoDb.logo()), Some(Engine::Postgres.logo())), format!("{logos:?}"));
     check("MongoDB's own database opens on its collections", listed && children == ["empty", "people"], format!("{children:?}"));
 
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&mid, DB, "people", window, cx)));
@@ -662,7 +662,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.expand_id(&format!("c:{eid}"), cx)));
     let listed = until(cx, 10, |cx| cx.update(|_, cx| tree.read(cx).demo_children(&format!("c:{eid}"))).unwrap_or_default().iter().any(|n| n == INDEX)).await;
     let logo = cx.update(|_, cx| tree.read(cx).demo_logo(&eid)).ok().flatten();
-    check("Elasticsearch's indices list under it, its logo on its row", listed && logo == Some(Engine::Elasticsearch), format!("{logo:?}"));
+    check("Elasticsearch's indices list under it, its logo on its row", listed && logo == Some(Engine::Elasticsearch.logo()), format!("{logo:?}"));
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&eid, "", INDEX, window, cx)));
     until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some()).await;
     let s = shown(ws, cx);
@@ -886,9 +886,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
 
     crate::assets::set_logos(false);
-    let hidden = crate::assets::small_logo(Engine::MongoDb, 13.).is_none();
+    let hidden = crate::assets::small_logo_at(Engine::MongoDb.logo(), 13.).is_none();
     crate::assets::set_logos(true);
-    check("Settings › Database logos hides them", hidden && crate::assets::small_logo(Engine::MongoDb, 13.).is_some(), String::new());
+    check("Settings › Database logos hides them", hidden && crate::assets::small_logo_at(Engine::MongoDb.logo(), 13.).is_some(), String::new());
 
     core.block_on(async {
         if let Ok(c) = core.connect(mongo.clone(), Some(mpw.clone())).await {

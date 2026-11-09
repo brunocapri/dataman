@@ -141,15 +141,15 @@ impl<T> Kept<T> {
     }
 }
 
-/// A connection's protections: all of it but its name, its color and whether its password is
-/// saved, which are only this person's to see.
+/// A connection's protections: all of it but its name, its color, its server's flavor and whether
+/// its password is saved, which are only this person's to see.
 pub fn protections_of(p: &ConnectionProfile) -> ConnectionProfile {
-    ConnectionProfile { name: String::new(), color: None, color_picked: false, save_password: false, ..p.clone() }
+    ConnectionProfile { name: String::new(), color: None, color_picked: false, save_password: false, flavor: Default::default(), ..p.clone() }
 }
 
 /// `p` with the protections approved for it.
 pub(crate) fn with_approved(p: &ConnectionProfile, approved: &ConnectionProfile) -> ConnectionProfile {
-    ConnectionProfile { id: p.id.clone(), name: p.name.clone(), color: p.color.clone(), color_picked: p.color_picked, save_password: p.save_password, ..approved.clone() }
+    ConnectionProfile { id: p.id.clone(), name: p.name.clone(), color: p.color.clone(), color_picked: p.color_picked, save_password: p.save_password, flavor: p.flavor, ..approved.clone() }
 }
 
 /// What `next` has over what was approved for it (none approved: a connection this person did
@@ -397,6 +397,26 @@ mod tests {
         m.outside().upsert(ConnectionProfile { mcp: Some(McpAccess::Write), ..conn("a") }).unwrap();
         assert_eq!(held_ids(&m.dataman()), ["a"]);
         assert_eq!(m.dataman().get("a").unwrap().mcp_access(), McpAccess::Read);
+    }
+
+    #[test]
+    fn the_server_flavor_is_not_a_protection() {
+        let m = Mac::new();
+        m.dataman().upsert(ConnectionProfile { mcp: Some(McpAccess::Write), ..conn("a") }).unwrap();
+        m.outside().upsert(ConnectionProfile { mcp: Some(McpAccess::Write), flavor: crate::server::Flavor::Yugabyte, ..conn("a") }).unwrap();
+        let d = m.dataman();
+        assert!(d.held().is_empty());
+        assert_eq!(d.get("a").unwrap().flavor, crate::server::Flavor::Yugabyte);
+        // Held for what it loosens, the connection still shows the file's flavor, and keeping one
+        // writes the approved rules back, not the file's.
+        m.outside().upsert(ConnectionProfile { mcp: Some(McpAccess::Full), flavor: crate::server::Flavor::Yugabyte, ..conn("a") }).unwrap();
+        let d = m.dataman();
+        assert_eq!(held_ids(&d), ["a"]);
+        let info = crate::ServerInfo::of(crate::Engine::Postgres, crate::server::Flavor::Timescale, "TimescaleDB".into(), "17");
+        assert!(d.note_flavor("a", &info).unwrap());
+        let a = m.dataman().get("a").unwrap();
+        assert_eq!((a.flavor, a.mcp_access()), (crate::server::Flavor::Timescale, McpAccess::Write));
+        assert_eq!(held_ids(&m.dataman()), ["a"]);
     }
 
     #[test]

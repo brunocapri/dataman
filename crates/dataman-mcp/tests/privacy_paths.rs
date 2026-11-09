@@ -1197,7 +1197,7 @@ fn generated_columns_follow_their_sources() {
         a(format!("CREATE DATABASE {s}"));
         a(format!(
             "CREATE TABLE {s}.gen (id int PRIMARY KEY, name varchar(50), email varchar(50), pw varchar(50), \
-             pw_len int AS (length(`pw`)) VIRTUAL, email_up varchar(50) AS (upper(email)) STORED, name_up varchar(50) AS (upper(name)) VIRTUAL)"
+             pw_len int AS (length(`pw`)) VIRTUAL, email_up varchar(50) AS (upper(concat('', email))) STORED, name_up varchar(50) AS (upper(name)) VIRTUAL)"
         ));
         a(format!("INSERT INTO {s}.gen (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"));
         check(&e, "mm", "gen", "SELECT * FROM gen");
