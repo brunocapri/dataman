@@ -357,6 +357,19 @@ fn tls_is_what_the_mode_asks_for() {
 }
 
 #[test]
+fn the_native_port_says_which_port_to_use() {
+    let e = env();
+    if open(&e, profile(""), &password()).is_none() {
+        return;
+    }
+    let addr = std::env::var("DATAMAN_CLICKHOUSE_NATIVE").unwrap_or_else(|_| "127.0.0.1:19000".into());
+    let (host, port) = addr.rsplit_once(':').unwrap();
+    let p = ConnectionProfile { host: host.into(), port: port.parse().unwrap(), ..profile("") };
+    let err = e.core.block_on(e.core.connect(p, Some(password()))).err().expect("HTTP to the native port");
+    assert!(format!("{err:#}").contains("use 8123, or 8443"), "{err:#}");
+}
+
+#[test]
 fn a_tab_keeps_its_session() {
     let e = env();
     let Some(c) = open(&e, profile(""), &password()) else { return };
@@ -476,6 +489,8 @@ fn parameters_bind_by_name_and_never_reach_the_text() {
     assert_eq!(shown(&rs, 0, 0), None);
     let rs = exec("SELECT {a:String}", vec![Some("1".into()), Some("2".into())]);
     assert!(rs.status().error.unwrap().message.contains("1 parameters and 2 values"));
+    let rs = exec("SELECT $1", vec![Some("1".into())]);
+    assert!(rs.status().error.unwrap().message.contains("{name:Type}"), "says how to write them");
     let p = dataman_core::params::detect_in("SELECT {a:String}, {b:Array(UInt8)}, {a:String}", dataman_core::sql::Dialect::ClickHouse).unwrap();
     assert_eq!(p.params.iter().map(|p| (p.key.as_str(), p.index)).collect::<Vec<_>>(), [("a", 1), ("b", 2)]);
     ok(&e, &s, "DROP DATABASE dataman_ch_params");

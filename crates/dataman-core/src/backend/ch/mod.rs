@@ -42,6 +42,9 @@ const TEXT_ROWS_BYTES: usize = 256 * 1024 * 1024;
 const QUERY_FIELD_BYTES: usize = 64 * 1024;
 const MIB: usize = 1024 * 1024;
 const OFF_THIS_MACHINE: &str = "TLS did not connect and nothing was sent in clear. ClickHouse's HTTPS port is usually 8443; on a private network without TLS, choose Disable in the connection's settings";
+/// How the server answers HTTP on its native port, in clear (9000) and with TLS (9440).
+const NATIVE_PORT_MARK: &[u8] = b"is for clickhouse-client program";
+const NATIVE_PORT: &str = "this is ClickHouse's native port and Dataman connects over HTTP: use 8123, or 8443 with TLS";
 const EXCEPTION_MARK: &[u8] = b"__exception__";
 /// The server's own limit for a session (`max_session_timeout`, 3600 by default).
 const SESSION_SECONDS: &str = "3600";
@@ -267,6 +270,9 @@ impl Client {
             let status = resp.status().as_u16();
             let code = header(resp.headers(), "x-clickhouse-exception-code").map(str::to_string);
             let body = read_up_to(resp, ERROR_BYTES).await.map_err(|e| transport(&self.base, e))?;
+            if body.windows(NATIVE_PORT_MARK.len()).any(|w| w == NATIVE_PORT_MARK) {
+                return Err(ChError::Server { code: format!("HTTP {status}"), message: NATIVE_PORT.into(), position: None });
+            }
             // Whatever answers this is not ClickHouse saying why (a proxy, another service).
             if code.is_none() && !body.windows(6).any(|w| w == b"Code: ") {
                 return Err(ChError::Server { code: format!("HTTP {status}"), message: format!("the server answered HTTP {status}, not as ClickHouse does"), position: None });
@@ -433,7 +439,7 @@ fn bind_params(sql: &str, params: &[Option<String>]) -> Result<Vec<(String, Stri
             // The server names what is missing.
             return Ok(Vec::new());
         }
-        return Err(ChError::Params(format!("the statement has {} parameters and {} values were given", names.len(), params.len())));
+        return Err(ChError::Params(format!("the statement has {} parameters and {} values were given; ClickHouse's are written {{name:Type}}", names.len(), params.len())));
     }
     // A name goes in a form field's header.
     if let Some(n) = names.iter().find(|n| !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')) {

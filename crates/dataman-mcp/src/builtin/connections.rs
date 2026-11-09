@@ -27,7 +27,7 @@ pub(super) fn port_text() -> String {
 }
 
 fn fields(s: Schema, mcp: Value) -> Schema {
-    s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver://, sqlite:///path, duckdb:///path URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
+    s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver://, clickhouse://, sqlite:///path, duckdb:///path URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
         .prop("engine", false, engine_prop(server::names(), "Default postgres; sqlite and duckdb are files (see path)."))
         .prop("path", false, json!({"type": "string", "description": "The database file of a sqlite or duckdb connection: an existing file (~ is the home folder). A file outside the home folder waits for the user's Allow."}))
         .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": port_text()}))
@@ -54,7 +54,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "create_connection",
-            description: "Saves a new database connection, for every engine Dataman speaks and the servers that speak one's protocol (see engine; sqlite and duckdb take a path to an existing file instead of host and user). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
+            description: "Saves a new database connection, for every engine Dataman speaks and the servers that speak one's protocol (see engine; sqlite and duckdb take a path to an existing file instead of host and user). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, clickhouse://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
             schema: fields(
                 Schema::new()
                     .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "A short label; must be unique (case-insensitive) unless overwrite is true."}))

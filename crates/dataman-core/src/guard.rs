@@ -442,29 +442,50 @@ fn absorb(f: &mut Facts, c: Facts) {
 
 const OBJECT_WORDS: &[&str] = &[
     "TABLE", "VIEW", "MATERIALIZED", "INDEX", "SEQUENCE", "SCHEMA", "DATABASE", "FUNCTION", "PROCEDURE", "ROUTINE",
-    "TRIGGER", "TYPE", "DOMAIN", "EXTENSION", "FOREIGN", "ROLE", "USER", "GROUP", "POLICY", "RULE", "OWNED", "BY",
-    "AGGREGATE", "OPERATOR", "CLASS", "FAMILY", "COLLATION", "CONVERSION", "EVENT", "PUBLICATION", "SUBSCRIPTION",
-    "SERVER", "TABLESPACE", "STATISTICS", "TEXT", "SEARCH", "CONFIGURATION", "DICTIONARY", "PARSER", "TEMPLATE",
-    "LANGUAGE", "PROCEDURAL", "ACCESS", "METHOD", "CAST", "TRANSFORM", "DATA", "WRAPPER", "MAPPING", "FOR",
-    "LARGE", "OBJECT", "SYSTEM", "DEFAULT", "PRIVILEGES",
+    "TRIGGER", "TYPE", "DOMAIN", "EXTENSION", "FOREIGN", "ROLE", "USER", "GROUP", "POLICY", "RULE", "OWNED",
+    "AGGREGATE", "OPERATOR", "COLLATION", "CONVERSION", "EVENT", "PUBLICATION", "SUBSCRIPTION",
+    "SERVER", "TABLESPACE", "STATISTICS", "TEXT", "SEARCH", "DICTIONARY",
+    "LANGUAGE", "PROCEDURAL", "ACCESS", "CAST", "TRANSFORM", "DATA",
+    "LARGE", "SYSTEM", "DEFAULT",
+];
+/// The words that go on naming the kind of object. After the kind comes the object's own name,
+/// whatever it is called: `DROP TABLE data`, `ALTER TABLE default.t`.
+const OBJECT_WORDS_AFTER: &[(&str, &[&str])] = &[
+    ("MATERIALIZED", &["VIEW"]),
+    ("FOREIGN", &["DATA", "TABLE"]),
+    ("DATA", &["WRAPPER"]),
+    ("USER", &["MAPPING"]),
+    ("MAPPING", &["FOR"]),
+    ("OWNED", &["BY"]),
+    ("OPERATOR", &["CLASS", "FAMILY"]),
+    ("EVENT", &["TRIGGER"]),
+    ("TEXT", &["SEARCH"]),
+    ("SEARCH", &["CONFIGURATION", "DICTIONARY", "PARSER", "TEMPLATE"]),
+    ("PROCEDURAL", &["LANGUAGE"]),
+    ("ACCESS", &["METHOD"]),
+    ("TRANSFORM", &["FOR"]),
+    ("LARGE", &["OBJECT"]),
+    ("DEFAULT", &["PRIVILEGES"]),
 ];
 const MODIFIERS: &[&str] =
     &["TEMP", "TEMPORARY", "UNLOGGED", "UNIQUE", "OR", "REPLACE", "ALTER", "GLOBAL", "LOCAL", "RECURSIVE", "TRUSTED", "CLUSTERED", "NONCLUSTERED"];
 
 fn object_command(t: &Toks, first: &str) -> (String, Option<String>, Vec<String>) {
     let mut i = 1;
-    let mut words = Vec::new();
+    while t.word(i).is_some_and(|w| MODIFIERS.contains(&w.as_str())) {
+        i += 1;
+    }
+    let mut words: Vec<String> = Vec::new();
     while let Some(w) = t.word(i) {
-        if MODIFIERS.contains(&w.as_str()) {
-            i += 1;
-            continue;
+        let names_the_kind = match words.last() {
+            None => OBJECT_WORDS.contains(&w.as_str()),
+            Some(kind) => OBJECT_WORDS_AFTER.iter().any(|(k, next)| *k == kind.as_str() && next.contains(&w.as_str())),
+        };
+        if !names_the_kind {
+            break;
         }
-        if OBJECT_WORDS.contains(&w.as_str()) && words.len() < 3 {
-            words.push(w);
-            i += 1;
-            continue;
-        }
-        break;
+        words.push(w);
+        i += 1;
     }
     loop {
         if t.is(i, "IF") {
@@ -2247,6 +2268,58 @@ mod tests {
         assert!(nw("WITH RECURSIVE a (n) AS (SELECT 1), b AS MATERIALIZED (UPDATE t SET x = 1 RETURNING 1) SELECT * FROM a"));
         let f = classify("WITH a AS (SELECT 1) SELECT * FROM a");
         assert_eq!((f.effect, f.no_where), (Effect::Read, false));
+    }
+
+    #[test]
+    fn an_object_may_be_called_anything() {
+        use Dialect::{ClickHouse, MySql, Postgres, TSql};
+        let cases = [
+            (ClickHouse, "CREATE TABLE default.users (a Int8)", "CREATE TABLE", "default.users"),
+            (ClickHouse, "DROP TABLE default.users", "DROP TABLE", "default.users"),
+            (ClickHouse, "ALTER TABLE default.users DROP COLUMN a", "ALTER TABLE", "default.users"),
+            (ClickHouse, "CREATE VIEW default.v AS SELECT 1", "CREATE VIEW", "default.v"),
+            (ClickHouse, "DROP DATABASE default", "DROP DATABASE", "default"),
+            (ClickHouse, "DROP TABLE system.query_log", "DROP TABLE", "system.query_log"),
+            (ClickHouse, "DROP USER default", "DROP USER", "default"),
+            (Postgres, "DROP TABLE data", "DROP TABLE", "data"),
+            (Postgres, "DROP TABLE data.users", "DROP TABLE", "data.users"),
+            (Postgres, "CREATE TABLE data (a int)", "CREATE TABLE", "data"),
+            (Postgres, "ALTER TABLE data DROP COLUMN a", "ALTER TABLE", "data"),
+            (Postgres, "DROP VIEW system", "DROP VIEW", "system"),
+            (Postgres, "DROP TABLE object", "DROP TABLE", "object"),
+            (Postgres, "DROP TABLE temp", "DROP TABLE", "temp"),
+            (Postgres, "CREATE TABLE global (a int)", "CREATE TABLE", "global"),
+            (Postgres, "DROP SCHEMA data CASCADE", "DROP SCHEMA", "data"),
+            (MySql, "DROP TABLE data", "DROP TABLE", "data"),
+            (TSql, "DROP TABLE data", "DROP TABLE", "data"),
+        ];
+        for (d, sql, verb, target) in cases {
+            let f = classify_in(sql, d);
+            assert_eq!((f.verb.as_str(), f.target.as_deref()), (verb, Some(target)), "{d:?} {sql}");
+        }
+        assert!(classify("ALTER TABLE data DROP COLUMN a").alter_drop.is_some());
+        assert!(!classify("DROP TABLE database").outside_tx, "only a database's own DROP leaves the transaction");
+        assert!(!classify("ALTER TABLE system.t ADD a int").outside_tx);
+        assert!(classify("DROP DATABASE d").outside_tx);
+        assert!(classify("ALTER SYSTEM SET x = 1").outside_tx);
+
+        for (sql, verb, target) in [
+            ("CREATE MATERIALIZED VIEW m AS SELECT 1", "CREATE MATERIALIZED VIEW", Some("m")),
+            ("CREATE OR REPLACE TEMP VIEW v AS SELECT 1", "CREATE VIEW", Some("v")),
+            ("CREATE UNIQUE INDEX i ON t (a)", "CREATE INDEX", Some("i")),
+            ("CREATE FOREIGN TABLE f (a int) SERVER s", "CREATE FOREIGN TABLE", Some("f")),
+            ("DROP FOREIGN DATA WRAPPER w", "DROP FOREIGN DATA", Some("w")),
+            ("DROP USER MAPPING FOR u SERVER s", "DROP USER MAPPING", Some("u")),
+            ("DROP EVENT TRIGGER e", "DROP EVENT TRIGGER", Some("e")),
+            ("DROP OWNED BY r", "DROP OWNED", Some("r")),
+            ("CREATE TEXT SEARCH CONFIGURATION c (COPY = simple)", "CREATE TEXT SEARCH", Some("c")),
+            ("DROP OPERATOR CLASS c USING btree", "DROP OPERATOR CLASS", Some("c")),
+            ("DROP TRANSFORM FOR int LANGUAGE plpython3u", "DROP TRANSFORM", Some("int")),
+            ("ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO x", "ALTER DEFAULT PRIVILEGES", Some("GRANT")),
+        ] {
+            let f = classify(sql);
+            assert_eq!((f.verb.as_str(), f.target.as_deref()), (verb, target), "{sql}");
+        }
     }
 
     #[test]

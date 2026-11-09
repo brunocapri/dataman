@@ -2,6 +2,7 @@
 //! with the same panels. A connection string's password goes where a typed one goes (the Keychain),
 //! never into connections.toml.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -971,7 +972,7 @@ impl ConnDialog {
 
     fn apply_string(&mut self, cx: &mut Context<Self>) {
         let text = self.conn_str.read(cx).text().trim().to_string();
-        let Some(spec) = connstr::resolved(&text) else {
+        let Some(spec) = connstr::resolved(&string_on_sheet(self.engine, &text)) else {
             self.str_bad = !text.is_empty();
             cx.notify();
             return;
@@ -1979,6 +1980,16 @@ impl ConnDialog {
     }
 }
 
+/// An http(s) URL on the sheet of an engine addressed by one is that server's, not Elasticsearch's.
+fn string_on_sheet(sheet: Engine, text: &str) -> Cow<'_, str> {
+    let form = sheet.spec().form;
+    if form.http_url && (text.starts_with("https://") || text.starts_with("http://")) {
+        Cow::Owned(format!("{}:{text}", form.scheme))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 fn string_placeholder(e: Engine) -> String {
     format!("{}://user@host:{}/db", e.spec().form.scheme, e.default_port())
 }
@@ -2871,6 +2882,17 @@ mod tests {
             let want = if e == Engine::OpenSearch { Engine::Elasticsearch } else { e };
             assert_eq!(got, Some(want), "{e:?}");
         }
+    }
+
+    #[test]
+    fn a_clickhouse_sheet_keeps_an_http_url() {
+        let read = |sheet, s| connstr::resolved(&string_on_sheet(sheet, s)).unwrap().into_profile().0;
+        let p = read(Engine::ClickHouse, "https://ch.corp.example");
+        assert_eq!((p.engine, p.port, p.sslmode), (Engine::ClickHouse, 8443, SslMode::VerifyFull));
+        let p = read(Engine::ClickHouse, "http://ch.corp.example");
+        assert_eq!((p.engine, p.port, p.sslmode), (Engine::ClickHouse, 8123, SslMode::Disable));
+        assert_eq!(read(Engine::ClickHouse, "postgres://u@h/d").engine, Engine::Postgres, "a string of another engine still moves the sheet");
+        assert_eq!(read(Engine::Elasticsearch, "https://es.example:9200").engine, Engine::Elasticsearch);
     }
 
     #[test]

@@ -61,6 +61,12 @@ pub struct Form {
     /// The database field's label ("DB" for Redis' numbered ones).
     pub database_label: &'static str,
     pub scheme: &'static str,
+    /// Its server answers at an http(s) URL, which its drivers write `{scheme}:https://…` since a
+    /// bare one reads as Elasticsearch's: one typed on its sheet is its own.
+    pub http_url: bool,
+    /// The port its server takes TLS on, when that is not `default_port`: where a string that
+    /// turns TLS on and names no port goes.
+    pub tls_port: Option<u16>,
 }
 
 /// What the engine calls a table, one and many ("collection", "collections").
@@ -72,8 +78,8 @@ pub struct Nouns {
 
 const TABLES: Nouns = Nouns { one: "table", many: "tables" };
 
-const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database", scheme: "postgres" };
-const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false, database_label: "Database", scheme: "" };
+const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database", scheme: "postgres", http_url: false, tls_port: None };
+const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false, database_label: "Database", scheme: "", http_url: false, tls_port: None };
 const NO_FILES: &[&str] = &[];
 
 /// In `Engine`'s declaration order: `Engine::spec` indexes it.
@@ -334,7 +340,7 @@ pub static SPECS: [EngineSpec; 10] = [
         system_schemas: &["system", "information_schema", "INFORMATION_SCHEMA"],
         numbered_dbs: None,
         nouns: TABLES,
-        form: Form { database_placeholder: "default", scheme: "clickhouse", ..SERVER },
+        form: Form { database_placeholder: "default", scheme: "clickhouse", http_url: true, tls_port: Some(8443), ..SERVER },
         strict_tls: true,
         db_in_name: Some(2),
     },
