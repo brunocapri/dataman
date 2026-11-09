@@ -102,6 +102,11 @@ assets!(
     "logos/duckdb.svg",
     "logos/clickhouse.svg",
     "logos/timescale.svg",
+    "logos/mariadb.svg",
+    "logos/valkey.svg",
+    "logos/yugabytedb.svg",
+    "logos/dragonfly.svg",
+    "logos/vitess.svg",
 );
 
 pub struct Assets;

@@ -73,10 +73,10 @@ const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
 /// order: the first whose clue the report holds names the server.
 pub static FLAVORS: [FlavorSpec; 11] = [
-    FlavorSpec { aliases: &["maria"], schemes: &[("mariadb", "mysql")], ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
+    FlavorSpec { aliases: &["maria"], logo: Some("logos/mariadb.svg"), schemes: &[("mariadb", "mysql")], ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
     FlavorSpec { aliases: &["azuresql", "azure"], ..row(Flavor::Azure, Engine::SqlServer, "azure-sql", "Azure SQL", "", None) },
     // valkey-py's own schemes.
-    FlavorSpec { schemes: &[("valkey", "redis"), ("valkeys", "rediss")], ..row(Flavor::Valkey, Engine::Redis, "valkey", "Valkey", "valkey", clue("valkey_version", "", true)) },
+    FlavorSpec { logo: Some("logos/valkey.svg"), schemes: &[("valkey", "redis"), ("valkeys", "rediss")], ..row(Flavor::Valkey, Engine::Redis, "valkey", "Valkey", "valkey", clue("valkey_version", "", true)) },
     FlavorSpec {
         aliases: &["timescale", "tigerdata"],
         logo: Some("logos/timescale.svg"),
@@ -86,12 +86,13 @@ pub static FLAVORS: [FlavorSpec; 11] = [
     // Its JDBC smart driver's scheme.
     FlavorSpec {
         aliases: &["yugabyte"],
+        logo: Some("logos/yugabytedb.svg"),
         default_port: Some(5433),
         schemes: &[("yugabytedb", "postgresql")],
         ..row(Flavor::Yugabyte, Engine::Postgres, "yugabytedb", "YugabyteDB", "yugabytedb yugabyte ysql", clue("", "-YB-", true))
     },
     FlavorSpec { aliases: &["percona-server"], ..row(Flavor::Percona, Engine::MySql, "percona", "Percona Server", "percona", clue("version_comment", "Percona Server", false)) },
-    FlavorSpec { aliases: &["dragonflydb"], ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
+    FlavorSpec { aliases: &["dragonflydb"], logo: Some("logos/dragonfly.svg"), ..row(Flavor::Dragonfly, Engine::Redis, "dragonfly", "Dragonfly", "dragonfly dragonflydb", clue("dragonfly_version", "", true)) },
     // KeyDB reports Redis' fields with its own release in `redis_version`; only its own INFO
     // section (`# KeyDB`, in the default INFO) is its.
     row(Flavor::KeyDb, Engine::Redis, "keydb", "KeyDB", "keydb snap", clue("mvcc_depth", "", false)),
@@ -100,7 +101,7 @@ pub static FLAVORS: [FlavorSpec; 11] = [
     // vtgate answers `@@version` and `@@version_comment` itself and the MySQL behind it the rest:
     // the backend reads both (`vitess_label`). It takes `SET SESSION TRANSACTION READ ONLY` and
     // keeps nothing of it; its READ ONLY transactions the tablets do hold.
-    FlavorSpec { aliases: &["planetscale"], read_only_held: false, ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
+    FlavorSpec { aliases: &["planetscale"], logo: Some("logos/vitess.svg"), read_only_held: false, ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
 ];
 
 impl Flavor {

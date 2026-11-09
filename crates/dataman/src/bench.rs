@@ -445,7 +445,12 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         });
                         window.focus(&editor.focus_handle(cx), cx);
                     }
-                    "dialog" => ws.update(cx, |w, cx| w.open_dialog(None, window, cx)),
+                    "dialog" => ws.update(cx, |w, cx| {
+                        w.open_dialog(None, window, cx);
+                        if let (Some(d), Ok(q)) = (w.dialog.clone(), std::env::var("DATAMAN_SHOT_SEARCH")) {
+                            d.update(cx, |d, cx| d.demo_search(&q, cx));
+                        }
+                    }),
                     "dialog-advanced" | "dialog-advanced-prod" => ws.update(cx, |w, cx| {
                         let core = w.store.read(cx).core.clone();
                         crate::mcp::demo_seed(&core, false, cx);
