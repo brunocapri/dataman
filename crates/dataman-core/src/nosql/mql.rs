@@ -17,9 +17,11 @@ pub enum Op {
     ShowCollections,
     Use(String),
     Find { coll: String, filter: Document, projection: Option<Document>, sort: Option<Document>, skip: u64, limit: Option<i64>, one: bool, options: Document },
-    Aggregate { coll: Option<String>, pipeline: Vec<Document> },
-    Count { coll: String, filter: Option<Document> },
-    Distinct { coll: String, field: String, filter: Document },
+    /// `options`: what the server takes beside the pipeline (`collation`, `hint`, `let`…).
+    Aggregate { coll: Option<String>, pipeline: Vec<Document>, options: Document },
+    /// No filter: an estimate. `options`: the `count` command's (`collation`, `limit`…).
+    Count { coll: String, filter: Option<Document>, options: Document },
+    Distinct { coll: String, field: String, filter: Document, options: Document },
     Insert { coll: String, docs: Vec<Document> },
     Update { coll: String, filter: Document, update: Bson, many: bool, upsert: bool, options: Document },
     Replace { coll: String, filter: Document, doc: Document, upsert: bool, options: Document },
@@ -45,6 +47,24 @@ const READ_COMMANDS: &[&str] = &[
 ];
 
 impl Op {
+    /// It is given the option `key` (`runCommand`'s own fields too).
+    pub fn takes(&self, key: &str) -> bool {
+        match self {
+            Op::Find { options, .. }
+            | Op::Aggregate { options, .. }
+            | Op::Count { options, .. }
+            | Op::Distinct { options, .. }
+            | Op::Update { options, .. }
+            | Op::Replace { options, .. }
+            | Op::Delete { options, .. }
+            | Op::FindAndModify { options, .. }
+            | Op::CreateIndex { options, .. }
+            | Op::CreateCollection { options, .. } => options.contains_key(key),
+            Op::Command { doc, .. } => doc.contains_key(key) || doc.get_document("explain").is_ok_and(|e| e.contains_key(key)),
+            _ => false,
+        }
+    }
+
     pub fn collection(&self) -> Option<&str> {
         match self {
             Op::Find { coll, .. }
@@ -387,16 +407,24 @@ fn db_method(name: &str, args: &[Val], at: usize) -> Result<Op, ParseError> {
         }
         "dropDatabase" => Op::DropDatabase,
         "stats" => Op::Stats { coll: None },
-        "aggregate" => Op::Aggregate { coll: None, pipeline: pipeline(args, at)? },
+        "aggregate" => Op::Aggregate { coll: None, pipeline: pipeline(args, at)?, options: aggregate_options(args, at)? },
         "version" | "serverBuildInfo" => Op::Command { doc: doc! { "buildInfo": 1 }, admin: true },
         "serverStatus" => Op::Command { doc: doc! { "serverStatus": 1 }, admin: true },
         "hostInfo" => Op::Command { doc: doc! { "hostInfo": 1 }, admin: true },
-        "currentOp" => Op::Aggregate { coll: None, pipeline: vec![doc! { "$currentOp": {} }] },
+        "currentOp" => Op::Aggregate { coll: None, pipeline: vec![doc! { "$currentOp": {} }], options: Document::new() },
         "getUsers" => Op::Command { doc: doc! { "usersInfo": 1 }, admin: false },
         "getRoles" => Op::Command { doc: doc! { "rolesInfo": 1 }, admin: false },
         "ping" => Op::Command { doc: doc! { "ping": 1 }, admin: false },
         other => return Err(err_at(at, format!("db.{other}() is not supported here (try db.runCommand)"))),
     })
+}
+
+/// `aggregate([stages], options)`; the old form, stages as arguments, takes none.
+fn aggregate_options(args: &[Val], at: usize) -> Result<Document, ParseError> {
+    match args.first() {
+        Some(Val::Arr(_)) => document(args.get(1), at, "the options"),
+        _ => Ok(Document::new()),
+    }
 }
 
 fn pipeline(args: &[Val], at: usize) -> Result<Vec<Document>, ParseError> {
@@ -430,10 +458,15 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
                 options,
             }
         }
-        "aggregate" => Op::Aggregate { coll: Some(coll.clone()), pipeline: pipeline(&args, at)? },
-        "countDocuments" | "count" => Op::Count { coll: coll.clone(), filter: Some(document(args.first(), at, "the filter")?) },
-        "estimatedDocumentCount" => Op::Count { coll: coll.clone(), filter: None },
-        "distinct" => Op::Distinct { coll: coll.clone(), field: string(args.first(), at, "distinct()")?, filter: document(args.get(1), at, "the filter")? },
+        "aggregate" => Op::Aggregate { coll: Some(coll.clone()), pipeline: pipeline(&args, at)?, options: aggregate_options(&args, at)? },
+        "countDocuments" | "count" => Op::Count { coll: coll.clone(), filter: Some(document(args.first(), at, "the filter")?), options: document(args.get(1), at, "the options")? },
+        "estimatedDocumentCount" => Op::Count { coll: coll.clone(), filter: None, options: document(args.first(), at, "the options")? },
+        "distinct" => Op::Distinct {
+            coll: coll.clone(),
+            field: string(args.first(), at, "distinct()")?,
+            filter: document(args.get(1), at, "the filter")?,
+            options: document(args.get(2), at, "the options")?,
+        },
         "insertOne" => Op::Insert { coll: coll.clone(), docs: vec![document(args.first(), at, "insertOne()")?] },
         "insertMany" | "insert" => {
             let docs = match args.first() {
@@ -528,11 +561,14 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
             (Op::Find { limit, .. }, "limit") => *limit = Some(int(a.first(), at, "limit()")?),
             (Op::Find { skip, .. }, "skip") => *skip = int(a.first(), at, "skip()")?.max(0) as u64,
             (Op::Find { projection, .. }, "projection" | "project") => *projection = Some(document(a.first(), at, "projection()")?),
-            (Op::Find { coll, filter, .. }, "count" | "itcount" | "size") => {
-                op = Op::Count { coll: coll.clone(), filter: Some(filter.clone()) };
+            (Op::Find { coll, filter, options, .. }, "count" | "itcount" | "size") => {
+                // What decides which documents match goes along (a collation, a hint).
+                let options = options.iter().filter(|(k, _)| matches!(k.as_str(), "collation" | "hint" | "maxTimeMS" | "comment")).map(|(k, v)| (k.clone(), v.clone())).collect();
+                op = Op::Count { coll: coll.clone(), filter: Some(filter.clone()), options };
             }
-            (Op::Find { coll, filter, projection, sort, skip, limit, .. }, "explain") => {
+            (Op::Find { coll, filter, projection, sort, skip, limit, options, .. }, "explain") => {
                 let mut find = doc! { "find": coll.clone(), "filter": filter.clone() };
+                find.extend(options.clone());
                 if let Some(p) = projection {
                     find.insert("projection", p.clone());
                 }
@@ -552,8 +588,10 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
                 };
                 op = Op::Command { doc: doc! { "explain": find, "verbosity": verbosity }, admin: false };
             }
-            (Op::Aggregate { coll: Some(coll), pipeline }, "explain") => {
-                op = Op::Command { doc: doc! { "explain": { "aggregate": coll.clone(), "pipeline": pipeline.clone(), "cursor": {} }, "verbosity": "queryPlanner" }, admin: false };
+            (Op::Aggregate { coll: Some(coll), pipeline, options }, "explain") => {
+                let mut aggregate = doc! { "aggregate": coll.clone(), "pipeline": pipeline.clone(), "cursor": {} };
+                aggregate.extend(options.clone());
+                op = Op::Command { doc: doc! { "explain": aggregate, "verbosity": "queryPlanner" }, admin: false };
             }
             (_, other) => return Err(err_at(at, format!(".{other}() does not go here"))),
         }
@@ -587,8 +625,8 @@ mod tests {
         assert!(matches!(op("db.users.findOne()"), Op::Find { limit: Some(1), one: true, .. }));
         assert_eq!(op("db.system.users.find()").collection(), Some("system.users"));
         assert_eq!(op("db['odd name'].find()").collection(), Some("odd name"));
-        assert_eq!(op("db.getCollection('a.b').countDocuments({})"), Op::Count { coll: "a.b".into(), filter: Some(doc! {}) });
-        assert_eq!(op("db.c.find({x: 1}).count()"), Op::Count { coll: "c".into(), filter: Some(doc! { "x": 1 }) });
+        assert_eq!(op("db.getCollection('a.b').countDocuments({})"), Op::Count { coll: "a.b".into(), filter: Some(doc! {}), options: doc! {} });
+        assert_eq!(op("db.c.find({x: 1}).count()"), Op::Count { coll: "c".into(), filter: Some(doc! { "x": 1 }), options: doc! {} });
         let p = parse("db.getSiblingDB('admin').runCommand({ping: 1})").unwrap();
         assert_eq!(p.db.as_deref(), Some("admin"));
         assert_eq!(p.op, Op::Command { doc: doc! { "ping": 1 }, admin: false });

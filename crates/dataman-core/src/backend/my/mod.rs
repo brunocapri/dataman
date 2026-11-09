@@ -482,9 +482,13 @@ fn identify(raw: &str, comment: &str) -> (crate::server::Flavor, String, String)
 fn vitess_label(gate: &str, comment: &str, release: &str) -> Option<String> {
     let said = |s: &str| s.to_ascii_lowercase();
     let (gate, comment) = (said(gate), said(comment));
+    // A vtgate run with `--mysql-server-version 8.0.30` (as deployments set it) and built by
+    // anyone but a `vitess` user names itself only by its comment's form, which no MySQL fork
+    // answers: `Version: 22.0.1 (Git revision 0f0b… branch 'HEAD') built on …`.
+    let vtgate = comment.starts_with("version: ") && comment.contains(" (git revision ");
     let product = if gate.contains("planetscale") || comment.contains("planetscale") {
         "PlanetScale"
-    } else if gate.contains("vitess") || comment.contains("vitess") {
+    } else if gate.contains("vitess") || comment.contains("vitess") || vtgate {
         "Vitess"
     } else {
         return None;
@@ -626,7 +630,9 @@ pub(crate) async fn run(
     aborted: &(dyn Fn() -> bool + Sync),
     next: &(dyn Fn(&Arc<ResultSet>) -> Arc<ResultSet> + Sync),
 ) -> Ran {
-    let fail = |e: &MyError| if interrupted(e) { Ran::Cancelled } else { Ran::Failed(error_info_at(e, &rs.sql)) };
+    // Interrupted by our own cancel. vtgate answers its row limit with the same code ("Row count
+    // exceeded 10000"), and another session's KILL QUERY is no cancel of the user's: both fail.
+    let fail = |e: &MyError| if interrupted(e) && rs.demand().borrow().abort { Ran::Cancelled } else { Ran::Failed(error_info_at(e, &rs.sql)) };
     let exec = match plan(client, &rs.sql, rs.params(), aborted).await {
         Ok(Some(x)) => x,
         Ok(None) => return Ran::NeverRan { settle: false },
@@ -645,7 +651,7 @@ pub(crate) async fn run(
     let mut cur = rs.clone();
     let mut cols = cols;
     loop {
-        let n = match super::pump(&mut rows, &cur, &cols, started, on_pause).await {
+        let n = match super::pump(&mut rows, &cur, &cols, started, on_pause, 0).await {
             Ok(n) => n,
             Err(e) => return fail(&e),
         };
@@ -694,6 +700,12 @@ mod tests {
         assert_eq!(vitess_label("8.4.6-Vitess", comment, "8.0.43").as_deref(), Some("Vitess 25.0.0 (MySQL 8.0.43)"));
         assert_eq!(vitess_label("8.0.34-PlanetScale", "", "8.0.34-PlanetScale").as_deref(), Some("PlanetScale (MySQL 8.0.34)"));
         assert_eq!(vitess_label("8.4.6", "MySQL Community Server - GPL", "8.4.6"), None);
+        // Its version set to the MySQL behind it, and a build of nobody named vitess: a read-only
+        // tab would otherwise trust the session setting vtgate drops.
+        let released = "Version: 22.0.1 (Git revision 0f0b1a3 branch 'HEAD') built on Tue Jun 3 10:01:12 UTC 2025 by runner@fv-az1234-56 using go1.24.3 linux/amd64";
+        assert_eq!(vitess_label("8.0.30", released, "8.0.30").as_deref(), Some("Vitess 22.0.1 (MySQL 8.0.30)"));
+        assert_eq!(vitess_label("8.0.36", "Percona Server (GPL), Release 28, Revision 47601f19", "8.0.36-28"), None);
+        assert_eq!(vitess_label("8.0.36", "Source distribution", "8.0.36"), None);
         assert_eq!(vitess_label("11.4.2-MariaDB-ubu2404", "mariadb.org binary distribution", "11.4.2-MariaDB-ubu2404"), None);
     }
 

@@ -130,6 +130,51 @@ fn failed_transaction_and_recovery() {
     assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
 }
 
+/// Several statements in one text run inside an open transaction too, and leave it open: the
+/// server refuses to prepare them, and a refused prepare would abort the transaction.
+#[test]
+fn several_statements_inside_a_transaction() {
+    let e = env();
+    let Some(c) = open(&e, pg_profile(), Some(&pg_password())) else { return };
+    let s = c.session(None);
+    ok(&e, &s, "BEGIN");
+    ok(&e, &s, "CREATE TEMP TABLE dataman_several (a int)");
+    ok(&e, &s, "INSERT INTO dataman_several VALUES (1); INSERT INTO dataman_several VALUES (2)");
+    let rs = ok(&e, &s, "SELECT count(*) FROM dataman_several");
+    assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("2"));
+    assert_eq!(s.tx().status, TxStatus::Open);
+    ok(&e, &s, "SELECT 1");
+    assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
+}
+
+/// The server ends the connection inside a transaction (a restart, an admin's terminate): the
+/// next statement fails, said why, instead of running on a new connection outside the
+/// transaction the user still thinks is open; the one after it runs.
+#[test]
+fn a_transaction_lost_with_the_connection_is_said() {
+    let e = env();
+    let Some(c) = open(&e, pg_profile(), Some(&pg_password())) else { return };
+    let admin = c.session(None);
+    ok(&e, &admin, "DROP TABLE IF EXISTS public.dataman_lost_tx");
+    ok(&e, &admin, "CREATE TABLE public.dataman_lost_tx (a int)");
+    let s = c.session(None);
+    ok(&e, &s, "BEGIN");
+    ok(&e, &s, "INSERT INTO public.dataman_lost_tx VALUES (1)");
+    let pid = s.backend_pid().expect("a direct session's process");
+    ok(&e, &admin, &format!("SELECT pg_terminate_backend({pid})"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.tx().status != TxStatus::Idle {
+        assert!(Instant::now() < deadline, "the closed connection was never seen");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let rs = run(&e, &s, "INSERT INTO public.dataman_lost_tx VALUES (2)");
+    assert_eq!(rs.phase(), Phase::Failed);
+    assert!(rs.status().error.unwrap().message.contains("rolled it back"));
+    ok(&e, &s, "INSERT INTO public.dataman_lost_tx VALUES (3)");
+    assert_eq!(count(&e, &c, "SELECT string_agg(a::text, ',') FROM public.dataman_lost_tx"), "3");
+    ok(&e, &admin, "DROP TABLE public.dataman_lost_tx");
+}
+
 #[test]
 fn paused_result_and_cancel_inside_a_transaction() {
     let e = env();
@@ -201,8 +246,12 @@ fn read_only_per_database_on_postgres() {
     ok(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (1)");
     assert!(bounded("INSERT INTO public.dataman_ro_db VALUES (9)").is_ok());
     ok(&e, &s, "BEGIN");
-    c.set_read_only_for("dataman", true);
     ok(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (2)");
+    // Read-only from here: the transaction begun before is no read-only one, and nothing more
+    // runs in it (a function a SELECT calls would write) but its end.
+    c.set_read_only_for("dataman", true);
+    let rs = run(&e, &s, "SELECT 1");
+    assert!(rs.status().error.is_some_and(|e| e.message.contains("end it first")), "{:?}", rs.status().error);
     ok(&e, &s, "COMMIT");
     let rs = run(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (3)");
     assert_eq!(code(&rs).as_deref(), Some("25006"));

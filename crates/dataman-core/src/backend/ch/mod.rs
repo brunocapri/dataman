@@ -983,7 +983,7 @@ pub(crate) async fn run(client: &Arc<Client>, rs: &Arc<ResultSet>, started: Inst
     rows.show_in(rs);
     rs.set_columns(columns);
     let cols = rs.columns().unwrap_or_default();
-    match super::pump(&mut rows, rs, &cols, started, on_pause).await {
+    match super::pump(&mut rows, rs, &cols, started, on_pause, 0).await {
         Ok(n) => Ran::Done(n),
         Err(e) => fail(&e),
     }

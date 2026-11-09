@@ -591,7 +591,7 @@ impl Call {
         }
         let ro = self.read_only(args, &p);
         let judged_sql = w.judged.unwrap_or(w.sql);
-        let class = guard::agent_write_class(judged_sql, d);
+        let class = guard::agent_write_class_on(judged_sql, d, Target::of(&p).ddl_commits);
         let preview = guard::agent_preview(w.sql, d);
         let judged = policy::judge(self.hub.settings().mcp_enabled, Target { read_only: ro, ..Target::of(&p) }, judged_sql, p.mcp_allowed_on());
         let ask: Option<Vec<String>> = match judged.verdict {

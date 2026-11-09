@@ -570,6 +570,12 @@ fn sendless(ty: &Type) -> bool {
 
 /// The server read more than one statement where the splitter saw one: the text protocol would
 /// run them all, unseen by the agents' checks.
+/// A paused result's server connection is shared through a pooler per transaction: it reads on
+/// (bounded), so that the pooler gets the connection back when the result ends.
+fn read_ahead(client: &Client) -> usize {
+    if client.keeps_statements() { 0 } else { super::SHARED_READ_AHEAD_BYTES }
+}
+
 pub(crate) fn several_commands(e: &tokio_postgres::Error) -> bool {
     e.as_db_error().is_some_and(|d| d.code() == &tokio_postgres::error::SqlState::SYNTAX_ERROR && d.message().contains("multiple commands"))
 }
@@ -704,26 +710,39 @@ pub(crate) async fn run(
         }
         None => {}
     }
-    let r = match client.describe(&rs.sql).await {
-        Ok(_) if aborted() => return Ran::NeverRan { settle: false },
-        Ok(stmt) => {
-            executing();
-            fetch_extended(client, &stmt, rs, started, on_pause).await
+    // Several statements go straight to the simple protocol: the server refuses to prepare them,
+    // and a refused prepare aborts the transaction they were to run in. An agent's text has one
+    // statement per call.
+    let several = rs.params().is_empty() && rs.agent().is_none() && crate::sql::split_in(&rs.sql, crate::sql::Dialect::Postgres).len() > 1;
+    let r = if several {
+        if aborted() {
+            return Ran::NeverRan { settle: false };
         }
-        Err(e) if aborted() || e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => return Ran::NeverRan { settle: true },
-        // With parameters there is no such fallback: values are never spliced into SQL.
-        Err(e) if e.as_db_error().is_some() && rs.params().is_empty() && !(rs.agent().is_some() && several_commands(&e)) => {
-            rs.update_status(|s| s.text_mode = true);
-            executing();
-            match fetch_simple(client, rs, started, on_pause).await {
-                Err(e2) if e2.code() == Some(&tokio_postgres::error::SqlState::IN_FAILED_SQL_TRANSACTION) => {
-                    rs.update_status(|s| s.text_mode = false);
-                    Err(e)
-                }
-                r => r,
+        rs.update_status(|s| s.text_mode = true);
+        executing();
+        fetch_simple(client, rs, started, on_pause).await
+    } else {
+        match client.describe(&rs.sql).await {
+            Ok(_) if aborted() => return Ran::NeverRan { settle: false },
+            Ok(stmt) => {
+                executing();
+                fetch_extended(client, &stmt, rs, started, on_pause).await
             }
+            Err(e) if aborted() || e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => return Ran::NeverRan { settle: true },
+            // With parameters there is no such fallback: values are never spliced into SQL.
+            Err(e) if e.as_db_error().is_some() && rs.params().is_empty() && !(rs.agent().is_some() && several_commands(&e)) => {
+                rs.update_status(|s| s.text_mode = true);
+                executing();
+                match fetch_simple(client, rs, started, on_pause).await {
+                    Err(e2) if e2.code() == Some(&tokio_postgres::error::SqlState::IN_FAILED_SQL_TRANSACTION) => {
+                        rs.update_status(|s| s.text_mode = false);
+                        Err(e)
+                    }
+                    r => r,
+                }
+            }
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
     };
     match r {
         Ok(affected) => Ran::Done(affected),
@@ -772,7 +791,7 @@ async fn fetch_copy_out(
     let stmt = client.describe(&rs.sql).await?;
     let stream = client.copy_out(&stmt).await?;
     let mut rows = CopyRows { stream: Box::pin(stream), partial: Vec::new(), lines: std::collections::VecDeque::new(), ended: false };
-    super::pump(&mut rows, rs, &cols, started, on_pause).await
+    super::pump(&mut rows, rs, &cols, started, on_pause, read_ahead(client)).await
 }
 
 struct CopyRows {
@@ -865,7 +884,7 @@ async fn fetch_extended(
         let stream = client.query_raw(stmt, params.iter().map(|p| p as &(dyn ToSql + Sync))).await?;
         PgRows::new(stream, stmt, &cols)
     };
-    super::pump(&mut rows, rs, &cols, started, on_pause).await
+    super::pump(&mut rows, rs, &cols, started, on_pause, read_ahead(client)).await
 }
 
 pub(crate) struct PgRows {

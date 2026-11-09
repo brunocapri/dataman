@@ -1,5 +1,7 @@
 //! Alone in its binary: it measures the process. What one row costs on this side, whatever the
-//! server sends: a fake server's 1.6 GB line, and on the compose service a 1 GB cell.
+//! server sends: a fake server's 1.6 GB line, and on the compose service a 200 MB cell. Not
+//! bigger: the server holds a cell several times over while it makes it, and a 1 GB one had the
+//! kernel kill the shared compose server (exit 137), and every test then running against it.
 #![cfg(unix)]
 
 mod common;
@@ -62,6 +64,6 @@ fn one_row_costs_what_the_cap_says() {
         eprintln!("skipping the server's cell: nothing at {addr}");
         return;
     };
-    let r = read(&e, &c, "SELECT arrayStringConcat(arrayMap(x -> repeat('x', 1000000), range(1000)))", "a server's 1 GB cell");
+    let r = read(&e, &c, "SELECT arrayStringConcat(arrayMap(x -> repeat('x', 1000000), range(200)))", "a server's 200 MB cell");
     assert!(matches!(&r, Err(Stop::Server(i)) if i.message.contains("larger than")), "{r:?}");
 }

@@ -1527,7 +1527,12 @@ impl RedisCat {
         let c = command.to_ascii_uppercase();
         let first = c.split(' ').next().unwrap_or("");
         match first {
-            "EVAL" | "EVALSHA" | "EVAL_RO" | "EVALSHA_RO" | "FCALL" | "FCALL_RO" | "SCRIPT" | "FUNCTION" => RedisCat::Scripting,
+            // KeyDB's KEYDB.CRON schedules a script; Garnet's RUNTXP runs a registered procedure.
+            "EVAL" | "EVALSHA" | "EVAL_RO" | "EVALSHA_RO" | "FCALL" | "FCALL_RO" | "SCRIPT" | "FUNCTION" | "KEYDB.CRON" | "RUNTXP" => RedisCat::Scripting,
+            // Each flavor's own replication, persistence, code loading and debugging: Garnet's
+            // REGISTERCS loads an assembly, Dragonfly's REPLTAKEOVER promotes the server.
+            "REPLCONF" | "SECONDARYOF" | "ADDREPLICAOF" | "REPLTAKEOVER" | "RREPLAY" | "REPLPING" | "DFLY" | "DFLYCLUSTER" | "REGISTERCS" | "COMMITAOF" | "FORCEGC"
+            | "PFDEBUG" | "PFSELFTEST" | "KEYDB.MVCCRESTORE" | "FT.CONFIG" | "FT._DEBUG" | "JSON.DEBUG" | "COMMANDLOG" => RedisCat::Dangerous,
             "PUBLISH" | "SPUBLISH" | "SUBSCRIBE" | "PSUBSCRIBE" | "SSUBSCRIBE" | "UNSUBSCRIBE" | "PUNSUBSCRIBE" | "PUBSUB" => RedisCat::Pubsub,
             "DEL" | "UNLINK" | "RENAME" | "RENAMENX" | "COPY" | "MOVE" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" | "PERSIST" | "TOUCH" | "OBJECT" | "DUMP" | "RESTORE" | "MIGRATE" => {
                 RedisCat::Keyspace

@@ -351,6 +351,13 @@ fn with_queries(t: &Toks) -> Facts {
     } else {
         with_queries_top(t)
     };
+    // MySQL hands a query's rows to a file or to variables by an INTO after any form of it:
+    // `(SELECT …) INTO OUTFILE`, `TABLE t INTO DUMPFILE`, `VALUES ROW(1) INTO OUTFILE`. A
+    // read-only session does not stop the file (measured on MySQL 8.4, Percona, MariaDB 11.8).
+    if t.dialect == Dialect::MySql && f.effect == Effect::Read && matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES") && t.has_top("INTO") {
+        f.effect = Effect::Ddl;
+        f.verb = "SELECT INTO".into();
+    }
     // A writable CTE below the top level (`SELECT (WITH d AS (DELETE …) SELECT …)`,
     // `… WHERE x IN (WITH i AS (INSERT …) SELECT …)`) still writes.
     let mut i = 0;
@@ -508,7 +515,35 @@ fn object_command(t: &Toks, first: &str) -> (String, Option<String>, Vec<String>
     (verb, target, words)
 }
 
+/// MariaDB runs `stmt` under `SET STATEMENT var = value, … FOR stmt`, and `ANALYZE [FORMAT = x]
+/// stmt` runs `stmt` too: where it starts.
+fn runs_inner(t: &Toks) -> Option<usize> {
+    if t.dialect != Dialect::MySql {
+        return None;
+    }
+    if t.is(0, "SET") && t.is(1, "STATEMENT") {
+        return t.top().into_iter().find(|&i| t.is(i, "FOR")).map(|i| i + 1);
+    }
+    if t.is(0, "ANALYZE") && !matches!(t.word(1).as_deref(), Some("TABLE" | "TABLES" | "NO_WRITE_TO_BINLOG" | "LOCAL")) {
+        return Some(if t.is(1, "FORMAT") && t.op(2, "=") { 4 } else { 1 });
+    }
+    None
+}
+
+/// MariaDB runs compound statements outside a routine (`BEGIN NOT ATOMIC … END`, `IF … END IF`,
+/// loops, a label before one): a block of statements that is no read.
+fn compound(t: &Toks) -> bool {
+    let start = if t.is_name(0) && t.punct(1, ":") { 2 } else { 0 };
+    t.dialect == Dialect::MySql && (t.is(start, "BEGIN") && t.is(start + 1, "NOT") && t.is(start + 2, "ATOMIC") || matches!(t.word(start).as_deref(), Some("IF" | "CASE" | "LOOP" | "REPEAT" | "WHILE" | "FOR")) || start == 2)
+}
+
 fn statement(t: &Toks) -> Facts {
+    if let Some(i) = runs_inner(t) {
+        return with_queries(&t.sub(i.min(t.t.len())..t.t.len()));
+    }
+    if compound(t) {
+        return Facts { verb: "a compound statement".into(), effect: Effect::Write, ..Default::default() };
+    }
     let Some(v) = t.word(0) else { return Facts::default() };
     let mut f = Facts { verb: v.clone(), ..Default::default() };
     match v.as_str() {
@@ -536,7 +571,7 @@ fn statement(t: &Toks) -> Facts {
             }
         }
         "TABLE" | "VALUES" | "SHOW" | "FETCH" | "MOVE" | "DECLARE" | "CLOSE" => {}
-        "DESCRIBE" | "DESC" | "CHECK" | "CHECKSUM" | "HANDLER" if t.dialect == Dialect::MySql => {}
+        "CHECK" | "CHECKSUM" | "HANDLER" if t.dialect == Dialect::MySql => {}
         "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT" if t.dialect == Dialect::DuckDb => {}
         "PRAGMA" if is_file_dialect(t.dialect) => pragma(t, &mut f),
         "ATTACH" | "DETACH" if is_file_dialect(t.dialect) => {
@@ -617,7 +652,8 @@ fn statement(t: &Toks) -> Facts {
             f.effect = Effect::Other;
             f.outside_tx = true;
         }
-        "EXPLAIN" => {
+        // MySQL's DESCRIBE and DESC are EXPLAIN (`DESC ANALYZE DELETE …` deletes).
+        "EXPLAIN" | "DESCRIBE" | "DESC" if v == "EXPLAIN" || t.dialect == Dialect::MySql => {
             // EXPLAIN ANALYZE runs the statement: it is what it explains.
             let mut i = 1;
             let mut analyze = false;
@@ -634,6 +670,8 @@ fn statement(t: &Toks) -> Facts {
                 match w.as_str() {
                     "ANALYZE" | "ANALYSE" => analyze = true,
                     "VERBOSE" => {}
+                    // MySQL's `EXPLAIN ANALYZE FORMAT = TREE …`.
+                    "FORMAT" if t.dialect == Dialect::MySql && t.op(i + 1, "=") => i += 2,
                     _ => break,
                 }
                 i += 1;
@@ -1171,14 +1209,64 @@ pub fn read_only_refusal_held(sql: &str, dialect: Dialect, held: bool) -> Option
     if dialect == Dialect::ClickHouse && f.verb == "KILL" {
         return Some("read-only connection: KILL is not run".into());
     }
+    if let Some(r) = lifts_read_only(sql, dialect) {
+        return Some(r);
+    }
+    // A read-only transaction lets it write the server's files and run its programs.
+    if dialect == Dialect::Postgres
+        && agent_pieces(sql, dialect).iter().any(|p| {
+            let all = significant(p, dialect);
+            pg_copy_on_server(&Toks { src: p, t: &all, dialect }, "TO")
+        })
+    {
+        return Some("read-only connection: COPY TO a file or program on the database server is not run".into());
+    }
     if held { None } else { unheld_read_only_refusal(sql, dialect) }
+}
+
+/// What holds a read-only session, per dialect: the settings no statement on a read-only
+/// connection may change.
+const READ_ONLY_SETTINGS: &[(Dialect, &[&str])] = &[
+    (Dialect::MySql, &["transaction_read_only", "tx_read_only"]),
+    (Dialect::Postgres, &["default_transaction_read_only", "transaction_read_only"]),
+];
+
+/// A statement that takes a read-only session out of read-only: one of those settings changed
+/// (`SET x = …`, `SET x TO …`, `RESET x`, `set_config('x', …)`, MariaDB's `SET STATEMENT x = 0
+/// FOR …`), `READ WRITE` for a transaction or the session, PostgreSQL's `RESET ALL` and `DISCARD
+/// ALL` (back to the server's default). MySQL, Percona and MariaDB write through every one.
+fn lifts_read_only(sql: &str, d: Dialect) -> Option<String> {
+    let names = READ_ONLY_SETTINGS.iter().find(|(x, _)| *x == d)?.1;
+    for text in crate::sql::exec_readings(sql, d) {
+        let all = significant(&text, d);
+        let whole = Toks { src: &text, t: &all, dialect: d };
+        for r in statements(&whole).into_iter().filter(|r| !r.is_empty()) {
+            let t = whole.sub(r);
+            let n = t.t.len();
+            let setting = |i: usize| t.is_name(i) && names.contains(&t.name_at(i).trim_matches(['@', '`', '"']));
+            // What a statement sets (a SELECT only compares `@@transaction_read_only = 0`).
+            let sets = t.is(0, "SET");
+            let starts = sets || t.is(0, "START") || t.is(0, "BEGIN");
+            let lifts = (0..n).any(|i| {
+                let assigned = sets && setting(i) && (t.op(i + 1, "=") || t.punct(i + 1, ":") && t.op(i + 2, "=") || t.is(i + 1, "TO"));
+                let named = |j: usize| t.t.get(j).is_some_and(|x| x.kind == TokenKind::String && names.iter().any(|n| x.text(&text).trim_matches('\'').eq_ignore_ascii_case(n)));
+                let configured = t.is_name(i) && t.name_at(i) == "set_config" && t.punct(i + 1, "(") && !(t.t.get(i + 2).is_some_and(|x| x.kind == TokenKind::String) && !named(i + 2));
+                assigned || configured || starts && t.is(i, "READ") && t.is(i + 1, "WRITE")
+            });
+            let reset = t.is(0, "RESET") && (setting(1) || t.is(1, "ALL")) || t.is(0, "DISCARD") && t.is(1, "ALL");
+            if lifts || reset {
+                return Some("read-only connection: it would take the session out of read-only".into());
+            }
+        }
+    }
+    None
 }
 
 /// Where the server keeps no read-only session (SQL Server has none, Vitess takes the setting and
 /// drops it), this is the only check: what is not known to read is refused (KILL, SHUTDOWN,
 /// RECONFIGURE, DBCC, BACKUP, DISABLE TRIGGER, a CALL, an engine's own verbs…), as on the agent's
-/// reads. Transaction control and session settings stay the user's, but where the engine has
-/// read-only transactions (which such a server does hold) a transaction opens read-only.
+/// reads. Session settings stay the user's; where the engine has read-only transactions (which
+/// such a server does hold), the transactions are Dataman's.
 fn unheld_read_only_refusal(sql: &str, d: Dialect) -> Option<String> {
     for text in crate::sql::exec_readings(sql, d) {
         let all = significant(&text, d);
@@ -1190,16 +1278,21 @@ fn unheld_read_only_refusal(sql: &str, d: Dialect) -> Option<String> {
             let st = Toks { src: one, t: &toks, dialect: d };
             let f = classify_in(one, d);
             let showplan = f.verb == "SET" && st.word(1).is_some_and(|w| w.starts_with("SHOWPLAN_") || matches!(w.as_str(), "LANGUAGE" | "TRANSACTION"));
-            if let (Some(tx), Some(ro)) = (f.tx, d.begin_read_only()) {
-                if tx == TxCmd::Begin && !(0..toks.len()).any(|i| st.is(i, "READ") && st.is(i + 1, "ONLY")) {
-                    return Some(format!("read-only connection: a transaction opens read-only here ({ro})"));
+            if f.tx.is_some() && d.begin_read_only().is_some() {
+                // Each run is a READ ONLY transaction of Dataman's: one of the user's would end
+                // when the server's timeout does (Vitess' tablets kill it after 30 s), and what
+                // follows would run outside any.
+                if f.tx == Some(TxCmd::Begin) {
+                    return Some("read-only connection: each run is a read-only transaction of its own here".into());
                 }
                 // The rest of the text would run outside the read-only transaction each run gets.
                 if ranges.len() > 1 {
                     return Some(format!("read-only connection: {} runs alone here", f.verb));
                 }
             }
-            if f.tx.is_some() || neutral(&st, &f) || showplan || toks.iter().all(|x| x.kind == TokenKind::Punct) {
+            // `USE` moves to another database, whose own read-only state the session then asks.
+            let moves = d == Dialect::MySql && f.verb == "USE";
+            if f.tx.is_some() || moves || neutral(&st, &f) || showplan || toks.iter().all(|x| x.kind == TokenKind::Punct) {
                 continue;
             }
             // Vitess' `SELECT NEXT n VALUES FROM seq` hands out values inside a READ ONLY
@@ -1262,6 +1355,11 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     }
     let all: Vec<Token> = tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let t = Toks { src: sql, t: &all, dialect };
+    // A read under MariaDB's `SET STATEMENT sql_mode = … FOR`, or its `ANALYZE`: settings the
+    // statement runs (and may be read) under, which the guard does not lex it by.
+    if runs_inner(&t).is_some() {
+        return Some(format!("{} is not a read; read-only access runs SELECT, WITH, TABLE, VALUES, SHOW and EXPLAIN", t.word(0).unwrap_or_default()));
+    }
     for (k, &i) in t.top().iter().enumerate() {
         if t.is(i, "FOR") {
             let next = t.top().get(k + 1).and_then(|&j| t.word(j));
@@ -1344,10 +1442,9 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
         let all = significant(&piece, dialect);
         let t = Toks { src: &piece, t: &all, dialect };
         let first = t.word(0).unwrap_or_default();
-        let named = |i: usize| all.get(i).is_some_and(|x| matches!(x.kind, TokenKind::String | TokenKind::DollarString));
         match dialect {
             Dialect::Postgres => {
-                if first == "COPY" && t.top().into_iter().any(|i| (t.is(i, "TO") || t.is(i, "FROM")) && (t.is(i + 1, "PROGRAM") || named(i + 1))) {
+                if pg_copy_on_server(&t, "TO") || pg_copy_on_server(&t, "FROM") {
                     return Some("COPY with a file or a program on the database server".into());
                 }
                 if first == "ALTER" && t.is(1, "SYSTEM") {
@@ -1384,6 +1481,12 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
         }
     }
     None
+}
+
+/// A PostgreSQL COPY to (`way` = TO) or from a file or a program on the database server.
+fn pg_copy_on_server(t: &Toks, way: &str) -> bool {
+    let named = |i: usize| t.t.get(i).is_some_and(|x| matches!(x.kind, TokenKind::String | TokenKind::DollarString));
+    t.is(0, "COPY") && t.top().into_iter().any(|i| t.is(i, way) && (t.is(i + 1, "PROGRAM") || named(i + 1)))
 }
 
 fn file_access_in(t: &Toks) -> Option<String> {
@@ -1635,6 +1738,11 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
         return Piece::Neutral;
     }
     let f = classify_in(sql, dialect);
+    // MariaDB's `SET STATEMENT foreign_key_checks = 0 FOR …` and `ANALYZE …` run their statement
+    // under settings or with a report the row count and the rules do not follow.
+    if runs_inner(&t).is_some() {
+        return Piece::Destructive(format!("{} {}", t.word(0).unwrap_or_default(), if t.is(0, "SET") { "STATEMENT … FOR" } else { "(runs the statement)" }));
+    }
     // What the user is asked to allow says so when it runs a program on the database server.
     if f.verb.starts_with("COPY") && t.has_top("PROGRAM") {
         return Piece::Destructive("COPY … PROGRAM (runs a command on the database server)".into());
@@ -1831,9 +1939,30 @@ pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
     pieces_class(&agent_pieces(sql, dialect), dialect)
 }
 
+/// As `agent_write_class`, on a server whose DDL commits on its own (`!Caps::transactional_ddl`
+/// of a server with transactions: MySQL, YugabyteDB) when `ddl_commits`.
+pub fn agent_write_class_on(sql: &str, dialect: Dialect, ddl_commits: bool) -> WriteClass {
+    pieces_class_on(&agent_pieces(sql, dialect), dialect, ddl_commits)
+}
+
+/// The first statement a rollback would not undo where DDL commits on its own: its verb.
+pub fn ddl_in(sql: &str, dialect: Dialect) -> Option<String> {
+    agent_pieces(sql, dialect).iter().map(|p| classify_in(p, dialect)).find(|f| f.effect == Effect::Ddl || f.verb == "TRUNCATE").map(|f| f.verb)
+}
+
 /// The class of pieces as `agent_pieces` cut them (what an allowlist leaves): joined again, a
 /// T-SQL routine would take in what follows it.
 pub fn pieces_class<S: AsRef<str>>(pieces: &[S], dialect: Dialect) -> WriteClass {
+    pieces_class_on(pieces, dialect, ddl_commits(dialect, crate::server::Flavor::Standard))
+}
+
+/// A server of the dialect, as `flavor`, has transactions whose rollback leaves DDL done.
+pub fn ddl_commits(dialect: Dialect, flavor: crate::server::Flavor) -> bool {
+    let engine = crate::engine::SPECS.iter().find(|s| s.dialect == Some(dialect)).map(|s| s.engine);
+    dialect.has_transactions() && engine.is_some_and(|e| !crate::backend::Caps::of_server(e, flavor).transactional_ddl)
+}
+
+pub fn pieces_class_on<S: AsRef<str>>(pieces: &[S], dialect: Dialect, ddl_commits: bool) -> WriteClass {
     let (mut safe, mut destructive) = (false, false);
     let mut reasons: Vec<String> = Vec::new();
     for p in pieces {
@@ -1853,9 +1982,10 @@ pub fn pieces_class<S: AsRef<str>>(pieces: &[S], dialect: Dialect) -> WriteClass
             reasons.push(r);
         }
     }
-    // DDL commits on its own in MySQL: beside a write it would commit that write before the row
-    // limit counts it, and survive the rollback when the limit is passed.
-    if destructive || (safe && !reasons.is_empty() && dialect == Dialect::MySql) {
+    // DDL commits on its own in MySQL (and YugabyteDB's survives a rollback): beside a write it
+    // would commit that write before the row limit counts it, or survive the rollback when the
+    // limit is passed.
+    if destructive || (safe && !reasons.is_empty() && ddl_commits) {
         WriteClass::Destructive { reasons }
     } else if !reasons.is_empty() {
         WriteClass::Create { what: reasons }
@@ -2223,10 +2353,32 @@ mod tests {
             ("SELECT nextval('s')", "effects"),
             ("SELECT \"pg_reload_conf\"()", "effects"),
             ("SELECT set_config('role', 'postgres', false)", "effects"),
+            // TimescaleDB's and YugabyteDB's, which run in a read-only transaction too.
+            ("SELECT _timescaledb_functions.stop_background_workers()", "effects"),
+            ("SELECT _timescaledb_internal.restart_background_workers()", "effects"),
+            ("SELECT yb_cancel_transaction('00000000-0000-0000-0000-000000000000')", "effects"),
+            ("SELECT yb_pg_stat_plans_reset(null, null, null, null)", "effects"),
+            ("SELECT yb_log_backend_heap_snapshot(1)", "effects"),
         ] {
             let r = agent_read_refusal(bad).unwrap_or_else(|| panic!("{bad} must be refused"));
             assert!(r.contains(why), "{bad}: {r}");
         }
+    }
+
+    /// A rollback leaves DDL done on MySQL and YugabyteDB: beside a write it waits for the Allow
+    /// instead of passing the row limit and staying.
+    #[test]
+    fn ddl_that_commits_on_its_own() {
+        use crate::server::Flavor;
+        assert!(ddl_commits(Dialect::MySql, Flavor::Standard) && ddl_commits(Dialect::Postgres, Flavor::Yugabyte));
+        assert!(!ddl_commits(Dialect::Postgres, Flavor::Standard) && !ddl_commits(Dialect::Postgres, Flavor::Timescale) && !ddl_commits(Dialect::ClickHouse, Flavor::Standard));
+        let both = "CREATE TABLE t2 (a int); INSERT INTO t VALUES (1)";
+        assert!(matches!(agent_write_class_on(both, Dialect::Postgres, false), WriteClass::Create { .. }));
+        assert!(agent_write_class_on(both, Dialect::Postgres, true).is_destructive());
+        assert_eq!(agent_write_class(both, Dialect::MySql), agent_write_class_on(both, Dialect::MySql, true));
+        assert_eq!(ddl_in("DELETE FROM t; TRUNCATE t", Dialect::Postgres).as_deref(), Some("TRUNCATE"));
+        assert!(ddl_in("ALTER TABLE t ADD COLUMN b int", Dialect::Postgres).is_some());
+        assert_eq!(ddl_in("DELETE FROM t WHERE a = 1; SELECT 'DROP TABLE t'", Dialect::Postgres), None);
     }
 
     fn nw(sql: &str) -> bool {
@@ -2428,6 +2580,11 @@ mod tests {
         assert!(read_only_refusal("CREATE TABLE x (a int)").is_some());
         assert!(read_only_refusal("TRUNCATE t").is_some());
         assert!(read_only_refusal("SELECT 1 INTO t2").is_some());
+        for sql in ["COPY (SELECT 1) TO PROGRAM 'true'", "copy t TO '/tmp/t.csv'", "SELECT 1; COPY t TO $$/tmp/x$$"] {
+            assert!(read_only_refusal(sql).is_some_and(|r| r.contains("COPY TO")), "{sql}");
+        }
+        assert!(read_only_refusal("COPY t TO STDOUT").is_none());
+        assert!(read_only_refusal("SELECT 'COPY t TO PROGRAM'").is_none());
         assert!(read_only_refusal("EXPLAIN ANALYZE INSERT INTO t VALUES (1)").is_some());
         assert!(read_only_refusal("EXPLAIN INSERT INTO t VALUES (1)").is_none());
     }
@@ -2930,8 +3087,11 @@ mod tests {
             "/*!50000 CALL p() */",
             "PREPARE s FROM 'CALL p()'",
             "EXECUTE s",
-            "USE other",
             "SELECT * FROM t INTO OUTFILE '/tmp/x'",
+            // The tablets end a transaction after their timeout, and vtgate runs what follows
+            // outside any: each run is a READ ONLY transaction of Dataman's.
+            "START TRANSACTION READ ONLY",
+            "start transaction with consistent snapshot, read only",
             "SELECT NEXT VALUE FROM seq",
             "select next 5 values from seq",
             "SELECT NEXT ? VALUES FROM seq",
@@ -2947,8 +3107,7 @@ mod tests {
             "EXPLAIN SELECT * FROM t",
             "DESCRIBE t",
             "WITH c AS (SELECT 1 AS a) SELECT a FROM c",
-            "START TRANSACTION READ ONLY",
-            "start transaction with consistent snapshot, read only",
+            "USE other",
             "COMMIT",
             "ROLLBACK",
             "SET @x = 1",
@@ -2961,6 +3120,84 @@ mod tests {
         for sql in ["BEGIN", "SET autocommit = 0", "USE other", "SHOW VITESS_SHARDS", "SELECT next value FROM t"] {
             assert_eq!(read_only_refusal_in(sql, d), None, "{sql}");
         }
+    }
+
+    /// Measured: MySQL 8.4, Percona 8.4, MariaDB 11.8 and PostgreSQL 18 each wrote after one of
+    /// these on a read-only session.
+    #[test]
+    fn read_only_is_not_lifted() {
+        let (my, pg) = (Dialect::MySql, Dialect::Postgres);
+        for (d, sql) in [
+            (my, "SET SESSION TRANSACTION READ WRITE"),
+            (my, "set transaction isolation level read committed, read write"),
+            (my, "SET SESSION transaction_read_only = 0"),
+            (my, "SET @@session.transaction_read_only := OFF"),
+            (my, "SET @@`tx_read_only` = 0"),
+            (my, "SET STATEMENT transaction_read_only = 0 FOR SELECT f()"),
+            (my, "START TRANSACTION READ WRITE"),
+            (my, "/*!80000 SET SESSION TRANSACTION READ WRITE */"),
+            (my, "SELECT 1; SET SESSION transaction_read_only = 0"),
+            (pg, "SET default_transaction_read_only = off"),
+            (pg, "SET SESSION default_transaction_read_only TO false"),
+            (pg, "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE"),
+            (pg, "BEGIN READ WRITE"),
+            (pg, "RESET default_transaction_read_only"),
+            (pg, "RESET ALL"),
+            (pg, "DISCARD ALL"),
+            (pg, "SELECT set_config('default_transaction_read_only', 'off', false)"),
+            (pg, "SELECT set_config(name, 'off', false) FROM settings"),
+        ] {
+            assert!(read_only_refusal_held(sql, d, true).is_some(), "{sql}");
+        }
+        for (d, sql) in [
+            (my, "SELECT @@transaction_read_only"),
+            (my, "SELECT @@session.transaction_read_only = 0 AS writable"),
+            (my, "SELECT 'READ WRITE' AS mode, `read` write FROM t"),
+            (my, "SET SESSION TRANSACTION READ ONLY"),
+            (my, "SET @transaction_read_only_x = 0"),
+            (pg, "SHOW default_transaction_read_only"),
+            (pg, "SELECT set_config('search_path', 'a', false)"),
+            (pg, "SET search_path = a"),
+            (pg, "BEGIN READ ONLY"),
+        ] {
+            assert_eq!(read_only_refusal_held(sql, d, true), None, "{sql}");
+        }
+    }
+
+    /// What MySQL and MariaDB run under another statement's name, and the files a read writes.
+    #[test]
+    fn mysql_statements_inside_others() {
+        let my = Dialect::MySql;
+        for (sql, verb) in [
+            ("DESC ANALYZE DELETE FROM t WHERE id = 1", "DELETE"),
+            ("describe analyze update t a join u b on a.id = b.id set a.x = 1", "UPDATE"),
+            ("EXPLAIN ANALYZE FORMAT=TREE UPDATE t a JOIN u b ON a.id = b.id SET a.x = 1", "UPDATE"),
+            ("ANALYZE FORMAT=JSON DELETE FROM t WHERE id = 1", "DELETE"),
+            ("SET STATEMENT max_statement_time = 1 FOR UPDATE t SET x = 1 WHERE id = 1", "UPDATE"),
+            ("BEGIN NOT ATOMIC UPDATE t SET x = 1 WHERE id = 1; END", "a compound statement"),
+            ("l1: LOOP UPDATE t SET x = 1 WHERE id = 1; LEAVE l1; END LOOP", "a compound statement"),
+            ("IF 1 THEN DELETE FROM t WHERE id = 1; END IF", "a compound statement"),
+            ("TABLE t INTO OUTFILE '/tmp/x'", "SELECT INTO"),
+            ("VALUES ROW(1) INTO DUMPFILE '/tmp/x'", "SELECT INTO"),
+            ("(SELECT * FROM t) INTO OUTFILE '/tmp/x'", "SELECT INTO"),
+            ("WITH a AS (SELECT 1) TABLE t INTO OUTFILE '/tmp/x'", "SELECT INTO"),
+        ] {
+            let f = classify_in(sql, my);
+            assert!(f.is_write() && f.verb == verb, "{sql}: {f:?}");
+            assert!(read_only_refusal_held(sql, my, true).is_some(), "{sql}");
+        }
+        for sql in ["DESCRIBE t", "DESC SELECT * FROM t", "EXPLAIN FORMAT=JSON SELECT 1", "ANALYZE TABLE t", "(SELECT 1) UNION (SELECT 2)", "SELECT * FROM t WHERE a IN (SELECT b INTO @x FROM u)"] {
+            assert!(!classify_in(sql, my).is_write(), "{sql}");
+        }
+        // Not the agents' reads: they run under settings the guard does not lex them by. Nor
+        // a safe write: what they change (foreign key checks, the SQL mode) the user allows.
+        assert!(agent_read_refusal_in("SET STATEMENT sql_mode = 'ANSI_QUOTES' FOR SELECT \"secret\" FROM t", my).is_some());
+        assert!(agent_read_refusal_in("ANALYZE SELECT * FROM t", my).is_some());
+        assert!(agent_write_class("SET STATEMENT foreign_key_checks = 0 FOR UPDATE t SET a = 1 WHERE id = 1", my).is_destructive());
+        assert!(agent_write_class("ANALYZE UPDATE t SET a = 1 WHERE id = 1", my).is_destructive());
+        assert_eq!(agent_write_class("UPDATE t SET a = 1 WHERE id = 1", my), WriteClass::SafeWrite);
+        // PostgreSQL's SELECT INTO is its own.
+        assert!(classify_in("SELECT 1 INTO t2", Dialect::Postgres).is_write());
     }
 
     #[test]

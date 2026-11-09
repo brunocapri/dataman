@@ -152,6 +152,22 @@ impl ChunkBuilder {
         self.rows == 0
     }
 
+    /// What its rows hold so far.
+    pub fn bytes(&self) -> usize {
+        self.cols
+            .iter()
+            .map(|c| {
+                c.nulls.len() * 8
+                    + match &c.data {
+                        ColData::Bool(v) => v.len(),
+                        ColData::I64(v) => v.len() * 8,
+                        ColData::F64(v) => v.len() * 8,
+                        ColData::Text { text, ends } => text.len() + ends.len() * 4,
+                    }
+            })
+            .sum()
+    }
+
     pub fn kind(&self, col: usize) -> Kind {
         self.kinds[col]
     }
@@ -864,6 +880,13 @@ impl ResultSet {
             s.error = Some(error);
         });
         rs
+    }
+
+    /// The server refused the cancel (vtgate without `--allow-kill-statement`): the statement
+    /// runs to its end, so it is shown as what it did, its rows as far as they were read.
+    pub(crate) fn cancel_refused(&self, why: &str) {
+        self.status.lock().partial = true;
+        self.push_message(format!("The server did not cancel it ({why}): it ran to its end."));
     }
 
     pub fn abort(&self) {

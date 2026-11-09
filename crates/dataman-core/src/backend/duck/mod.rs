@@ -666,7 +666,7 @@ pub(crate) async fn run(
     let mut cur = rs.clone();
     let mut cols = rs.columns().unwrap_or_default();
     loop {
-        let n = match super::pump(&mut rows, &cur, &cols, started, on_pause).await {
+        let n = match super::pump(&mut rows, &cur, &cols, started, on_pause, 0).await {
             Ok(n) => n,
             Err(e) => return fail(&e),
         };

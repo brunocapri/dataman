@@ -413,6 +413,25 @@ impl Dialect {
         }
     }
 
+    /// Sent first in a read-only transaction, it keeps it read-only to its end: PostgreSQL lets a
+    /// transaction turn read-write (`SET TRANSACTION READ WRITE`, `SET LOCAL
+    /// transaction_read_only = off`) until a query has taken its snapshot, and never after.
+    pub fn pin_read_only(self) -> Option<&'static str> {
+        match self {
+            Dialect::Postgres => Some("SET TRANSACTION READ ONLY; SELECT 1"),
+            Dialect::MySql | Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb | Dialect::ClickHouse => None,
+        }
+    }
+
+    /// What asks a session which database a `USE` left it on.
+    pub fn current_database(self) -> Option<&'static str> {
+        match self {
+            Dialect::MySql => Some("SELECT DATABASE()"),
+            Dialect::TSql => Some("SELECT DB_NAME()"),
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb | Dialect::ClickHouse => None,
+        }
+    }
+
     /// Not valid inside a transaction on MySQL, and undone by a rollback on PostgreSQL: sent between
     /// transactions.
     pub fn session_read_only(self, on: bool) -> Option<&'static str> {

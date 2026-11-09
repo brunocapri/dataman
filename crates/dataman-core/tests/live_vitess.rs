@@ -25,8 +25,12 @@ const UNSHARDED: (&str, &str) = ("DATAMAN_VITESS", "127.0.0.1:33577");
 const SHARDED: (&str, &str) = ("DATAMAN_VITESS_SHARDED", "127.0.0.1:33587");
 
 fn vitess(e: &Env, at: (&str, &str), read_only: bool) -> Option<Arc<Connection>> {
+    vitess_with(e, at, |p| p.read_only = read_only)
+}
+
+fn vitess_with(e: &Env, at: (&str, &str), change: impl FnOnce(&mut dataman_core::ConnectionProfile)) -> Option<Arc<Connection>> {
     let mut p = vitess_profile(at.0, at.1);
-    p.read_only = read_only;
+    change(&mut p);
     let c = connect_with(e, p, None)?;
     assert_eq!(c.info.flavor, Flavor::Vitess, "{} answers as {}", at.1, c.info.version);
     Some(c)
@@ -130,12 +134,29 @@ fn read_only(at: (&str, &str), sharded: bool) {
         "SELECT 1; COMMIT",
         "SELECT NEXT VALUE FROM vt_seq",
         "LOCK TABLES vt_items WRITE",
+        // The tablets kill a transaction after their timeout (30 s), and vtgate then runs what
+        // follows outside any: a stored function writes. Each run is a transaction of Dataman's.
+        "START TRANSACTION READ ONLY",
+        "SET TRANSACTION READ WRITE",
+        "SET SESSION transaction_read_only = 0",
     ] {
         assert!(ro.read_only_refusal(&ks, sql).is_some(), "{sql}");
     }
-    for sql in ["SELECT * FROM vt_items", "START TRANSACTION READ ONLY", "COMMIT", "SHOW VITESS_SHARDS"] {
+    for sql in ["SELECT * FROM vt_items", "COMMIT", "SHOW VITESS_SHARDS", &format!("USE {ks}")] {
         assert_eq!(ro.read_only_refusal(&ks, sql), None, "{sql}");
     }
+    // A routing target in a name reaches the keyspace before it, and none reaches every one.
+    let per_db = vitess_with(&e, at, |p| _ = p.read_only_databases.insert(ks.clone(), true)).unwrap();
+    let other = "information_schema";
+    for (on, sql) in [
+        (other, format!("UPDATE `{ks}@primary`.vt_items SET name = 'x' WHERE id = 1")),
+        (other, format!("UPDATE `{ks}:-80`.vt_items SET name = 'x' WHERE id = 1")),
+        (&format!("{ks}@primary"), "UPDATE vt_items SET name = 'x' WHERE id = 1".to_string()),
+        ("@primary", "UPDATE vt_items SET name = 'x' WHERE id = 1".to_string()),
+    ] {
+        assert!(per_db.read_only_refusal(on, &sql).is_some(), "on {on}: {sql}");
+    }
+    assert!(per_db.read_only_for(&format!("{ks}@replica")) && !per_db.read_only_for(other));
 
     // The session asks the same of every caller, and what it runs is in a READ ONLY transaction
     // the server holds (a stored function that writes fails there).
@@ -159,10 +180,22 @@ fn read_only(at: (&str, &str), sharded: bool) {
     assert!(!tab.tx().status.is_open(), "the transaction around a run ends with it");
     let (ph, rs) = run(&tab, "SELECT name FROM vt_items ORDER BY id");
     assert_eq!((ph, rs.rows()), (Phase::Done, 3), "{:?}", rs.status().error);
-    assert_eq!(run(&tab, "START TRANSACTION READ ONLY").0, Phase::Done);
-    assert!(tab.tx().status.is_open());
-    assert_eq!(run(&tab, ACCESS).1.snapshot().text(0, 0).as_deref(), Some("READ ONLY"), "the user's own");
-    assert_eq!(run(&tab, "ROLLBACK").0, Phase::Done);
+    let (ph, rs) = run(&tab, &format!("USE {ks}"));
+    assert_eq!(ph, Phase::Done, "{:?}", rs.status().error);
+    assert_eq!(run(&tab, ACCESS).1.snapshot().text(0, 0).as_deref(), Some("READ ONLY"), "after a USE too");
+    // A transaction begun while the keyspace was writable: nothing runs in it once it is
+    // read-only (a READ ONLY transaction of Dataman's would commit it).
+    let toggled = vitess(&e, at, false).unwrap();
+    let t = toggled.session(None);
+    assert_eq!(run(&t, "BEGIN").0, Phase::Done);
+    assert_eq!(run(&t, "UPDATE vt_items SET name = 'pending' WHERE id = 3").0, Phase::Done);
+    toggled.set_read_only_for(&ks, true);
+    let (ph, rs) = run(&t, ACCESS);
+    assert_eq!(ph, Phase::Failed, "ran in the open transaction");
+    assert!(rs.status().error.unwrap().message.contains("end it first"));
+    assert_eq!(run(&t, "ROLLBACK").0, Phase::Done);
+    assert_eq!(run(&t, ACCESS).1.snapshot().text(0, 0).as_deref(), Some("READ ONLY"));
+    assert_eq!(name_of(3).as_deref(), Some("c"));
     // A writable database: as MySQL, nothing of Dataman's around the run.
     let w = rw.session(None);
     assert_eq!(run(&w, ACCESS).1.snapshot().text(0, 0).as_deref(), Some("READ WRITE"));
@@ -191,11 +224,54 @@ fn read_only(at: (&str, &str), sharded: bool) {
     assert_eq!(name_of(2).as_deref(), Some("w"));
 }
 
+/// vtgate refuses KILL (VT07001) unless started with `--allow-kill-statement`: a statement
+/// cancelled there runs to its end, and is shown as what it did, never as cancelled.
+fn cancel_refused(at: (&str, &str)) {
+    let e = env();
+    let Some(c) = vitess(&e, at, false) else { return };
+    setup(&e, &c, false);
+    let s = c.session(None);
+    let rs = s.execute("UPDATE vt_items SET name = 'late' WHERE id = 3 AND SLEEP(3) = 0");
+    rs.fetch_all();
+    // Cancelled once the tablet runs it.
+    let running = || query(&e, &c, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE LOWER(INFO) LIKE '%sleep(3)%' AND INFO NOT LIKE '%PROCESSLIST%'").snapshot().text(0, 0).is_some_and(|n| n != "0");
+    let t = Instant::now();
+    while !running() {
+        assert!(t.elapsed() < Duration::from_secs(10) && !rs.phase().is_finished(), "never seen running: {:?}", rs.status());
+    }
+    s.cancel();
+    assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Done, "{:?}", rs.status().error);
+    assert_eq!(rs.status().affected, Some(1));
+    assert!(rs.messages().0.iter().any(|m| m.contains("did not cancel")), "{:?}", rs.messages());
+    let name = query(&e, &c, "SELECT name FROM vt_items WHERE id = 3").snapshot().text(0, 0).map(|t| t.into_owned());
+    assert_eq!(name.as_deref(), Some("late"));
+}
+
+/// vtgate answers a read past its row limit (`--queryserver-config-max-result-size`, 10000 by
+/// default) with the code of an interrupted query: it fails with that message, not as cancelled.
+fn row_limit(at: (&str, &str)) {
+    let e = env();
+    let Some(c) = vitess(&e, at, false) else { return };
+    exec_quiet(&e, &c, &["DROP TABLE IF EXISTS vt_many"]);
+    exec(&e, &c, &["CREATE TABLE vt_many (id BIGINT PRIMARY KEY)"]);
+    for k in 0..11 {
+        let values: Vec<String> = (0..1000).map(|i| format!("({})", k * 1000 + i)).collect();
+        exec(&e, &c, &[&format!("INSERT INTO vt_many VALUES {}", values.join(","))]);
+    }
+    let rs = c.session(None).execute("SELECT id FROM vt_many");
+    rs.fetch_all();
+    assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Failed);
+    assert!(rs.status().error.is_some_and(|e| e.message.contains("Row count exceeded")), "{:?}", rs.status().error);
+    exec(&e, &c, &["DROP TABLE vt_many"]);
+}
+
 /// One test per keyspace: both parts make the same tables.
 #[test]
 fn unsharded() {
     catalog(UNSHARDED, false);
     read_only(UNSHARDED, false);
+    cancel_refused(UNSHARDED);
+    row_limit(UNSHARDED);
 }
 
 #[test]

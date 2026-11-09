@@ -166,6 +166,11 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     if mode == Mode::Autocommit && stmts.len() > 1 {
         return Some("a statement that runs outside a transaction runs alone".into());
     }
+    // Outside a transaction only the session holds it read-only, and a session setting is any
+    // statement's to change (`set_config` in a function).
+    if mode == Mode::Autocommit && read_only_profile && dialect.pin_read_only().is_some() {
+        return Some("read-only connection: a statement outside a transaction is not run".into());
+    }
     for (i, s) in stmts.iter().enumerate() {
         if mode == Mode::Read {
             if let Some(r) = guard::agent_read_refusal_in(s, dialect) {
@@ -339,6 +344,7 @@ impl Connection {
     /// Past those, under a connection read-only by default, a name counts when the server has such
     /// a database, and while the list is unknown (the first part of `t.col` is no database).
     fn names_read_only(&self, name: &str) -> bool {
+        let Some(name) = self.reached(name) else { return self.read_only_for(name) };
         let set: Vec<bool> = self.read_only_dbs.read().iter().filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, on)| *on).collect();
         if !set.is_empty() {
             return set.contains(&true);
@@ -384,6 +390,12 @@ impl Connection {
             }
         }
         None
+    }
+
+    /// `sql` moves to a read-only database by a `USE`.
+    pub(crate) fn uses_read_only(&self, sql: &str) -> bool {
+        let d = self.dialect();
+        crate::sql::exec_readings(sql, d).iter().any(|text| statement_ranges(text, d).into_iter().any(|r| used_database(&text[r], d).is_some_and(|db| self.read_only_for(&db))))
     }
 
     /// What an agent's read must not run on a server that keeps no read-only session (Vitess):
@@ -480,6 +492,11 @@ impl Connection {
         if let Some(r) = refusal_in(&stmts, params.len(), mode, ro, dialect) {
             return Err(Stop::Refused(r));
         }
+        if mode == Mode::Rollback
+            && let Some(r) = self.unrollable(sql)
+        {
+            return Err(Stop::Refused(r));
+        }
         if mode == Mode::Read
             && let Some(r) = self.unheld_read_refusal(sql)
         {
@@ -514,7 +531,7 @@ impl Connection {
                 match &d {
                     Dedicated::Pg(p) => {
                         let shared = p.pooler.is_some_and(|x| x.per_transaction());
-                        in_transaction(&p.client, &stmts, &params, mode, &limits, PgTx { read_only: mode == Mode::Read || (shared && ro), shared }).await
+                        in_transaction(&p.client, &stmts, &params, mode, &limits, PgTx { read_only: mode == Mode::Read || ro, shared }).await
                     }
                     Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, ro, &limits).await,
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
@@ -988,8 +1005,9 @@ fn keep_row(cols: &[ColumnInfo], chunk: &crate::result::Chunk, mode: Mode, more:
 
 type Failed = (Stop, bool);
 
-/// How an agent's transaction opens. Through a pooler per transaction (`shared`) the session
-/// holds nothing: what the server must enforce is set on the transaction itself.
+/// How an agent's transaction opens. What the server must enforce is set on the transaction
+/// itself: through a pooler per transaction (`shared`) the session holds nothing, and a direct
+/// session's default_transaction_read_only is any statement's to change.
 #[derive(Clone, Copy)]
 struct PgTx {
     read_only: bool,
@@ -1031,7 +1049,12 @@ async fn begin(client: &Client, mode: Mode, limits: &Limits, tx: PgTx) -> Result
         }
         return Ok(());
     }
-    let begin = Dialect::Postgres.begin_for(tx.read_only);
+    let d = Dialect::Postgres;
+    let begin = match d.pin_read_only() {
+        Some(pin) if tx.read_only => format!("{}; {pin}", d.begin_for(true)),
+        _ => d.begin().to_string(),
+    };
+    let begin = begin.as_str();
     client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     if tx.shared {
         client.simple_query(crate::pooler::AGENT_TX_LOCALS).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
