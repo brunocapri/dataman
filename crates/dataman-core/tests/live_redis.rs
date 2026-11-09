@@ -150,3 +150,17 @@ fn other_databases_keep_their_read_only() {
     assert_eq!(size(ro), before);
     on(rw, "DEL dataman_ro_moved").unwrap();
 }
+
+/// `localhost` resolves to `::1` before `127.0.0.1` here, and a server published on 127.0.0.1
+/// only (Docker's `-p 127.0.0.1:…`) is reached at the address after the first.
+#[test]
+fn every_address_of_the_host_is_tried() {
+    let e = env();
+    let mut p = profile();
+    if p.host != "127.0.0.1" {
+        return;
+    }
+    p.host = "localhost".into();
+    let Some(c) = connect(&e, p) else { panic!("localhost:{} not reached, though 127.0.0.1 answers", profile().port) };
+    assert_eq!(e.core.block_on(c.run_nosql(DB, "PING", Page::default())).unwrap().output, Output::Value(Body::Json(json!("PONG"))));
+}

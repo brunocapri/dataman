@@ -68,7 +68,9 @@ trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 struct Dial {
-    addr: SocketAddr,
+    /// Every address the host resolves to, tried in turn: `localhost` is `::1` before
+    /// `127.0.0.1`, and a server may listen on only one of them.
+    addrs: Vec<SocketAddr>,
     tls: Option<(Arc<rustls::ClientConfig>, rustls::pki_types::ServerName<'static>)>,
     auth: Vec<String>,
 }
@@ -144,7 +146,7 @@ fn read_reply<'a>(io: &'a mut BufStream<Box<dyn Stream>>) -> std::pin::Pin<Box<d
 }
 
 async fn open(d: &Dial) -> Result<Conn> {
-    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(d.addr)).await.map_err(|_| anyhow!("timed out connecting to {}", d.addr))??;
+    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(&d.addrs[..])).await.map_err(|_| anyhow!("timed out connecting to {:?}", d.addrs))??;
     super::refuse_self_connect(&tcp)?;
     let _ = tcp.set_nodelay(true);
     let stream: Box<dyn Stream> = match &d.tls {
@@ -165,10 +167,13 @@ async fn open(d: &Dial) -> Result<Conn> {
 }
 
 pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunnel: Option<&Tunnel>) -> Result<Client> {
-    let addr = match tunnel {
-        Some(t) => t.local_addr(),
-        None => tokio::net::lookup_host((p.host.as_str(), p.port)).await.with_context(|| format!("resolving {}", p.host))?.next().ok_or_else(|| anyhow!("{} has no address", p.host))?,
+    let addrs: Vec<SocketAddr> = match tunnel {
+        Some(t) => vec![t.local_addr()],
+        None => tokio::net::lookup_host((p.host.as_str(), p.port)).await.with_context(|| format!("resolving {}", p.host))?.collect(),
     };
+    if addrs.is_empty() {
+        bail!("{} has no address", p.host);
+    }
     let tls = match crate::backend::pg::rustls_config(p.sslmode)? {
         Some(cfg) if p.sslmode != SslMode::Prefer => {
             let name = rustls::pki_types::ServerName::try_from(p.host.clone()).map_err(|_| anyhow!("{} is not a TLS server name", p.host))?;
@@ -183,7 +188,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     };
     let default_db = if p.database.trim().is_empty() { 0 } else { p.database.trim().parse().map_err(|_| anyhow!("the database is a number (0–15)"))? };
     let tls_active = tls.is_some();
-    let dial = Dial { addr, tls, auth };
+    let dial = Dial { addrs, tls, auth };
     let conn = match open(&dial).await {
         Ok(c) => c,
         Err(e) => {
