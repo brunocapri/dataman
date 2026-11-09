@@ -471,6 +471,11 @@ impl Session {
             }
         }
         self.tx.closed();
+        // What the user sends next was meant for that transaction: it fails once, said why, and
+        // the statement after it runs on a new connection.
+        if self.tx.take_lost() {
+            anyhow::bail!("the connection to the server was lost with a transaction open, and the server rolled it back: this statement did not run");
+        }
         let p = self.conn.profile_for(&self.database);
         let password = self.conn.cred.secret(&p).await?;
         let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx, self.conn.pooler).await.map_err(|e| crate::cloudauth::explain(&p, e))?;

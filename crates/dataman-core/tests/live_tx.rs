@@ -147,6 +147,34 @@ fn several_statements_inside_a_transaction() {
     assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
 }
 
+/// The server ends the connection inside a transaction (a restart, an admin's terminate): the
+/// next statement fails, said why, instead of running on a new connection outside the
+/// transaction the user still thinks is open; the one after it runs.
+#[test]
+fn a_transaction_lost_with_the_connection_is_said() {
+    let e = env();
+    let Some(c) = open(&e, pg_profile(), Some(&pg_password())) else { return };
+    let admin = c.session(None);
+    ok(&e, &admin, "DROP TABLE IF EXISTS public.dataman_lost_tx");
+    ok(&e, &admin, "CREATE TABLE public.dataman_lost_tx (a int)");
+    let s = c.session(None);
+    ok(&e, &s, "BEGIN");
+    ok(&e, &s, "INSERT INTO public.dataman_lost_tx VALUES (1)");
+    let pid = s.backend_pid().expect("a direct session's process");
+    ok(&e, &admin, &format!("SELECT pg_terminate_backend({pid})"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.tx().status != TxStatus::Idle {
+        assert!(Instant::now() < deadline, "the closed connection was never seen");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let rs = run(&e, &s, "INSERT INTO public.dataman_lost_tx VALUES (2)");
+    assert_eq!(rs.phase(), Phase::Failed);
+    assert!(rs.status().error.unwrap().message.contains("rolled it back"));
+    ok(&e, &s, "INSERT INTO public.dataman_lost_tx VALUES (3)");
+    assert_eq!(count(&e, &c, "SELECT string_agg(a::text, ',') FROM public.dataman_lost_tx"), "3");
+    ok(&e, &admin, "DROP TABLE public.dataman_lost_tx");
+}
+
 #[test]
 fn paused_result_and_cancel_inside_a_transaction() {
     let e = env();

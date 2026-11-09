@@ -71,6 +71,9 @@ pub struct TxWatch {
     settle: tokio::sync::Notify,
     pid: AtomicI32,
     notices: Mutex<Vec<String>>,
+    /// The connection closed with a transaction open: the server rolled it back, and the next
+    /// statement must not run on a new connection as if it were still inside it.
+    lost: AtomicBool,
 }
 
 impl TxWatch {
@@ -127,8 +130,18 @@ impl TxWatch {
         self.state.lock().statement(counts);
     }
 
+    /// Whether a transaction was lost with the connection since this was last asked.
+    pub(crate) fn take_lost(&self) -> bool {
+        self.lost.swap(false, Ordering::AcqRel)
+    }
+
     pub(crate) fn closed(&self) {
-        self.state.lock().closed();
+        let mut st = self.state.lock();
+        if st.status.is_open() {
+            self.lost.store(true, Ordering::Release);
+        }
+        st.closed();
+        drop(st);
         self.error_pending.store(false, Ordering::Release);
         self.settle.notify_waiters();
     }
