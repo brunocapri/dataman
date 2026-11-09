@@ -250,6 +250,22 @@ table! {
     ("pg_replication_origin_create", EFFECT),
     ("pg_replication_origin_drop", EFFECT),
     ("pg_import_system_collations", EFFECT),
+    // TimescaleDB: its job scheduler, for every database of the server, in a read-only
+    // transaction too.
+    ("stop_background_workers", EFFECT),
+    ("start_background_workers", EFFECT),
+    ("restart_background_workers", EFFECT),
+    // YugabyteDB's own, run in a read-only transaction too.
+    ("yb_cancel_transaction", EFFECT),
+    ("yb_pg_stat_plans_reset", EFFECT),
+    ("yb_pg_stat_plans_insert", EFFECT),
+    ("yb_pg_stat_plans_write_file", EFFECT | SERVER_FILE),
+    ("yb_pg_stat_plans_read_file", EFFECT | SERVER_FILE),
+    ("yb_query_diagnostics", EFFECT | SERVER_FILE),
+    ("yb_cancel_query_diagnostics", EFFECT),
+    ("yb_log_backend_heap_snapshot", EFFECT),
+    ("yb_log_backend_heap_snapshot_peak", EFFECT),
+    ("yb_log_catcache_stats", EFFECT),
     ("txid_current", EFFECT | WRITE_OK),
     ("pg_current_xact_id", EFFECT | WRITE_OK),
     ("set_config", EFFECT),

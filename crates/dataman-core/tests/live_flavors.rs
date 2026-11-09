@@ -9,6 +9,7 @@ mod common;
 
 use common::*;
 use dataman_core::agent_login::live;
+use dataman_core::bounded::{Limits, Mode, Stop};
 use dataman_core::nosql::{Body, Output, Page};
 use dataman_core::server::Flavor;
 use dataman_core::{ConnectionProfile, Engine, ResultSet};
@@ -87,6 +88,12 @@ fn timescale_is_told_by_its_extension_and_its_schemas_hide() {
     assert!(public.iter().any(|r| r.name == "dataman_flavor_metrics"), "{public:?}");
     assert_eq!(first(&ok(&e, &c, "SELECT count(*) FROM public.dataman_flavor_metrics")).as_deref(), Some("2"));
     ok(&e, &c, "DROP TABLE public.dataman_flavor_metrics");
+    // It stops every job of the server's from a read-only transaction: no agent's read runs it.
+    let read = |sql: &str| e.core.block_on(c.bounded(None, sql, vec![], Mode::Read, Limits::default(), std::future::pending()));
+    for sql in ["SELECT _timescaledb_functions.stop_background_workers()", "SELECT public.add_job('pg_sleep'::regproc, '1h')"] {
+        assert!(read(sql).is_err(), "{sql}");
+    }
+    assert!(matches!(read("SELECT _timescaledb_functions.stop_background_workers()"), Err(Stop::Refused(_))));
 }
 
 #[test]
@@ -99,6 +106,8 @@ fn yugabyte_is_told_by_its_version_and_listen_fails_clean() {
     assert_eq!(first(&ok(&e, &c, "SELECT 1")).as_deref(), Some("1"));
     ok(&e, &c, "DROP TABLE IF EXISTS public.dataman_flavor_ro");
     ok(&e, &c, "CREATE TABLE public.dataman_flavor_ro (id int PRIMARY KEY)");
+    let read = |sql: &str| e.core.block_on(c.bounded(None, sql, vec![], Mode::Read, Limits::default(), std::future::pending()));
+    assert!(matches!(read("SELECT yb_cancel_transaction('00000000-0000-0000-0000-000000000000')"), Err(Stop::Refused(_))), "it cancels another session's transaction");
     let (e2, ro) = server("DATAMAN_YUGABYTE", true).expect("reached once");
     let err = failed(&e2, &ro, "INSERT INTO public.dataman_flavor_ro VALUES (1)");
     assert_eq!(err.code.as_deref(), Some("25006"), "{err:?}");

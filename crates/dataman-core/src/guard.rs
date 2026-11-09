@@ -2237,6 +2237,12 @@ mod tests {
             ("SELECT nextval('s')", "effects"),
             ("SELECT \"pg_reload_conf\"()", "effects"),
             ("SELECT set_config('role', 'postgres', false)", "effects"),
+            // TimescaleDB's and YugabyteDB's, which run in a read-only transaction too.
+            ("SELECT _timescaledb_functions.stop_background_workers()", "effects"),
+            ("SELECT _timescaledb_internal.restart_background_workers()", "effects"),
+            ("SELECT yb_cancel_transaction('00000000-0000-0000-0000-000000000000')", "effects"),
+            ("SELECT yb_pg_stat_plans_reset(null, null, null, null)", "effects"),
+            ("SELECT yb_log_backend_heap_snapshot(1)", "effects"),
         ] {
             let r = agent_read_refusal(bad).unwrap_or_else(|| panic!("{bad} must be refused"));
             assert!(r.contains(why), "{bad}: {r}");
