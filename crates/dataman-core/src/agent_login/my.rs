@@ -498,12 +498,12 @@ pub(crate) async fn have(db: &Db, user: &str, space: &str, mariadb: bool) -> Res
         }
     }
     let create = text_rows(db, &format!("SHOW CREATE USER {}", account(user))).await?.first().map(|r| s(&r[0])).unwrap_or_default();
-    let num_after = |k: &str| create.split(k).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok());
-    if let Some(n) = num_after("MAX_USER_CONNECTIONS").filter(|n| *n > 0) {
+    let (connections, statement_time) = user_limits(&create);
+    if let Some(n) = connections.filter(|n| *n > 0) {
         out.push(Grant::Limit(n));
     }
-    if mariadb && let Some(n) = num_after("MAX_STATEMENT_TIME").filter(|n| *n > 0) {
-        out.push(Grant::Setting { name: "MAX_STATEMENT_TIME".into(), value: n.to_string() });
+    if mariadb && let Some(t) = statement_time.filter(|t| *t > 0.0) {
+        out.push(Grant::Setting { name: "MAX_STATEMENT_TIME".into(), value: t.to_string() });
     }
     let mut views = Vec::new();
     if mariadb {
@@ -532,6 +532,13 @@ pub(crate) async fn have(db: &Db, user: &str, space: &str, mariadb: bool) -> Res
     out.sort();
     out.dedup();
     Ok((out, views, db_exists))
+}
+
+/// MAX_USER_CONNECTIONS and MariaDB's MAX_STATEMENT_TIME in a `SHOW CREATE USER`, which writes
+/// the time in seconds with six decimals (`MAX_STATEMENT_TIME 30.000000`).
+pub(crate) fn user_limits(create: &str) -> (Option<u32>, Option<f64>) {
+    let after = |k: &str| create.split(k).nth(1).and_then(|r| r.split_whitespace().next()).map(|n| n.trim_end_matches([';', ',']));
+    (after("MAX_USER_CONNECTIONS").and_then(|n| n.parse().ok()), after("MAX_STATEMENT_TIME").and_then(|n| n.parse().ok()))
 }
 
 /// Before Remove: the views in Dataman's database, and whether only Dataman's things are there.

@@ -688,3 +688,15 @@ fn partial_keeps_what_the_column_says() {
     assert!(!pg::mask_expr("c", Mask::PARTIAL).contains('@'), "no e-mail look: the last 4 like any column");
     assert!(mongo::mask_expr("c", first).to_string().contains("\"$substrCP\":[\"$$s\",0,2]"));
 }
+
+/// As MySQL 8.4 and MariaDB 11.8 write them: the time must read as the 30 Dataman sets, or the
+/// login is never in sync.
+#[test]
+fn user_limits_as_servers_write_them() {
+    use super::my::user_limits;
+    let maria = "CREATE USER `a`@`%` IDENTIFIED BY PASSWORD '*B6' WITH MAX_USER_CONNECTIONS 4 MAX_STATEMENT_TIME 30.000000";
+    assert_eq!(user_limits(maria), (Some(4), Some(30.0)));
+    assert_eq!(30.0_f64.to_string(), 30.to_string());
+    assert_eq!(user_limits("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' WITH MAX_USER_CONNECTIONS 2 PASSWORD EXPIRE DEFAULT"), (Some(2), None));
+    assert_eq!(user_limits("CREATE USER `a`@`%` WITH MAX_STATEMENT_TIME 0.500000").1, Some(0.5));
+}
