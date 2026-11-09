@@ -166,6 +166,11 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     if mode == Mode::Autocommit && stmts.len() > 1 {
         return Some("a statement that runs outside a transaction runs alone".into());
     }
+    // Outside a transaction only the session holds it read-only, and a session setting is any
+    // statement's to change (`set_config` in a function).
+    if mode == Mode::Autocommit && read_only_profile && dialect.pin_read_only().is_some() {
+        return Some("read-only connection: a statement outside a transaction is not run".into());
+    }
     for (i, s) in stmts.iter().enumerate() {
         if mode == Mode::Read {
             if let Some(r) = guard::agent_read_refusal_in(s, dialect) {
@@ -514,7 +519,7 @@ impl Connection {
                 match &d {
                     Dedicated::Pg(p) => {
                         let shared = p.pooler.is_some_and(|x| x.per_transaction());
-                        in_transaction(&p.client, &stmts, &params, mode, &limits, PgTx { read_only: mode == Mode::Read || (shared && ro), shared }).await
+                        in_transaction(&p.client, &stmts, &params, mode, &limits, PgTx { read_only: mode == Mode::Read || ro, shared }).await
                     }
                     Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, ro, &limits).await,
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
@@ -988,8 +993,9 @@ fn keep_row(cols: &[ColumnInfo], chunk: &crate::result::Chunk, mode: Mode, more:
 
 type Failed = (Stop, bool);
 
-/// How an agent's transaction opens. Through a pooler per transaction (`shared`) the session
-/// holds nothing: what the server must enforce is set on the transaction itself.
+/// How an agent's transaction opens. What the server must enforce is set on the transaction
+/// itself: through a pooler per transaction (`shared`) the session holds nothing, and a direct
+/// session's default_transaction_read_only is any statement's to change.
 #[derive(Clone, Copy)]
 struct PgTx {
     read_only: bool,
@@ -1031,7 +1037,12 @@ async fn begin(client: &Client, mode: Mode, limits: &Limits, tx: PgTx) -> Result
         }
         return Ok(());
     }
-    let begin = Dialect::Postgres.begin_for(tx.read_only);
+    let d = Dialect::Postgres;
+    let begin = match d.pin_read_only() {
+        Some(pin) if tx.read_only => format!("{}; {pin}", d.begin_for(true)),
+        _ => d.begin().to_string(),
+    };
+    let begin = begin.as_str();
     client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     if tx.shared {
         client.simple_query(crate::pooler::AGENT_TX_LOCALS).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;

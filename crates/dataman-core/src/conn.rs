@@ -597,13 +597,17 @@ impl Session {
         if let Some(why) = self.conn.pooler.and_then(|p| crate::pooler::session_state_refusal(&rs.sql, &p)) {
             return refuse(why);
         }
-        // A read-only tab through a pooler per transaction: each statement runs in a read-only
-        // transaction of its own, and a transaction the user opens is made read-only.
-        let ro_pooled = !agent && self.conn.read_only_per_transaction(&self.database);
-        if ro_pooled && let Some(why) = tx_control_mixed(&rs.sql) {
+        // A read-only tab where the server holds a transaction read-only once a query has run in
+        // it (PostgreSQL): each statement runs in a pinned read-only transaction of its own, and a
+        // transaction the user opens is pinned read-only. The session's
+        // default_transaction_read_only alone gives way to `BEGIN READ WRITE`, a `SET`, or any
+        // function that sets it, and through a pooler per transaction there is no session.
+        let ro_pin = dialect.pin_read_only().filter(|_| !agent && self.conn.read_only_for(&self.database));
+        let ro_tx = ro_pin.is_some();
+        if ro_tx && let Some(why) = tx_control_mixed(&rs.sql) {
             return refuse(why);
         }
-        let rollback = rs.rolled_back() || (ro_pooled && facts.tx.is_none() && !self.tx.get().status.is_open());
+        let rollback = rs.rolled_back() || (ro_tx && facts.tx.is_none() && !self.tx.get().status.is_open());
         // Nothing would undo it: it does not run. A read has nothing to undo (and an agent's runs
         // on a read-only connection).
         if rollback && !dialect.has_transactions() && (facts.is_write() || facts.effect == crate::guard::Effect::Other) {
@@ -650,27 +654,37 @@ impl Session {
             }
             let begin = match self.read_only_hold(&rs.sql) {
                 Some(hold) if !agent => hold,
-                _ if read_only || ro_pooled => dialect.begin_read_only().unwrap_or(dialect.begin()),
+                _ if read_only || ro_tx => dialect.begin_read_only().unwrap_or(dialect.begin()),
                 _ => dialect.begin(),
             };
             let sql = if savepoint {
                 dialect.savepoint(ROLLBACK_SAVEPOINT)
             } else if agent && self.conn.per_transaction() {
                 format!("{begin}; {}", crate::pooler::AGENT_TX_LOCALS)
+            } else if let Some(pin) = ro_pin {
+                format!("{begin}; {pin}")
             } else {
                 begin.to_string()
             };
             if !self.wrapper(&client, rs, &sql, agent).await {
                 return;
             }
-            Some(savepoint)
+            // A read-only tab's own statement keeps what it set (a `SET search_path`): its
+            // transaction, pinned read-only, commits.
+            Some(if savepoint {
+                Wrap::RollbackTo
+            } else if ro_tx && !rs.rolled_back() {
+                Wrap::Commit
+            } else {
+                Wrap::Rollback
+            })
         } else if !agent && let Some(begin) = self.read_only_hold(&rs.sql) {
             // The server keeps no read-only session (Vitess) but holds a READ ONLY transaction:
             // outside the user's own transaction, each run is one.
             if !self.wrapper(&client, rs, begin, agent).await {
                 return;
             }
-            Some(false)
+            Some(Wrap::Rollback)
         } else {
             None
         };
@@ -712,15 +726,15 @@ impl Session {
             }
             r => r,
         };
-        let r = match r {
-            Ran::Done(n) if ro_pooled && facts.tx == Some(crate::guard::TxCmd::Begin) => match client.execute("SET TRANSACTION READ ONLY").await {
+        let r = match (r, ro_pin) {
+            (Ran::Done(n), Some(pin)) if opens_transaction(&rs.sql, &facts) => match client.execute(pin).await {
                 Ok(_) => Ran::Done(n),
                 Err(info) => {
-                    end_rollback(&client, dialect, Some(false)).await;
+                    end_rollback(&client, dialect, Some(Wrap::Rollback)).await;
                     Ran::Failed(info)
                 }
             },
-            r => r,
+            (r, _) => r,
         };
         let rs = &last.lock().clone();
         if !agent {
@@ -818,16 +832,40 @@ fn tx_control_mixed(sql: &str) -> Option<String> {
         return None;
     }
     let f = stmts.iter().map(|s| crate::guard::classify_in(&sql[s.range.clone()], d)).find(|f| f.tx.is_some())?;
-    Some(format!("read-only through a pooler: {} runs alone, not with other statements", f.verb))
+    Some(format!("read-only: {} runs alone, not with other statements", f.verb))
 }
 
-/// Ends the transaction (`Some(false)`) or savepoint (`Some(true)`) a rolled-back statement ran
-/// in. After an error the server refuses all but this, which is what it is for.
-async fn end_rollback(client: &Db, dialect: Dialect, wrap: Option<bool>) {
+/// Transaction control that leaves a transaction open: BEGIN, and a COMMIT or ROLLBACK … AND CHAIN,
+/// whose next transaction takes the last one's characteristics but not its pin.
+fn opens_transaction(sql: &str, f: &crate::guard::Facts) -> bool {
+    use crate::guard::TxCmd;
+    match f.tx {
+        Some(TxCmd::Begin) => true,
+        Some(TxCmd::Commit | TxCmd::Rollback) => {
+            let d = Dialect::Postgres;
+            let words: Vec<&str> = crate::sql::tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).map(|t| t.text(sql)).collect();
+            words.windows(2).any(|w| w[0].eq_ignore_ascii_case("AND") && w[1].eq_ignore_ascii_case("CHAIN"))
+        }
+        _ => false,
+    }
+}
+
+/// How the transaction or savepoint Dataman opened around a statement ends.
+#[derive(Clone, Copy)]
+enum Wrap {
+    Rollback,
+    RollbackTo,
+    Commit,
+}
+
+/// Ends the transaction or savepoint a statement ran in. After an error the server refuses all
+/// but a rollback, which a commit then is.
+async fn end_rollback(client: &Db, dialect: Dialect, wrap: Option<Wrap>) {
     let sql = match wrap {
         None => return,
-        Some(true) => dialect.rollback_to(ROLLBACK_SAVEPOINT),
-        Some(false) => dialect.rollback().to_string(),
+        Some(Wrap::RollbackTo) => dialect.rollback_to(ROLLBACK_SAVEPOINT),
+        Some(Wrap::Rollback) => dialect.rollback().to_string(),
+        Some(Wrap::Commit) => dialect.commit().to_string(),
     };
     if let Err(e) = client.execute(&sql).await {
         log::warn!("rollback after a rolled-back statement failed: {e}");

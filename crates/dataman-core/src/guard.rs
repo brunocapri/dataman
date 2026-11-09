@@ -1171,6 +1171,15 @@ pub fn read_only_refusal_held(sql: &str, dialect: Dialect, held: bool) -> Option
     if dialect == Dialect::ClickHouse && f.verb == "KILL" {
         return Some("read-only connection: KILL is not run".into());
     }
+    // A read-only transaction lets it write the server's files and run its programs.
+    if dialect == Dialect::Postgres
+        && agent_pieces(sql, dialect).iter().any(|p| {
+            let all = significant(p, dialect);
+            pg_copy_on_server(&Toks { src: p, t: &all, dialect }, "TO")
+        })
+    {
+        return Some("read-only connection: COPY TO a file or program on the database server is not run".into());
+    }
     if held { None } else { unheld_read_only_refusal(sql, dialect) }
 }
 
@@ -1344,10 +1353,9 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
         let all = significant(&piece, dialect);
         let t = Toks { src: &piece, t: &all, dialect };
         let first = t.word(0).unwrap_or_default();
-        let named = |i: usize| all.get(i).is_some_and(|x| matches!(x.kind, TokenKind::String | TokenKind::DollarString));
         match dialect {
             Dialect::Postgres => {
-                if first == "COPY" && t.top().into_iter().any(|i| (t.is(i, "TO") || t.is(i, "FROM")) && (t.is(i + 1, "PROGRAM") || named(i + 1))) {
+                if pg_copy_on_server(&t, "TO") || pg_copy_on_server(&t, "FROM") {
                     return Some("COPY with a file or a program on the database server".into());
                 }
                 if first == "ALTER" && t.is(1, "SYSTEM") {
@@ -1384,6 +1392,12 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
         }
     }
     None
+}
+
+/// A PostgreSQL COPY to (`way` = TO) or from a file or a program on the database server.
+fn pg_copy_on_server(t: &Toks, way: &str) -> bool {
+    let named = |i: usize| t.t.get(i).is_some_and(|x| matches!(x.kind, TokenKind::String | TokenKind::DollarString));
+    t.is(0, "COPY") && t.top().into_iter().any(|i| t.is(i, way) && (t.is(i + 1, "PROGRAM") || named(i + 1)))
 }
 
 fn file_access_in(t: &Toks) -> Option<String> {
@@ -2428,6 +2442,11 @@ mod tests {
         assert!(read_only_refusal("CREATE TABLE x (a int)").is_some());
         assert!(read_only_refusal("TRUNCATE t").is_some());
         assert!(read_only_refusal("SELECT 1 INTO t2").is_some());
+        for sql in ["COPY (SELECT 1) TO PROGRAM 'true'", "copy t TO '/tmp/t.csv'", "SELECT 1; COPY t TO $$/tmp/x$$"] {
+            assert!(read_only_refusal(sql).is_some_and(|r| r.contains("COPY TO")), "{sql}");
+        }
+        assert!(read_only_refusal("COPY t TO STDOUT").is_none());
+        assert!(read_only_refusal("SELECT 'COPY t TO PROGRAM'").is_none());
         assert!(read_only_refusal("EXPLAIN ANALYZE INSERT INTO t VALUES (1)").is_some());
         assert!(read_only_refusal("EXPLAIN INSERT INTO t VALUES (1)").is_none());
     }
