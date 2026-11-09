@@ -112,6 +112,40 @@ fn yugabyte_is_told_by_its_version_and_listen_fails_clean() {
     let err = failed(&e2, &ro, "INSERT INTO public.dataman_flavor_ro VALUES (1)");
     assert_eq!(err.code.as_deref(), Some("25006"), "{err:?}");
     ok(&e, &c, "DROP TABLE public.dataman_flavor_ro");
+
+    // DDL and TRUNCATE commit there whatever becomes of the transaction: what is to be rolled
+    // back does not run them.
+    ok(&e, &c, "DROP TABLE IF EXISTS public.dataman_flavor_ddl");
+    ok(&e, &c, "CREATE TABLE public.dataman_flavor_ddl (id int PRIMARY KEY)");
+    ok(&e, &c, "INSERT INTO public.dataman_flavor_ddl VALUES (1)");
+    let s = c.session(None);
+    let rolled_back = |sql: &str| {
+        let rs = s.execute_opts(sql, vec![], true);
+        rs.fetch_all();
+        e.core.block_on(async { tokio::time::timeout(Duration::from_secs(60), rs.wait_finished()).await.expect("timeout") });
+        rs
+    };
+    for sql in ["DROP TABLE public.dataman_flavor_ddl", "TRUNCATE public.dataman_flavor_ddl", "DELETE FROM public.dataman_flavor_ddl; ALTER TABLE public.dataman_flavor_ddl ADD COLUMN x int"] {
+        let rs = rolled_back(sql);
+        assert_eq!(rs.phase(), Phase::Failed, "{sql}");
+        assert!(rs.status().error.unwrap().message.contains("does not roll back"), "{sql}");
+        let r = e.core.block_on(c.bounded(None, sql, vec![], Mode::Rollback, Limits::default(), std::future::pending()));
+        assert!(matches!(&r, Err(Stop::Refused(m)) if m.contains("does not roll back")), "{sql}: {r:?}");
+    }
+    assert_eq!(rolled_back("DELETE FROM public.dataman_flavor_ddl").phase(), Phase::Done, "a write still rolls back");
+    assert_eq!(first(&ok(&e, &c, "SELECT count(*) FROM public.dataman_flavor_ddl")).as_deref(), Some("1"));
+    assert_eq!(first(&ok(&e, &c, "SELECT count(*) FROM pg_attribute WHERE attrelid = 'public.dataman_flavor_ddl'::regclass AND attname = 'x'")).as_deref(), Some("0"));
+    ok(&e, &c, "DROP TABLE public.dataman_flavor_ddl");
+
+    // A login half made stays half made there: the failure does not say nothing was changed.
+    use dataman_core::agent_login::{Action, Plan, Step};
+    ok(&e, &c, "DROP ROLE IF EXISTS dataman_flavor_half");
+    let step = |sql: &str| Step { action: Action::Sql(sql.into()), shown: sql.into(), copy: sql.into(), group: String::new() };
+    let plan = Plan { engine: Some(Engine::Postgres), user: "dataman_flavor_half".into(), steps: vec![step("CREATE ROLE dataman_flavor_half LOGIN"), step("SELECT 1/0")], one_tx: true, ..Default::default() };
+    let err = format!("{:#}", e.core.block_on(live::apply(&c, &plan, c.database())).unwrap_err());
+    assert!(!err.contains("nothing was changed"), "{err}");
+    assert_eq!(first(&ok(&e, &c, "SELECT count(*) FROM pg_roles WHERE rolname = 'dataman_flavor_half'")).as_deref(), Some("1"));
+    ok(&e, &c, "DROP ROLE dataman_flavor_half");
 }
 
 #[test]

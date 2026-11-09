@@ -132,6 +132,17 @@ impl Connection {
         Caps::of_server(self.profile.engine, self.info.flavor)
     }
 
+    /// Why `sql` must not run to be rolled back: DDL or TRUNCATE on a server whose rollback
+    /// leaves them done (MySQL commits them, YugabyteDB keeps them).
+    pub(crate) fn unrollable(&self, sql: &str) -> Option<String> {
+        let d = self.dialect();
+        if !crate::guard::ddl_commits(d, self.info.flavor) {
+            return None;
+        }
+        let verb = crate::guard::ddl_in(sql, d)?;
+        Some(format!("{} does not roll back {verb}: it would stay done, so it did not run", self.info.flavor.label(self.profile.engine)))
+    }
+
     pub fn read_only_for(&self, database: &str) -> bool {
         crate::config::read_only_in(self.profile.read_only, &self.read_only_dbs.read(), self.profile.engine, database)
     }
@@ -600,6 +611,11 @@ impl Session {
             });
         };
         if let Some(why) = self.conn.pooler.and_then(|p| crate::pooler::session_state_refusal(&rs.sql, &p)) {
+            return refuse(why);
+        }
+        if rs.rolled_back()
+            && let Some(why) = self.conn.unrollable(&rs.sql)
+        {
             return refuse(why);
         }
         // A read-only tab where the server holds a transaction read-only once a query has run in

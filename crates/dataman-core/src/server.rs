@@ -47,6 +47,8 @@ pub struct FlavorSpec {
     pub schemes: &'static [(&'static str, &'static str)],
     /// The server keeps a read-only connection from writing, as its engine does (`Caps::read_only_held`).
     pub read_only_held: bool,
+    /// A rollback undoes DDL and TRUNCATE, as its engine's does (`Caps::transactional_ddl`).
+    pub transactional_ddl: bool,
 }
 
 /// What in a server's report names the flavor.
@@ -67,7 +69,7 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
@@ -83,9 +85,11 @@ pub static FLAVORS: [FlavorSpec; 11] = [
         system_schemas: &["_timescaledb_*", "timescaledb_information", "timescaledb_experimental"],
         ..row(Flavor::Timescale, Engine::Postgres, "timescaledb", "TimescaleDB", "timescaledb timescale tigerdata tiger", clue("timescaledb", "", true))
     },
-    // Its JDBC smart driver's scheme.
+    // Its JDBC smart driver's scheme. DDL and TRUNCATE in a transaction block commit on their
+    // own, ROLLBACK or not (unless `yb_ddl_transaction_block_enabled`, off by default).
     FlavorSpec {
         aliases: &["yugabyte"],
+        transactional_ddl: false,
         logo: Some("logos/yugabytedb.svg"),
         default_port: Some(5433),
         schemes: &[("yugabytedb", "postgresql")],

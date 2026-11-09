@@ -14,8 +14,9 @@ fn targets(d: Dialect) -> Vec<Target> {
     let mut out = Vec::new();
     for access in [McpAccess::Read, McpAccess::Write, McpAccess::Full] {
         for env in [Environment::Dev, Environment::Production] {
-            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: false });
-            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: true });
+            let ddl_commits = dataman_core::guard::ddl_commits(d, dataman_core::server::Flavor::Standard);
+            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: false, ddl_commits });
+            out.push(Target { access, env, read_only: false, dialect: d, yolo: false, agent_login: true, ddl_commits });
         }
     }
     out

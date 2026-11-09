@@ -158,7 +158,9 @@ pub async fn apply(c: &Arc<Connection>, plan: &Plan, database: &str) -> Result<(
         let db = admin_db(c, if matches!(engine, Engine::Postgres | Engine::SqlServer) && !database.is_empty() { Some(database) } else { None }).await?;
         let d = engine.dialect();
         let (begin, commit, rollback) = (d.begin(), d.commit(), d.rollback_if_open());
-        let tx = plan.one_tx;
+        // Where a rollback leaves DDL done (YugabyteDB keeps the role, its schema and grants),
+        // a transaction would only make the failure say nothing was changed.
+        let tx = plan.one_tx && !crate::guard::ddl_commits(d, c.info.flavor);
         for s in &plan.before {
             let Action::Sql(sql) = &s.action else { continue };
             db.execute(sql).await.map_err(|e| anyhow!("{e}\n  in: {}", s.shown))?;

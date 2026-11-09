@@ -205,8 +205,10 @@ impl Caps {
     /// What the server that answered can do: its engine's, less what its flavor lacks.
     pub fn of_server(engine: Engine, flavor: crate::server::Flavor) -> Caps {
         let caps = Caps::of(engine);
-        let held = flavor.spec_on(engine).is_none_or(|f| f.read_only_held);
-        Caps { read_only_held: caps.read_only_held && held, ..caps }
+        let spec = flavor.spec_on(engine);
+        let held = spec.is_none_or(|f| f.read_only_held);
+        let ddl = spec.is_none_or(|f| f.transactional_ddl);
+        Caps { read_only_held: caps.read_only_held && held, transactional_ddl: caps.transactional_ddl && ddl, ..caps }
     }
 }
 

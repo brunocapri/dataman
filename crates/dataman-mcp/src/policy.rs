@@ -75,11 +75,13 @@ pub struct Target {
     pub dialect: Dialect,
     pub yolo: bool,
     pub agent_login: bool,
+    /// A rollback leaves DDL done there (`guard::ddl_commits`).
+    pub ddl_commits: bool,
 }
 
 impl Target {
     pub fn of(p: &ConnectionProfile) -> Target {
-        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo_on(), agent_login: p.agent_login.is_some() }
+        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo_on(), agent_login: p.agent_login.is_some(), ddl_commits: dataman_core::guard::ddl_commits(p.engine.dialect(), p.flavor) }
     }
 
     pub fn of_in(p: &ConnectionProfile, database: &str) -> Target {
@@ -170,7 +172,7 @@ pub struct Judged {
 }
 
 pub fn judge(enabled: bool, t: Target, sql: &str, allowed: &[String]) -> Judged {
-    let class = dataman_core::guard::agent_write_class(sql, t.dialect);
+    let class = dataman_core::guard::agent_write_class_on(sql, t.dialect, t.ddl_commits);
     let tier = |class: &WriteClass| Judged { verdict: write_verdict(enabled, t, class), by: None, row_limit: true };
     // The database server's files and programs (on a local server: this Mac's, Dataman's own
     // files and an open project's among them) wait for a human at every level: neither YOLO
@@ -203,7 +205,7 @@ pub fn judge(enabled: bool, t: Target, sql: &str, allowed: &[String]) -> Judged 
     if t.read_only && class.is_write() {
         return Judged { verdict: Verdict::Refuse(READ_ONLY.into()), by: None, row_limit: true };
     }
-    let rest = dataman_core::guard::pieces_class(&rest, t.dialect);
+    let rest = dataman_core::guard::pieces_class_on(&rest, t.dialect, t.ddl_commits);
     if !rest.is_write() {
         return Judged { verdict: Verdict::Run, by: Some(By::Allowlist(used)), row_limit: false };
     }
@@ -227,7 +229,7 @@ mod tests {
     use super::*;
 
     fn t(access: McpAccess, env: Environment, read_only: bool) -> Target {
-        Target { access, env, read_only, dialect: Dialect::Postgres, yolo: false, agent_login: false }
+        Target { access, env, read_only, dialect: Dialect::Postgres, yolo: false, agent_login: false, ddl_commits: false }
     }
 
     fn safe() -> WriteClass {

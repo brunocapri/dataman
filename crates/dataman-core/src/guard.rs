@@ -1845,9 +1845,30 @@ pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
     pieces_class(&agent_pieces(sql, dialect), dialect)
 }
 
+/// As `agent_write_class`, on a server whose DDL commits on its own (`!Caps::transactional_ddl`
+/// of a server with transactions: MySQL, YugabyteDB) when `ddl_commits`.
+pub fn agent_write_class_on(sql: &str, dialect: Dialect, ddl_commits: bool) -> WriteClass {
+    pieces_class_on(&agent_pieces(sql, dialect), dialect, ddl_commits)
+}
+
+/// The first statement a rollback would not undo where DDL commits on its own: its verb.
+pub fn ddl_in(sql: &str, dialect: Dialect) -> Option<String> {
+    agent_pieces(sql, dialect).iter().map(|p| classify_in(p, dialect)).find(|f| f.effect == Effect::Ddl || f.verb == "TRUNCATE").map(|f| f.verb)
+}
+
 /// The class of pieces as `agent_pieces` cut them (what an allowlist leaves): joined again, a
 /// T-SQL routine would take in what follows it.
 pub fn pieces_class<S: AsRef<str>>(pieces: &[S], dialect: Dialect) -> WriteClass {
+    pieces_class_on(pieces, dialect, ddl_commits(dialect, crate::server::Flavor::Standard))
+}
+
+/// A server of the dialect, as `flavor`, has transactions whose rollback leaves DDL done.
+pub fn ddl_commits(dialect: Dialect, flavor: crate::server::Flavor) -> bool {
+    let engine = crate::engine::SPECS.iter().find(|s| s.dialect == Some(dialect)).map(|s| s.engine);
+    dialect.has_transactions() && engine.is_some_and(|e| !crate::backend::Caps::of_server(e, flavor).transactional_ddl)
+}
+
+pub fn pieces_class_on<S: AsRef<str>>(pieces: &[S], dialect: Dialect, ddl_commits: bool) -> WriteClass {
     let (mut safe, mut destructive) = (false, false);
     let mut reasons: Vec<String> = Vec::new();
     for p in pieces {
@@ -1867,9 +1888,10 @@ pub fn pieces_class<S: AsRef<str>>(pieces: &[S], dialect: Dialect) -> WriteClass
             reasons.push(r);
         }
     }
-    // DDL commits on its own in MySQL: beside a write it would commit that write before the row
-    // limit counts it, and survive the rollback when the limit is passed.
-    if destructive || (safe && !reasons.is_empty() && dialect == Dialect::MySql) {
+    // DDL commits on its own in MySQL (and YugabyteDB's survives a rollback): beside a write it
+    // would commit that write before the row limit counts it, or survive the rollback when the
+    // limit is passed.
+    if destructive || (safe && !reasons.is_empty() && ddl_commits) {
         WriteClass::Destructive { reasons }
     } else if !reasons.is_empty() {
         WriteClass::Create { what: reasons }
@@ -2247,6 +2269,22 @@ mod tests {
             let r = agent_read_refusal(bad).unwrap_or_else(|| panic!("{bad} must be refused"));
             assert!(r.contains(why), "{bad}: {r}");
         }
+    }
+
+    /// A rollback leaves DDL done on MySQL and YugabyteDB: beside a write it waits for the Allow
+    /// instead of passing the row limit and staying.
+    #[test]
+    fn ddl_that_commits_on_its_own() {
+        use crate::server::Flavor;
+        assert!(ddl_commits(Dialect::MySql, Flavor::Standard) && ddl_commits(Dialect::Postgres, Flavor::Yugabyte));
+        assert!(!ddl_commits(Dialect::Postgres, Flavor::Standard) && !ddl_commits(Dialect::Postgres, Flavor::Timescale) && !ddl_commits(Dialect::ClickHouse, Flavor::Standard));
+        let both = "CREATE TABLE t2 (a int); INSERT INTO t VALUES (1)";
+        assert!(matches!(agent_write_class_on(both, Dialect::Postgres, false), WriteClass::Create { .. }));
+        assert!(agent_write_class_on(both, Dialect::Postgres, true).is_destructive());
+        assert_eq!(agent_write_class(both, Dialect::MySql), agent_write_class_on(both, Dialect::MySql, true));
+        assert_eq!(ddl_in("DELETE FROM t; TRUNCATE t", Dialect::Postgres).as_deref(), Some("TRUNCATE"));
+        assert!(ddl_in("ALTER TABLE t ADD COLUMN b int", Dialect::Postgres).is_some());
+        assert_eq!(ddl_in("DELETE FROM t WHERE a = 1; SELECT 'DROP TABLE t'", Dialect::Postgres), None);
     }
 
     fn nw(sql: &str) -> bool {

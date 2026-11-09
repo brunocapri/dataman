@@ -485,6 +485,11 @@ impl Connection {
         if let Some(r) = refusal_in(&stmts, params.len(), mode, ro, dialect) {
             return Err(Stop::Refused(r));
         }
+        if mode == Mode::Rollback
+            && let Some(r) = self.unrollable(sql)
+        {
+            return Err(Stop::Refused(r));
+        }
         if mode == Mode::Read
             && let Some(r) = self.unheld_read_refusal(sql)
         {
