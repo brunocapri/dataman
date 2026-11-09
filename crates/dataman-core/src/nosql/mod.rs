@@ -540,6 +540,14 @@ impl Connection {
                     if class.is_write() && this.read_only_for(&db) {
                         return Err(Failed { message: format!("database {db} is read-only: writes are refused"), at: None });
                     }
+                    // MOVE, COPY … DB, SWAPDB and FLUSHALL write to other databases too.
+                    let reached = redis::databases_reached(&args);
+                    if let Some(ro) = reached.as_ref().and_then(|dbs| dbs.iter().find(|d| this.read_only_for(d))) {
+                        return Err(Failed { message: format!("database {ro} is read-only: writes are refused"), at: None });
+                    }
+                    if reached.is_none() && this.any_read_only() {
+                        return Err(Failed { message: format!("{} reaches every database, and some are read-only", redis::name(&args)), at: None });
+                    }
                     let output = rds::run(&c, &db, &args, &raw, page).await?;
                     Ok(Ran::of(output, started.elapsed(), class))
                 }

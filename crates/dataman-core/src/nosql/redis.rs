@@ -71,6 +71,37 @@ pub fn class(args: &[String]) -> WriteClass {
     }
 }
 
+/// Where a command writes beyond the database it runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    /// The database numbered by the argument at this position.
+    Arg(usize),
+    /// The one numbered after this word (`COPY a b DB 3`).
+    After(&'static str),
+    Every,
+}
+
+const REACHES: &[(&str, &[Reach])] = &[
+    ("MOVE", &[Reach::Arg(2)]),
+    ("COPY", &[Reach::After("DB")]),
+    ("SWAPDB", &[Reach::Arg(1), Reach::Arg(2)]),
+    ("FLUSHALL", &[Reach::Every]),
+];
+
+/// The other databases a command writes to: None, every one (`FLUSHALL`).
+pub fn databases_reached(args: &[String]) -> Option<Vec<&str>> {
+    let n = name(args);
+    let mut out = Vec::new();
+    for r in REACHES.iter().find(|(c, _)| *c == n).map_or(&[][..], |(_, r)| *r) {
+        match *r {
+            Reach::Arg(i) => out.extend(args.get(i).map(String::as_str)),
+            Reach::After(w) => out.extend(args.iter().position(|a| a.eq_ignore_ascii_case(w)).and_then(|i| args.get(i + 1)).map(String::as_str)),
+            Reach::Every => return None,
+        }
+    }
+    Some(out)
+}
+
 pub fn refusal(args: &[String]) -> Option<String> {
     let n = name(args);
     let first = n.split(' ').next().unwrap_or("");

@@ -50,7 +50,8 @@ fn docs(o: Output) -> dataman_core::nosql::Docs {
 fn keys_values_and_entries() {
     let e = env();
     let Some(c) = connect(&e, profile()) else { return };
-    assert!(c.info.version.starts_with("Redis ") || c.info.version.starts_with("Valkey "), "{}", c.info.version);
+    // Any Redis-wire server: DATAMAN_REDIS may point to Valkey, Dragonfly, KeyDB or Garnet.
+    assert!(c.info.version.starts_with(c.info.flavor.label(Engine::Redis)), "{}", c.info.version);
     assert_eq!(c.database(), DB);
     ok(&e, &c, "FLUSHDB");
 
@@ -124,4 +125,28 @@ fn keys_values_and_entries() {
     let err = e.core.block_on(e.core.connect(profile(), Some("wrong".into()))).err().expect("refused");
     assert!(format!("{err:#}").contains("authentication failed"), "{err:#}");
     ok(&e, &c, "FLUSHDB");
+}
+
+/// A database marked read-only on a writable connection: what runs on another one does not write
+/// to it (MOVE, COPY … DB, SWAPDB), nor to every one at once (FLUSHALL).
+#[test]
+fn other_databases_keep_their_read_only() {
+    let e = env();
+    let (rw, ro) = ("11", "12");
+    let mut p = profile();
+    p.read_only_databases.insert(ro.into(), true);
+    let Some(c) = connect(&e, p) else { return };
+    let on = |db: &str, text: &str| e.core.block_on(c.run_nosql(db, text, Page::default()));
+    let size = |db: &str| match on(db, "DBSIZE").unwrap().output {
+        Output::Value(Body::Json(n)) => n,
+        o => panic!("{o:?}"),
+    };
+    on(rw, "SET dataman_ro_moved 1").unwrap();
+    let before = size(ro);
+    for text in ["MOVE dataman_ro_moved 12", "COPY dataman_ro_moved dataman_ro_copy DB 12", "copy dataman_ro_moved x db 12 REPLACE", "SWAPDB 11 12", "FLUSHALL"] {
+        let err = on(rw, text).map(|r| r.output).unwrap_err();
+        assert!(format!("{err:#}").contains("read-only"), "{text}: {err:#}");
+    }
+    assert_eq!(size(ro), before);
+    on(rw, "DEL dataman_ro_moved").unwrap();
 }

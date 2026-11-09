@@ -135,8 +135,13 @@ impl Connection {
     pub fn read_only_for(&self, database: &str) -> bool {
         match self.reached(database) {
             Some(db) => crate::config::read_only_in(self.profile.read_only, &self.read_only_dbs.read(), self.profile.engine, db),
-            None => self.profile.read_only || self.read_only_dbs.read().values().any(|on| *on),
+            None => self.any_read_only(),
         }
+    }
+
+    /// Some database is read-only here (by default or by its own setting).
+    pub fn any_read_only(&self) -> bool {
+        self.profile.read_only || self.read_only_dbs.read().values().any(|on| *on)
     }
 
     /// The database a name reaches on this server (`FlavorSpec::database_of`). None: any.
