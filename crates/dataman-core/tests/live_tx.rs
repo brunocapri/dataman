@@ -201,8 +201,12 @@ fn read_only_per_database_on_postgres() {
     ok(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (1)");
     assert!(bounded("INSERT INTO public.dataman_ro_db VALUES (9)").is_ok());
     ok(&e, &s, "BEGIN");
-    c.set_read_only_for("dataman", true);
     ok(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (2)");
+    // Read-only from here: the transaction begun before is no read-only one, and nothing more
+    // runs in it (a function a SELECT calls would write) but its end.
+    c.set_read_only_for("dataman", true);
+    let rs = run(&e, &s, "SELECT 1");
+    assert!(rs.status().error.is_some_and(|e| e.message.contains("end it first")), "{:?}", rs.status().error);
     ok(&e, &s, "COMMIT");
     let rs = run(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (3)");
     assert_eq!(code(&rs).as_deref(), Some("25006"));

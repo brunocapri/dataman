@@ -413,6 +413,15 @@ impl Dialect {
         }
     }
 
+    /// What asks a session which database a `USE` left it on.
+    pub fn current_database(self) -> Option<&'static str> {
+        match self {
+            Dialect::MySql => Some("SELECT DATABASE()"),
+            Dialect::TSql => Some("SELECT DB_NAME()"),
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb | Dialect::ClickHouse => None,
+        }
+    }
+
     /// Not valid inside a transaction on MySQL, and undone by a rollback on PostgreSQL: sent between
     /// transactions.
     pub fn session_read_only(self, on: bool) -> Option<&'static str> {

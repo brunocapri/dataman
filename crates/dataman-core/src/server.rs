@@ -47,6 +47,24 @@ pub struct FlavorSpec {
     pub schemes: &'static [(&'static str, &'static str)],
     /// The server keeps a read-only connection from writing, as its engine does (`Caps::read_only_held`).
     pub read_only_held: bool,
+    /// Its catalog reports a column's default as SQL (`'it''s'`, `NULL`, `current_timestamp()`),
+    /// not as the value MySQL's `information_schema.COLUMNS.COLUMN_DEFAULT` holds.
+    pub defaults_as_sql: bool,
+    /// A database's name may carry a routing target after one of these (Vitess: `` `ks@primary` ``,
+    /// `` `ks:-80` ``, `` `ks[-80]` ``): the database is the part before it, and with none
+    /// (`@replica`, or no database at all) a table's name is looked up in every one.
+    pub targets: &'static [char],
+}
+
+impl FlavorSpec {
+    /// The database `name` reaches: itself, or what is before its routing target. None: any.
+    pub fn database_of<'a>(&self, name: &'a str) -> Option<&'a str> {
+        if self.targets.is_empty() {
+            return Some(name);
+        }
+        let db = name.split(self.targets).next().unwrap_or(name);
+        (!db.is_empty()).then_some(db)
+    }
 }
 
 /// What in a server's report names the flavor.
@@ -67,13 +85,14 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, defaults_as_sql: false, targets: &[] }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
 /// order: the first whose clue the report holds names the server.
 pub static FLAVORS: [FlavorSpec; 11] = [
-    FlavorSpec { aliases: &["maria"], logo: Some("logos/mariadb.svg"), schemes: &[("mariadb", "mysql")], ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
+    // MariaDB 10.2.7 and later quote a default in its catalog.
+    FlavorSpec { aliases: &["maria"], logo: Some("logos/mariadb.svg"), schemes: &[("mariadb", "mysql")], defaults_as_sql: true, ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
     FlavorSpec { aliases: &["azuresql", "azure"], ..row(Flavor::Azure, Engine::SqlServer, "azure-sql", "Azure SQL", "", None) },
     // valkey-py's own schemes.
     FlavorSpec { logo: Some("logos/valkey.svg"), schemes: &[("valkey", "redis"), ("valkeys", "rediss")], ..row(Flavor::Valkey, Engine::Redis, "valkey", "Valkey", "valkey", clue("valkey_version", "", true)) },
@@ -101,7 +120,7 @@ pub static FLAVORS: [FlavorSpec; 11] = [
     // vtgate answers `@@version` and `@@version_comment` itself and the MySQL behind it the rest:
     // the backend reads both (`vitess_label`). It takes `SET SESSION TRANSACTION READ ONLY` and
     // keeps nothing of it; its READ ONLY transactions the tablets do hold.
-    FlavorSpec { aliases: &["planetscale"], logo: Some("logos/vitess.svg"), read_only_held: false, ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
+    FlavorSpec { aliases: &["planetscale"], logo: Some("logos/vitess.svg"), read_only_held: false, targets: &['@', ':', '['], ..row(Flavor::Vitess, Engine::MySql, "vitess", "Vitess", "vitess planetscale", None) },
 ];
 
 impl Flavor {

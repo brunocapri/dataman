@@ -3,7 +3,7 @@
 //! reads its server's connection string (as pasted in the connection sheet) from an environment
 //! variable and skips itself without one, or when the server does not answer:
 //! `DATAMAN_TIMESCALE=postgres://postgres:pw@127.0.0.1:5432/postgres`, `DATAMAN_YUGABYTE`,
-//! `DATAMAN_PERCONA`, `DATAMAN_DRAGONFLY`, `DATAMAN_KEYDB`, `DATAMAN_GARNET`, `DATAMAN_FERRETDB`.
+//! `DATAMAN_PERCONA`, `DATAMAN_MARIADB`, `DATAMAN_DRAGONFLY`, `DATAMAN_KEYDB`, `DATAMAN_GARNET`, `DATAMAN_FERRETDB`.
 
 mod common;
 
@@ -14,12 +14,16 @@ use dataman_core::server::Flavor;
 use dataman_core::{ConnectionProfile, Engine, ResultSet};
 
 fn server(var: &str, read_only: bool) -> Option<(Env, Arc<Connection>)> {
+    server_with(var, |p| p.read_only = read_only)
+}
+
+fn server_with(var: &str, change: impl FnOnce(&mut ConnectionProfile)) -> Option<(Env, Arc<Connection>)> {
     let Ok(url) = std::env::var(var) else {
         eprintln!("skipping: {var} is not set");
         return None;
     };
     let (mut p, pw) = dataman_core::connstr::parse_profile(&url).unwrap_or_else(|| panic!("{var} does not read as a connection string"));
-    p.read_only = read_only;
+    change(&mut p);
     let e = env();
     match e.core.block_on(e.core.connect(p.clone(), pw)) {
         Ok(c) => Some((e, c)),
@@ -115,6 +119,105 @@ fn percona_is_told_by_its_version_comment() {
     let (e2, ro) = server("DATAMAN_PERCONA", true).expect("reached once");
     failed(&e2, &ro, "INSERT INTO dataman_flavor.ro VALUES (1)");
     assert_eq!(first(&ok(&e, &c, "SELECT count(*) FROM dataman_flavor.ro")).as_deref(), Some("0"));
+    ok(&e, &c, "DROP DATABASE dataman_flavor");
+}
+
+/// What a read-only connection to a MySQL-wire server must keep from writing, beyond what its
+/// read-only session holds: the session itself (every one of these flavors writes once it is
+/// turned off), files (`INTO OUTFILE` is no write to a read-only session), and a database marked
+/// read-only on a writable connection (its session is the database the tab began on).
+fn mysql_read_only_holds(var: &str, flavor: Flavor) {
+    let Some((e, c)) = server(var, false) else { return };
+    assert_eq!(c.info.flavor, flavor, "{}", c.info.version);
+    let maria = flavor == Flavor::MariaDb;
+    for sql in ["DROP DATABASE IF EXISTS dataman_flavor_ro", "DROP DATABASE IF EXISTS dataman_flavor_rw", "CREATE DATABASE dataman_flavor_ro", "CREATE DATABASE dataman_flavor_rw"] {
+        ok(&e, &c, sql);
+    }
+    ok(&e, &c, "CREATE TABLE dataman_flavor_ro.t (id INT PRIMARY KEY, v INT)");
+    ok(&e, &c, "INSERT INTO dataman_flavor_ro.t VALUES (1, 0)");
+    ok(&e, &c, "CREATE FUNCTION dataman_flavor_ro.bump() RETURNS INT DETERMINISTIC MODIFIES SQL DATA BEGIN UPDATE dataman_flavor_ro.t SET v = v + 1 WHERE id = 1; RETURN 1; END");
+    let v = || first(&ok(&e, &c, "SELECT v FROM dataman_flavor_ro.t WHERE id = 1"));
+
+    let (e2, ro) = server_with(var, |p| p.read_only = true).expect("reached once");
+    let db = "dataman_flavor_ro";
+    let mut lifts = vec![
+        "SET SESSION TRANSACTION READ WRITE",
+        "SET TRANSACTION READ WRITE",
+        "SET SESSION transaction_read_only = 0",
+        "SET @@session.transaction_read_only = OFF; SELECT bump()",
+        "START TRANSACTION READ WRITE",
+        "(SELECT * FROM t) INTO OUTFILE '/tmp/dataman_flavor_out'",
+        "DESC ANALYZE UPDATE t a JOIN t b ON a.id = b.id SET a.v = 9",
+    ];
+    if maria {
+        lifts.extend(["SET STATEMENT transaction_read_only = 0 FOR UPDATE t SET v = 9 WHERE id = 1", "BEGIN NOT ATOMIC UPDATE t SET v = 9 WHERE id = 1; END", "ANALYZE UPDATE t SET v = 9 WHERE id = 1"]);
+    } else {
+        lifts.extend(["TABLE t INTO OUTFILE '/tmp/dataman_flavor_out'", "VALUES ROW(1) INTO DUMPFILE '/tmp/dataman_flavor_out'"]);
+    }
+    for sql in lifts {
+        assert!(ro.read_only_refusal(db, sql).is_some(), "{sql}");
+    }
+    assert_eq!(ro.read_only_refusal(db, "SELECT @@transaction_read_only"), None);
+    // What the check lets through, the session holds.
+    let tab = ro.session(Some(db));
+    let rs = tab.execute("SELECT bump()");
+    rs.fetch_all();
+    assert_eq!(e2.core.block_on(rs.wait_finished()), Phase::Failed);
+    assert_eq!(v().as_deref(), Some("0"));
+
+    // A database marked read-only on a writable connection: a tab on another one moves to it.
+    let (e3, per_db) = server_with(var, |p| _ = p.read_only_databases.insert(db.into(), true)).expect("reached once");
+    let tab = per_db.session(Some("dataman_flavor_rw"));
+    let run = |sql: &str| {
+        let rs = tab.execute(sql);
+        rs.fetch_all();
+        (e3.core.block_on(rs.wait_finished()), rs)
+    };
+    // `USE` ran, and the server stays there though the run failed after it.
+    for sql in ["USE dataman_flavor_ro; SELECT bump()", "SELECT bump()"] {
+        assert!(per_db.read_only_refusal(&tab.current_database(), sql).is_none(), "the session holds it: {sql}");
+        assert_eq!(run(sql).0, Phase::Failed, "{sql}");
+        assert_eq!(v().as_deref(), Some("0"), "{sql}");
+    }
+    assert_eq!(run("USE dataman_flavor_rw").0, Phase::Done);
+    // A transaction begun while on a writable database stays writable: nothing more runs in it.
+    assert_eq!(run("BEGIN").0, Phase::Done);
+    let (ph, rs) = run("USE dataman_flavor_ro");
+    assert_eq!(ph, Phase::Failed);
+    assert!(rs.status().error.unwrap().message.contains("end it first"));
+    assert_eq!(run("ROLLBACK").0, Phase::Done);
+    ok(&e, &c, "DROP DATABASE dataman_flavor_ro");
+    ok(&e, &c, "DROP DATABASE dataman_flavor_rw");
+}
+
+#[test]
+fn percona_read_only_holds() {
+    mysql_read_only_holds("DATAMAN_PERCONA", Flavor::Percona);
+}
+
+#[test]
+fn mariadb_read_only_holds() {
+    mysql_read_only_holds("DATAMAN_MARIADB", Flavor::MariaDb);
+}
+
+/// MariaDB's catalog writes a default as SQL: `'bronze'`, `curdate()`, and `NULL` for none.
+#[test]
+fn mariadb_defaults_read_as_written() {
+    let Some((e, c)) = server("DATAMAN_MARIADB", false) else { return };
+    told(&c, Flavor::MariaDb, "MariaDB ", 10..=99);
+    ok(&e, &c, "CREATE DATABASE IF NOT EXISTS dataman_flavor");
+    ok(&e, &c, "DROP TABLE IF EXISTS dataman_flavor.d");
+    ok(&e, &c, "CREATE TABLE dataman_flavor.d (id INT AUTO_INCREMENT PRIMARY KEY, a VARCHAR(10) DEFAULT 'it''s', b INT DEFAULT 3, c VARCHAR(5), d DATE DEFAULT curdate(), e INT DEFAULT (b + 1), g VARCHAR(10) DEFAULT 'NULL', j INT AS (b * 2) VIRTUAL)");
+    let cols = e.core.block_on(c.columns("dataman_flavor", "dataman_flavor", "d")).unwrap();
+    let default = |n: &str| cols.iter().find(|c| c.name == n).unwrap().default.clone();
+    assert_eq!(default("id").as_deref(), Some("AUTO_INCREMENT"));
+    assert_eq!(default("a").as_deref(), Some("'it''s'"));
+    assert_eq!(default("b").as_deref(), Some("3"));
+    assert_eq!(default("c"), None, "no default");
+    assert_eq!(default("d").as_deref(), Some("curdate()"));
+    assert_eq!(default("e").as_deref(), Some("(`b` + 1)"));
+    assert_eq!(default("g").as_deref(), Some("'NULL'"));
+    assert!(default("j").is_some_and(|d| d.starts_with("GENERATED")), "{:?}", default("j"));
     ok(&e, &c, "DROP DATABASE dataman_flavor");
 }
 

@@ -133,7 +133,15 @@ impl Connection {
     }
 
     pub fn read_only_for(&self, database: &str) -> bool {
-        crate::config::read_only_in(self.profile.read_only, &self.read_only_dbs.read(), self.profile.engine, database)
+        match self.reached(database) {
+            Some(db) => crate::config::read_only_in(self.profile.read_only, &self.read_only_dbs.read(), self.profile.engine, db),
+            None => self.profile.read_only || self.read_only_dbs.read().values().any(|on| *on),
+        }
+    }
+
+    /// The database a name reaches on this server (`FlavorSpec::database_of`). None: any.
+    pub(crate) fn reached<'a>(&self, name: &'a str) -> Option<&'a str> {
+        self.info.flavor.spec_on(self.profile.engine).map_or(Some(name), |f| f.database_of(name))
     }
 
     pub fn set_read_only_for(&self, database: &str, on: bool) {
@@ -481,8 +489,13 @@ impl Session {
         Ok(client)
     }
 
-    async fn sync_read_only(&self, client: &Db) {
-        let want = self.conn.read_only_for(&self.database);
+    /// The session must be read-only for `sql`: its database is, the one a `USE` left it on is,
+    /// or `sql` moves to one (its statements after that `USE` run on the session as it is).
+    fn read_only_wanted(&self, sql: &str) -> bool {
+        self.conn.read_only_for(&self.database) || self.conn.read_only_for(&self.current_database()) || self.conn.uses_read_only(sql)
+    }
+
+    async fn sync_read_only(&self, client: &Db, want: bool) {
         // Per transaction instead (`run_on`): a session setting would reach other clients.
         if *self.ro_applied.lock() == Some(want) || self.tx.get().status.is_open() || self.conn.per_transaction() {
             return;
@@ -580,8 +593,9 @@ impl Session {
         if aborted() {
             return never_ran(rs);
         }
+        let want_read_only = !agent && self.read_only_wanted(&rs.sql);
         if !agent {
-            self.sync_read_only(&client).await;
+            self.sync_read_only(&client, want_read_only).await;
         }
         let dialect = self.conn.dialect();
         let facts = crate::guard::classify_in(&rs.sql, dialect);
@@ -594,6 +608,22 @@ impl Session {
                 s.error = Some(info);
             });
         };
+        // The session is not read-only where it must be: a transaction begun while the database
+        // was writable is still open (the setting waits for its end), or the server refused the
+        // setting. What runs would not be held (a function the statement calls writes).
+        if want_read_only
+            && self.conn.caps().read_only_held
+            && dialect.session_read_only(true).is_some()
+            && *self.ro_applied.lock() != Some(true)
+            && facts.tx.is_none()
+            && !self.conn.per_transaction()
+        {
+            return refuse(if self.tx.get().status.is_open() {
+                "read-only database: a transaction begun while it was writable is open in this tab: end it first (COMMIT or ROLLBACK)".into()
+            } else {
+                "read-only database: the server did not make the session read-only".into()
+            });
+        }
         if let Some(why) = self.conn.pooler.and_then(|p| crate::pooler::session_state_refusal(&rs.sql, &p)) {
             return refuse(why);
         }
@@ -619,8 +649,12 @@ impl Session {
         // Nothing on such a server keeps the session read-only: what a tab asks before sending
         // holds for every caller, and the rest runs in a READ ONLY transaction (below).
         if !agent
-            && self.unheld_read_only()
-            && let Some(message) = self.conn.read_only_refusal(&self.current_database(), &rs.sql)
+            && self.unheld_read_only(&rs.sql)
+            && let Some(message) = self.conn.read_only_refusal(&self.current_database(), &rs.sql).or_else(|| {
+                // One begun while the database was writable: what runs in it is not held, and a
+                // READ ONLY transaction of Dataman's would commit it.
+                (self.tx.get().status.is_open() && facts.tx.is_none()).then(|| "read-only connection: a transaction is open in this tab: end it first (COMMIT or ROLLBACK)".to_string())
+            })
         {
             let info = ErrorInfo { code: Some("25006".into()), message, ..Default::default() };
             self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
@@ -633,6 +667,7 @@ impl Session {
         }
         // Rolled back: a transaction of its own, or a savepoint inside the open one (whose work
         // must survive).
+        let hold = if agent { None } else { self.read_only_hold(&rs.sql) };
         let wrap = if rollback && dialect.has_transactions() {
             let savepoint = self.tx.get().status.is_open();
             // An agent's read never runs inside a transaction someone else opened: a read-only
@@ -648,8 +683,8 @@ impl Session {
                 });
                 return;
             }
-            let begin = match self.read_only_hold(&rs.sql) {
-                Some(hold) if !agent => hold,
+            let begin = match hold {
+                Some(hold) => hold,
                 _ if read_only || ro_pooled => dialect.begin_read_only().unwrap_or(dialect.begin()),
                 _ => dialect.begin(),
             };
@@ -664,9 +699,9 @@ impl Session {
                 return;
             }
             Some(savepoint)
-        } else if !agent && let Some(begin) = self.read_only_hold(&rs.sql) {
+        } else if let Some(begin) = hold {
             // The server keeps no read-only session (Vitess) but holds a READ ONLY transaction:
-            // outside the user's own transaction, each run is one.
+            // each run is one.
             if !self.wrapper(&client, rs, begin, agent).await {
                 return;
             }
@@ -737,11 +772,20 @@ impl Session {
             Ran::Cancelled | Ran::NeverRan { .. } => (Phase::Cancelled, None, None),
             Ran::Failed(info) => (Phase::Failed, None, Some(info)),
         };
-        if !agent
-            && phase == Phase::Done
-            && let Some(db) = crate::bounded::used_database(&rs.sql, dialect)
-        {
-            *self.used.lock() = Some(db);
+        if !agent && let Some(db) = crate::bounded::used_database(&rs.sql, dialect) {
+            if phase == Phase::Done {
+                *self.used.lock() = Some(db);
+            } else if let Some(q) = dialect.current_database() {
+                // It may have stopped after its USE (`USE x; bad`): the server says where it is,
+                // or nobody knows and the next run opens a connection anew.
+                match backend::text_rows(&client, q).await {
+                    Ok(rows) => *self.used.lock() = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()),
+                    Err(e) => {
+                        log::warn!("the database after a failed USE is unknown: {e:#}");
+                        *self.client.lock().await = None;
+                    }
+                }
+            }
         }
         // A failure reaches us before the ReadyForQuery that follows it: the status it leaves
         // (a failed transaction) is read first.
@@ -765,19 +809,18 @@ impl Session {
     }
 
     /// How `sql` begins the read-only transaction of Dataman's it runs in: on a read-only database
-    /// whose server keeps no read-only session, outside a transaction, when it is no transaction
-    /// control itself (which `guard::read_only_refusal_held` lets run only alone there).
+    /// whose server keeps no read-only session, outside a transaction (none of the user's begins
+    /// there: `guard::read_only_refusal_held`), when it is no transaction control itself.
     fn read_only_hold(&self, sql: &str) -> Option<&'static str> {
         let d = self.conn.dialect();
         let outside = !self.tx.get().status.is_open() && crate::guard::classify_in(sql, d).tx.is_none();
-        if outside && self.unheld_read_only() { d.begin_read_only() } else { None }
+        if outside && self.unheld_read_only(sql) { d.begin_read_only() } else { None }
     }
 
     /// A read-only database whose server keeps no read-only session but holds a READ ONLY
     /// transaction (Vitess; SQL Server has neither).
-    fn unheld_read_only(&self) -> bool {
-        let ro = self.conn.read_only_for(&self.database) || self.conn.read_only_for(&self.current_database());
-        ro && !self.conn.caps().read_only_held && self.conn.dialect().begin_read_only().is_some()
+    fn unheld_read_only(&self, sql: &str) -> bool {
+        self.read_only_wanted(sql) && !self.conn.caps().read_only_held && self.conn.dialect().begin_read_only().is_some()
     }
 
     fn record(&self, rs: &ResultSet, elapsed: Duration) {

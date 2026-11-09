@@ -339,6 +339,7 @@ impl Connection {
     /// Past those, under a connection read-only by default, a name counts when the server has such
     /// a database, and while the list is unknown (the first part of `t.col` is no database).
     fn names_read_only(&self, name: &str) -> bool {
+        let Some(name) = self.reached(name) else { return self.read_only_for(name) };
         let set: Vec<bool> = self.read_only_dbs.read().iter().filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, on)| *on).collect();
         if !set.is_empty() {
             return set.contains(&true);
@@ -384,6 +385,12 @@ impl Connection {
             }
         }
         None
+    }
+
+    /// `sql` moves to a read-only database by a `USE`.
+    pub(crate) fn uses_read_only(&self, sql: &str) -> bool {
+        let d = self.dialect();
+        crate::sql::exec_readings(sql, d).iter().any(|text| statement_ranges(text, d).into_iter().any(|r| used_database(&text[r], d).is_some_and(|db| self.read_only_for(&db))))
     }
 
     /// What an agent's read must not run on a server that keeps no read-only session (Vitess):
