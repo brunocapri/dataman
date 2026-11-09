@@ -455,17 +455,16 @@ impl Session {
             return;
         }
         let agent = self.agent_run.lock().clone();
-        if let Some(d) = agent {
-            if let Err(e) = d.cancel().await {
-                log::warn!("cancel request failed: {e}");
-            }
-            return;
-        }
-        let c = self.cancel.lock().clone();
-        if let Some(c) = c
-            && let Err(e) = c.cancel().await
-        {
-            log::warn!("cancel request failed: {e}");
+        let canceller = self.cancel.lock().clone();
+        let refused = match (agent, canceller) {
+            (Some(d), _) => d.cancel().await.err(),
+            (None, Some(c)) => c.cancel().await.err(),
+            (None, None) => None,
+        };
+        // What ran on is shown as done, never as cancelled.
+        if let Some(e) = refused {
+            log::warn!("cancel request failed: {e:#}");
+            rs.cancel_refused(&e.root_cause().to_string());
         }
     }
 

@@ -224,11 +224,35 @@ fn read_only(at: (&str, &str), sharded: bool) {
     assert_eq!(name_of(2).as_deref(), Some("w"));
 }
 
+/// vtgate refuses KILL (VT07001) unless started with `--allow-kill-statement`: a statement
+/// cancelled there runs to its end, and is shown as what it did, never as cancelled.
+fn cancel_refused(at: (&str, &str)) {
+    let e = env();
+    let Some(c) = vitess(&e, at, false) else { return };
+    setup(&e, &c, false);
+    let s = c.session(None);
+    let rs = s.execute("UPDATE vt_items SET name = 'late' WHERE id = 3 AND SLEEP(3) = 0");
+    rs.fetch_all();
+    // Cancelled once the tablet runs it.
+    let running = || query(&e, &c, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE LOWER(INFO) LIKE '%sleep(3)%' AND INFO NOT LIKE '%PROCESSLIST%'").snapshot().text(0, 0).is_some_and(|n| n != "0");
+    let t = Instant::now();
+    while !running() {
+        assert!(t.elapsed() < Duration::from_secs(10) && !rs.phase().is_finished(), "never seen running: {:?}", rs.status());
+    }
+    s.cancel();
+    assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Done, "{:?}", rs.status().error);
+    assert_eq!(rs.status().affected, Some(1));
+    assert!(rs.messages().0.iter().any(|m| m.contains("did not cancel")), "{:?}", rs.messages());
+    let name = query(&e, &c, "SELECT name FROM vt_items WHERE id = 3").snapshot().text(0, 0).map(|t| t.into_owned());
+    assert_eq!(name.as_deref(), Some("late"));
+}
+
 /// One test per keyspace: both parts make the same tables.
 #[test]
 fn unsharded() {
     catalog(UNSHARDED, false);
     read_only(UNSHARDED, false);
+    cancel_refused(UNSHARDED);
 }
 
 #[test]
