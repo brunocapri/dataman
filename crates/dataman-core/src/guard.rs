@@ -1724,6 +1724,11 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
         return Piece::Neutral;
     }
     let f = classify_in(sql, dialect);
+    // MariaDB's `SET STATEMENT foreign_key_checks = 0 FOR …` and `ANALYZE …` run their statement
+    // under settings or with a report the row count and the rules do not follow.
+    if runs_inner(&t).is_some() {
+        return Piece::Destructive(format!("{} {}", t.word(0).unwrap_or_default(), if t.is(0, "SET") { "STATEMENT … FOR" } else { "(runs the statement)" }));
+    }
     // What the user is asked to allow says so when it runs a program on the database server.
     if f.verb.starts_with("COPY") && t.has_top("PROGRAM") {
         return Piece::Destructive("COPY … PROGRAM (runs a command on the database server)".into());
@@ -3121,9 +3126,13 @@ mod tests {
         for sql in ["DESCRIBE t", "DESC SELECT * FROM t", "EXPLAIN FORMAT=JSON SELECT 1", "ANALYZE TABLE t", "(SELECT 1) UNION (SELECT 2)", "SELECT * FROM t WHERE a IN (SELECT b INTO @x FROM u)"] {
             assert!(!classify_in(sql, my).is_write(), "{sql}");
         }
-        // Not the agents' reads: they run under settings the guard does not lex them by.
+        // Not the agents' reads: they run under settings the guard does not lex them by. Nor
+        // a safe write: what they change (foreign key checks, the SQL mode) the user allows.
         assert!(agent_read_refusal_in("SET STATEMENT sql_mode = 'ANSI_QUOTES' FOR SELECT \"secret\" FROM t", my).is_some());
         assert!(agent_read_refusal_in("ANALYZE SELECT * FROM t", my).is_some());
+        assert!(agent_write_class("SET STATEMENT foreign_key_checks = 0 FOR UPDATE t SET a = 1 WHERE id = 1", my).is_destructive());
+        assert!(agent_write_class("ANALYZE UPDATE t SET a = 1 WHERE id = 1", my).is_destructive());
+        assert_eq!(agent_write_class("UPDATE t SET a = 1 WHERE id = 1", my), WriteClass::SafeWrite);
         // PostgreSQL's SELECT INTO is its own.
         assert!(classify_in("SELECT 1 INTO t2", Dialect::Postgres).is_write());
     }
