@@ -247,12 +247,31 @@ fn cancel_refused(at: (&str, &str)) {
     assert_eq!(name.as_deref(), Some("late"));
 }
 
+/// vtgate answers a read past its row limit (`--queryserver-config-max-result-size`, 10000 by
+/// default) with the code of an interrupted query: it fails with that message, not as cancelled.
+fn row_limit(at: (&str, &str)) {
+    let e = env();
+    let Some(c) = vitess(&e, at, false) else { return };
+    exec_quiet(&e, &c, &["DROP TABLE IF EXISTS vt_many"]);
+    exec(&e, &c, &["CREATE TABLE vt_many (id BIGINT PRIMARY KEY)"]);
+    for k in 0..11 {
+        let values: Vec<String> = (0..1000).map(|i| format!("({})", k * 1000 + i)).collect();
+        exec(&e, &c, &[&format!("INSERT INTO vt_many VALUES {}", values.join(","))]);
+    }
+    let rs = c.session(None).execute("SELECT id FROM vt_many");
+    rs.fetch_all();
+    assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Failed);
+    assert!(rs.status().error.is_some_and(|e| e.message.contains("Row count exceeded")), "{:?}", rs.status().error);
+    exec(&e, &c, &["DROP TABLE vt_many"]);
+}
+
 /// One test per keyspace: both parts make the same tables.
 #[test]
 fn unsharded() {
     catalog(UNSHARDED, false);
     read_only(UNSHARDED, false);
     cancel_refused(UNSHARDED);
+    row_limit(UNSHARDED);
 }
 
 #[test]

@@ -626,7 +626,9 @@ pub(crate) async fn run(
     aborted: &(dyn Fn() -> bool + Sync),
     next: &(dyn Fn(&Arc<ResultSet>) -> Arc<ResultSet> + Sync),
 ) -> Ran {
-    let fail = |e: &MyError| if interrupted(e) { Ran::Cancelled } else { Ran::Failed(error_info_at(e, &rs.sql)) };
+    // Interrupted by our own cancel. vtgate answers its row limit with the same code ("Row count
+    // exceeded 10000"), and another session's KILL QUERY is no cancel of the user's: both fail.
+    let fail = |e: &MyError| if interrupted(e) && rs.demand().borrow().abort { Ran::Cancelled } else { Ran::Failed(error_info_at(e, &rs.sql)) };
     let exec = match plan(client, &rs.sql, rs.params(), aborted).await {
         Ok(Some(x)) => x,
         Ok(None) => return Ran::NeverRan { settle: false },
