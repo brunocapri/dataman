@@ -1031,11 +1031,11 @@ impl Workspace {
             .border_color(t.pane_line)
             .text_color(t.tx2)
             .child(run)
+            .children(cancel)
             .child(picker)
             .children(agent)
             .when(tx_controls.is_some(), |d| d.child(ui::vsep(t, 18.).mx(px(4.))))
             .children(tx_controls)
-            .children(cancel)
             .child(div().flex_1())
             .child(format)
     }

@@ -11,6 +11,31 @@ use crate::theme::{Pt, px};
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, BANNER, Theme};
 
+/// A search field's count ("3 of 120"). Hovered, an × takes its place: a click there clears
+/// the search (the caller's `on_click`).
+pub fn search_count(t: &Theme, id: &'static str, count: impl Into<SharedString>) -> Stateful<Div> {
+    let group = SharedString::from(id);
+    div()
+        .children(here(&id.into()))
+        .id(id)
+        .group(group.clone())
+        .relative()
+        .flex_none()
+        .cursor_pointer()
+        .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().group_hover(group.clone(), |s| s.invisible()).child(count.into()))
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .invisible()
+                .group_hover(group, |s| s.visible())
+                .child(icon(Icon::Close).size(px(12.)).text_color(t.tx2)),
+        )
+}
+
 pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
     div()
         .flex_none()

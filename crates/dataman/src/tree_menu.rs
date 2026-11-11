@@ -11,8 +11,9 @@ use crate::assets::Icon;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Empty,
-    /// The explorer's header (its … button, a right click on it): the explorer as a whole.
-    Header,
+    /// The explorer's header (its … button, a right click on it): the explorer as a whole;
+    /// `everything` while it shows every object, not only each database's tables.
+    Header { everything: bool },
     /// An explorer folder: `color` is its swatch's index; `first`/`last` its place among them.
     Folder { id: String, name: String, color: Option<usize>, count: usize, first: bool, last: bool },
     /// Rows picked together: `conns` is every connection they stand for (a folder, those in it),
@@ -65,6 +66,7 @@ pub enum Gen {
 pub enum Act {
     NewConnection,
     NewFolder,
+    ShowEverything,
     CollapseAll,
     MoveToFolder(usize),
     MoveToNewFolder,
@@ -198,10 +200,11 @@ pub fn entries(t: &Target) -> Vec<Entry> {
     let it = Item::new;
     match t {
         Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")), I(it(Act::NewFolder, "New folder", Icon::Schema))],
-        Target::Header => vec![
+        Target::Header { everything } => vec![
             I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")),
             I(it(Act::NewFolder, "New folder", Icon::Schema)),
             Sep,
+            I(it(Act::ShowEverything, "Show everything", Icon::View).checked(*everything)),
             I(it(Act::CollapseAll, "Collapse all", Icon::Collapse)),
             Sep,
             I(it(Act::Reload, "Refresh", Icon::Reload).cmd("refresh")),
@@ -828,7 +831,8 @@ mod tests {
         assert_eq!(acts(&Target::Group), vec![Act::Reload]);
         assert_eq!(acts(&Target::Error), vec![Act::Retry]);
         assert_eq!(acts(&Target::Empty), vec![Act::NewConnection, Act::NewFolder]);
-        assert_eq!(acts(&Target::Header), vec![Act::NewConnection, Act::NewFolder, Act::CollapseAll, Act::Reload]);
+        assert_eq!(acts(&Target::Header { everything: false }), vec![Act::NewConnection, Act::NewFolder, Act::ShowEverything, Act::CollapseAll, Act::Reload]);
+        assert!(item(&Target::Header { everything: true }, Act::ShowEverything).checked && !item(&Target::Header { everything: false }, Act::ShowEverything).checked);
     }
 
     #[test]
