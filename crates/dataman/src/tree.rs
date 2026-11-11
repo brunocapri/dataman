@@ -2214,7 +2214,7 @@ impl SchemaTree {
                 Some(t) => (Some(r), t),
                 None => return,
             },
-            None if matches!(at, MenuAnchor::Header(_)) => (None, Target::Header),
+            None if matches!(at, MenuAnchor::Header(_)) => (None, Target::Header { everything: self.advanced }),
             None => (None, Target::Empty),
         };
         if let (Some(i), Some(r)) = (ix, &row) {
@@ -2436,7 +2436,8 @@ impl SchemaTree {
                     }
                 }, cx);
             }
-            (Act::Reload, Target::Header) => self.refresh_all(cx),
+            (Act::Reload, Target::Header { .. }) => self.refresh_all(cx),
+            (Act::ShowEverything, Target::Header { everything }) => self.set_advanced(!everything, cx),
             (Act::Reload, Target::Picked { .. }) => {
                 for id in self.conns_of(&m.target, cx) {
                     self.refresh_conn(id, cx);
@@ -3914,12 +3915,6 @@ impl Render for SchemaTree {
                     .tip(ui::tooltip("New folder", None, None))
                     .on_click(cx.listener(|t, _, window, cx| t.new_folder(vec![], window, cx))),
             )
-            .child({
-                let advanced = self.advanced;
-                ui::icon_button(&t, "x-view", if advanced { Icon::View } else { Icon::EyeOff }, 24., 14.)
-                    .tip(ui::tooltip(if advanced { "Show tables only" } else { "Show everything" }, None, None))
-                    .on_click(cx.listener(move |t, _, _, cx| t.set_advanced(!advanced, cx)))
-            })
             .child(
                 ui::icon_button(&t, "x-more", Icon::More, 24., 14.)
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
@@ -3940,7 +3935,7 @@ impl Render for SchemaTree {
             .map(|d| ui::field_frame(d, &t, filter_focused))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-            .children(filter_meta.map(|m| div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(m)));
+            .children(filter_meta.map(|m| ui::search_count(&t, "x-filter-count", m).on_click(cx.listener(|t, _, _, cx| t.clear_filter(cx)))));
         let body: gpui::AnyElement = if empty {
             div()
                 .flex_1()

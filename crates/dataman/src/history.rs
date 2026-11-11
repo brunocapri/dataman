@@ -1146,6 +1146,7 @@ impl HistoryPanel {
         let sel = self.selected == Some(ix);
         let profile = self.store.read(cx).profile(conn);
         let (conn_name, chip) = (profile.map(|p| p.name.clone()), profile.map(|p| t.profile_color(p)));
+        let logo = profile.and_then(|p| crate::assets::profile_logo(p, 12.));
         let (glyph, gcolor) = match e.outcome {
             Outcome::Ok => ("✓", t.ok),
             Outcome::Error => ("✕", t.err),
@@ -1244,6 +1245,7 @@ impl HistoryPanel {
                             .text_size(px(crate::theme::text::SMALL))
                             .text_color(t.tx3)
                             .children(chip.map(|c| ui::chip(c, 7.)))
+                            .children(logo)
                             .child(ui::marked(t, clip(&format!("{} · {}", conn_name.unwrap_or_else(|| conn.clone()), e.database), NAME_MAX), &self.query)),
                     )
                     .child(
@@ -1346,6 +1348,7 @@ impl HistoryPanel {
         let profile = f.connection_id.as_ref().and_then(|id| self.store.read(cx).profile(id));
         let conn_name = profile.map(|p| p.name.clone());
         let chip = profile.map(|p| t.profile_color(p));
+        let logo = profile.and_then(|p| crate::assets::profile_logo(p, 12.));
         let flat = excerpt(&f.sql.split_whitespace().collect::<Vec<_>>().join(" "), &self.query, SQL_MAX);
         let hov = t.hov;
         let nested = f.folder.is_some();
@@ -1417,6 +1420,7 @@ impl HistoryPanel {
                             .items_center()
                             .gap(px(8.))
                             .text_size(px(crate::theme::text::SMALL))
+                            .children(logo)
                             .child(div().flex_1().min_w_0().flex().flex_row().child(name))
                             .child(fav_button(t, ("fav-remove", ix), true).my(px(-4.)).mr(px(-4.)).on_click(cx.listener(
                                 move |h, _: &gpui::ClickEvent, _, cx| {
@@ -2450,7 +2454,10 @@ impl Render for HistoryPanel {
                     .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                     .when(!self.query.is_empty(), |d| {
-                        d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
+                        d.child(ui::search_count(&t, "history-filter-count", format!("{} of {}", ui_count(self.shown), ui_count(total))).on_click(cx.listener(|h, _, _, cx| {
+                            h.filter.update(cx, |f, cx| f.set_text("", cx));
+                            h.apply_filter(cx);
+                        })))
                     }),
             )
             .child(

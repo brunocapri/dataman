@@ -81,7 +81,6 @@ assets!(
     "icons/tunnel.svg",
     "icons/type.svg",
     "icons/view.svg",
-    "icons/eye-off.svg",
     "icons/win-max.svg",
     "icons/win-min.svg",
     "icons/win-restore.svg",
@@ -197,7 +196,6 @@ pub enum Icon {
     /// Struck through: hidden from agents.
     ColumnOff,
     TableOff,
-    EyeOff,
     GridTable,
     Gear,
     Format,
@@ -276,7 +274,6 @@ impl Icon {
             Icon::Column => "icons/column.svg",
             Icon::ColumnOff => "icons/column-off.svg",
             Icon::TableOff => "icons/table-off.svg",
-            Icon::EyeOff => "icons/eye-off.svg",
             Icon::GridTable => "icons/grid-table.svg",
             Icon::Gear => "icons/gear.svg",
             Icon::Format => "icons/format.svg",
