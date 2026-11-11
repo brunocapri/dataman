@@ -240,10 +240,6 @@ mod tests {
         Env { home: dir.join("home"), settings: dir.join("settings"), dirs: vec![dir.join("bin")] }
     }
 
-    fn listing(dir: &Path) -> Listing {
-        Listing::of(Some(env(dir)), vec![BIN.to_string()])
-    }
-
     /// A fake program: a shell script that records its arguments, then does `then`.
     #[cfg(unix)]
     fn fake(dir: &Path, name: &str, then: &str) {
@@ -312,7 +308,7 @@ mod tests {
         let d = dir.path();
         fake(d, "gemini", "");
         std::fs::create_dir_all(d.join("settings").join("Claude")).unwrap();
-        let l = listing(d);
+        let l = Listing::of(Some(env(d)), vec![BIN.to_string()]);
         assert_eq!(l.rows[0].agent.id, "gemini");
         assert!(l.rows[0].installed && l.rows.iter().any(|r| r.agent.id == "desktop" && r.installed));
         assert!(!l.rows.iter().any(|r| r.agent.id == "claude" && r.installed));

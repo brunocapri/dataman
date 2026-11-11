@@ -21,7 +21,11 @@ fn close_dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
 }
 
 pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    let first = cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
+    // Wide enough for the two panels side by side: a runner's screen (1024 wide on Windows)
+    // makes the window narrower than the 1400 it asks for, and there they stack.
+    let _ = cx.update(|window, _| window.resize(gpui::size(gpui::px(1400.), gpui::px(900.))));
+    until(cx, 5, |cx| cx.update(|window, _| window.viewport_size().width >= gpui::px(1300.)).unwrap_or(false)).await;
+    let first =cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
     r.check("nothing saved: the Welcome tab, in the strip and in front", first && probed("tab-welcome", cx).is_some(), "");
 
     click_probe("welcome-0", cx);
