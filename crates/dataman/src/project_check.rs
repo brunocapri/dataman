@@ -52,12 +52,12 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     std::fs::write(project::file_in(&root), teammate).unwrap();
     let core = core(ws, cx);
 
-    let first = cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
+    let first = cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
     r.check("no connection: the welcome screen", first, "");
     snap("welcome", cx);
     crate::sql_picker::set_test_paths(vec![root.clone()]);
-    let clicked = click_probe("welcome-6", cx);
-    r.check("the welcome screen offers Open a project folder", clicked, "no welcome-6");
+    let clicked = click_probe("welcome-5", cx);
+    r.check("the welcome screen offers Open a project folder", clicked, "no welcome-5");
     until(cx, 5, |cx| names(ws, cx).contains(&"Team shop".to_string())).await;
     let profile = core.config.get("team-shop");
     let want = dataman_core::config::tilde(&db.to_string_lossy());
@@ -98,7 +98,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let mut made = dataman_core::ConnectionProfile::new_file(Engine::Sqlite, dataman_core::config::tilde(&root.join("made.sqlite").to_string_lossy()));
     made.name = "Made here".into();
     let _ = core.config.upsert(made.clone());
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.connections_on_disk(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.connections_on_disk(cx)));
     let joined = until(cx, 5, |_| file(&root).is_some_and(|f| f.connections.iter().any(|p| p.id == made.id && p.path.as_deref() == Some("made.sqlite")))).await;
     r.check("a connection made here joins the project, relative to it", joined, "");
     draw(cx);

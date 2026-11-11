@@ -550,7 +550,8 @@ impl Workspace {
     /// sheets, over the room the surface keeps for it as laid out this very frame (`pane_bounds`,
     /// recorded at prepaint): the band's part cannot stray from the rest by a pixel.
     pub(crate) fn render_seam_line(&self, cx: &App) -> Option<impl IntoElement + use<>> {
-        self.split_now?;
+        // The Welcome tab in front draws no groups to part.
+        self.split_now.filter(|_| !self.welcome_front)?;
         let color = cx.theme().line2;
         let parts = self.pane_bounds.clone();
         let painted = self.seam_line.clone();

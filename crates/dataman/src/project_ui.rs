@@ -81,7 +81,7 @@ impl Workspace {
     pub(crate) fn project_synced(&mut self, s: Synced, window: &mut Window, cx: &mut Context<Self>) {
         let core = self.store.read(cx).core.clone();
         if s.connections {
-            self.connections_reloaded(window, cx);
+            self.connections_reloaded(cx);
         }
         if s.favorites {
             self.history.update(cx, |h, cx| h.reload_favorites(cx));

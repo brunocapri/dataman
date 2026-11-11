@@ -91,6 +91,9 @@ assets!(
     "agents/gemini.svg",
     "agents/openai.svg",
     "agents/windsurf.svg",
+    "brand/dataman-disc.png",
+    "brand/dataman-disc-spin.webp",
+    "brand/dots.svg",
     "logos/elasticsearch.svg",
     "logos/mongodb.svg",
     "logos/mysql.svg",
@@ -295,9 +298,117 @@ pub fn set_logos(on: bool) {
     LOGOS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// A logo by its path: an engine's (`Engine::logo`) or a flavor's (`Flavor::logo`).
-pub fn logo_at(path: &'static str) -> gpui::Img {
-    gpui::img(path).flex_none()
+/// A logo by its path: an engine's (`Engine::logo`) or a flavor's (`Flavor::logo`), `size` points
+/// square.
+pub fn logo_at(path: &'static str, size: f32) -> gpui::Div {
+    sharp(path, size)
+}
+
+/// An image asset drawn `size` points square, rasterized at the device pixels it covers. GPUI's
+/// `img` uploads one raster (an svg at twice its own size, a png as it is) and the GPU scales it
+/// without mipmaps: a 128 px logo drawn on 28 px skips most of its pixels and its edges go jagged.
+pub fn sharp(path: &'static str, size: f32) -> gpui::Div {
+    sharp_box(path, size, false)
+}
+
+/// [`sharp`] for an animated one (a WebP's frames): it plays while it is drawn.
+pub fn sharp_playing(path: &'static str, size: f32) -> gpui::Div {
+    sharp_box(path, size, true)
+}
+
+fn sharp_box(path: &'static str, size: f32, playing: bool) -> gpui::Div {
+    gpui::div().flex_none().size(crate::theme::px(size)).child(
+        gpui::canvas(
+            |_, _, _| {},
+            move |b, _, window, cx| {
+                let n = (f32::from(b.size.width) * window.scale_factor()).round() as u32;
+                let Some(image) = sharp_image(path, n, cx) else { return };
+                let frame = if playing && image.frame_count() > 1 {
+                    window.request_animation_frame();
+                    frame_now(&image)
+                } else {
+                    0
+                };
+                if let Err(e) = window.paint_image(b, b, Default::default(), image, frame, false) {
+                    log::warn!("{path}: {e:#}");
+                }
+            },
+        )
+        .size_full(),
+    )
+}
+
+/// Rasters made, by asset and width in device pixels. Each zoom step and display scale makes its
+/// own: past the cap the whole map is dropped and made again as it is drawn.
+const SHARP_CAP: usize = 256;
+
+thread_local! {
+    static SHARP: std::cell::RefCell<std::collections::HashMap<(&'static str, u32), Option<std::sync::Arc<gpui::RenderImage>>>> = Default::default();
+}
+
+/// None when the asset could not be made (logged once, when it was tried).
+fn sharp_image(path: &'static str, n: u32, cx: &gpui::App) -> Option<std::sync::Arc<gpui::RenderImage>> {
+    if n == 0 {
+        return None;
+    }
+    SHARP.with_borrow_mut(|map| {
+        if let Some(made) = map.get(&(path, n)) {
+            return made.clone();
+        }
+        if map.len() >= SHARP_CAP {
+            map.clear();
+        }
+        let made = rasterize(path, n, cx).inspect_err(|e| log::warn!("{path} at {n} px: {e:#}")).ok();
+        map.insert((path, n), made.clone());
+        made
+    })
+}
+
+fn rasterize(path: &str, n: u32, cx: &gpui::App) -> anyhow::Result<std::sync::Arc<gpui::RenderImage>> {
+    use image::{AnimationDecoder as _, Frame, imageops};
+    let bytes = FILES.iter().find(|(p, _)| *p == path).map(|(_, b)| *b).ok_or_else(|| anyhow::anyhow!("no such asset"))?;
+    if path.ends_with(".svg") {
+        let r = cx.svg_renderer();
+        let side = gpui::DevicePixels(n as i32);
+        return Ok(r.render_parsed(&r.parse_svg(bytes)?, gpui::SvgSize::Size(gpui::size(side, side)))?);
+    }
+    let frames: Vec<Frame> = match image::guess_format(bytes)? {
+        image::ImageFormat::WebP => {
+            let d = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(bytes))?;
+            if d.has_animation() { d.into_frames().collect_frames()? } else { vec![Frame::new(image::load_from_memory(bytes)?.into_rgba8())] }
+        }
+        _ => vec![Frame::new(image::load_from_memory(bytes)?.into_rgba8())],
+    };
+    let frames = frames
+        .into_iter()
+        .map(|f| {
+            let delay = f.delay();
+            let src = f.into_buffer();
+            let h = ((src.height() as f32 * n as f32 / src.width().max(1) as f32).round() as u32).max(1);
+            let mut px = imageops::resize(&src, n, h, imageops::FilterType::Lanczos3);
+            // GPUI's images are BGRA.
+            for p in px.pixels_mut() {
+                p.0.swap(0, 2);
+            }
+            Frame::from_parts(px, 0, 0, delay)
+        })
+        .collect::<Vec<_>>();
+    Ok(std::sync::Arc::new(gpui::RenderImage::new(frames)))
+}
+
+/// The frame an animation shows now, on one clock for all of them.
+fn frame_now(image: &gpui::RenderImage) -> usize {
+    static START: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
+    let delays = (0..image.frame_count()).map(|i| std::time::Duration::from(image.delay(i)).as_millis().max(1));
+    let total: u128 = delays.clone().sum();
+    let mut t = START.elapsed().as_millis() % total.max(1);
+    for (i, d) in delays.enumerate() {
+        if t < d {
+            return i;
+        }
+        t -= d;
+    }
+    0
 }
 
 pub fn agent_logo_mono(path: &'static str) -> Svg {
@@ -305,12 +416,12 @@ pub fn agent_logo_mono(path: &'static str) -> Svg {
 }
 
 /// A connection's: its server's flavor's when it has one (TimescaleDB), else its engine's.
-pub fn profile_logo(p: &dataman_core::ConnectionProfile, size: f32) -> Option<gpui::Img> {
+pub fn profile_logo(p: &dataman_core::ConnectionProfile, size: f32) -> Option<gpui::Div> {
     small_logo_at(p.logo(), size)
 }
 
-pub fn small_logo_at(path: &'static str, size: f32) -> Option<gpui::Img> {
-    logos_on().then(|| logo_at(path).size(crate::theme::px(size)))
+pub fn small_logo_at(path: &'static str, size: f32) -> Option<gpui::Div> {
+    logos_on().then(|| logo_at(path, size))
 }
 
 #[cfg(test)]

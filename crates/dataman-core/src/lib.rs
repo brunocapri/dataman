@@ -442,15 +442,25 @@ impl Core {
     }
 
     pub fn connect(&self, profile: ConnectionProfile, password: Option<String>) -> Task<Arc<Connection>> {
+        self.connect_telling(profile, password).0
+    }
+
+    /// As `connect`, and whether a password went with it (typed, saved, or ~/.pgpass's), set once
+    /// the credentials are read: refused, it was the wrong one, not a missing one.
+    pub fn connect_telling(&self, profile: ConnectionProfile, password: Option<String>) -> (Task<Arc<Connection>>, Arc<std::sync::atomic::AtomicBool>) {
         let handle = self.handle();
         let history = self.history.clone();
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
-        spawn(&self.handle(), async move {
+        let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let told = sent.clone();
+        let task = spawn(&self.handle(), async move {
             let (cred, ssh_secret) = secrets.both(&profile, password, None).await?;
+            told.store(matches!(&cred, Cred::Password(Some(pw)) if !pw.is_empty()), std::sync::atomic::Ordering::Relaxed);
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
             Connection::open(handle, profile, cred, history, tunnel).await
-        })
+        });
+        (task, sent)
     }
 
     /// The connection dialog's sign-in check: the cloud CLI asked for a token now, and who it

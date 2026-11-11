@@ -485,8 +485,14 @@ impl Workspace {
         if delete {
             self.delete_connections(&ids, cx);
         }
-        let f = self.tree.focus_handle(cx);
-        window.focus(&f, cx);
+        // The last one deleted, the welcome shows: it takes the focus, not the empty explorer.
+        // Cancelled, or some left: back to the explorer.
+        if delete && self.store.read(cx).profiles.is_empty() {
+            self.focus_editor(window, cx);
+        } else {
+            let f = self.tree.focus_handle(cx);
+            window.focus(&f, cx);
+        }
         cx.notify();
     }
 

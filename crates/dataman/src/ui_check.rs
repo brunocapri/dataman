@@ -36,7 +36,7 @@ async fn tip_error(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext
                 let _ = core.save_connection(p, None, None);
                 w.store.update(cx, |s, cx| {
                     s.reload(cx);
-                    s.states.insert(id.clone(), crate::conns::ConnState::Failed(long.clone()));
+                    s.states.insert(id.clone(), crate::conns::ConnState::failed_with(long.clone()));
                 });
                 id
             })
@@ -467,7 +467,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let saved = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.config.connections().len()).unwrap_or(0);
     let saved_before = saved(cx);
     if let Some(d) = cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten() {
-        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_step(crate::conn_dialog::Step::Connection, window, cx)));
+        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.open_at(crate::conn_dialog::Step::Connection, window, cx)));
         draw(cx);
         use dataman_core::config::Engine;
         for (s, engine, host, port, user, db, pw) in [
@@ -1311,14 +1311,14 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     });
     for _ in 0..100 {
         pause(cx, 50).await;
-        if cx.update(|_, cx| matches!(ws.read(cx).store.read(cx).states.get(&off), Some(crate::conns::ConnState::Failed(_)))).unwrap_or(true) {
+        if cx.update(|_, cx| matches!(ws.read(cx).store.read(cx).states.get(&off), Some(crate::conns::ConnState::Failed { .. }))).unwrap_or(true) {
             break;
         }
     }
     let _ = cx.update(|_, cx| {
         ws.update(cx, |w, cx| {
             w.store.update(cx, |s, cx| {
-                s.states.insert(off.clone(), crate::conns::ConnState::Failed(long.clone()));
+                s.states.insert(off.clone(), crate::conns::ConnState::failed_with(long.clone()));
                 cx.notify();
             })
         })

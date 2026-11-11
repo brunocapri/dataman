@@ -3,11 +3,10 @@
 //! never into connections.toml.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task,
     Window, actions, div, prelude::*,
 };
 use crate::theme::{Pt, px};
@@ -15,7 +14,6 @@ use dataman_core::config::Engine;
 use dataman_core::server::{FLAVORS, Flavor};
 use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
 use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode, connstr};
-use dataman_mcp::agents::{self, AGENTS, Added, Listing};
 
 const ENGINES: [Engine; 10] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") {
@@ -94,22 +92,25 @@ impl Tile {
     }
 }
 
-/// The flavors a search names: by their own words only (the empty search shows the engines).
+/// The flavors a search names, by their own words; the empty search shows every one that has a
+/// tile (one with no words, Azure SQL, is told from its engine once connected).
 fn flavors_matching(q: &str) -> impl Iterator<Item = Tile> + '_ {
     FLAVORS
         .iter()
-        .filter(move |f| !q.is_empty() && (f.search.split_whitespace().any(|w| w.starts_with(q)) || (q.len() >= 3 && !f.search.is_empty() && f.label.to_lowercase().contains(q))))
+        .filter(move |f| !f.search.is_empty() && (q.is_empty() || f.search.split_whitespace().any(|w| w.starts_with(q)) || (q.len() >= 3 && f.label.to_lowercase().contains(q))))
         .map(|f| Tile { engine: f.engine, flavor: f.flavor })
 }
 
-/// The Database step's tiles for what is in its search: none for a connection string, which either
-/// reads (and goes on to Connection) or does not.
+/// The Database step's tiles for what is in its search, each flavor after its engine: none for a
+/// connection string, which either reads (and goes on to Connection) or does not.
 fn tiles_for(search: &str) -> Vec<Tile> {
     if search.contains("://") {
         return Vec::new();
     }
     let q = search.trim().to_lowercase();
-    engines_matching(&q).into_iter().map(|engine| Tile { engine, flavor: Flavor::Standard }).chain(flavors_matching(&q)).collect()
+    let mut tiles: Vec<Tile> = engines_matching(&q).into_iter().map(|engine| Tile { engine, flavor: Flavor::Standard }).chain(flavors_matching(&q)).collect();
+    tiles.sort_by_key(|t| ENGINES.iter().position(|e| *e == t.engine));
+    tiles
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -290,14 +291,6 @@ struct Advanced {
     confirmed: bool,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-enum AgentAdd {
-    Idle,
-    Adding,
-    Done,
-    Failed(String),
-}
-
 pub struct ConnDialog {
     store: Entity<ConnStore>,
     focus: FocusHandle,
@@ -329,6 +322,8 @@ pub struct ConnDialog {
     str_bad: bool,
     /// A password is really saved for this connection.
     saved_pw: bool,
+    /// The sheet opened on a sign-in refused with the saved password: that one is not kept.
+    refused: bool,
     /// What the string gave for each: compared with the fields for the note under them.
     str_user: Option<String>,
     str_pw: Option<String>,
@@ -368,9 +363,6 @@ pub struct ConnDialog {
     body_scroll: gpui::ScrollHandle,
     /// A field that took the focus, to scroll to once it has been drawn.
     reveal: Option<Entity<TextInput>>,
-    agents: Option<Arc<Listing>>,
-    agent_adds: [AgentAdd; AGENTS.len()],
-    copied: ui::CopiedFlash,
 }
 
 impl EventEmitter<DialogEvent> for ConnDialog {}
@@ -533,7 +525,7 @@ impl ConnDialog {
                 };
                 let (pw, ssh) = (there("password", pw), there("SSH secret", ssh));
                 let _ = this.update(cx, |d, cx| {
-                    d.saved_pw = pw;
+                    d.saved_pw = pw && !d.refused;
                     if pw && !d.password_needed {
                         d.password.update(cx, |t, cx| t.set_placeholder(SAVED_IN, cx));
                     }
@@ -571,6 +563,7 @@ impl ConnDialog {
             conn_str,
             str_bad: false,
             saved_pw: false,
+            refused: false,
             str_user: None,
             str_pw: None,
             auto_name: None,
@@ -601,9 +594,6 @@ impl ConnDialog {
             unrolls: std::array::from_fn(|k| crate::motion::Unroll::rest(k == profile_auth as usize)),
             body_scroll: Default::default(),
             reveal: None,
-            agents: None,
-            agent_adds: std::array::from_fn(|_| AgentAdd::Idle),
-            copied: Default::default(),
         };
         d.name_follows_host(cx);
         // Filled in: the string says what the fields say, with the TLS the host decided above.
@@ -768,8 +758,7 @@ impl ConnDialog {
                 }
                 self.settle_methods();
             }
-            Step::Mcp => self.find_agents(cx),
-            Step::Connection => {}
+            Step::Connection | Step::Mcp => {}
         }
         // Once the click (or Return) that got here is done with the focus.
         cx.defer_in(window, |d, window, cx| {
@@ -843,6 +832,15 @@ impl ConnDialog {
         cx.notify();
     }
 
+    /// Opens on `to`: an agent's connection on the step it lacks. On Sign-in with a password
+    /// needed (`set_password_needed`), the password takes the focus.
+    pub fn open_at(&mut self, to: Step, window: &mut Window, cx: &mut Context<Self>) {
+        self.enter(to, window, cx);
+        if to == Step::SignIn && self.password_needed {
+            cx.defer_in(window, |d, window, cx| window.focus(&d.password.focus_handle(cx), cx));
+        }
+    }
+
     pub fn password_focus(&self, cx: &App) -> FocusHandle {
         self.password.focus_handle(cx)
     }
@@ -863,6 +861,23 @@ impl ConnDialog {
     #[cfg(feature = "checks")]
     pub fn run_test(&mut self, cx: &mut Context<Self>) {
         self.test(cx);
+    }
+
+    /// The saved connection's last connect failed: said as a failed test says it
+    /// (`server_message`'s words, kept when it failed), the password field marked when the
+    /// sign-in was refused.
+    pub fn show_failure(&mut self, title: &str, body: &str, password: bool, cx: &mut Context<Self>) {
+        if password {
+            // The saved one is what was refused: not offered to keep ("Keep user & password"),
+            // even once the Keychain's answer comes in.
+            (self.saved_pw, self.refused) = (false, true);
+            self.password.update(cx, |p, cx| {
+                p.set_text("", cx);
+                p.error = true;
+            });
+        }
+        self.test = Test::Failed { title: title.to_string(), body: body.to_string() };
+        cx.notify();
     }
 
     pub fn set_host_key(&mut self, prompt: HostKeyPrompt, cx: &mut Context<Self>) {
@@ -1148,15 +1163,9 @@ impl ConnDialog {
             // Not laid out yet: the next frame is.
             return window.request_animation_frame();
         };
-        let view = self.body_scroll.bounds();
-        let mut at = self.body_scroll.offset();
-        let label = px(24.);
-        if b.top() - label < view.top() {
-            at.y += view.top() - (b.top() - label);
-        } else if b.bottom() + px(8.) > view.bottom() {
-            at.y -= b.bottom() + px(8.) - view.bottom();
+        if let Some(at) = ui::scrolled_to(&self.body_scroll, b, px(24.), px(8.)) {
+            self.body_scroll.set_offset(at);
         }
-        self.body_scroll.set_offset(at);
         self.reveal = None;
     }
 
@@ -1273,8 +1282,10 @@ impl ConnDialog {
         p.mcp = self.mcp;
         p.mcp_allowed = self.advanced.allowed.clone();
         p.mcp_yolo = self.advanced.yolo;
-        // Saved here, the user has seen where it goes.
-        p.agent_made = false;
+        // Saved here, the user has seen where it goes; but an agent's connection taken through
+        // New connection's steps stays the agent's: its mark, and these steps whenever it is not
+        // up (`open_connection_sheet`).
+        p.agent_made = self.is_new && self.profile.agent_made && self.store.read(cx).profile(&self.profile.id).is_some();
         p.from_project = false;
         p.path = None;
         p.ssh = self.ssh.on.then(|| SshSettings {
@@ -1599,10 +1610,6 @@ impl ConnDialog {
         self.pick_engine(e, window, cx);
     }
 
-    #[cfg(feature = "checks")]
-    pub fn demo_step(&mut self, to: Step, window: &mut Window, cx: &mut Context<Self>) {
-        self.enter(to, window, cx);
-    }
 
     #[cfg(feature = "checks")]
     pub fn demo_test(&mut self, cx: &mut Context<Self>) {
@@ -1656,16 +1663,6 @@ impl ConnDialog {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_installed(&self, id: &str) -> Option<bool> {
-        self.agents.as_ref()?.rows.iter().find(|r| r.agent.id == id).map(|r| r.installed)
-    }
-
-    #[cfg(feature = "checks")]
-    pub fn demo_copy(&self, id: &str) -> Option<String> {
-        self.agents.as_ref()?.rows.iter().find(|r| r.agent.id == id).map(|r| r.copy.clone())
-    }
-
-    #[cfg(feature = "checks")]
     pub fn demo_tier(&self) -> McpAccess {
         self.tier()
     }
@@ -1673,17 +1670,6 @@ impl ConnDialog {
     #[cfg(feature = "checks")]
     pub fn demo_color(&self) -> (usize, bool) {
         (self.color, self.color_picked)
-    }
-
-    #[cfg(feature = "checks")]
-    pub fn demo_agent_add(&self, id: &str) -> Option<String> {
-        let i = AGENTS.iter().position(|a| a.id == id)?;
-        Some(match &self.agent_adds[i] {
-            AgentAdd::Idle => "idle".to_string(),
-            AgentAdd::Adding => "adding".to_string(),
-            AgentAdd::Done => "done".to_string(),
-            AgentAdd::Failed(e) => format!("failed: {e}"),
-        })
     }
 
     #[cfg(feature = "checks")]
@@ -1935,49 +1921,6 @@ impl ConnDialog {
         self.sign_in[self.auth as usize] = SignIn::Failed { title: e.title.clone(), body: e.body.clone(), fix: e.action };
         cx.notify();
     }
-
-    /// Looks for the agents the first time MCP shows. Only looks: nothing runs until Add.
-    fn find_agents(&mut self, cx: &mut Context<Self>) {
-        if self.agents.is_some() {
-            return;
-        }
-        cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async { Listing::here() }).await;
-            let _ = this.update(cx, |d, cx| {
-                d.agents = Some(found);
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn add_agent(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(listing) = self.agents.clone() else { return };
-        if self.agent_adds[i] == AgentAdd::Adding {
-            return;
-        }
-        self.agent_adds[i] = AgentAdd::Adding;
-        let job = self.store.read(cx).core.handle().spawn(async move { agents::add(&AGENTS[i], &listing).await });
-        cx.spawn(async move |this, cx| {
-            let r = job.await;
-            let _ = this.update(cx, |d, cx| {
-                d.agent_adds[i] = match r.map_err(|e| e.to_string()).and_then(|r| r) {
-                    Ok(Added::Done) => AgentAdd::Done,
-                    Ok(Added::Open(link)) => {
-                        cx.open_url(&link);
-                        AgentAdd::Done
-                    }
-                    Err(e) => {
-                        log::warn!("adding Dataman to {}: {e}", AGENTS[i].label);
-                        AgentAdd::Failed(e)
-                    }
-                };
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
-    }
 }
 
 /// An http(s) URL on the sheet of an engine addressed by one is that server's, not Elasticsearch's.
@@ -2065,7 +2008,7 @@ impl ConnDialog {
                 .when(on, |d| d.bg(t.acc_s))
                 .when(!on, |d| d.hover(move |s| s.bg(hov).border_color(line)))
                 .cursor_pointer()
-                .child(crate::assets::logo_at(tile.flavor.logo(e)).size(px(30.)))
+                .child(crate::assets::logo_at(tile.flavor.logo(e), 30.))
                 .child(div().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(tile.label()))
                 .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(e.family_label()))
                 .on_click(cx.listener(move |d, _, window, cx| d.pick(tile, window, cx)))
@@ -2353,75 +2296,11 @@ impl ConnDialog {
         div().mx(px(-8.)).flex().flex_col().gap(px(2.)).child(head).children(rows)
     }
 
-    fn agent_rows(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let listing = self.agents.as_ref()?;
-        let rows = listing.rows.iter().map(|r| {
-            let (i, a) = (r.index, r.agent);
-            let state = &self.agent_adds[i];
-            let logo = if a.mono { crate::assets::agent_logo_mono(a.logo).text_color(t.tx).into_any_element() } else { gpui::img(a.logo).flex_none().size(px(16.)).into_any_element() };
-            let status = match state {
-                AgentAdd::Done => Some((if a.waits { "◌" } else { "●" }, if a.waits { t.tx3 } else { t.ok }, t.tx, a.done, a.done.to_string())),
-                AgentAdd::Failed(why) => Some(("✕", t.tx3, t.tx3, "Could not add", why.clone())),
-                _ => None,
-            };
-            let status = status.map(|(glyph, gc, tc, text, tip)| {
-                div()
-                    .id(("agent-status", i))
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_size(px(crate::theme::text::UI))
-                    .child(div().text_size(px(crate::theme::text::TINY)).text_color(gc).child(glyph))
-                    .child(div().text_color(tc).child(text))
-                    .map(|d| if matches!(state, AgentAdd::Failed(_)) { d.tip(ui::error_tip(tip)) } else { d.tip(ui::text_tooltip(tip)) })
-            });
-            let add = (r.installed && *state != AgentAdd::Done).then(|| {
-                let id = format!("agent-add-{}", a.id);
-                let b = if *state == AgentAdd::Adding {
-                    ui::button_off(t, SharedString::from(id.clone()), Btn::Secondary).child("Adding…")
-                } else {
-                    ui::button(t, SharedString::from(id.clone()), Btn::Secondary).child("Add").tip(ui::text_tooltip(a.add_hint)).on_click(cx.listener(move |d, _, _, cx| d.add_agent(i, cx)))
-                };
-                ui::probe(id, b.h(px(24.)))
-            });
-            let copy_id = format!("agent-copy-{}", a.id);
-            let text = r.copy.clone();
-            let copy = ui::copy_button(t, SharedString::from(copy_id.clone()), Btn::Ghost, "Copy", self.copied.on(&copy_id, cx))
-                .h(px(24.))
-                .tip(ui::text_tooltip(format!("{}: {}", a.copy_hint, r.copy)))
-                .on_click({
-                    let copy_id = copy_id.clone();
-                    cx.listener(move |d, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                        d.copied.start(copy_id.clone(), cx);
-                    })
-                });
-            let name = div().flex_1().min_w_0().text_size(px(crate::theme::text::BODY)).text_color(if r.installed { t.tx } else { t.tx3 }).child(a.label);
-            div()
-                .h(px(36.))
-                .flex_none()
-                .px(px(8.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .child(div().flex_none().mr(px(2.)).when(!r.installed, |d| d.opacity(0.45)).child(logo))
-                .child(name)
-                .children(status)
-                .children(add)
-                .child(ui::probe(copy_id, copy))
-        });
-        Some(div().flex().flex_col().gap(px(8.)).child(caption(t, "ADD TO YOUR AGENTS")).child(div().mx(px(-8.)).flex().flex_col().children(rows)))
-    }
-
     fn mcp_panel(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         panel()
             .child(line(t.tx3, "What AI agents can do on this connection. More in Agents › Protection."))
             .child(self.tiers(t, cx))
             .when(dataman_core::MCP_ADVANCED, |d| d.child(self.mcp_advanced(t, cx)))
-            .children(self.agent_rows(t, cx))
     }
 
     fn status(&self, t: &Theme) -> Option<gpui::AnyElement> {
@@ -2496,7 +2375,7 @@ impl ConnDialog {
     }
 
     fn header(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let logo = div().flex_none().size(px(16.)).mr(px(8.)).when(self.engine_picked, |d| d.child(crate::assets::logo_at(self.flavor.logo(self.engine)).size(px(16.))));
+        let logo = div().flex_none().size(px(16.)).mr(px(8.)).when(self.engine_picked, |d| d.child(crate::assets::logo_at(self.flavor.logo(self.engine), 16.)));
         let middle = if self.is_new {
             let file = self.engine_picked && self.is_file();
             let mut crumbs = div().flex_1().min_w_0().flex().flex_row().items_center().gap(px(6.));
@@ -2794,7 +2673,7 @@ mod tests {
     }
 
     /// Servers that speak an engine's protocol are found by their own names, each its own tile
-    /// that connects as the engine; the empty search shows only the engines.
+    /// that connects as the engine; the empty search shows them all, each after its engine.
     #[test]
     fn flavors_are_found_by_their_own_names() {
         let one = |q: &str| match tiles_for(q).as_slice() {
@@ -2812,7 +2691,14 @@ mod tests {
         assert_eq!(one("valkey"), (Engine::Redis, Flavor::Valkey, "Valkey"));
         assert_eq!(one("ferret"), (Engine::MongoDb, Flavor::FerretDb, "FerretDB"));
         assert_eq!(tiles_for("microsoft").iter().map(|t| t.label()).collect::<Vec<_>>(), ["SQL Server", "Garnet"]);
-        assert_eq!(tiles_for(""), ENGINES.map(|engine| Tile { engine, flavor: Flavor::Standard }).to_vec());
+        let all: Vec<&str> = tiles_for("").iter().map(|t| t.label()).collect();
+        assert_eq!(
+            all,
+            [
+                "PostgreSQL", "TimescaleDB", "YugabyteDB", "MySQL", "MariaDB", "Percona Server", "Vitess", "SQL Server", "ClickHouse", "SQLite", "DuckDB",
+                "MongoDB", "FerretDB", "Elasticsearch", "OpenSearch", "Redis", "Valkey", "Dragonfly", "KeyDB", "Garnet"
+            ]
+        );
         assert!(tiles_for("azure").iter().all(|t| t.flavor == Flavor::Standard), "Azure SQL has no tile: it is told from SQL Server once connected");
     }
 

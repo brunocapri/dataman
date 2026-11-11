@@ -153,6 +153,10 @@ pub enum TreeEvent {
     OpenRelation { conn: String, db: String, schema: String, name: String },
     OpenCollection { conn: String, db: String, coll: String },
     Selected(String),
+    /// A row opened (clicked, ↩, expanded or shut), not only selected.
+    Opened,
+    /// A connection whose server refused it for want of a (right) password, opened.
+    AskPassword(String),
     EditConnection(String),
     NewConnection,
     Disconnect(String),
@@ -762,7 +766,7 @@ impl SchemaTree {
         let (glyph, meta) = match state {
             Some(ConnState::Connecting) => ("◐", Meta::Warn),
             Some(ConnState::Connected(_)) => ("●", Meta::Ok),
-            Some(ConnState::Failed(_)) => ("✕", Meta::Err),
+            Some(ConnState::Failed { .. }) => ("✕", Meta::Err),
             None => ("○", Meta::Off),
         };
         let mut r = Row::new(cid(&p.id), 0, p.name.clone(), Kind::Conn { id: p.id.clone() })
@@ -775,7 +779,7 @@ impl SchemaTree {
             .expandable(open);
         r.chip = Some(t.profile_color(p));
         r.chip_dim = r.tone == Tone::ConnOff;
-        if let Some(ConnState::Failed(e)) = state {
+        if let Some(ConnState::Failed { msg: e, .. }) = state {
             r.tip = Some(e.clone().into());
             r.tip_err = true;
         }
@@ -839,7 +843,7 @@ impl SchemaTree {
                     self.push_conn_simple(rows, &p.id, c, t);
                 }
             }
-            Some(ConnState::Failed(e)) => rows.push(error_row(&id, 1, e, &id, t)),
+            Some(ConnState::Failed { msg: e, .. }) => rows.push(error_row(&id, 1, e, &id, t)),
             _ => rows.push(loading_row(&id, 1)),
         }
     }
@@ -1409,6 +1413,13 @@ impl SchemaTree {
         cx.notify();
     }
 
+    /// The user opened (or shut) row `ix`: a click, ↩, an arrow key. Only these say Opened; the
+    /// app's own `expand_id` does not.
+    fn open_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.toggle(ix, cx);
+        cx.emit(TreeEvent::Opened);
+    }
+
     pub fn toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         self.select(ix, cx);
@@ -1515,7 +1526,7 @@ impl SchemaTree {
     fn set_expanded(&mut self, ix: usize, open: bool, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         if row.expandable && (row.expanded && !self.shutting(&row.id)) != open {
-            self.toggle(ix, cx);
+            self.open_row(ix, cx);
         } else if !open {
             if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
                 self.select(p, cx);
@@ -1957,10 +1968,14 @@ impl SchemaTree {
                 }
                 cx.notify();
             }
-            Kind::Conn { id } if matches!(self.store.read(cx).states.get(&id), Some(ConnState::Failed(_))) => {
-                cx.emit(TreeEvent::EditConnection(id));
+            // Refused for its password: that sheet, from a click as from ↩. Any other failure
+            // opens as the row does, its error and Retry under it.
+            Kind::Conn { id } if self.asks_password(&id, cx) => {
+                self.select(ix, cx);
+                cx.emit(TreeEvent::Opened);
+                cx.emit(TreeEvent::AskPassword(id));
             }
-            _ => self.toggle(ix, cx),
+            _ => self.open_row(ix, cx),
         }
     }
 
@@ -1985,10 +2000,22 @@ impl SchemaTree {
             self.pick_anchor = Some(id);
         }
         self.picked.clear();
-        if ev.click_count() >= 2 {
+        let conn = self.rows.get(ix).and_then(|r| match &r.kind {
+            Kind::Conn { id } => Some(id.clone()),
+            _ => None,
+        });
+        let asks = conn.as_deref().is_some_and(|id| self.asks_password(id, cx));
+        // The second click of a double on a connection not up (failed, or connecting since the
+        // first click retried it): the first opened it, to its error or its progress, and so it
+        // stays. A connected one opens as it always did.
+        let up = conn.as_deref().is_some_and(|id| matches!(self.store.read(cx).states.get(id), Some(ConnState::Connected(_))));
+        if ev.click_count() >= 2 && conn.is_some() && !up && !asks {
+            return;
+        }
+        if ev.click_count() >= 2 || asks {
             return self.open(ix, cx);
         }
-        self.toggle(ix, cx);
+        self.open_row(ix, cx);
     }
 
     /// Shift picks the connections and folders from the last plain click to row `ix`; ⌘ adds or
@@ -2053,7 +2080,7 @@ impl SchemaTree {
             None => ConnPhase::Off,
             Some(ConnState::Connecting) => ConnPhase::Connecting,
             Some(ConnState::Connected(_)) => ConnPhase::Connected,
-            Some(ConnState::Failed(_)) => ConnPhase::Failed,
+            Some(ConnState::Failed { .. }) => ConnPhase::Failed,
         }
     }
 
@@ -2170,6 +2197,10 @@ impl SchemaTree {
         let y = y.clamp(top, (bottom - 22.).max(top));
         let left = b.origin.x.pt() + 6.;
         Some((left, y, left + b.size.width.pt() - 12.))
+    }
+
+    fn asks_password(&self, id: &str, cx: &App) -> bool {
+        matches!(self.store.read(cx).states.get(id), Some(ConnState::Failed { needs_password: true, .. }))
     }
 
     pub fn open_menu(&mut self, ix: Option<usize>, at: MenuAnchor, window: &mut Window, cx: &mut Context<Self>) {

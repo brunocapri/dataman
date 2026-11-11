@@ -165,6 +165,8 @@ pub(crate) fn connect(ws: &Entity<Workspace>, prof: ConnectionProfile, password:
         s.reload(cx);
         s.connect(&prof.id, Some(password), cx);
     });
+    // As saved through its sheet: the work in front of the Welcome tab.
+    ws.update(cx, |w, cx| w.show_work(cx));
 }
 
 fn demo_importable() -> Vec<dataman_core::Importable> {
@@ -186,7 +188,7 @@ fn demo_importable() -> Vec<dataman_core::Importable> {
 fn connected(ws: &Entity<Workspace>, id: &str, cx: &App) -> bool {
     match ws.read(cx).connection_state(id, cx) {
         Some(ConnState::Connected(_)) => true,
-        Some(ConnState::Failed(e)) => panic!("bench: connection failed: {e}"),
+        Some(ConnState::Failed { msg: e, .. }) => panic!("bench: connection failed: {e}"),
         _ => false,
     }
 }
@@ -467,7 +469,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         w.open_dialog(None, window, cx);
                         if let Some(d) = w.dialog.clone() {
                             d.update(cx, |d, cx| {
-                                d.demo_step(crate::conn_dialog::Step::Connection, window, cx);
+                                d.open_at(crate::conn_dialog::Step::Connection, window, cx);
                                 if stage == "dialog-url" {
                                     d.set_conn_str("Server=tcp:db.example.com,14330;Database=shop;User Id=app;Encrypt=True;TrustServerCertificate=True", cx);
                                 } else {
@@ -487,14 +489,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                                 d.set_conn_str("postgres://ana:hunter22@db.internal:6432/orders?sslmode=require", cx);
                                 match stage.as_str() {
                                     "dialog-prod" => d.demo_env(dataman_core::Environment::Production, cx),
-                                    "dialog-signin" => d.demo_step(Step::SignIn, window, cx),
+                                    "dialog-signin" => d.open_at(Step::SignIn, window, cx),
                                     "dialog-mcp" | "dialog-mcp-prod" => {
                                         if stage == "dialog-mcp-prod" {
                                             d.demo_env(dataman_core::Environment::Production, cx);
                                         }
-                                        d.demo_step(Step::Mcp, window, cx);
+                                        d.open_at(Step::Mcp, window, cx);
                                     }
-                                    "dialog-unroll" => d.demo_step(Step::SignIn, window, cx),
+                                    "dialog-unroll" => d.open_at(Step::SignIn, window, cx),
                                     _ => {}
                                 }
                             });
@@ -527,7 +529,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         w.open_dialog_with(Some(p), true, None, window, cx);
                         if let Some(d) = w.dialog.clone() {
                             d.update(cx, |d, cx| {
-                                d.demo_step(crate::conn_dialog::Step::SignIn, window, cx);
+                                d.open_at(crate::conn_dialog::Step::SignIn, window, cx);
                                 if stage == "dialog-entra" {
                                     d.demo_signed_in("ana@contoso.com", cx);
                                 }
@@ -548,7 +550,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         w.open_dialog_with(Some(p), true, None, window, cx);
                         if let Some(d) = w.dialog.clone() {
                             d.update(cx, |d, cx| {
-                                d.demo_step(crate::conn_dialog::Step::SignIn, window, cx);
+                                d.open_at(crate::conn_dialog::Step::SignIn, window, cx);
                                 d.set_sign_in_failed(&e, cx);
                             });
                         }

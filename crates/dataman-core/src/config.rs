@@ -745,6 +745,11 @@ impl ConnectionProfile {
         format!("{}@{}:{}/{}", self.user, self.host, self.port, self.database)
     }
 
+    /// Whether the user has to type its password: a password sign-in with none saved.
+    pub fn asks_password(&self) -> bool {
+        !(self.save_password || self.auth.is_token() || self.engine.is_file())
+    }
+
     pub fn is_socket(&self) -> bool {
         self.host.starts_with('/')
     }

@@ -63,6 +63,10 @@ pub fn set_zoom(z: f32, window: &mut Window, cx: &mut App) {
 /// The wordmark and the empty states' banners: Geist Mono in capitals, whatever the UI font.
 pub const BANNER: &str = "Geist Mono";
 
+/// "Dataman" next to its disc on the welcome, as the landing page's header writes it.
+pub const WORDMARK: &str = "Host Grotesk";
+static WORDMARK_REGISTERED: std::sync::Once = std::sync::Once::new();
+
 static FONT: AtomicU8 = AtomicU8::new(0);
 static REGISTERED: AtomicU8 = AtomicU8::new(0);
 static SYSTEM_FONT: RwLock<Option<SharedString>> = RwLock::new(None);
@@ -112,6 +116,12 @@ fn faces(f: UiFont) -> [&'static [u8]; 5] {
 pub fn register_fonts(font: UiFont, cx: &App) {
     FONT.store(UiFont::ALL.iter().position(|f| *f == font).unwrap_or(0) as u8, Ordering::Relaxed);
     add_families(&[font, UiFont::GeistMono], cx);
+    // OFL, its license next to it.
+    WORDMARK_REGISTERED.call_once(|| {
+        if let Err(e) = cx.text_system().add_fonts(vec![Cow::Borrowed(include_bytes!("../assets/fonts/HostGrotesk-Regular.ttf"))]) {
+            log::warn!("could not register the wordmark's font: {e:#}");
+        }
+    });
 }
 
 pub fn ensure_fonts(fonts: &[UiFont], cx: &App) {
@@ -300,6 +310,8 @@ pub struct Theme {
     pub pane_line: Hsla,
     pub line2: Hsla,
     pub grid_line: Hsla,
+    /// The welcome's dotted squares, faint over its surface.
+    pub pattern: Hsla,
     /// Translucent on purpose: GPUI adds alpha, so an opaque color on the antialiased pixels of a
     /// curve saturates them to alpha 1 — a dark fringe over a light desktop. Kept at ≤ 0.2 alpha.
     pub edge: Hsla,
@@ -400,6 +412,7 @@ impl Theme {
             pane_line: c(0x1f1f1f),
             line2: c(0x383838),
             grid_line: c(0x1a1a1a),
+            pattern: ca(W, 0.10),
             edge: ca(W, 0.14),
             edge_acc: ca(0x4c7dff, 0.2),
             tx: c(0xe8eaf4),
@@ -481,6 +494,7 @@ impl Theme {
             pane_line: c(0xe0e0e0),
             line2: c(0xcccccc),
             grid_line: c(0xebebeb),
+            pattern: ca(0x000000, 0.10),
             edge: ca(K, 0.14),
             edge_acc: ca(0x2f5bff, 0.2),
             tx: c(0x11131b),

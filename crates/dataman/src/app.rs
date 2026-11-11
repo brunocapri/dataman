@@ -10,10 +10,8 @@ use dataman_core::groups::Pane;
 use dataman_core::layout::NavView;
 use dataman_core::{Connection, ConnectionProfile, Core, Favorite, Translucency};
 
-use crate::conn_dialog::{ConnDialog, DialogEvent};
-#[cfg(feature = "checks")]
-use crate::conns::ConnState;
-use crate::conns::{ConnEvent, ConnStore};
+use crate::conn_dialog::{ConnDialog, DialogEvent, Step};
+use crate::conns::{ConnEvent, ConnState, ConnStore};
 use crate::grid::GridEvent;
 use crate::history::{HistoryEvent, HistoryPanel};
 use crate::tab::{QueryTab, TabEvent};
@@ -26,6 +24,7 @@ actions!(
     [
         NewTab,
         CloseTab,
+        ShowWelcome,
         NextTab,
         PrevTab,
         Tab1,
@@ -366,6 +365,12 @@ pub struct Workspace {
     /// The sidebar's view before the Agents area covered the tabs, to go back to.
     pub(crate) before_agents: dataman_core::layout::NavView,
     pub(crate) welcome: Entity<Welcome>,
+    /// The Welcome tab: in the strip (`open`), and the surface (`front`, only while open). It
+    /// opens at launch with nothing saved, and when the last connection goes.
+    pub(crate) welcome_open: bool,
+    pub(crate) welcome_front: bool,
+    /// Something was saved when the store last changed: its going to none opens the Welcome tab.
+    saved_any: bool,
     pub(crate) side: Option<Side>,
     pub(crate) last_side: Option<Side>,
     pub(crate) current_conn: Option<String>,
@@ -470,7 +475,7 @@ impl Workspace {
         let store = cx.new(|_| ConnStore::new(core));
         let tree = cx.new(|cx| SchemaTree::new(store.clone(), cx));
         let history = cx.new(|cx| HistoryPanel::new(store.clone(), cx));
-        let welcome = cx.new(Welcome::new);
+        let welcome = cx.new(|cx| Welcome::new(store.clone(), cx));
         let core = store.read(cx).core.clone();
         let agents = cx.new(|cx| crate::agents::AgentsPage::new(core, store.clone(), cx));
         cx.subscribe_in(&agents, window, |w, _, ev: &crate::agents::AgentsEvent, window, cx| match ev {
@@ -487,6 +492,7 @@ impl Workspace {
         cx.observe(&agents, |w, _, cx| w.session_dirty(cx)).detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
         cx.subscribe_in(&store, window, Self::on_conn).detach();
+        cx.observe_in(&store, window, |w, _, window, cx| w.saved_changed(window, cx)).detach();
         cx.subscribe_in(&welcome, window, Self::on_welcome).detach();
         cx.subscribe_in(&history, window, |w, _, ev: &HistoryEvent, window, cx| match ev {
             HistoryEvent::Insert(sql) => {
@@ -541,6 +547,7 @@ impl Workspace {
         })
         .detach();
         let first = store.read(cx).profiles.first().map(|p| p.id.clone());
+        let nothing_saved = first.is_none();
         let compact = window.viewport_size().width.pt() <= 1280.;
         let mut w = Workspace {
             store,
@@ -553,6 +560,9 @@ impl Workspace {
             history,
             agents,
             welcome,
+            welcome_open: nothing_saved,
+            welcome_front: nothing_saved,
+            saved_any: !nothing_saved,
             side: None,
             last_side: None,
             view: NavView::Explorer,
@@ -665,7 +675,7 @@ impl Workspace {
         w.watch_project(window, cx);
         w.check_outside_edits(window, cx);
         if !w.restore_session(window, cx) {
-            w.new_tab(window, cx);
+            w.blank_tab(window, cx);
         }
         w.store.update(cx, |s, cx| s.connect_all(cx));
         w.nav.history.clear();
@@ -675,7 +685,7 @@ impl Workspace {
             cx.observe_in(&this, window, |w, _, window, cx| w.notified(window, cx)).detach();
             w.notified(window, cx);
         });
-        if w.first_run(cx) {
+        if w.welcome_front {
             w.focus_editor(window, cx);
         }
         w
@@ -685,7 +695,16 @@ impl Workspace {
         self.tabs.get(self.active)
     }
 
+    /// A tab opened (`tab_opened`): by the user, a file, a table, an agent.
     pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
+        let tab = self.blank_tab(window, cx);
+        self.tab_opened(&tab, window, cx);
+        tab
+    }
+
+    /// A tab that only stands for none: the first one, and the one after the last closes. It
+    /// opens nothing, so the Welcome tab in front stays there.
+    fn blank_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
         self.leave_agents(cx);
         let conn = self.current_conn.as_ref().and_then(|id| self.store.read(cx).connection(id));
         let id = self.next_id;
@@ -866,7 +885,7 @@ impl Workspace {
             front = next;
         }
         if self.tabs.is_empty() {
-            self.new_tab(window, cx);
+            self.blank_tab(window, cx);
         }
         self.active = front.and_then(|f| self.tabs.iter().position(|t| t.entity_id() == f)).unwrap_or(0).min(self.tabs.len() - 1);
         self.sync_bound_views(cx);
@@ -883,6 +902,7 @@ impl Workspace {
             }
             self.enter_group_of(ix);
             self.active = ix;
+            self.welcome_front = false;
             if let Some(id) = self.tabs[ix].read(cx).connection().map(|c| c.profile.id.clone()) {
                 self.current_conn = Some(id);
             }
@@ -1025,6 +1045,11 @@ impl Workspace {
             ("value", self.value_view.clone().map(Into::into)),
         ];
         let mut out: Vec<gpui::AnyElement> = Vec::new();
+        // Under every sheet, whatever its own backdrop does: nothing beneath it is hovered (no
+        // tooltip of the explorer's shows over it). The title bar above stays the window's.
+        if self.modal_open(cx) {
+            out.push(div().absolute().top(px(metrics::TITLE_H)).left_0().right_0().bottom_0().occlude().child(crate::ui::sheet_layer()).into_any_element());
+        }
         for (key, v) in views {
             out.extend(self.fades.view(key, v, reduced, window));
         }
@@ -1428,9 +1453,12 @@ impl Workspace {
     }
 
     pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.first_run(cx) {
-            let f = self.welcome.focus_handle(cx);
-            window.focus(&f, cx);
+        if self.welcome_front {
+            // The Agents page drawn over it: not onto the welcome under it.
+            if self.view != NavView::Agents {
+                let f = self.welcome.focus_handle(cx);
+                window.focus(&f, cx);
+            }
             return;
         }
         if let Some(t) = self.active_tab() {
@@ -1503,6 +1531,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
+        self.hold_focus(Modal::Sheet, window, cx);
         let store = self.store.clone();
         let d = cx.new(|cx| {
             let mut d = ConnDialog::new(store, profile, is_new, window, cx);
@@ -1520,15 +1549,27 @@ impl Workspace {
             match ev {
                 DialogEvent::Close => {}
                 DialogEvent::Saved { id, password } => {
-                    w.current_conn = Some(id.clone());
                     let (id, pw) = (id.clone(), password.clone());
+                    // Saved over the Welcome tab (an agent's connection, its password typed): the
+                    // work comes to the front, on it.
+                    if w.welcome_front {
+                        w.work_on(&id, window, cx);
+                    }
+                    w.current_conn = Some(id.clone());
                     w.store.update(cx, |s, cx| s.connect(&id, pw, cx));
                 }
                 DialogEvent::Save => return w.request_save_connection(d.clone(), window, cx),
                 DialogEvent::Delete(id) => return w.request_delete_connections(vec![id.clone()], true, window, cx),
             }
             w.dialog = None;
-            w.focus_editor(window, cx);
+            // Closed: the focus back where the sheet was opened from. Saved: the editor, on the
+            // connection.
+            if matches!(ev, DialogEvent::Close) {
+                w.give_focus_back(Modal::Sheet, window, cx);
+            } else {
+                w.drop_focus(Modal::Sheet, cx);
+                w.focus_editor(window, cx);
+            }
             cx.notify();
         })
         .detach();
@@ -1622,7 +1663,6 @@ impl Workspace {
     fn on_welcome(&mut self, _: &Entity<Welcome>, ev: &WelcomeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             WelcomeEvent::NewConnection => self.open_dialog(None, window, cx),
-            WelcomeEvent::AgentSetup => self.open_settings_at("mcp", window, cx),
             WelcomeEvent::Prefill(p, pw, text) => {
                 self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx);
                 if let (Some(text), Some(d)) = (text, self.dialog.clone()) {
@@ -1632,22 +1672,196 @@ impl Workspace {
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
             WelcomeEvent::OpenDatabase => self.open_database_file(window, cx),
             WelcomeEvent::OpenProject => self.open_project(window, cx),
+            WelcomeEvent::Open(id) => self.open_from_welcome(id, window, cx),
+        }
+    }
+
+    /// A row of the welcome's FROM YOUR AGENT: opened as a click in the explorer opens it, or,
+    /// failed or wanting a password, its sheet (`open_connection_sheet`), on what it lacks.
+    fn open_from_welcome(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        if store.profile(id).is_none() {
+            return;
+        }
+        // Failed, or never tried and wanting a password: its sheet. Never tried with one saved
+        // (auto-connect off, a file), the click connects it.
+        let sheet = match store.states.get(id) {
+            Some(ConnState::Failed { .. }) => true,
+            None => store.profile(id).is_some_and(|p| p.asks_password()),
+            Some(ConnState::Connected(_) | ConnState::Connecting) => false,
+        };
+        if sheet {
+            return self.open_connection_sheet(id.to_string(), window, cx);
+        }
+        self.work_on(id, window, cx);
+        // Its connect is the user's now, whether the explorer shows its row (a filter may hide
+        // it) or not: started when never tried, and no longer quiet when under way (a sheet for
+        // its password if it then fails). Up, nothing to do.
+        self.store.update(cx, |s, cx| s.connect(id, None, cx));
+        let row = format!("c:{id}");
+        self.tree.update(cx, |t, cx| t.expand_id(&row, cx));
+        self.focus_editor(window, cx);
+    }
+
+    /// The work to the front, on `id`: the current connection, and the tab showing (still blank)
+    /// on it, not on what came up on its own first (the agent's other connection, say); not up
+    /// yet, it waits for it.
+    fn work_on(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_work(cx);
+        self.select_connection(id, cx);
+        if let Some(tab) = self.active_tab().cloned().filter(|t| t.read(cx).pristine(cx)) {
+            match self.store.read(cx).connection(id) {
+                Some(c) => self.retarget(&tab, c, None, None, window, cx),
+                None => tab.update(cx, |t, _| t.want = Some((id.to_string(), None))),
+            }
+        }
+    }
+
+    /// A saved connection's sheet, on its password when that is what it lacks: its connect
+    /// failed for want of one or, not tried yet, it asks for one. `show_in_dataman` and the
+    /// welcome's rows both open it here.
+    /// The failure it was opened for shows there, as a failed test, unless it is only a password
+    /// that none was given for: that sheet asks for one, as it always did.
+    /// One an agent filled in that is not up yet gets New connection's steps, not the Edit form:
+    /// the user has not seen it, and goes through it as through their own.
+    pub(crate) fn open_connection_sheet(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) {
+            return;
+        }
+        let store = self.store.read(cx);
+        let Some(profile) = store.profile(&id).cloned() else { return };
+        let state = store.states.get(&id);
+        let (on_password, failed) = match state {
+            Some(ConnState::Failed { needs_password, password_tried, title, body, .. }) => (*needs_password, (!*needs_password || *password_tried).then(|| (title.clone(), body.clone()))),
+            Some(ConnState::Connected(_) | ConnState::Connecting) => (false, None),
+            None => (profile.asks_password(), None),
+        };
+        let steps = profile.agent_made && !matches!(state, Some(ConnState::Connected(_)));
+        if steps {
+            let at = if on_password && !profile.engine.is_file() { Step::SignIn } else { Step::Connection };
+            self.open_dialog_with(Some(profile), true, None, window, cx);
+            if let Some(d) = self.dialog.clone() {
+                d.update(cx, |d, cx| {
+                    if on_password {
+                        d.set_password_needed(cx);
+                    }
+                    d.open_at(at, window, cx);
+                });
+            }
+        } else if on_password {
+            self.open_dialog_for_password(id, window, cx);
+        } else {
+            self.open_dialog(Some(id), window, cx);
+        }
+        if let (Some((title, body)), Some(d)) = (failed, self.dialog.clone()) {
+            d.update(cx, |d, cx| d.show_failure(&title, &body, on_password, cx));
+        }
+    }
+
+    /// The connection selected in the explorer (or opened from the welcome): the current one,
+    /// and the tab's when it has none.
+    fn select_connection(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.current_conn = Some(id.to_string());
+        let conn = self.store.read(cx).connection(id);
+        if let (Some(tab), Some(conn)) = (self.active_tab().cloned(), conn) {
+            tab.update(cx, |t, cx| {
+                if t.connection().is_none() {
+                    t.set_connection(Some(conn), cx)
+                }
+            });
+        }
+    }
+
+    /// The work surface to the front, the Welcome tab staying in the strip: a connection opened,
+    /// a tab clicked or opened.
+    pub(crate) fn show_work(&mut self, cx: &mut Context<Self>) {
+        if self.welcome_front {
+            self.welcome_front = false;
+            cx.notify();
+        }
+    }
+
+    /// The Welcome tab, opened if it was closed, in front: the user's pick (its tab, the palette,
+    /// the menu), so off the Agents page too.
+    pub(crate) fn show_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_agents(cx);
+        self.welcome_up(window, cx);
+    }
+
+    /// The Welcome tab open and in front; the focus on it unless a sheet or the Agents page,
+    /// drawn over it, has it.
+    fn welcome_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.welcome_open = true;
+        self.welcome_front = true;
+        if !self.modal_open(cx) && self.view != NavView::Agents {
+            self.focus_editor(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The Welcome tab closed: the work in front, and what the agent saved is listed no more.
+    pub(crate) fn close_welcome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.welcome_open = false;
+        self.welcome_front = false;
+        self.welcome.update(cx, |w, cx| w.closed(cx));
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    /// The saved connections changed: the last one gone, the Welcome tab opens in front.
+    fn saved_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let any = !self.store.read(cx).profiles.is_empty();
+        if self.saved_any && !any {
+            self.welcome_up(window, cx);
+        }
+        self.saved_any = any;
+    }
+
+    /// The focus is on nothing, or off what the surface draws. While the welcome shows, that is
+    /// anywhere but the welcome and the sidebar (its explorer, history or favorites, which take
+    /// their focus as they slide in): a hidden tab's editor, find bar, cell. Otherwise it is
+    /// the welcome gone.
+    fn focus_off_surface(&self, window: &Window, cx: &App) -> bool {
+        let Some(f) = window.focused(cx) else { return true };
+        if self.welcome_front {
+            !(self.welcome.focus_handle(cx).contains_focused(window, cx) || self.tree.read(cx).contains_focus(window, cx) || self.history.focus_handle(cx).contains_focused(window, cx))
+        } else {
+            f == self.welcome.focus_handle(cx)
+        }
+    }
+
+    /// The one rule: with no sheet up, a focus on nothing or on the surface not drawn (the
+    /// welcome gone, an editor hidden by the welcome come back, what a sheet gave back after it
+    /// went) goes to what the surface shows, the welcome or the editor. The Agents page keeps
+    /// its own.
+    fn focus_drawn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.modal_open(cx) && self.view != NavView::Agents && self.focus_off_surface(window, cx) {
+            self.focus_editor(window, cx);
+        }
+    }
+
+    /// A tab opened, the user's or for an agent (every one comes through `new_tab` or
+    /// `agent_tab`): over the Welcome tab, it comes to the front. Under the Agents page or a
+    /// sheet it is the tab there on the way back; they keep the view and focus.
+    pub(crate) fn tab_opened(&mut self, tab: &Entity<QueryTab>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.welcome_front {
+            return;
+        }
+        let Some(ix) = self.tabs.iter().position(|t| t == tab) else { return };
+        if self.view == NavView::Agents || self.modal_open(cx) {
+            self.welcome_front = false;
+            self.active = ix;
+            self.sync_bound_views(cx);
+        } else {
+            self.activate(ix, window, cx);
         }
     }
 
     fn on_tree(&mut self, _: &Entity<SchemaTree>, ev: &TreeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
-            TreeEvent::Selected(id) => {
-                self.current_conn = Some(id.clone());
-                let conn = self.store.read(cx).connection(id);
-                if let (Some(tab), Some(conn)) = (self.active_tab().cloned(), conn) {
-                    tab.update(cx, |t, cx| {
-                        if t.connection().is_none() {
-                            t.set_connection(Some(conn), cx)
-                        }
-                    });
-                }
-            }
+            TreeEvent::Selected(id) => self.select_connection(id, cx),
+            // Selected is not opened (a right click, ↑↓): only opening one brings the work up.
+            TreeEvent::Opened => self.show_work(cx),
             TreeEvent::OpenRelation { conn, db, schema, name } => {
                 self.open_in = self.alt_aside(window);
                 self.open_relation(conn, db, schema, name, window, cx);
@@ -1659,6 +1873,7 @@ impl Workspace {
                 self.open_in = None;
             }
             TreeEvent::EditConnection(id) => self.open_dialog(Some(id.clone()), window, cx),
+            TreeEvent::AskPassword(id) => self.open_connection_sheet(id.clone(), window, cx),
             TreeEvent::NewConnection => self.open_dialog(None, window, cx),
             TreeEvent::Disconnect(id) => self.request_disconnect(vec![id.clone()], false, window, cx),
             TreeEvent::FocusEditor => self.focus_editor(window, cx),
@@ -1786,48 +2001,44 @@ impl Workspace {
         }
     }
 
+    /// `id` connected, again maybe: a tab waiting for it adopts it; one on its old connection
+    /// moves to the new one, unless mid-transaction or mid-run; one with none takes it when it
+    /// is the current connection.
+    fn tabs_follow(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(conn) = self.store.read(cx).connection(id) else { return };
+        let current = self.current_conn.as_deref() == Some(id);
+        for tab in self.tabs.clone() {
+            let conn = conn.clone();
+            tab.update(cx, |t, cx| {
+                if let Some((want, _)) = &t.want {
+                    if want == id {
+                        t.adopt(conn, cx);
+                    }
+                    return;
+                }
+                // An agent's tab handed the agents' own session (the same connection id) stays on it.
+                if t.agent.as_ref().is_some_and(|a| a.own_session) {
+                    return;
+                }
+                let stale = !t.tx_open() && !t.is_running() && t.connection().is_some_and(|c| c.profile.id == id && !Arc::ptr_eq(c, &conn));
+                if stale || (current && t.connection().is_none()) {
+                    t.set_connection(Some(conn), cx);
+                }
+            });
+        }
+    }
+
     fn on_conn(&mut self, _: &Entity<ConnStore>, ev: &ConnEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             ConnEvent::Connected(id) => {
                 self.current_conn = Some(id.clone());
-                let conn = self.store.read(cx).connection(id);
-                for tab in self.tabs.clone() {
-                    let conn = conn.clone();
-                    tab.update(cx, |t, cx| {
-                        if let Some((want, _)) = &t.want {
-                            if want == id
-                                && let Some(c) = conn
-                            {
-                                t.adopt(c, cx);
-                            }
-                            return;
-                        }
-                        let stale = !t.tx_open()
-                            && !t.is_running()
-                            && t.connection().is_some_and(|c| c.profile.id == *id && conn.as_ref().is_some_and(|n| !Arc::ptr_eq(c, n)));
-                        if t.connection().is_none() || stale {
-                            t.set_connection(conn, cx);
-                        }
-                    });
-                }
+                self.tabs_follow(id, cx);
                 let cid = format!("c:{id}");
                 self.tree.update(cx, |t, cx| {
                     t.expand_id(&cid, cx);
                 });
             }
-            // Only a tab waiting for it takes it, or one with none when it is the current one.
-            ConnEvent::Arrived(id) => {
-                let conn = self.store.read(cx).connection(id);
-                let current = self.current_conn.as_ref() == Some(id);
-                for tab in self.tabs.clone() {
-                    let conn = conn.clone();
-                    tab.update(cx, |t, cx| match (&t.want, conn) {
-                        (Some((want, _)), Some(c)) if want == id => t.adopt(c, cx),
-                        (None, Some(c)) if current && t.connection().is_none() => t.set_connection(Some(c), cx),
-                        _ => {}
-                    });
-                }
-            }
+            ConnEvent::Arrived(id) => self.tabs_follow(id, cx),
             ConnEvent::Failed { id, ssh: Some(err), .. } => {
                 if self.dialog.is_none() {
                     self.open_dialog(Some(id.clone()), window, cx);
@@ -1849,7 +2060,7 @@ impl Workspace {
             }
             ConnEvent::Failed { id, needs_password, .. } => {
                 if *needs_password && self.dialog.is_none() {
-                    self.open_dialog_for_password(id.clone(), window, cx);
+                    self.open_connection_sheet(id.clone(), window, cx);
                 }
             }
         }
@@ -1949,6 +2160,7 @@ impl Workspace {
         let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && dataman_core::os::canonical(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
         match saved {
             Some(id) => {
+                self.show_work(cx);
                 self.current_conn = Some(id.clone());
                 if !self.store.read(cx).states.contains_key(&id) {
                     self.store.update(cx, |s, cx| s.connect(&id, None, cx));
@@ -2174,7 +2386,7 @@ impl Workspace {
     }
 
     fn find_in_editor(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.first_run(cx) {
+        if self.welcome_front {
             return;
         }
         let Some(tab) = self.active_tab().cloned() else { return };
@@ -2183,7 +2395,7 @@ impl Workspace {
     }
 
     fn find_step_in_editor(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.first_run(cx) {
+        if self.welcome_front {
             return;
         }
         let Some(tab) = self.active_tab().cloned() else { return };
@@ -2734,9 +2946,6 @@ impl Workspace {
         self.active_tab().is_some_and(|t| t.read(cx).has_run)
     }
 
-    pub(crate) fn first_run(&self, cx: &App) -> bool {
-        self.store.read(cx).profiles.is_empty()
-    }
 }
 
 pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
@@ -2799,15 +3008,22 @@ impl Render for Workspace {
         let _trace = TraceRender::new("workspace render");
         RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::ui::clear_probes();
+        crate::ui::begin_frame(self.modal_open(cx));
         crate::ui::esc_frame(window);
         let t = cx.theme();
-        let first_run = self.first_run(cx);
-        let pass = self.dock_pass(first_run, window, cx);
-        self.split_now = if first_run { None } else { self.split_frame(window) };
-        let surface = if first_run {
-            self.welcome.clone().into_any_element()
-        } else if self.view == NavView::Agents {
+        let welcome = self.welcome_front;
+        // The focus on what the surface shows (`focus_drawn`), checked here, moved after.
+        if !self.modal_open(cx) && self.view != NavView::Agents && self.focus_off_surface(window, cx) {
+            cx.defer_in(window, |w, window, cx| w.focus_drawn(window, cx));
+        }
+        let pass = self.dock_pass(welcome, window, cx);
+        // Kept with the Welcome tab in front: the strips stay as the split groups them.
+        self.split_now = self.split_frame(window);
+        // The Agents page shows over the welcome, which is there again on the way back.
+        let surface = if self.view == NavView::Agents {
             self.agents.clone().into_any_element()
+        } else if welcome {
+            self.welcome.clone().into_any_element()
         } else {
             self.render_work(window, cx).into_any_element()
         };
@@ -2820,7 +3036,7 @@ impl Render for Workspace {
                 self.explorer_tween = None;
             }
         }
-        let production = !first_run && self.view != NavView::Agents && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
+        let production = !welcome && self.view != NavView::Agents && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
         let docks = self.render_docks(&pass, production, window, cx);
         let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
         let left_shown = left_w > 0.5;
@@ -2869,10 +3085,14 @@ impl Render for Workspace {
                     cx.stop_propagation();
                 }
             }))
+            .on_action(cx.listener(|w, _: &ShowWelcome, window, cx| w.show_welcome(window, cx)))
             .on_action(cx.listener(|w, _: &NewTab, window, cx| {
                 w.new_tab(window, cx);
             }))
             .on_action(cx.listener(|w, _: &CloseTab, window, cx| {
+                if w.welcome_front {
+                    return w.close_welcome(window, cx);
+                }
                 let a = w.active;
                 w.close_tab(a, window, cx)
             }))

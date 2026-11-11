@@ -112,7 +112,7 @@ impl Workspace {
             seen: None,
             login: None,
         });
-        self.connections_reloaded(window, cx);
+        self.connections_reloaded(cx);
         if let Some(v) = self.settings_view.clone() {
             v.update(cx, |v, cx| v.reload(cx));
         }

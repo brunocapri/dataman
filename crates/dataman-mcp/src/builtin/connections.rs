@@ -59,7 +59,7 @@ pub fn tools() -> Vec<Builtin> {
                 Schema::new()
                     .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "A short label; must be unique (case-insensitive) unless overwrite is true."}))
                     .prop("host", false, json!({"type": "string", "description": "Host, or a Unix-socket directory (starts with /). Required unless connection_string gives one."}))
-                    .prop("user", false, json!({"type": "string", "description": "Required unless connection_string gives one."})),
+                    .prop("user", false, json!({"type": "string", "description": user_needed()})),
                 json!({"type": "string", "enum": ["off", "read", "write"], "description": "What agents may do here; default: read, off on production."}),
             )
             .prop("overwrite", false, json!({"type": "boolean", "description": "Replace the existing connection of the same name (keeping its id and any saved password) instead of refusing."})),
@@ -217,6 +217,9 @@ pub(super) fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<
         }
         if profile.engine != before && profile.database == before.spec().default_database {
             profile.database = profile.engine.spec().default_database.to_string();
+        }
+        if profile.engine != before && profile.user == before.spec().default_user {
+            profile.user = profile.engine.spec().default_user.to_string();
         }
     }
     if let Some(h) = a.opt_str("host") {
@@ -466,6 +469,24 @@ fn settle_secrets(cx: &Call, old: Option<&ConnectionProfile>, profile: &mut Conn
     Ok(state)
 }
 
+/// The app told what was saved, in one message: with a password the call gave
+/// (`settle_secrets` says "set") the app also tries the connection again, which may have failed
+/// for want of it, and only once whatever else changed.
+fn tell_app(cx: &Call, id: &str, password: &str) {
+    let Some(f) = cx.hub.front() else { return };
+    if password == "set" {
+        f.password_given(id);
+    } else {
+        f.connections_changed();
+    }
+}
+
+/// When `user` is needed, as the engines' connection forms say.
+fn user_needed() -> String {
+    let without: Vec<&str> = dataman_core::Engine::ALL.iter().filter(|e| !e.is_file() && !e.spec().form.user_required).map(|e| e.label()).collect();
+    format!("Required unless connection_string gives one; {} can go without (a password only, or none).", without.join(", "))
+}
+
 /// A connection of the open project is the team's: an agent's change would be written to the
 /// project's file as if the user made it, so none goes through, even one that tightens.
 pub(super) fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
@@ -511,9 +532,6 @@ fn save(cx: &Call, base: Option<&ConnectionProfile>, profile: &ConnectionProfile
     if moved_on {
         return Err(ToolError::Refused(format!("{:?} was changed in Dataman while this call waited: nothing was saved; read it again (list_connections) and retry", profile.name)));
     }
-    if let Some(f) = cx.hub.front() {
-        f.connections_changed();
-    }
     Ok(())
 }
 
@@ -554,8 +572,16 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if file && a.opt_str("path").is_none() && a.opt_str("connection_string").is_none() {
             return Err(ToolError::Invalid("\"path\" is required for a sqlite or duckdb connection".into()));
         }
-        if !file && a.opt_str("connection_string").is_none() && (a.opt_str("host").is_none() || a.opt_str("user").is_none()) {
-            return Err(ToolError::Invalid("\"host\" and \"user\" are required, directly or via connection_string".into()));
+        if !file && a.opt_str("connection_string").is_none() {
+            // A user where the engine signs in with one (its connection form says): Redis, MongoDB
+            // and the search engines can go without.
+            let engine = a.opt_str("engine").and_then(server::named).map(|(e, _)| e).unwrap_or_default();
+            if a.opt_str("host").is_none() {
+                return Err(ToolError::Invalid("\"host\" is required, directly or via connection_string".into()));
+            }
+            if a.opt_str("user").is_none() && engine.spec().form.user_required {
+                return Err(ToolError::Invalid(format!("\"user\" is required for {}, directly or via connection_string", engine.label())));
+            }
         }
         // The most an agent may grant through this tool is read: write stays an app-only choice,
         // whatever the connection is (new, or replaced with overwrite).
@@ -602,8 +628,9 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
             no_twin(cx, &profile)?;
         }
         check_file(cx, existing, &profile).await?;
-        settle_secrets(cx, existing, &mut profile, password)?;
+        let state = settle_secrets(cx, existing, &mut profile, password)?;
         save(cx, existing, &profile)?;
+        tell_app(cx, &profile.id, state);
         Ok(json!({"id": profile.id, "name": profile.name, "engine": profile.engine.slug(), "flavor": Some(profile.flavor.slug()).filter(|s| !s.is_empty()), "overwritten": existing.is_some()}))
     })
 }
@@ -640,7 +667,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if target_changed(&old, &profile) || profile.auth != old.auth {
             cloud_target(&profile)?;
         }
-        let changed = changed_fields(&old, &profile);
+        let mut changed = changed_fields(&old, &profile);
         if changed.is_empty() && password.is_none() {
             let state = if old.save_password { "kept" } else { "none" };
             return Ok(json!({"id": old.id, "name": old.name, "changed": [], "password": state}));
@@ -666,6 +693,10 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         profile.agent_made |= target_changed(&old, &profile);
         let state = settle_secrets(cx, Some(&old), &mut profile, password)?;
         save(cx, Some(&old), &profile)?;
+        tell_app(cx, &profile.id, state);
+        if state == "set" {
+            changed.push("password");
+        }
         Ok(json!({"id": profile.id, "name": profile.name, "changed": changed, "password": state}))
     })
 }

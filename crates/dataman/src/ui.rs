@@ -253,6 +253,31 @@ impl CopiedFlash {
     pub fn on(&self, id: &str, cx: &App) -> Option<f32> {
         self.at.as_ref().filter(|(at, _)| at == id).and_then(|(_, since)| crate::motion::copied(*since, std::time::Instant::now(), cx.reduce_motion()))
     }
+
+    /// A [`copy_button`] that puts `text` on the clipboard and says "Copied"; `flash` is where
+    /// the view keeps this flash.
+    pub fn button<V: 'static>(&self, t: &Theme, id: SharedString, kind: Btn, label: &'static str, text: SharedString, flash: fn(&mut V) -> &mut CopiedFlash, cx: &mut Context<V>) -> Stateful<Div> {
+        let on = self.on(&id, cx);
+        copy_button(t, id.clone(), kind, label, on).on_click(cx.listener(move |v, _, _, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
+            flash(v).start(id.clone(), cx);
+        }))
+    }
+}
+
+/// The offset that brings `b` into `scroll`'s view with `above` and `below` of room; None when
+/// it shows already.
+pub fn scrolled_to(scroll: &gpui::ScrollHandle, b: Bounds<Pixels>, above: Pixels, below: Pixels) -> Option<gpui::Point<Pixels>> {
+    let view = scroll.bounds();
+    let mut at = scroll.offset();
+    if b.top() - above < view.top() {
+        at.y += view.top() - (b.top() - above);
+    } else if b.bottom() + below > view.bottom() {
+        at.y -= b.bottom() + below - view.bottom();
+    } else {
+        return None;
+    }
+    Some(at)
 }
 
 pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
@@ -427,7 +452,12 @@ pub fn flood_icon(outline: Icon, filled: Icon, level: f32, size: f32, color: Hsl
 }
 
 pub fn popover(t: &Theme) -> Div {
-    div().bg(t.pop).shadow(t.ring()).p(px(4.)).occlude()
+    div()
+        .bg(t.pop)
+        .shadow(t.ring())
+        .p(px(4.))
+        .occlude()
+        .child(gpui::canvas(|b, _, _| MENUS.with(|m| m.borrow_mut().push(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
 }
 
 pub fn menu_item(
@@ -489,15 +519,28 @@ pub fn tab_divider(t: &Theme) -> Div {
 pub trait Tipped: StatefulInteractiveElement + ParentElement {
     fn tip(self, build: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
         let anchor: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
-        let at = anchor.clone();
+        let inside: Rc<Cell<bool>> = Rc::default();
+        let (at, inside_at) = (anchor.clone(), inside.clone());
         let warm = TIP_SEEN.with(Cell::get).is_some_and(|seen| seen.elapsed() < TIP_WARM);
-        self.child(gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-            .tooltip_show_delay(if warm { Duration::ZERO } else { TIP_SHOW })
-            .hoverable_tooltip(move |window, cx| {
-                let inner = build(window, cx);
-                let anchor = anchor.clone();
-                cx.new(|_| TipHost { inner, anchor, own: Rc::default(), left: None }).into()
-            })
+        self.child(
+            gpui::canvas(
+                move |b, _, _| {
+                    at.set(Some(b));
+                    inside_at.set(FRAME.with(Cell::get).in_sheet);
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+        .tooltip_show_delay(if warm { Duration::ZERO } else { TIP_SHOW })
+        .hoverable_tooltip(move |window, cx| {
+            let inner = build(window, cx);
+            let (anchor, inside) = (anchor.clone(), inside.clone());
+            cx.new(|_| TipHost { inner, anchor, inside, own: Rc::default(), left: None, covered: false }).into()
+        })
     }
 }
 
@@ -511,6 +554,29 @@ const TIP_WARM: Duration = Duration::from_millis(500);
 
 thread_local! {
     static TIP_SEEN: Cell<Option<Instant>> = const { Cell::new(None) };
+    static FRAME: Cell<Frame> = const { Cell::new(Frame { sheet_up: false, in_sheet: false }) };
+    /// Where this frame draws its menus (popovers).
+    static MENUS: std::cell::RefCell<Vec<Bounds<Pixels>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What the frame being drawn has over its controls, for the tooltips (drawn last in it).
+#[derive(Clone, Copy)]
+struct Frame {
+    sheet_up: bool,
+    /// The prepaint has reached the sheets' layer (`sheet_layer`): what comes now is in a sheet.
+    in_sheet: bool,
+}
+
+/// The window's frame begins (the workspace draws first, the tooltips last).
+pub fn begin_frame(sheet_up: bool) {
+    FRAME.with(|f| f.set(Frame { sheet_up, in_sheet: false }));
+    MENUS.with(|m| m.borrow_mut().clear());
+}
+
+/// Put first in the sheets' layer: the controls drawn after it are in a sheet, and keep their
+/// tooltips while it is up.
+pub fn sheet_layer() -> gpui::AnyElement {
+    gpui::canvas(|_, _, _| FRAME.with(|f| f.set(Frame { in_sheet: true, ..f.get() })), |_, _, _, _| {}).absolute().top_0().left_0().size_full().into_any_element()
 }
 
 #[cfg(feature = "checks")]
@@ -532,8 +598,13 @@ pub fn tip_stats() -> (u32, u32, Option<Duration>) {
 struct TipHost {
     inner: AnyView,
     anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The control is in a sheet (it was drawn in the sheets' layer when the tooltip was asked
+    /// for): a sheet up does not cover it.
+    inside: Rc<Cell<bool>>,
     own: Rc<Cell<Option<Bounds<Pixels>>>>,
     left: Option<Instant>,
+    /// Once covered (asked for by the click that opened the sheet, say), it never shows again.
+    covered: bool,
 }
 
 impl Render for TipHost {
@@ -552,7 +623,12 @@ impl Render for TipHost {
         }
         #[cfg(feature = "checks")]
         TIP_RENDERS.with(|n| n.set(n.get() + 1));
-        if self.left.is_some_and(|l| l.elapsed() >= TIP_GRACE) {
+        // As a sheet's, a menu's own controls keep theirs: a layer covers what is not in it.
+        let frame = FRAME.with(Cell::get);
+        let anchor = self.anchor.get();
+        let menu_over = MENUS.with(|m| m.borrow().iter().any(|menu| !anchor.is_some_and(|a| menu.contains(&a.origin) && menu.contains(&a.bottom_right()))));
+        self.covered |= menu_over || (frame.sheet_up && !self.inside.get());
+        if self.covered || self.left.is_some_and(|l| l.elapsed() >= TIP_GRACE) {
             #[cfg(feature = "checks")]
             TIP_HIDDEN.with(|n| n.set(n.get() + 1));
             return div().into_any_element();
@@ -680,11 +756,12 @@ impl Render for TextTip {
     }
 }
 
+/// Fitted when it shows, not as the control is drawn (on every frame).
 pub fn text_tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    let (text, width) = fit_tip(&text.into());
-    let text = SharedString::from(text);
+    let text = text.into();
     move |_, cx| {
-        let text = text.clone();
+        let (text, width) = fit_tip(&text);
+        let text = SharedString::from(text);
         cx.new(|_| TextTip { text, width }).into()
     }
 }

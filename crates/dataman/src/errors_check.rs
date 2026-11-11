@@ -71,7 +71,7 @@ async fn failed_connection(ws: &Entity<Workspace>, r: &mut Report, cx: &mut Asyn
         ws.update(cx, |w, cx| {
             w.store.update(cx, |s, cx| {
                 s.reload(cx);
-                s.states.insert(id.clone(), ConnState::Failed(full.clone()));
+                s.states.insert(id.clone(), ConnState::failed_with(full.clone()));
                 cx.notify();
             })
         })

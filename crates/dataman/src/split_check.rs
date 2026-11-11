@@ -429,8 +429,15 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     wheel(cx, middle(view), -400.);
     key(cx, "cmd-1");
     draw(cx);
-    let (x2, _, _) = strip_scroll(ws, Pane::Left, cx);
-    report("⌘1: the first tab comes to the front, scrolled into view", near(x2, 0., 0.5) && active(ws, cx).as_ref() == Some(&first), format!("{x2}"));
+    // In view, not at offset 0: the Welcome tab, open since the stage began with nothing saved,
+    // goes before it.
+    let (x2, _, view) = strip_scroll(ws, Pane::Left, cx);
+    let shown = tab_mid(ws, Pane::Left, 0, cx);
+    report(
+        "⌘1: the first tab comes to the front, scrolled into view",
+        shown.is_some_and(|p| p.x.pt() > view.left().pt() && p.x.pt() < view.right().pt()) && active(ws, cx).as_ref() == Some(&first),
+        format!("{x2} {shown:?} in {view:?}"),
+    );
     key(cx, "cmd-9");
     for _ in 0..6 {
         key(cx, "cmd-w");

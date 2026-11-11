@@ -25,6 +25,9 @@ pub struct AgentTab {
     pub client: String,
     pub connection_id: String,
     pub text: String,
+    /// Handed the agents' own session (their login), not the user's connection: a reconnect of
+    /// the user's leaves it be.
+    pub own_session: bool,
 }
 
 pub(crate) enum TabMsg {
@@ -114,11 +117,18 @@ fn text_of(v: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// What an agent's tab runs on, and whether it is the agents' own session (their login), not
+/// the user's connection: a reconnect of the user's leaves such a tab be.
+pub(crate) struct AgentConn {
+    conn: Arc<Connection>,
+    own_session: bool,
+}
+
 impl Workspace {
     /// The connection an agent's statement runs on in its tab: the connection's agent login
     /// when it has one (never the user's instead), else the user's own connection. A draft is
     /// the user's to run: `as_agent` false.
-    fn agent_connection(&mut self, id: &str, wait: Duration, as_agent: bool, cx: &mut Context<Self>) -> Task<Result<Arc<Connection>, String>> {
+    fn agent_connection(&mut self, id: &str, wait: Duration, as_agent: bool, cx: &mut Context<Self>) -> Task<Result<AgentConn, String>> {
         let Some(profile) = self.store.read(cx).profile(id).cloned() else {
             return Task::ready(Err("the connection is not in Dataman".into()));
         };
@@ -129,20 +139,27 @@ impl Workspace {
                 let (hub, _) = shared.hub().map_err(|e| format!("{e:#}"))?;
                 let h = hub.handle();
                 let p = profile.clone();
-                h.spawn(async move { hub.connect(&p).await }).await.map_err(|e| e.to_string())?
+                let conn = h.spawn(async move { hub.connect(&p).await }).await.map_err(|e| e.to_string())??;
+                Ok(AgentConn { conn, own_session: true })
             });
         }
-        if let Some(c) = self.store.read(cx).connection(id) {
-            return Task::ready(Ok(c));
+        if let Some(conn) = self.store.read(cx).connection(id) {
+            return Task::ready(Ok(AgentConn { conn, own_session: false }));
         }
         self.store.update(cx, |s, cx| s.connect(id, None, cx));
         let (store, id) = (self.store.clone(), id.to_string());
-        cx.spawn(async move |_, cx| {
+        cx.spawn(async move |this, cx| {
             let until = Instant::now() + wait;
             while Instant::now() < until {
                 match store.read_with(cx, |s, _| s.states.get(&id).cloned()) {
-                    Some(ConnState::Connected(c)) => return Ok(c),
-                    Some(ConnState::Failed(e)) => return Err(e),
+                    Some(ConnState::Connected(conn)) => return Ok(AgentConn { conn, own_session: false }),
+                    Some(ConnState::Failed { needs_password: true, .. }) => {
+                        // The window gone, no sheet is open either.
+                        let sheet = this.read_with(cx, |w, cx| w.dialog.as_ref().is_some_and(|d| d.read(cx).profile_id() == id)).is_ok_and(|open| open);
+                        let there = if sheet { "where its sheet is open" } else { "in the connection's sheet, from the explorer" };
+                        return Err(format!("it needs its password, which only the user types: ask them to type it in Dataman, {there}"));
+                    }
+                    Some(ConnState::Failed { msg: e, .. }) => return Err(e),
                     None => return Err("not connected".into()),
                     Some(ConnState::Connecting) => {}
                 }
@@ -152,39 +169,44 @@ impl Workspace {
         })
     }
 
-    fn agent_tab(&mut self, conn: Arc<Connection>, client: &str, database: &str, draft: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
+    fn agent_tab(&mut self, given: AgentConn, client: &str, database: &str, draft: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
+        let AgentConn { conn, own_session } = given;
         let id = conn.profile.id.clone();
+        let held = self.welcome_front;
+        // The user's focus, whichever tab this takes: given back at the end, unless it was on the
+        // Welcome tab (behind the tab this brings to the front).
+        let focus = window.focused(cx).filter(|f| *f != gpui::Focusable::focus_handle(&self.welcome, cx));
         let mine = |t: &QueryTab| t.agent.as_ref().is_some_and(|a| a.client == client && a.connection_id == id);
         let found = self.tabs.iter().find(|t| mine(t.read(cx)) && t.read(cx).agent_free(draft, cx)).cloned();
         let tab = match found {
             Some(t) => t,
             None => {
-                let pristine = self.active_tab().filter(|t| {
-                    let t = t.read(cx);
-                    t.agent.is_none() && !t.has_run && t.monitor.is_none() && t.table.is_none() && t.editor.read(cx).text().trim().is_empty()
-                });
+                let pristine = self.active_tab().filter(|t| t.read(cx).pristine(cx));
                 let tab = match pristine.cloned() {
                     Some(t) => t,
                     None => {
-                        // In the background: the user's tab, focus and view (Agents included) stay.
-                        let (prev, focus, view) = (self.active, window.focused(cx), self.view);
+                        // In the background: the user's tab and view (Agents included) stay. Over the
+                        // Welcome tab in front, the new one comes to the front.
+                        let (prev, view) = (self.active, self.view);
                         let t = self.new_tab(window, cx);
-                        self.active = prev.min(self.tabs.len() - 1);
+                        if !held {
+                            self.active = prev.min(self.tabs.len() - 1);
+                        }
                         if view == dataman_core::layout::NavView::Agents {
                             self.set_nav(view, cx);
                         }
                         self.sync_bound_views(cx);
-                        if let Some(f) = focus {
-                            window.focus(&f, cx);
-                        }
                         t
                     }
                 };
-                tab.update(cx, |t, _| t.agent = Some(AgentTab { client: client.to_string(), connection_id: id.clone(), text: String::new() }));
+                tab.update(cx, |t, _| t.agent = Some(AgentTab { client: client.to_string(), connection_id: id.clone(), text: String::new(), own_session: false }));
                 tab
             }
         };
         tab.update(cx, |t, cx| {
+            if let Some(a) = t.agent.as_mut() {
+                a.own_session = own_session;
+            }
             if !t.connection().is_some_and(|c| Arc::ptr_eq(c, &conn)) {
                 t.set_connection(Some(conn), cx);
             }
@@ -192,8 +214,21 @@ impl Workspace {
                 t.set_database(database.to_string(), cx);
             }
         });
+        self.tab_opened(&tab, window, cx);
+        if let Some(f) = focus {
+            window.focus(&f, cx);
+        }
         cx.notify();
         tab
+    }
+
+    /// An agent's tab on `id`'s connection as the user's (`agent_tab`), for the checks.
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_agent_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(conn) = self.store.read(cx).connection(id) else { return false };
+        let database = conn.database().to_string();
+        self.agent_tab(AgentConn { conn, own_session: false }, "welcome-check", &database, false, window, cx);
+        true
     }
 
     fn agent_read(&mut self, req: TabRead, reply: oneshot::Sender<Result<Outcome, Stop>>, window: &mut Window, cx: &mut Context<Self>) {
@@ -208,7 +243,7 @@ impl Workspace {
             };
             let limits = req.limits;
             if let Some(r) = &req.rules {
-                conn.set_agent_rules(r);
+                conn.conn.set_agent_rules(r);
             }
             let started = w.update_in(cx, |w, window, cx| {
                 let tab = w.agent_tab(conn, &req.client, &req.database, false, window, cx);
@@ -302,7 +337,7 @@ impl Workspace {
             };
             let id = w
                 .update_in(cx, |w, window, cx| {
-                    let database = if req.database.is_empty() { conn.database().to_string() } else { req.database.clone() };
+                    let database = if req.database.is_empty() { conn.conn.database().to_string() } else { req.database.clone() };
                     let tab = w.agent_tab(conn, &req.client, &database, false, window, cx);
                     let shown = tab.update(cx, |t, cx| t.show_agent_doc(&req.sql, req.title.clone(), cx));
                     shown.then(|| tab.entity_id().as_u64())

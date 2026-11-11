@@ -66,7 +66,7 @@ async fn connected(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext
         pause(cx, 50).await;
         match cx.update(|_, cx| ws.read(cx).connection_state(id, cx)).ok().flatten() {
             Some(ConnState::Connected(_)) => return Ok(()),
-            Some(ConnState::Failed(e)) => return Err(e),
+            Some(ConnState::Failed { msg: e, .. }) => return Err(e),
             _ => {}
         }
     }
@@ -152,7 +152,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         ok &= pass;
     };
     pause(cx, 300).await;
-    let first_run = cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
+    let first_run = cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
     check("nothing saved: the welcome screen", first_run, String::new());
     snap("welcome", cx);
 
@@ -217,7 +217,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             d.demo_set_field(4, "wrong", cx);
         })
     });
-    let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_step(crate::conn_dialog::Step::SignIn, window, cx)));
+    let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.open_at(crate::conn_dialog::Step::SignIn, window, cx)));
     pause(cx, 50).await;
     draw(cx);
     let port = cx.update(|_, cx| d.read(cx).current(cx).0.port).unwrap_or(0);
@@ -261,7 +261,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let r = connected(ws, &id, cx).await;
     check("⌘↩ saves and connects", closed && r.is_ok(), format!("closed={closed} {r:?}"));
     draw(cx);
-    let welcome = cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(true);
+    let welcome = cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(true);
     let tab_conn = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()))).ok().flatten();
     check("the welcome screen gives way, the tab on the new connection", !welcome && tab_conn.as_deref() == Some(id.as_str()), format!("{tab_conn:?}"));
 
@@ -514,7 +514,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         pause(cx, 50).await;
     }
     draw(cx);
-    let (welcome, tabs_on) = cx.update(|_, cx| (ws.read(cx).first_run(cx), ws.read(cx).tabs.iter().filter(|t| t.read(cx).connection().is_some()).count())).unwrap_or_default();
+    let (welcome, tabs_on) = cx.update(|_, cx| (ws.read(cx).welcome_front, ws.read(cx).tabs.iter().filter(|t| t.read(cx).connection().is_some()).count())).unwrap_or_default();
     check("all connections deleted: the welcome screen, no tab left on one", welcome && tabs_on == 0, format!("welcome {welcome} tabs on a connection {tabs_on}"));
     let _ = cx.update(|window, cx| {
         let tree = ws.read(cx).tree.clone();

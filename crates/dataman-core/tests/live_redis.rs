@@ -164,3 +164,15 @@ fn every_address_of_the_host_is_tried() {
     let Some(c) = connect(&e, p) else { panic!("localhost:{} not reached, though 127.0.0.1 answers", profile().port) };
     assert_eq!(e.core.block_on(c.run_nosql(DB, "PING", Page::default())).unwrap().output, Output::Value(Body::Json(json!("PONG"))));
 }
+
+/// A server that wants a password, reached without one, answers its first command with NOAUTH:
+/// the app asks the user for the password, as for a wrong one.
+#[test]
+fn no_password_is_a_password_failure() {
+    let e = env();
+    let Some(_) = connect(&e, profile()) else { return };
+    for given in [None, Some("not-the-password".to_string())] {
+        let err = e.core.block_on(e.core.connect(profile(), given.clone())).err().expect("a server with a password refuses");
+        assert!(dataman_core::needs_password(&err), "{given:?}: {err:#}");
+    }
+}

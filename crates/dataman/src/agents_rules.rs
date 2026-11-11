@@ -142,7 +142,8 @@ fn count_label(n: u64) -> String {
     out
 }
 
-fn place(p: &ConnectionProfile) -> String {
+/// Where a connection points: its file, its socket, or its host and port.
+pub(crate) fn place(p: &ConnectionProfile) -> String {
     match () {
         _ if p.engine.is_file() => p.summary(),
         _ if p.is_socket() || p.port == 0 => p.host.clone(),
