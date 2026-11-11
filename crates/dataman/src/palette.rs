@@ -881,7 +881,7 @@ impl Workspace {
                 window.dispatch_action(action, cx);
             }
             ItemKind::Connection { id } => {
-                self.leave_welcome(cx);
+                self.show_work(cx);
                 let connected = self.store.read(cx).connection(&id);
                 self.current_conn = Some(id.clone());
                 match connected {
@@ -1116,6 +1116,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Focus grid", "", "⌘⇧G", Box::new(FocusGrid), Workspace),
         c("Focus editor", "", "esc", Box::new(FocusEditor), Workspace),
         c("Settings", "theme, editor, grid, export, keys", "⌘,", Box::new(OpenSettings), Workspace),
+        c("Welcome", "connect, or ask your agent", "", Box::new(ShowWelcome), Workspace),
         c("Toggle theme", "dark → black → light → solarized → system", "", Box::new(ToggleTheme), Workspace),
         c("Theme: dark", "", "", Box::new(ThemeDark), Workspace),
         c("Theme: black", "", "", Box::new(ThemeBlack), Workspace),

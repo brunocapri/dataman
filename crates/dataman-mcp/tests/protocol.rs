@@ -468,6 +468,7 @@ fn stdio_favorites_and_create_connection() {
     assert!(block_for(&toml, "clear").contains("sslmode = \"disable\""), "asked for: {toml}");
     assert!(block_for(&toml, "tunneled").contains("sslmode = \"prefer\""), "the tunnel encrypts the hop: {toml}");
     assert!(block_for(&toml, "by string").contains("sslmode = \"prefer\""), "the string asked for it: {toml}");
+    assert!(!block_for(&toml, "cache").contains("postgres"), "Redis given no user takes its own default, not PostgreSQL's: {toml}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db2.internal", "user": "bob", "overwrite": true}));
     assert!(err && text.contains("moves the connection to another server") && text.contains("open the app"), "headless, a move is refused: {text}");

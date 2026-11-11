@@ -218,6 +218,9 @@ pub(super) fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<
         if profile.engine != before && profile.database == before.spec().default_database {
             profile.database = profile.engine.spec().default_database.to_string();
         }
+        if profile.engine != before && profile.user == before.spec().default_user {
+            profile.user = profile.engine.spec().default_user.to_string();
+        }
     }
     if let Some(h) = a.opt_str("host") {
         profile.host = h.to_string();

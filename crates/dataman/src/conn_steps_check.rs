@@ -1,6 +1,6 @@
 //! `conn-steps-check`: the stepped New connection and Edit connection, with no server and no real
-//! cloud or agent CLI: fake `az`, `claude` and `codex` come first on the PATH and record every run,
-//! and the home folder is a temporary one, so the user's agents are never touched.
+//! cloud CLI: fake `az` and `aws` come first on the PATH and record every run, and the home folder
+//! is a temporary one.
 
 use std::path::PathBuf;
 
@@ -33,14 +33,14 @@ pub fn prepare() {
     let root = root();
     let (bin, home) = (root.join("bin"), root.join("home"));
     std::fs::create_dir_all(&bin).expect("a folder for the fake CLIs");
-    std::fs::create_dir_all(home.join(".codeium").join("windsurf")).expect("a temporary home");
+    std::fs::create_dir_all(&home).expect("a temporary home");
     let token = "eyJhbGciOiJSUzI1NiJ9.eyJ1cG4iOiJhbmFAY29udG9zby5jb20ifQ.c2ln";
     let r = root.display();
     let az = format!(
         "echo \"az $*\" >> '{r}/runs'\ncase \"$1\" in\naccount)\n  [ -f '{r}/signed-in' ] || {{ echo \"ERROR: Please run 'az login' to setup account.\" >&2; exit 1; }}\n  echo '{{\"accessToken\":\"{token}\",\"expires_on\":4102444800}}' ;;\nlogin)\n  if [ -f '{r}/hold' ]; then sleep 60 & echo $! > '{r}/login.pid'; wait; fi\n  while [ -f '{r}/gate' ]; do sleep 0.1; done\n  touch '{r}/signed-in' ;;\nesac\n"
     );
     let aws = format!("echo \"aws $*\" >> '{r}/runs'\ncase \"$1\" in\nrds) echo 'aws-iam-token' ;;\nsts) echo '{{\"Arn\":\"arn:aws:iam::1:user/aws-identity\"}}' ;;\nesac\n");
-    let scripts = [("az", az), ("aws", aws), ("claude", format!("echo \"claude $*\" >> '{r}/runs'\n")), ("codex", format!("echo \"codex $*\" >> '{r}/runs'\necho 'no config' >&2\nexit 1\n"))];
+    let scripts = [("az", az), ("aws", aws)];
     #[cfg(unix)]
     for (name, script) in scripts {
         use std::os::unix::fs::PermissionsExt as _;
@@ -109,7 +109,6 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     breadcrumb(ws, r, cx).await;
     scrolling(ws, r, cx).await;
     files(ws, r, cx).await;
-    agents(ws, r, cx).await;
     saving(ws, r, cx).await;
     a_password_stays_with_its_string(ws, r, cx).await;
     a_changed_host_goes_through_sign_in(ws, r, cx).await;
@@ -403,40 +402,6 @@ async fn files(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowConte
     shut(ws, cx).await;
 }
 
-async fn agents(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    let Some(d) = sheet(ws, "pg", cx).await else { return };
-    fill("HOST", "db.internal", cx);
-    cont(cx).await;
-    fill("USER", "ana", cx);
-    cont(cx).await;
-    let found = until(cx, 5, |cx| cx.update(|_, cx| d.read(cx).demo_installed("claude")).ok().flatten().is_some()).await;
-    r.check("MCP looks for the agents, and runs none of them", found && !runs().contains("claude") && !runs().contains("codex"), runs());
-    for a in &dataman_mcp::agents::AGENTS {
-        let here = cx.update(|_, cx| d.read(cx).demo_installed(a.id)).ok().flatten().unwrap_or(false);
-        let add = probed(&format!("agent-add-{}", a.id), cx).is_some();
-        let copy = probed(&format!("agent-copy-{}", a.id), cx).is_some();
-        r.check(&format!("{}: Copy always, Add only when it is here", a.label), copy && add == here, format!("here {here} add {add} copy {copy}"));
-    }
-    let state = |id: &str, cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).demo_agent_add(id)).ok().flatten().unwrap_or_default();
-    click_probe("agent-add-claude", cx);
-    let done = until(cx, 10, |cx| state("claude", cx) == "done").await;
-    let log = runs();
-    r.check("Add runs in the background, with the user scope", done && log.lines().any(|l| l.starts_with("claude mcp add -s user dataman -- ")), &log);
-    click_probe("agent-add-codex", cx);
-    let failed = until(cx, 10, |cx| state("codex", cx).starts_with("failed")).await;
-    r.check("an agent that fails says so, and the other keeps its answer", failed && state("codex", cx).contains("no config") && state("claude", cx) == "done", state("codex", cx));
-    click_probe("agent-add-windsurf", cx);
-    let done = until(cx, 10, |cx| state("windsurf", cx) == "done").await;
-    let home = dataman_core::os::home().unwrap_or_default();
-    let file = home.join(".codeium").join("windsurf").join("mcp_config.json");
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
-    r.check("Windsurf's settings get the server, under this check's own home", done && file.starts_with(root()) && text.contains("mcpServers") && text.contains("dataman"), &text);
-    click_probe("agent-copy-claude", cx);
-    let want = cx.update(|_, cx| d.read(cx).demo_copy("claude")).ok().flatten().unwrap_or_default();
-    r.check("Copy gives the command", want.starts_with("claude mcp add -s user dataman -- ") && clipboard(cx) == want, clipboard(cx));
-    shut(ws, cx).await;
-}
-
 async fn saving(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     // Nothing listens on this port: as `save_now` does, a connect that fails leaves it saved.
     let sheet_to_mcp = async |cx: &mut AsyncWindowContext| {
@@ -472,8 +437,8 @@ async fn saving(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     r.check("Edit opens", dialog(ws, cx).is_some(), "");
     draw(cx);
     let form = probed("field-HOST", cx).is_some() && probed("field-USER", cx).is_some() && probed("mcp-read", cx).is_some();
-    let extras = ["crumb-Database", "agent-copy-claude", "dlg-skip"].iter().any(|p| probed(p, cx).is_some());
-    r.check("Edit is one form: connection, sign-in and tiers, no breadcrumb, Skip or agents", form && !extras && probed("dlg-delete", cx).is_some() && probed("dlg-test", cx).is_some(), format!("{form} {extras}"));
+    let extras = ["crumb-Database", "dlg-skip"].iter().any(|p| probed(p, cx).is_some());
+    r.check("Edit is one form: connection, sign-in and tiers, no breadcrumb or Skip", form && !extras && probed("dlg-delete", cx).is_some() && probed("dlg-test", cx).is_some(), format!("{form} {extras}"));
     fill("NAME", "renamed", cx);
     click_probe("dlg-save", cx);
     until(cx, 5, |cx| saved(ws, &id, cx).is_some_and(|p| p.name == "renamed")).await;

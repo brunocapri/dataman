@@ -21,7 +21,8 @@ serde_json.workspace = true
 chrono.workspace = true
 log = "0.4"
 unicode-segmentation = "1"
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# Logos and the disc drawn at the size they show (`assets::sharp`).
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 
 # objc2: GPUI does not read macOS's Reduce motion switch.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -51,4 +52,4 @@ required-features = ["checks"]
 # Test builds only.
 # The check stages and benchmarks (`--demo`, `--bench-*`): `xtask e2e` builds with it.
 checks = ["dep:tokio-postgres"]
-screenshots = ["checks", "gpui/test-support", "gpui_platform/test-support", "dep:image"]
+screenshots = ["checks", "gpui/test-support", "gpui_platform/test-support"]

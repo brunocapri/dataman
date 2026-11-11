@@ -1648,7 +1648,7 @@ impl crate::app::Workspace {
 
     pub(crate) fn sync_monitors(&mut self, window: &Window, cx: &mut Context<Self>) {
         let active_window = self.assume_active.unwrap_or_else(|| window.is_window_active());
-        let first_run = self.first_run(cx);
+        let welcome = self.welcome_front;
         for (i, tab) in self.tabs.clone().into_iter().enumerate() {
             let Some(m) = tab.read(cx).monitor.clone() else { continue };
             let conn = tab.read(cx).connection().cloned();
@@ -1662,7 +1662,7 @@ impl crate::app::Workspace {
                     cx.notify();
                 });
             }
-            let on = i == self.active && active_window && conn.is_some() && !first_run;
+            let on = i == self.active && active_window && conn.is_some() && !welcome;
             if m.read(cx).is_visible() != on {
                 m.update(cx, |m, cx| m.set_visible(on, cx));
             }

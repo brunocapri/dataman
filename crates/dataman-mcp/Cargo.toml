@@ -27,7 +27,6 @@ log = "0.4"
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 tokio-util = "0.7"
 futures-util.workspace = true
-data-encoding = "2"
 
 [dev-dependencies]
 tempfile = "3"

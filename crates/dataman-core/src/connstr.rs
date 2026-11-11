@@ -254,7 +254,7 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
 /// that end in a database file's extension.
 fn parse_file(s: &str) -> Option<ConnSpec> {
     let schemes = [("sqlite:", Engine::Sqlite), ("sqlite3:", Engine::Sqlite), ("file:", Engine::Sqlite), ("duckdb:", Engine::DuckDb)];
-    let (engine, rest, url) = match schemes.iter().find(|(p, _)| s.len() > p.len() && s[..p.len()].eq_ignore_ascii_case(p)) {
+    let (engine, rest, url) = match schemes.iter().find(|(p, _)| s.len() > p.len() && s.get(..p.len()).is_some_and(|head| head.eq_ignore_ascii_case(p))) {
         Some((p, e)) => (*e, &s[p.len()..], true),
         None => {
             let lower = s.to_ascii_lowercase();
@@ -652,6 +652,11 @@ mod tests {
         assert_eq!(p("/data/warehouse.DUCKDB"), Some((Engine::DuckDb, "/data/warehouse.DUCKDB".into(), false)));
         assert_eq!(p("Server=x;Database=foo.db").map(|t| t.0), Some(Engine::SqlServer));
         assert_eq!(p("postgres://h/foo.db").map(|t| t.0), Some(Engine::Postgres));
+        // A clipboard of anything at all is read, never a crash: multibyte text where a scheme
+        // would end.
+        for text in ["sqlit😀 x", "😀😀😀😀", "dü€kdb:x", "fi😀: a"] {
+            assert!(parse_profile(text).is_none(), "{text}");
+        }
         // On Windows `/tmp/chinook.db` is on the current drive (`windows_file_databases`).
         let (prof, _) = parse_profile(if cfg!(windows) { "sqlite:///C:/tmp/chinook.db" } else { "sqlite:///tmp/chinook.db" }).unwrap();
         assert_eq!((prof.name.as_str(), prof.host.as_str(), prof.port, prof.user.as_str()), ("chinook", "", 0, ""));

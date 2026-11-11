@@ -5,7 +5,7 @@ use crate::theme::px;
 use dataman_core::ConnectionProfile;
 
 use crate::conns::{ConnState, ConnStore};
-use crate::theme::{ActiveTheme, BANNER, Theme};
+use crate::theme::{ActiveTheme, Theme, WORDMARK};
 use crate::ui::{self, Tipped as _};
 
 actions!(welcome, [Up, Down, Choose, PasteUrl, Localhost]);
@@ -35,13 +35,14 @@ pub enum WelcomeEvent {
 /// What the user's agent is asked, word for word.
 pub const PROMPT: &str = "Set up Dataman for this project.";
 
-const ITEMS: [(&str, &str); 6] = [
-    ("New connection", "⌘N"),
-    ("Paste a connection URL", "⌘V"),
-    ("Connect to localhost:5432", "⌘L"),
-    ("Open a .sql file", "⌘O"),
-    ("Open a database file", ""),
-    ("Open a project folder", ""),
+/// Each way by hand: its glyph, its label, its key.
+const ITEMS: [(&str, &str, &str); 6] = [
+    ("+", "New connection", "⌘N"),
+    ("⎘", "Paste a connection URL", "⌘V"),
+    ("→", "Connect to localhost:5432", "⌘L"),
+    ("↗", "Open a .sql file", "⌘O"),
+    ("↗", "Open a database file", ""),
+    ("▢", "Open a project folder", ""),
 ];
 
 const LOCALHOST: usize = 2;
@@ -52,8 +53,8 @@ fn item_shown(i: usize, projects: bool) -> bool {
     i != PROJECT || projects
 }
 
-/// What ↑↓↩ is on: a row of FROM YOUR AGENT (by its place there), or an item by hand. The
-/// agent's rows come first.
+/// What ↑↓↩ is on: an item by hand, or a row of FROM YOUR AGENT (by its place there). The items
+/// come first, as they read: on the left, or above when the columns wrap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sel {
     Arrival(usize),
@@ -110,17 +111,15 @@ pub struct Welcome {
     note: Option<String>,
     store: Entity<ConnStore>,
     /// None until the welcome first shows: only then is the disk looked at.
-    agents: Option<ui::Agents>,
+    agents: Option<Agents>,
     looked: bool,
     copied: ui::CopiedFlash,
     scroll: gpui::ScrollHandle,
     /// Where each row of the ↑↓ list was in the last frame: ↑↓ scrolls to the next one at once.
     drawn: std::rc::Rc<std::cell::RefCell<Vec<(Sel, gpui::Bounds<gpui::Pixels>)>>>,
-    /// The connections the agent saved while the welcome showed, in the order they came. While
-    /// they are all there is and none has been picked, the welcome stays (`holds`).
+    /// The connections the agent saved while the Welcome tab was open, in the order they came,
+    /// listed until it closes.
     arrivals: Vec<Arrival>,
-    /// The listed connection whose sheet the user saved: connected, it was picked.
-    saved: Option<String>,
 }
 
 impl EventEmitter<WelcomeEvent> for Welcome {}
@@ -145,19 +144,18 @@ impl Welcome {
             scroll: gpui::ScrollHandle::new(),
             drawn: Default::default(),
             arrivals: Vec::new(),
-            saved: None,
         }
     }
 
     /// The saved connections changed on disk (`now`, `added` the new ones). Those gone leave
-    /// FROM YOUR AGENT; those an agent made while the welcome was `showing` join it, the first
+    /// FROM YOUR AGENT; those an agent made while the Welcome tab is `open` join it, the first
     /// to come selected.
-    pub(crate) fn saved_elsewhere(&mut self, now: &[ConnectionProfile], added: &[String], showing: bool, cx: &mut Context<Self>) {
+    pub(crate) fn saved_elsewhere(&mut self, now: &[ConnectionProfile], added: &[String], open: bool, cx: &mut Context<Self>) {
         let had = self.arrivals.len();
         self.arrivals.retain(|a| now.iter().any(|p| p.id == a.id));
         let pruned = self.arrivals.len() != had;
         let store = self.store.read(cx);
-        if showing {
+        if open {
             for p in now.iter().filter(|p| p.agent_made && added.contains(&p.id)) {
                 if !self.arrivals.iter().any(|a| a.id == p.id) {
                     self.arrivals.push(Arrival::of(p, store.states.get(&p.id)));
@@ -167,25 +165,19 @@ impl Welcome {
         if had == 0 && !self.arrivals.is_empty() {
             self.selected = Sel::Arrival(0);
         }
-        self.drop_if_not_alone(now);
         self.keep_selection();
         if pruned || self.arrivals.len() != had {
             cx.notify();
         }
     }
 
-    /// A connection saved that is not the agent's: the welcome is not kept any more, and its
-    /// list goes with it (deleting that one later must not bring old rows back).
-    fn drop_if_not_alone(&mut self, saved: &[ConnectionProfile]) {
-        if saved.iter().any(|p| !self.lists(&p.id)) {
-            self.clear();
+    /// The Welcome tab closed: what the agent saved while it was open is listed no more.
+    pub(crate) fn closed(&mut self, cx: &mut Context<Self>) {
+        if !self.arrivals.is_empty() {
+            self.arrivals.clear();
+            self.keep_selection();
+            cx.notify();
         }
-    }
-
-    /// Nothing listed, nothing waited for: the welcome kept for the agent no more.
-    fn clear(&mut self) {
-        self.arrivals.clear();
-        self.saved = None;
     }
 
     /// The store changed: each row says how its connect went now; one deleted in the app goes.
@@ -196,11 +188,8 @@ impl Welcome {
         let store = self.store.clone();
         let store = store.read(cx);
         let now: Vec<Arrival> = self.arrivals.iter().filter_map(|a| store.profile(&a.id).map(|p| Arrival::of(p, store.states.get(&a.id)))).collect();
-        let changed = now != self.arrivals;
-        self.arrivals = now;
-        let had = self.arrivals.len();
-        self.drop_if_not_alone(&store.profiles);
-        if changed || self.arrivals.len() != had {
+        if now != self.arrivals {
+            self.arrivals = now;
             self.keep_selection();
             cx.notify();
         }
@@ -218,47 +207,18 @@ impl Welcome {
         self.arrivals.iter().any(|a| a.id == id)
     }
 
-    /// Whether it stays with `profiles` saved: each came from the agent while it showed, and the
-    /// user has picked none yet.
-    pub(crate) fn holds(&self, profiles: &[ConnectionProfile]) -> bool {
-        !self.arrivals.is_empty() && profiles.iter().all(|p| self.lists(&p.id))
-    }
-
-    /// The user picked a connection or went elsewhere: the welcome gives way, and comes back
-    /// only when nothing is saved.
-    pub(crate) fn release(&mut self, cx: &mut Context<Self>) {
-        if !self.arrivals.is_empty() {
-            self.clear();
-            self.keep_selection();
-            cx.notify();
-        }
-    }
-
-    /// The user saved the sheet of `id` (its password, say): its connect is the user's pick.
-    pub(crate) fn sheet_saved(&mut self, id: &str) {
-        if self.lists(id) {
-            self.saved = Some(id.to_string());
-        }
-    }
-
-    /// `id` connected: when that was the pick of a sheet saved here, the welcome gives way.
-    pub(crate) fn connected(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.saved.as_deref() == Some(id) {
-            self.release(cx);
-        }
-    }
-
     fn step(&mut self, down: bool, cx: &mut Context<Self>) {
         let projects = crate::project_ui::projects(cx).enabled;
         let n = self.arrivals.len();
         let next = |i: usize| (i + 1..ITEMS.len()).find(|j| item_shown(*j, projects));
         let prev = |i: usize| (0..i).rev().find(|j| item_shown(*j, projects));
+        let last = (0..ITEMS.len()).rev().find(|j| item_shown(*j, projects)).unwrap_or(0);
         self.selected = match (self.selected, down) {
-            (Sel::Arrival(i), true) if i + 1 < n => Sel::Arrival(i + 1),
-            (Sel::Arrival(_), true) => Sel::Item(0),
-            (Sel::Arrival(i), false) => Sel::Arrival(i.saturating_sub(1)),
-            (Sel::Item(i), true) => next(i).map_or(self.selected, Sel::Item),
-            (Sel::Item(i), false) => prev(i).map(Sel::Item).or(n.checked_sub(1).map(Sel::Arrival)).unwrap_or(self.selected),
+            (Sel::Item(i), true) => next(i).map(Sel::Item).or((n > 0).then_some(Sel::Arrival(0))).unwrap_or(self.selected),
+            (Sel::Item(i), false) => prev(i).map_or(self.selected, Sel::Item),
+            (Sel::Arrival(i), true) => Sel::Arrival((i + 1).min(n.saturating_sub(1))),
+            (Sel::Arrival(0), false) => Sel::Item(last),
+            (Sel::Arrival(i), false) => Sel::Arrival(i - 1),
         };
         // From where the row was last drawn: the frame this notify asks for already shows it.
         let to = self.drawn.borrow().iter().find(|(s, _)| *s == self.selected).map(|(_, b)| *b);
@@ -309,6 +269,12 @@ impl Welcome {
         self.scroll.bounds()
     }
 
+    /// The welcome scrolled to its end, as far down as it goes.
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_scroll_to_end(&self) {
+        self.scroll.scroll_to_bottom();
+    }
+
     /// The row ↑↓ is on under FROM YOUR AGENT, if one is.
     #[cfg(feature = "checks")]
     pub(crate) fn demo_selected_arrival(&self) -> Option<usize> {
@@ -327,24 +293,44 @@ impl Welcome {
         cx.notify();
     }
 
+    /// Each agent: its logo, its name, and Copy for what adds Dataman to it (`Row::copy`).
     fn agent_list(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let agents = self.agents.as_ref()?;
-        let rows = (0..agents.listing.rows.len()).map(|at| ui::agent_row(t, agents, at, [], &self.copied, |w: &mut Self| &mut w.copied, cx));
+        let rows = agents.listing.rows.iter().zip(&agents.texts).map(|(r, texts)| {
+            let a = r.agent;
+            let logo = if a.mono { crate::assets::agent_logo_mono(a.logo).text_color(t.tx).into_any_element() } else { crate::assets::sharp(a.logo, 16.).into_any_element() };
+            let copy = self.copied.button(t, texts.copy_id.clone(), ui::Btn::Ghost, "Copy", texts.copy.clone(), |w: &mut Self| &mut w.copied, cx).h(px(24.));
+            div()
+                .h(px(36.))
+                .flex_none()
+                .px(px(8.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_none().mr(px(2.)).child(logo))
+                .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(a.label))
+                .child(copy)
+        });
         Some(div().mx(px(-8.)).flex().flex_col().children(rows))
     }
 
     fn prompt(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let copy = self.copied.button(t, "welcome-prompt-copy".into(), ui::Btn::Ghost, "Copy", PROMPT.into(), |w: &mut Self| &mut w.copied, cx).h(px(24.));
-        ui::field_frame(div(), t, false)
-            .h(px(40.))
-            .pl(px(12.))
+        // Something to copy, not to type in: a dashed outline and no field's fill.
+        div()
+            .h(px(48.))
+            .pl(px(14.))
             .pr(px(8.))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(10.))
-            .bg(t.field)
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(PROMPT))
+            .gap(px(12.))
+            .border_1()
+            .border_dashed()
+            .border_color(t.line2)
+            .child(div().flex_none().text_size(px(crate::theme::text::BODY)).text_color(t.tx4).child("❯"))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::TITLE)).text_color(t.tx).child(PROMPT))
             .child(copy)
     }
 
@@ -362,8 +348,8 @@ impl Welcome {
             div()
                 .children(ui::here(&("welcome-from", i).into()))
                 .id(("welcome-from", i))
-                .h(px(36.))
-                .px(px(14.))
+                .h(px(32.))
+                .px(px(12.))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -373,8 +359,7 @@ impl Welcome {
                 .cursor_pointer()
                 .on_click(cx.listener(move |w, _, _, cx| w.choose(Sel::Arrival(i), cx)))
                 .child(self.tracked(Sel::Arrival(i)))
-                .child(marker(t, on).mr(px(4.)))
-                .children(crate::assets::small_logo_at(a.logo, 16.))
+                .children(crate::assets::small_logo_at(a.logo, 14.))
                 .child(div().flex_none().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(a.name.clone()))
                 // Short of room the address gives way first, down to a stub, then the state, down
                 // to what it keeps; the name stays. (A flex item shrinks by its factor times its
@@ -408,21 +393,83 @@ impl Welcome {
                         .when_some(a.tip.clone(), |d, (whole, failed)| if failed { d.tip(ui::error_tip(whole)) } else { d.tip(ui::text_tooltip(whole)) })
                 }))
         });
-        div().mx(px(-14.)).flex().flex_col().gap(px(2.)).children(rows)
+        div().mx(px(-12.)).flex().flex_col().children(rows)
     }
 }
+
+/// The wordmark's size, and its font's capital height in ems.
+const WORDMARK_PX: f32 = 36.;
+const WORDMARK_CAPS: f32 = 0.7;
 
 /// What an address keeps when its row is short of room.
 const ADDRESS_KEEPS: f32 = 96.;
 
-/// ▶ on the row ↑↓ is on, in both lists (they are one).
-fn marker(t: &Theme, on: bool) -> gpui::Div {
-    div().flex_none().w(px(12.)).text_size(px(crate::theme::text::TINY)).text_color(t.acc).child(if on { "▶" } else { "" })
+/// The agents Dataman can be added to, as this machine has them, with what each row shows made
+/// once when they are found: a row is drawn on every frame (the Copied flash animates).
+struct Agents {
+    listing: std::sync::Arc<dataman_mcp::agents::Listing>,
+    /// One per `listing.rows`, in its order.
+    texts: Vec<AgentTexts>,
+}
+
+struct AgentTexts {
+    copy_id: SharedString,
+    copy: SharedString,
+}
+
+impl Agents {
+    /// Looks at the disk (nothing runs): off the UI thread.
+    fn here() -> Agents {
+        let listing = dataman_mcp::agents::Listing::here();
+        let texts = listing
+            .rows
+            .iter()
+            .map(|r| AgentTexts { copy_id: format!("welcome-agent-copy-{}", r.agent.id).into(), copy: r.copy.clone().into() })
+            .collect();
+        Agents { listing, texts }
+    }
 }
 
 /// A part of the welcome: its caption over what it holds.
 fn part(t: &Theme, caption: &'static str, body: impl IntoElement) -> gpui::Div {
-    div().flex().flex_col().child(div().h(px(26.)).mb(px(6.)).flex().items_center().child(ui::caps(t, caption))).child(body)
+    div().flex().flex_col().child(div().h(px(22.)).mb(px(6.)).flex().items_center().child(ui::caps(t, caption))).child(body)
+}
+
+/// One of the two panels, opaque over the pattern; the row they are in gives both the taller
+/// one's height.
+fn panel(t: &Theme) -> gpui::Div {
+    div().relative().flex_grow(1.).flex_basis(px(380.)).min_w_0().flex().flex_col().gap(px(22.)).px(px(24.)).py(px(20.)).bg(t.bg).border_1().border_color(t.line)
+}
+
+/// The dotted squares' tile, and its side: a multiple of the squares (16) and of the dots' period
+/// (3), so tiles meet without a seam.
+const PATTERN: &str = "brand/dots.svg";
+const PATTERN_TILE: f32 = 192.;
+
+/// The pattern behind the panels, tiled over what shows of it and no further. Its outermost pixel
+/// is left bare all round: a line of the grid there would double the border it meets.
+fn pattern(color: gpui::Hsla) -> gpui::Canvas<()> {
+    gpui::canvas(
+        |_, _, _| {},
+        move |b, _, window, cx| {
+            let tile = px(PATTERN_TILE);
+            let inner = gpui::Bounds::new(gpui::point(b.left() + px(1.), b.top() + px(1.)), gpui::size(b.size.width - px(2.), b.size.height - px(2.)));
+            window.with_content_mask(Some(gpui::ContentMask { bounds: inner }), |window| {
+                let mut y = b.top();
+                while y < b.bottom() {
+                    let mut x = b.left();
+                    while x < b.right() {
+                        if let Err(e) = window.paint_svg(gpui::Bounds::new(gpui::point(x, y), gpui::size(tile, tile)), PATTERN.into(), None, gpui::TransformationMatrix::unit(), color, cx) {
+                            log::warn!("the welcome's pattern: {e:#}");
+                            return;
+                        }
+                        x += tile;
+                    }
+                    y += tile;
+                }
+            });
+        },
+    )
 }
 
 impl Render for Welcome {
@@ -430,53 +477,51 @@ impl Render for Welcome {
         self.drawn.borrow_mut().clear();
         if !self.looked {
             self.looked = true;
-            ui::find_agents(cx, "welcome-agent-copy", |w: &mut Self, found| w.agents = Some(found));
+            cx.spawn(async move |w, cx| {
+                let found = cx.background_executor().spawn(async { Agents::here() }).await;
+                // The welcome lives as long as the window: gone, nothing is shown.
+                let _ = w.update(cx, |w, cx| {
+                    w.agents = Some(found);
+                    cx.notify();
+                });
+            })
+            .detach();
         }
         let t = cx.theme();
         let projects = crate::project_ui::projects(cx).enabled;
         let menu = (0..ITEMS.len()).filter(|i| item_shown(*i, projects)).map(|i| {
-            let (label, key) = ITEMS[i];
+            let (glyph, label, key) = ITEMS[i];
             let on = self.selected == Sel::Item(i);
             let quiet = key.is_empty();
             let hov = t.hov;
             div()
                 .children(crate::ui::here(&("welcome", i).into()))
                 .id(("welcome", i))
-                .h(px(if quiet { 30. } else { 40. }))
-                .px(px(14.))
+                .h(px(34.))
+                .px(px(12.))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(14.))
+                .gap(px(10.))
                 .map(|d| ui::selectable(d, &t, on, true))
                 .when(on, |d| d.text_color(t.tx))
                 .when(!on, |d| d.text_color(if quiet { t.tx3 } else { t.tx2 }).hover(move |s| s.bg(hov)))
                 .cursor_pointer()
                 .on_click(cx.listener(move |w, _, _, cx| w.choose(Sel::Item(i), cx)))
                 .child(self.tracked(Sel::Item(i)))
-                .child(marker(&t, on))
-                .child(div().flex_1().text_size(px(if quiet { 12. } else { 13. })).child(label))
+                .child(div().flex_none().w(px(16.)).flex().justify_center().text_size(px(crate::theme::text::TITLE)).text_color(t.tx3).child(glyph))
+                .child(div().flex_1().text_size(px(crate::theme::text::BODY)).child(label))
                 .when(!quiet, |d| d.child(ui::keycap(&t, key)))
         });
-        let menu = div().mx(px(-14.)).flex().flex_col().gap(px(2.)).children(menu);
-        // Side by side while both fit at their widths, the agent's way growing 1.25 to the hand's
-        // 1 (the prototype's); narrower, BY HAND wraps under it.
-        let agent = div()
-            .flex()
-            .flex_col()
-            .gap(px(26.))
-            .flex_grow(1.25)
-            .flex_basis(px(400.))
-            .min_w_0()
-            .child(part(&t, "YOUR AGENT", div().children(self.agent_list(&t, cx))))
-            .child(part(&t, "ASK YOUR AGENT", self.prompt(&t, cx)))
+        let menu = div().mx(px(-12.)).flex().flex_col().gap(px(2.)).children(menu);
+        // Two panels side by side, as tall as each other; narrower, the agent's wraps under.
+        // What the agent saved goes under the items: one ↑↓ list, read top to bottom.
+        let by_hand = panel(&t)
+            .children(ui::here(&"welcome-hand".into()))
+            .child(div().child(part(&t, "CONNECT", menu)).children(self.note.clone().map(|n| div().mt(px(10.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child(n))))
             .when(!self.arrivals.is_empty(), |d| d.child(part(&t, "FROM YOUR AGENT", self.arrival_rows(&t, cx))));
-        let by_hand = div()
-            .flex_grow(1.)
-            .flex_basis(px(320.))
-            .min_w_0()
-            .child(part(&t, "BY HAND", menu))
-            .children(self.note.clone().map(|n| div().mt(px(10.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child(n)));
+        // Dataman added to the agent first, then what to ask it.
+        let agent = panel(&t).children(ui::here(&"welcome-agent".into())).children(self.agent_list(&t, cx).map(|l| part(&t, "ADD MCP", l))).child(part(&t, "ASK YOUR AGENT", self.prompt(&t, cx)));
         // The whole work surface (transparent: the surface paints its fill).
         div()
             .id("welcome")
@@ -494,18 +539,36 @@ impl Render for Welcome {
             .on_action(cx.listener(|w, _: &PasteUrl, _, cx| w.paste_url(cx)))
             .on_action(cx.listener(|w, _: &Localhost, _, cx| w.choose(Sel::Item(LOCALHOST), cx)))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|w, _, window, cx| window.focus(&w.focus, cx)))
+            // The disc as tall as the capitals, from the baseline to the top of the D. A line as
+            // tall as the type puts the capitals' middle on its own (Host Grotesk: ascent 1.015,
+            // descent 0.315, capitals 0.7 em), so centring the disc on the line lines it up with them.
             .child(
                 div()
-                    .id("welcome-body")
-                    .track_scroll(&self.scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .pt(px(96.))
-                    .px(px(72.))
-                    .pb(px(48.))
-                    .overflow_y_scroll()
-                    .child(div().font_family(BANNER).text_size(px(56.)).line_height(px(56.)).text_color(t.tx).child("DATAMAN"))
-                    .child(div().mt(px(40.)).flex().flex_row().flex_wrap().items_start().gap_x(px(72.)).gap_y(px(40.)).child(agent).child(by_hand)),
+                    .h(px(84.))
+                    .flex_none()
+                    .px(px(56.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(WORDMARK_PX * 0.3))
+                    .border_b_1()
+                    .border_color(t.pane_line)
+                    .child(crate::assets::sharp("brand/dataman-disc.png", WORDMARK_PX * WORDMARK_CAPS))
+                    .child(div().font_family(WORDMARK).font_weight(gpui::FontWeight::NORMAL).text_size(px(WORDMARK_PX)).line_height(px(WORDMARK_PX)).text_color(t.tx).child("Dataman")),
+            )
+            .child(
+                div().flex_1().min_h_0().relative().overflow_hidden().child(pattern(t.pattern).absolute().inset_0()).child(
+                    div()
+                        .id("welcome-body")
+                        .track_scroll(&self.scroll)
+                        .absolute()
+                        .inset_0()
+                        .pt(px(32.))
+                        .px(px(56.))
+                        .pb(px(40.))
+                        .overflow_y_scroll()
+                        .child(div().flex().flex_row().flex_wrap().items_stretch().gap(px(24.)).child(by_hand).child(agent)),
+                ),
             )
     }
 }

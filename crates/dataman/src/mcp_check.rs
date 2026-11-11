@@ -18,7 +18,7 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
         ok &= pass;
     };
     pause(cx, 300).await;
-    let first_run = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
+    let first_run = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
     check("no connection saved: the welcome screen", first_run(cx), String::new());
     let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
     let _ = core.settings.update(|s| s.mcp_enabled = true);
@@ -84,7 +84,7 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     let tab = cx.update(|_, cx| ws.read(cx).active_tab().is_some_and(|t| t.read(cx).agent.is_some())).unwrap_or(false);
     let kept = cx.update(|window, cx| window.focused(cx)).ok().flatten() == focus;
     check(
-        "an agent's query while the user is on the Agents page it sent them to: the page and its focus stay, its tab is the one under it, the welcome gone",
+        "an agent's query while the user is on the Agents page it sent them to: the page and its focus stay, its tab is the one under it, in front of the Welcome tab",
         sent && !qerr && on_agents(cx) && tab && kept && !first_run(cx),
         format!("{out} {qout} tab {tab} focus kept {kept}"),
     );
@@ -104,7 +104,8 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     }
     draw(cx);
     check("one written to the file by another process shows within ~1 s", written.is_ok() && seen, format!("{:?} after {:?}", written.err(), t0.elapsed()));
-    check("…and, not an agent's, the welcome gives way", !first_run(cx), String::new());
+    let listed = cx.update(|_, cx| ws.read(cx).welcome.read(cx).demo_arrivals().into_iter().map(|a| a.0).collect::<Vec<_>>()).unwrap_or_default();
+    check("…and, not an agent's, it is not listed on the welcome", listed.contains(&made) && !listed.contains(&other), format!("{listed:?}"));
     let (err, out) = call(&ipc, "update_connection", json!({"connection": "first by agent", "name": "renamed by agent"})).await;
     pause(cx, 150).await;
     draw(cx);

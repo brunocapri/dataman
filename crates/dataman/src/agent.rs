@@ -172,9 +172,9 @@ impl Workspace {
     fn agent_tab(&mut self, given: AgentConn, client: &str, database: &str, draft: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
         let AgentConn { conn, own_session } = given;
         let id = conn.profile.id.clone();
-        let held = self.holding(cx);
+        let held = self.welcome_front;
         // The user's focus, whichever tab this takes: given back at the end, unless it was on the
-        // welcome (gone if this ends its hold).
+        // Welcome tab (behind the tab this brings to the front).
         let focus = window.focused(cx).filter(|f| *f != gpui::Focusable::focus_handle(&self.welcome, cx));
         let mine = |t: &QueryTab| t.agent.as_ref().is_some_and(|a| a.client == client && a.connection_id == id);
         let found = self.tabs.iter().find(|t| mine(t.read(cx)) && t.read(cx).agent_free(draft, cx)).cloned();
@@ -185,8 +185,8 @@ impl Workspace {
                 let tab = match pristine.cloned() {
                     Some(t) => t,
                     None => {
-                        // In the background: the user's tab and view (Agents included) stay. Over a
-                        // kept welcome there is no tab of the user's: the new one is the tab.
+                        // In the background: the user's tab and view (Agents included) stay. Over the
+                        // Welcome tab in front, the new one comes to the front.
                         let (prev, view) = (self.active, self.view);
                         let t = self.new_tab(window, cx);
                         if !held {

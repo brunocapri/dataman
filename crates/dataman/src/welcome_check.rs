@@ -1,6 +1,6 @@
-//! `welcome-check`: the first-run screen: its items by hand, clicked or reached with ↓ ↩; the
-//! agents' commands and the prompt copied; a connection the agent saves, listed while the welcome
-//! stays. `palette-check`: ⌘K and its scopes (commands, tables, tabs, favorites, connections,
+//! `welcome-check`: the Welcome tab: its items by hand, clicked or reached with ↓ ↩; the agents'
+//! commands and the prompt copied; a connection the agent saves, listed while the tab is open;
+//! the tab itself, clicked, closed and opened again. `palette-check`: ⌘K and its scopes (commands, tables, tabs, favorites, connections,
 //! settings) and ⌘P.
 
 use gpui::{AsyncWindowContext, Entity, Focusable};
@@ -21,8 +21,8 @@ fn close_dialog(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
 }
 
 pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    let first = cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
-    r.check("no connection: the welcome screen", first, "");
+    let first = cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
+    r.check("nothing saved: the Welcome tab, in the strip and in front", first && probed("tab-welcome", cx).is_some(), "");
 
     click_probe("welcome-0", cx);
     let step = dialog(ws, cx).map(|d| cx.update(|_, cx| d.read(cx).step()).unwrap());
@@ -54,6 +54,7 @@ pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
     let text = active(ws, cx).map(|t| cx.update(|_, cx| t.read(cx).editor.read(cx).text().to_string()).unwrap()).unwrap_or_default();
     r.check("Open a .sql file: its text in a tab", text.contains("from a file"), &text);
     let _ = std::fs::remove_file(&file);
+    welcome_tab(ws, r, cx).await;
 
     let _ = cx.update(|window, cx| {
         let w = ws.read(cx).welcome.clone();
@@ -73,23 +74,59 @@ pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
     from_agent(ws, r, cx).await;
 }
 
+fn welcome_focused(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    cx.update(|window, cx| ws.read(cx).welcome.focus_handle(cx).contains_focused(window, cx)).unwrap_or(false)
+}
+
+fn welcome_open(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    cx.update(|_, cx| ws.read(cx).welcome_open).unwrap_or(false)
+}
+
+/// The Welcome tab beside the query tabs: clicked to the front and away, closed with ⌘W, opened
+/// again from the palette.
+async fn welcome_tab(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    r.check("the file's tab comes to the front; the Welcome tab stays in the strip", !welcome(ws, cx) && probed("tab-welcome", cx).is_some(), "");
+    click_probe("tab-welcome", cx);
+    r.check("…the Welcome tab clicked: the welcome in front again, with the focus", welcome(ws, cx) && welcome_focused(ws, cx), "");
+    let tab = cx.update(|_, cx| ws.read(cx).panes[0].tab_bounds.borrow().first().copied()).ok().flatten();
+    if let Some(b) = tab {
+        click_with(cx, centre(b), gpui::MouseButton::Left, gpui::Modifiers::default(), 1);
+    }
+    r.check("…a query tab clicked: that tab in front, its editor focused", tab.is_some() && !welcome(ws, cx) && editor_focused(ws, cx), format!("{tab:?}"));
+    click_probe("tab-welcome", cx);
+    let tabs = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
+    let before = tabs(cx);
+    key(cx, "cmd-w");
+    draw(cx);
+    r.check(
+        "⌘W on the Welcome tab closes it, not a query tab: the editor in front, focused",
+        !welcome(ws, cx) && !welcome_open(ws, cx) && probed("tab-welcome", cx).is_none() && tabs(cx) == before && editor_focused(ws, cx),
+        format!("{before} tabs, now {}", tabs(cx)),
+    );
+    let (label, _) = palette(ws, "cmd-k", ">welcome", cx).await;
+    key(cx, "enter");
+    draw(cx);
+    r.check("the palette's Welcome opens it again, in front, with the focus", label == "Welcome" && welcome(ws, cx) && probed("tab-welcome", cx).is_some() && welcome_focused(ws, cx), &label);
+}
+
 fn localhost_sheet(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<dataman_core::ConnectionProfile> {
     dialog(ws, cx).map(|d| cx.update(|_, cx| d.read(cx).current(cx).0).unwrap())
 }
 
-/// YOUR AGENT: each agent's Copy gives what adds Dataman to it; ASK YOUR AGENT, the prompt.
+/// ADD MCP: each agent's Copy gives what adds Dataman to it; ASK YOUR AGENT's, the prompt. Side by
+/// side, the two panels end level.
 async fn agent_copy(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let listing = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).welcome.read(cx).demo_agents()).ok().flatten();
     until(cx, 5, |cx| listing(cx).is_some()).await;
     let Some(l) = listing(cx) else {
-        r.check("YOUR AGENT lists the agents", false, "never listed");
+        r.check("ADD MCP lists the agents", false, "never listed");
         return;
     };
     let tops: Vec<Option<f32>> = l.rows.iter().map(|row| probed(&format!("welcome-agent-copy-{}", row.agent.id), cx).map(|b| f32::from(b.top()))).collect();
     let drawn: Vec<f32> = tops.iter().flatten().copied().collect();
     r.check(
-        "YOUR AGENT: a row with its Copy for every agent, drawn in the listing's order",
-        l.rows.len() == dataman_mcp::agents::AGENTS.len() && drawn.len() == l.rows.len() && drawn.is_sorted(),
+        "ADD MCP: a row with its Copy for every agent, above the prompt, in the listing's order",
+        l.rows.len() == dataman_mcp::agents::AGENTS.len() && drawn.len() == l.rows.len() && drawn.is_sorted() && probed("welcome-prompt-copy", cx).zip(drawn.last()).is_some_and(|(p, last)| *last < f32::from(p.top())),
         format!("{tops:?}"),
     );
     // The first row, then the last: the flash goes with the click.
@@ -103,10 +140,16 @@ async fn agent_copy(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     set_clipboard("", cx);
     click_probe("welcome-prompt-copy", cx);
     r.check("ASK YOUR AGENT: Copy gives the prompt", clipboard(cx) == crate::welcome::PROMPT, clipboard(cx));
+    let panels = probed("welcome-hand", cx).zip(probed("welcome-agent", cx));
+    r.check(
+        "the two panels side by side, as tall as each other",
+        panels.is_some_and(|(h, a)| a.left() > h.right() && (h.top() - a.top()).abs() < gpui::px(0.5) && (h.bottom() - a.bottom()).abs() < gpui::px(0.5)),
+        format!("{panels:?}"),
+    );
 }
 
 fn welcome(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
-    cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false)
+    cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false)
 }
 
 /// FROM YOUR AGENT as it reads: each row's connection, and what it says of its connect.
@@ -154,39 +197,37 @@ fn focus_welcome(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     });
 }
 
-/// The welcome in a 960-wide window with the explorer open (the smallest): BY HAND goes under the
-/// agent's column, inside the window; wider again, they are side by side.
+/// The welcome in the smallest window (960 by 600, the explorer open): the agent's column goes
+/// under the items and FROM YOUR AGENT, inside the window; scrolled to its end, ↑ from the agent's
+/// row to the first item shows it in the frame that ↑ draws; wider again, side by side.
 async fn narrow(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let size = cx.update(|window, _| window.viewport_size()).expect("the window");
-    let stacked = |cx: &mut AsyncWindowContext| probed("welcome-prompt-copy", cx).zip(probed("welcome-0", cx)).is_some_and(|(prompt, hand)| hand.top() > prompt.bottom());
-    let _ = cx.update(|window, _| window.resize(gpui::size(gpui::px(960.), gpui::px(700.))));
+    let stacked = |cx: &mut AsyncWindowContext| probed("welcome-prompt-copy", cx).zip(probed("welcome-from-0", cx)).is_some_and(|(prompt, row)| prompt.top() > row.bottom());
+    let _ = cx.update(|window, _| window.resize(gpui::size(gpui::px(960.), gpui::px(600.))));
     let under = until(cx, 5, stacked).await;
     let width = cx.update(|window, _| window.viewport_size().width).expect("the window");
-    let hand = probed("welcome-0", cx);
-    r.check("960 wide: BY HAND under the agent's column, inside the window", under && hand.is_some_and(|b| b.right() <= width), format!("{hand:?} in {width:?}"));
-    let last = if probed("welcome-5", cx).is_some() { "welcome-5" } else { "welcome-4" };
+    let prompt = probed("welcome-prompt-copy", cx);
+    r.check("960 wide: the agent's column under the items and FROM YOUR AGENT, inside the window", under && prompt.is_some_and(|b| b.right() <= width), format!("{prompt:?} in {width:?}"));
     // What shows: under the welcome's top, above the status bar drawn over the window's foot.
     let view = |cx: &mut AsyncWindowContext| cx.update(|window, cx| (ws.read(cx).welcome.read(cx).demo_view().top(), window.viewport_size().height - gpui::px(crate::theme::metrics::STATUS_H))).ok();
-    let whole = |cx: &mut AsyncWindowContext| probed(last, cx).zip(view(cx)).is_some_and(|(b, (top, bottom))| b.top() >= top && b.bottom() <= bottom);
-    let hidden = !whole(cx);
     focus_welcome(ws, cx);
-    for _ in 0..8 {
+    let _ = cx.update(|_, cx| ws.read(cx).welcome.read(cx).demo_scroll_to_end());
+    draw(cx);
+    let hidden = !probed("welcome-0", cx).zip(view(cx)).is_some_and(|(b, (top, bottom))| b.top() >= top && b.bottom() <= bottom);
+    // From the agent's row, one ↑ per item to the first: the last frame is the one that ↑ drew
+    // (`key` draws once, and the probes are that frame's), no frame asked for by anything else.
+    let items = if probed("welcome-5", cx).is_some() { 6 } else { 5 };
+    for _ in 0..items {
         key(cx, "up");
     }
-    // ↓ onto each item in turn; on the last, the one frame that ↓ drew (`key` draws once, and
-    // the probes are that frame's): no frame asked for by anything else.
-    let steps = if last == "welcome-5" { 5 } else { 4 };
-    for _ in 0..steps {
+    let seen = crate::ui::probed("welcome-0").zip(view(cx)).is_some_and(|(b, (top, bottom))| b.top() >= top && b.bottom() <= bottom);
+    r.check("…and short, scrolled to its end: ↑ from the agent's row to the first item shows it in the frame that ↑ draws", hidden && seen, format!("hidden first {hidden}, then seen {seen}"));
+    for _ in 0..items {
         key(cx, "down");
     }
-    let seen = crate::ui::probed(last).zip(view(cx)).is_some_and(|(b, (top, bottom))| b.top() >= top && b.bottom() <= bottom);
-    r.check("…and short: ↓ to the last item by hand shows it in the frame that ↓ draws", hidden && seen, format!("hidden first {hidden}, then seen {seen}"));
-    for _ in 0..8 {
-        key(cx, "up");
-    }
     let _ = cx.update(|window, _| window.resize(size));
-    let beside = until(cx, 5, |cx| probed("welcome-prompt-copy", cx).zip(probed("welcome-0", cx)).is_some_and(|(prompt, hand)| hand.left() > prompt.right())).await;
-    r.check("…wider again, side by side", beside, "");
+    let beside = until(cx, 5, |cx| probed("welcome-prompt-copy", cx).zip(probed("welcome-0", cx)).is_some_and(|(prompt, hand)| prompt.left() > hand.right())).await;
+    r.check("…wider again, side by side, the items on the left", beside, "");
 }
 
 fn tab_on(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -207,11 +248,10 @@ fn agent_edits(ws: &Entity<Workspace>, id: &str, edit: impl FnOnce(&mut dataman_
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.connections_on_disk(cx)));
 }
 
-/// What the agent saves while the welcome shows: listed under FROM YOUR AGENT, each row as its
-/// connect went, and the welcome kept until the user opens one or a tab opens.
+/// What the agent saves while the Welcome tab is open: listed under FROM YOUR AGENT, each row as
+/// its connect went, until the tab closes; the work to the front when the user opens one.
 async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     r.check("FROM YOUR AGENT is not there while nothing came", probed("welcome-from-0", cx).is_none(), "");
-    narrow(ws, r, cx).await;
 
     // Nothing listens on this port.
     let mut p = dataman_core::ConnectionProfile::new("shop");
@@ -236,6 +276,10 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
         shows && welcome(ws, cx) && arrivals(ws, cx) == [(shop.clone(), None)] && picked == Some(0) && tree.as_deref() == Some("shop"),
         format!("{:?} {picked:?} {tree:?}", arrivals(ws, cx)),
     );
+    let last = if probed("welcome-5", cx).is_some() { "welcome-5" } else { "welcome-4" };
+    let left = probed("welcome-from-0", cx).zip(probed(last, cx)).zip(probed("welcome-prompt-copy", cx)).is_some_and(|((row, item), prompt)| row.top() > item.bottom() && row.right() <= prompt.left());
+    r.check("FROM YOUR AGENT: in the left column, under the items", left, "");
+    narrow(ws, r, cx).await;
 
     let mut q = dataman_core::ConnectionProfile::new("shop-staging");
     (q.host, q.port) = ("127.0.0.1".into(), 9);
@@ -265,10 +309,10 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
         format!("{said:?}"),
     );
     click_probe("welcome-from-0", cx);
-    let sheet = dialog(ws, cx).map(|d| cx.update(|_, cx| (d.read(cx).profile_id().to_string(), d.read(cx).demo_asks_password(), d.read(cx).demo_status(cx).0)).unwrap());
+    let sheet = dialog(ws, cx).map(|d| cx.update(|_, cx| (d.read(cx).profile_id().to_string(), d.read(cx).is_new(), d.read(cx).step(), d.read(cx).demo_status(cx).0)).unwrap());
     r.check(
-        "…and clicked, it opens its sheet, saying why as the row does",
-        sheet.as_ref().is_some_and(|(id, asks, status)| *id == shop && !asks && said.as_ref().is_some_and(|s| *status == format!("failed: {s}"))),
+        "…and clicked, New connection's steps on it, at Connection, saying why as the row does",
+        sheet.as_ref().is_some_and(|(id, new, step, status)| *id == shop && *new && *step == Step::Connection && said.as_ref().is_some_and(|s| *status == format!("failed: {s}"))),
         format!("{sheet:?} {said:?}"),
     );
     close_dialog(ws, cx);
@@ -281,18 +325,20 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
 
     focus_welcome(ws, cx);
     let sel = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).welcome.read(cx).demo_selected_arrival()).ok().flatten();
+    for _ in 0..8 {
+        key(cx, "down");
+    }
+    let bottom = sel(cx);
     key(cx, "up");
-    let top = sel(cx);
+    let above = sel(cx);
     key(cx, "down");
-    let below = sel(cx);
-    key(cx, "up");
     let back = sel(cx);
     key(cx, "enter");
     let sheet = dialog(ws, cx).map(|d| cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap());
     r.check(
-        "↑↓: the agent's rows come before BY HAND; ↩ on one opens it",
-        top == Some(0) && below.is_none() && back == Some(0) && sheet.as_deref() == Some(shop.as_str()),
-        format!("{top:?} {below:?} {back:?} {sheet:?}"),
+        "↑↓: the agent's rows come after the items; ↩ on one opens it",
+        bottom == Some(0) && above.is_none() && back == Some(0) && sheet.as_deref() == Some(shop.as_str()),
+        format!("{bottom:?} {above:?} {back:?} {sheet:?}"),
     );
     close_dialog(ws, cx);
 
@@ -300,11 +346,11 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     draw(cx);
     let on_agents = cx.update(|_, cx| ws.read(cx).view == dataman_core::layout::NavView::Agents).unwrap_or(false);
     r.check(
-        "show_in_dataman to the Agents page while it is kept: the page shows over the welcome",
+        "show_in_dataman to the Agents page over the Welcome tab: the page shows over it",
         shown == Some(Ok(())) && on_agents && probed("welcome-from-0", cx).is_none() && welcome(ws, cx),
         format!("{shown:?} {on_agents}"),
     );
-    let on_welcome = |cx: &mut AsyncWindowContext| cx.update(|window, cx| ws.read(cx).welcome.focus_handle(cx).contains_focused(window, cx)).unwrap_or(false);
+    let on_welcome = |cx: &mut AsyncWindowContext| welcome_focused(ws, cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_editor(window, cx)));
     let hidden = on_welcome(cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::Explorer, window, cx)));
@@ -380,21 +426,29 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     let gone = until(cx, 5, |cx| !welcome(ws, cx)).await;
     let error_row = until(cx, 10, |cx| cx.update(|_, cx| !ws.read(cx).tree.read(cx).demo_children(&format!("c:{shop}")).is_empty()).unwrap_or(false)).await;
     r.check(
-        "…double-clicked (refused, not for a password): open on its error and Retry, no sheet, and the welcome gives way",
+        "…double-clicked (refused, not for a password): open on its error and Retry, no sheet, the work in front",
         gone && error_row && dialog(ws, cx).is_none(),
         format!("{gone} error row {error_row} sheet {}", dialog(ws, cx).is_some()),
     );
     until(cx, 10, |cx| matches!(state(ws, &shop, cx), Some(ConnState::Failed { .. }))).await;
+    click_probe("close-welcome", cx);
+    let closed = !welcome_open(ws, cx) && probed("tab-welcome", cx).is_none() && arrivals(ws, cx).is_empty();
     agent_edits(ws, &shop, |p| p.database = "shop3".into(), cx);
-    r.check("an edit from outside of a failed one, the welcome gone, auto-connect off: its failure forgotten, not tried again", state(ws, &shop, cx).is_none(), "");
+    r.check(
+        "the Welcome tab closed by its ×, its rows gone: an edit from outside of a failed one, auto-connect off, forgets its failure, not tried again",
+        closed && state(ws, &shop, cx).is_none(),
+        format!("closed {closed}"),
+    );
     let mut later = dataman_core::ConnectionProfile::new("cache");
     (later.host, later.port) = ("127.0.0.1".into(), 9);
     agent_saves(ws, later, None, cx);
-    r.check("one the agent saves after that does not bring the welcome back", !welcome(ws, cx) && arrivals(ws, cx).is_empty(), format!("{:?}", arrivals(ws, cx)));
+    r.check("one the agent saves with the Welcome tab closed: not listed, the tab not opened", !welcome(ws, cx) && !welcome_open(ws, cx) && arrivals(ws, cx).is_empty(), format!("{:?}", arrivals(ws, cx)));
     r.check("deleting every connection brings the welcome back", forget_all(ws, cx).await, "");
 
-    // The test server, with the password the agent was given; a blank tab, as on a first launch.
+    // The test server, with the password the agent was given; a blank tab behind the Welcome tab,
+    // as on a first launch.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx)));
+    click_probe("tab-welcome", cx);
     let (pg, pw) = profile(Engine::Postgres);
     let orders = agent_saves(ws, dataman_core::ConnectionProfile { id: dataman_core::ConnectionProfile::new("orders").id, name: "orders".into(), ..pg.clone() }, Some(&pw), cx);
     quietly(ws, &orders, cx);
@@ -424,7 +478,7 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     key(cx, "enter");
     let gone = until(cx, 5, |cx| !welcome(ws, cx)).await;
     r.check(
-        "two up on their own, the blank tab on the first: ↓ ↩ on the second, the welcome gives way, the tab on that one, the editor focused",
+        "two up on their own, the blank tab on the first: ↓ ↩ on the second, the work in front, the tab on that one, the editor focused",
         both && gone && tab_on(ws, &returns, cx) && editor_focused(ws, cx),
         format!("{both} {gone} tab {} focused {}", tab_on(ws, &returns, cx), editor_focused(ws, cx)),
     );
@@ -441,8 +495,8 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     let taken = until(cx, 5, |cx| welcome(ws, cx) && on_welcome(cx)).await;
     r.check("every connection removed outside while typing in the find bar: the welcome back, with the focus", in_find && taken, format!("in the find bar first {in_find}"));
 
-    // The welcome kept and focused, a sheet opened from it, an agent's tab opening under the
-    // sheet ends the hold: esc gives the focus to what shows, the tab, not the welcome gone.
+    // The Welcome tab in front and focused, a sheet opened from it, an agent's tab opening under
+    // the sheet comes to the front: esc gives the focus to what shows, the tab, not the welcome.
     let mut p = dataman_core::ConnectionProfile::new("shop");
     (p.host, p.port) = ("127.0.0.1".into(), 9);
     agent_saves(ws, p, None, cx);
@@ -452,30 +506,29 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     let ended = !welcome(ws, cx) && dialog(ws, cx).is_some();
     key(cx, "escape");
     let shown = until(cx, 5, |cx| editor_focused(ws, cx)).await;
-    r.check("…the hold ended under a sheet, esc: the focus on the tab's editor, not on the welcome gone", ended && shown && !on_welcome(cx), format!("ended {ended}"));
+    r.check("…a tab come to the front under a sheet, esc: the focus on the tab's editor, not on the welcome behind it", ended && shown && !on_welcome(cx), format!("ended {ended}"));
     forget_all(ws, cx).await;
 
-    // ⌘W on the kept welcome closes the hidden tab, whose blank stand-in opens nothing.
+    // ⌘W on the Welcome tab in front, with the agent's row: the tab closes, not the one behind.
     let mut p = dataman_core::ConnectionProfile::new("shop");
     (p.host, p.port) = ("127.0.0.1".into(), 9);
     agent_saves(ws, p, None, cx);
     focus_welcome(ws, cx);
-    // As many as there are tabs: the last one closed too, a blank one stands in.
     let tabs = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
-    for _ in 0..tabs {
-        key(cx, "cmd-w");
-    }
-    let blank = cx.update(|_, cx| ws.read(cx).tabs.len() == 1 && ws.read(cx).active_tab().is_some_and(|t| t.read(cx).pristine(cx))).unwrap_or(false);
+    let listed = arrivals(ws, cx).len() == 1;
+    key(cx, "cmd-w");
+    draw(cx);
     r.check(
-        "⌘W on the kept welcome until the last tab: a blank one stands in, and the welcome and its row stay",
-        tabs > 0 && blank && welcome(ws, cx) && arrivals(ws, cx).len() == 1,
-        format!("{tabs} tabs, blank after {blank} {:?}", arrivals(ws, cx)),
+        "⌘W on the Welcome tab with the agent's row: it closes and its row goes, the tabs as they were",
+        listed && !welcome(ws, cx) && !welcome_open(ws, cx) && arrivals(ws, cx).is_empty() && cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) == tabs,
+        format!("{tabs} tabs {:?}", arrivals(ws, cx)),
     );
     forget_all(ws, cx).await;
 
-    // An agent's tab taking the blank hidden tab while the user is in the explorer: the hold
-    // ends, the explorer keeps the focus.
+    // An agent's tab taking the blank tab behind the Welcome tab while the user is in the
+    // explorer: it comes to the front, the explorer keeps the focus.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx)));
+    click_probe("tab-welcome", cx);
     let agents = agent_saves(ws, dataman_core::ConnectionProfile { id: dataman_core::ConnectionProfile::new("orders").id, name: "orders".into(), ..pg.clone() }, Some(&pw), cx);
     quietly(ws, &agents, cx);
     until(cx, 15, |cx| is_connected(ws, &agents, cx)).await;
@@ -485,7 +538,7 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     draw(cx);
     let agent_tab = cx.update(|_, cx| ws.read(cx).active_tab().is_some_and(|t| t.read(cx).agent.is_some())).unwrap_or(false);
     r.check(
-        "an agent's tab taking the blank tab while the user is in the explorer: the welcome gives way, the explorer keeps the focus",
+        "an agent's tab taking the blank tab while the user is in the explorer: it comes to the front, the explorer keeps the focus",
         kept && made && agent_tab && !welcome(ws, cx) && in_tree(cx),
         format!("kept {kept} made {made} agent tab {agent_tab} in the explorer {}", in_tree(cx)),
     );
@@ -507,7 +560,7 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
 
     // Never tried (auto-connect off), its row hidden by the explorer's filter: ↩ on it connects.
     let hidden = agent_saves(ws, dataman_core::ConnectionProfile { id: dataman_core::ConnectionProfile::new("ledger").id, name: "ledger".into(), ..pg.clone() }, Some(&pw), cx);
-    // Its delete sheet cancelled while the welcome is kept: the focus back in the explorer.
+    // Its delete sheet cancelled over the Welcome tab: the focus back in the explorer.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_region(crate::app::Region::Explorer, window, cx)));
     key(cx, "down");
     key(cx, "up");
@@ -519,7 +572,7 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     click_probe("dc-cancel", cx);
     draw(cx);
     r.check(
-        "its delete sheet cancelled while the welcome is kept: the explorer has the focus back, the welcome its row",
+        "its delete sheet cancelled over the Welcome tab: the explorer has the focus back, the welcome its row",
         asked && in_tree(cx) && !on_welcome(cx) && welcome(ws, cx) && arrivals(ws, cx).len() == 1,
         format!("asked {asked} in the explorer {}", in_tree(cx)),
     );
@@ -562,10 +615,10 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     r.check("a server that wants a password: the row says it needs yours", refused && arrivals(ws, cx) == [(asks.clone(), Some("Needs your password".into()))], format!("{:?}", arrivals(ws, cx)));
     click_probe("welcome-from-0", cx);
     let d = dialog(ws, cx);
-    let sheet = d.as_ref().map(|d| cx.update(|_, cx| (d.read(cx).demo_asks_password(), d.read(cx).demo_status(cx))).unwrap());
+    let sheet = d.as_ref().map(|d| cx.update(|window, cx| (d.read(cx).profile_id() == asks, d.read(cx).is_new(), d.read(cx).step(), d.read(cx).password_focus(cx).is_focused(window), d.read(cx).demo_asks_password(), d.read(cx).demo_status(cx))).unwrap());
     r.check(
-        "…clicked, its sheet opens on the password, with no failure said nor the field marked (none was tried)",
-        sheet.as_ref().is_some_and(|(asks, (status, marked))| *asks && status == "untested" && !marked),
+        "…clicked, New connection's steps on it, at Sign-in, the password focused, with no failure said nor the field marked (none was tried)",
+        sheet.as_ref().is_some_and(|(same, new, step, focused, asks, (status, marked))| *same && *new && *step == Step::SignIn && *focused && *asks && status == "untested" && !marked),
         format!("{sheet:?}"),
     );
     let type_in = async |password: &str, cx: &mut AsyncWindowContext| {
@@ -589,10 +642,10 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     type_in("not-the-password", cx).await;
     let wrong = until(cx, 15, |cx| matches!(state(ws, &asks, cx), Some(ConnState::Failed { password_tried: true, .. })) && dialog(ws, cx).is_some()).await;
     let said = arrivals(ws, cx).first().and_then(|a| a.1.clone());
-    let shown = dialog(ws, cx).map(|d| cx.update(|_, cx| (d.read(cx).demo_asks_password(), d.read(cx).demo_status(cx).0)).unwrap());
+    let shown = dialog(ws, cx).map(|d| cx.update(|_, cx| (d.read(cx).demo_asks_password(), d.read(cx).demo_status(cx).0, d.read(cx).is_new() && d.read(cx).step() == Step::SignIn)).unwrap());
     r.check(
-        "…a wrong one: the sheet again, on the password, saying why (the server's code and words); the row says the same",
-        wrong && shown.as_ref().is_some_and(|(asks, status)| *asks && status.contains("28P01")) && said.as_ref().is_some_and(|s| shown.as_ref().is_some_and(|(_, status)| *status == format!("failed: {s}"))) && welcome(ws, cx),
+        "…a wrong one: the steps again, at Sign-in, on the password, saying why (the server's code and words); the row says the same",
+        wrong && shown.as_ref().is_some_and(|(asks, status, steps)| *asks && *steps && status.contains("28P01")) && said.as_ref().is_some_and(|s| shown.as_ref().is_some_and(|(_, status, _)| *status == format!("failed: {s}"))),
         format!("{shown:?} {said:?}"),
     );
     let method = dialog(ws, cx).map(|d| cx.update(|_, cx| (d.read(cx).demo_method(cx).1, d.read(cx).demo_field(4, cx))).unwrap());
@@ -602,30 +655,44 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
         format!("{method:?}"),
     );
     type_in(&pw, cx).await;
-    let gone = until(cx, 15, |cx| !welcome(ws, cx)).await;
+    let gone = until(cx, 15, |cx| !welcome(ws, cx) && is_connected(ws, &asks, cx) && editor_focused(ws, cx)).await;
     r.check(
-        "…typed and saved: once it connects, the welcome gives way, the editor focused",
+        "…typed and saved: it connects, the work in front, the editor focused",
         gone && is_connected(ws, &asks, cx) && editor_focused(ws, cx),
         format!("{gone} connected {} focused {}", is_connected(ws, &asks, cx), editor_focused(ws, cx)),
     );
     forget_all(ws, cx).await;
 
+    // show_in_dataman on one the agent saved with no password: New connection's steps, at its
+    // password; saved, the same connection (no second one), still the agent's.
+    let asks = agent_saves(ws, dataman_core::ConnectionProfile { id: dataman_core::ConnectionProfile::new("billing").id, name: "billing".into(), user: "welcome_e2e".into(), ..pg.clone() }, None, cx);
+    let shown = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_place(dataman_mcp::Place::Connection(asks.clone()), window, cx))).ok();
+    let at = dialog(ws, cx).map(|d| cx.update(|window, cx| (d.read(cx).profile_id() == asks, d.read(cx).is_new(), d.read(cx).step(), d.read(cx).password_focus(cx).is_focused(window))).unwrap());
+    r.check(
+        "show_in_dataman to one the agent saved with no password: New connection's steps on it, at Sign-in, the password focused",
+        shown == Some(Ok(())) && at == Some((true, true, Step::SignIn, true)),
+        format!("{shown:?} {at:?}"),
+    );
+    type_in(&pw, cx).await;
+    let up = until(cx, 15, |cx| is_connected(ws, &asks, cx)).await;
+    let saved: Vec<(String, bool)> = core(ws, cx).config.connections().into_iter().filter(|p| p.name == "billing").map(|p| (p.id, p.agent_made)).collect();
+    r.check("…typed and saved: the same connection, still the agent's, connected", up && saved == [(asks.clone(), true)], format!("up {up} {saved:?}"));
+    forget_all(ws, cx).await;
+
     let mut p = dataman_core::ConnectionProfile::new("shop");
     (p.host, p.port) = ("127.0.0.1".into(), 9);
     let shop = agent_saves(ws, p, None, cx);
-    let kept = welcome(ws, cx);
-    focus_welcome(ws, cx);
     let mine = dataman_core::ConnectionProfile::new_file(Engine::Sqlite, std::env::temp_dir().join(format!("dataman-e2e-mine-{}.sqlite", std::process::id())).to_string_lossy());
     let mine_id = mine.id.clone();
     core(ws, cx).config.upsert(mine).expect("the check's own connections file");
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.connections_on_disk(cx)));
-    let gone = until(cx, 5, |cx| !welcome(ws, cx) && arrivals(ws, cx).is_empty() && editor_focused(ws, cx)).await;
+    let listed = arrivals(ws, cx).into_iter().map(|a| a.0).collect::<Vec<_>>() == [shop.clone()];
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_delete_connections(vec![mine_id], true, window, cx)));
     draw(cx);
     r.check(
-        "one saved that is not the agent's: the welcome gives way to the editor, and deleting it does not bring the old rows back",
-        kept && gone && !welcome(ws, cx) && arrivals(ws, cx).is_empty() && cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&shop).is_some()).unwrap_or(false),
-        format!("kept {kept} gone {gone} {:?}", arrivals(ws, cx)),
+        "one saved that is not the agent's: not listed; the Welcome tab stays in front with the agent's row, its deletion too",
+        listed && welcome(ws, cx) && arrivals(ws, cx).into_iter().map(|a| a.0).collect::<Vec<_>>() == [shop.clone()],
+        format!("{:?}", arrivals(ws, cx)),
     );
     forget_all(ws, cx).await;
 
@@ -695,6 +762,7 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     // The agent's and another in one reload: no list, and ↑↓ on nothing gone.
     let mut a = dataman_core::ConnectionProfile::new("shop");
     (a.host, a.port, a.agent_made) = ("127.0.0.1".into(), 9, true);
+    let a_id = a.id.clone();
     let mut b = dataman_core::ConnectionProfile::new("mine");
     (b.host, b.port) = ("127.0.0.1".into(), 9);
     let core = core(ws, cx);
@@ -702,7 +770,8 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     core.config.upsert(b).expect("the check's own connections file");
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.connections_on_disk(cx)));
     let sel = cx.update(|_, cx| ws.read(cx).welcome.read(cx).demo_selected_arrival()).ok().flatten();
-    r.check("the agent's and another in one reload: no list, nothing selected in it", !welcome(ws, cx) && arrivals(ws, cx).is_empty() && sel.is_none(), format!("{sel:?}"));
+    let listed: Vec<String> = arrivals(ws, cx).into_iter().map(|a| a.0).collect();
+    r.check("the agent's and another in one reload: only the agent's listed, and selected", welcome(ws, cx) && listed == [a_id.clone()] && sel == Some(0), format!("{listed:?} {sel:?}"));
     forget_all(ws, cx).await;
 
     // Saved in the app (a duplicate, an import: the store reloaded at once), not the agent's.
@@ -715,8 +784,12 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     (dup.host, dup.port) = ("127.0.0.1".into(), 9);
     core.config.upsert(dup).expect("the check's own connections file");
     let _ = cx.update(|_, cx| ws.read(cx).store.clone().update(cx, |s, cx| s.reload(cx)));
-    let handed = until(cx, 5, |cx| !welcome(ws, cx) && editor_focused(ws, cx)).await;
-    r.check("one saved in the app that is not the agent's: the welcome gives way, the editor takes the focus", kept && handed, format!("kept {kept}"));
+    draw(cx);
+    r.check(
+        "one saved in the app (a duplicate, an import), not the agent's: the Welcome tab stays in front, with the focus and the agent's row",
+        kept && welcome(ws, cx) && welcome_focused(ws, cx) && arrivals(ws, cx).len() == 1,
+        format!("kept {kept} {:?}", arrivals(ws, cx)),
+    );
     forget_all(ws, cx).await;
 
     let mut p = dataman_core::ConnectionProfile::new("shop");
@@ -728,7 +801,7 @@ async fn from_agent(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindow
     crate::sql_picker::set_test_paths(vec![file.clone()]);
     click_probe("welcome-3", cx);
     let opened = until(cx, 5, |cx| active(ws, cx).is_some_and(|t| cx.update(|_, cx| t.read(cx).editor.read(cx).text().contains("while kept")).unwrap_or(false))).await;
-    r.check("Open a .sql file while it is kept: the file's tab shows, the welcome gives way", kept && opened && !welcome(ws, cx), format!("kept {kept} opened {opened}"));
+    r.check("Open a .sql file from the Welcome tab: the file's tab comes to the front", kept && opened && !welcome(ws, cx), format!("kept {kept} opened {opened}"));
     let _ = std::fs::remove_file(&file);
 }
 

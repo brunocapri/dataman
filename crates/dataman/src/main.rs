@@ -328,6 +328,7 @@ fn menus(cx: &App) -> Vec<Menu> {
         Menu::new("View").items(
             [
                 MenuItem::action("Command Palette", CommandPalette),
+                MenuItem::action("Welcome", ShowWelcome),
                 MenuItem::action("Go to Table or Tab", GoTo),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Sidebar", ToggleExplorer),

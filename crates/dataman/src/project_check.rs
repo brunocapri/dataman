@@ -52,7 +52,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     std::fs::write(project::file_in(&root), teammate).unwrap();
     let core = core(ws, cx);
 
-    let first = cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
+    let first = cx.update(|_, cx| ws.read(cx).welcome_front).unwrap_or(false);
     r.check("no connection: the welcome screen", first, "");
     snap("welcome", cx);
     crate::sql_picker::set_test_paths(vec![root.clone()]);

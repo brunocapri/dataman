@@ -370,7 +370,7 @@ impl crate::app::Workspace {
             }
             return;
         }
-        let welcoming = self.first_run(cx);
+        let welcoming = self.welcome_open;
         self.store.update(cx, |s, cx| s.reload(cx));
         // Saved elsewhere (another Dataman, an agent, the project): connected as the others were.
         let added: Vec<String> = new.iter().filter(|n| !old.iter().any(|o| o.id == n.id)).map(|n| n.id.clone()).collect();
@@ -395,8 +395,8 @@ impl crate::app::Workspace {
                         }
                     }
                 }
-                // One the welcome still lists came up on its own and was never picked: an edit
-                // (the agent's) brings it back the same way, never moving to it or asking.
+                // One the welcome lists (the agent's, saved while it was open): an edit (the
+                // agent's) brings it back the same way, never moving to it or asking.
                 (Edited::Settings, Some(ConnState::Connected(_))) => {
                     let id = p.id.clone();
                     let quiet = self.welcome.read(cx).lists(&id);

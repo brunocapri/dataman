@@ -171,9 +171,8 @@ impl Workspace {
             .child(el)
             .into_any_element()
         };
-        let first_run = self.first_run(cx);
         // The Agents area takes the whole work surface: no tabs over it.
-        let tabless = first_run || self.view == dataman_core::layout::NavView::Agents;
+        let tabless = self.view == dataman_core::layout::NavView::Agents;
         let strips: Vec<AnyElement> = if tabless { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let tab_menu = self.render_tab_menu(&t, cx);
@@ -218,10 +217,36 @@ impl Workspace {
                 .when_some(crate::keymap::key("command_palette"), |d, k| d.child(ui::keycap(&t, k)))
                 .into_any_element(),
         );
+        // Dataman's disc at the explorer's end, while there is room past the arrows: it takes
+        // the Welcome tab to the front, so it is not there while that tab is.
+        let disc_room = title.lead - lights - crate::dock::HEADER_MIN >= DISC_BOX + 8.;
+        // It turns while a query runs, in any tab.
+        let spinning = self.tabs.iter().any(|tab| tab.read(cx).is_running());
+        let disc = (disc_room && !self.welcome_front).then(|| {
+            let (hov, prs) = (t.hov, t.prs);
+            div()
+                .children(ui::here(&"explorer-disc".into()))
+                .id("explorer-disc")
+                .absolute()
+                .top(px((metrics::TITLE_H - DISC_BOX) / 2.))
+                .right(px(8.))
+                .size(px(DISC_BOX))
+                .flex()
+                .items_center()
+                .justify_center()
+                .opacity(title.seam)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hov))
+                .active(move |s| s.bg(prs))
+                .on_mouse_down(MouseButton::Left, stop)
+                .on_click(cx.listener(|w, _, window, cx| w.show_welcome(window, cx)))
+                .child(if spinning { crate::assets::sharp_playing("brand/dataman-disc-spin.webp", 14.) } else { crate::assets::sharp("brand/dataman-disc.png", 14.) })
+        });
         // With nothing before it (Windows: its buttons are on the right) the toggle stands on the
         // rail's column, over its icons (the rail's content box ends at its right border).
         let toggle_at = if lights > 0. { 14. } else { (metrics::RAIL_W - 1.) / 2. - TOGGLE / 2. };
         let left = div()
+            .relative()
             .w(px(title.lead))
             .flex_none()
             .h_full()
@@ -231,7 +256,8 @@ impl Workspace {
             .child(div().w(px(lights)).h_full().flex_none().children(self.render_window_buttons_left(window, cx)))
             .child(div().ml(px(toggle_at)).flex_none().child(toggle))
             .child(div().ml(px(4.)).flex_none().flex().flex_row().children(arrows))
-            .child(div().flex_1());
+            .child(div().flex_1())
+            .children(disc);
         let right = div().ml(px(12.)).mr(px(10.)).flex_none().child(search);
         div()
             .id("titlebar")
@@ -273,7 +299,7 @@ impl Workspace {
     fn render_strips(&self, side: f32, seam: f32, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let pad = 2. + 9. * seam;
         let Some(f) = self.split_now else {
-            return vec![self.render_strip(Pane::Left, self.group(Pane::Left), None, pad, t, cx)];
+            return vec![self.render_strip(Pane::Left, self.group(Pane::Left), None, pad, true, t, cx)];
         };
         let c = self.frame_now.center;
         let x = self.surface_x() + f.widths(c.w).0.0;
@@ -285,16 +311,20 @@ impl Workspace {
         };
         let (lp, rp) = if self.split.is_some() { (Pane::Left, Pane::Right) } else { (Pane::Left, Pane::Left) };
         let mut v = Vec::new();
-        v.push(if left.is_empty() { div().w(px(left_w)).flex_none().into_any_element() } else { self.render_strip(lp, left, Some(left_w), pad, t, cx) });
+        // The Welcome tab heads the first strip drawn.
+        let first = !left.is_empty();
+        v.push(if first { self.render_strip(lp, left, Some(left_w), pad, true, t, cx) } else { div().w(px(left_w)).flex_none().into_any_element() });
         if !right.is_empty() {
-            v.push(self.render_strip(rp, right, None, 2. + 9. + crate::split::SEAM, t, cx));
+            v.push(self.render_strip(rp, right, None, 2. + 9. + crate::split::SEAM, !first, t, cx));
         } else {
             v.push(div().flex_1().into_any_element());
         }
         v
     }
 
-    fn render_strip(&self, pane: Pane, tabs: Vec<usize>, width: Option<f32>, pad: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// `welcome`: the strip the Welcome tab heads, while it is open.
+    #[allow(clippy::too_many_arguments)]
+    fn render_strip(&self, pane: Pane, tabs: Vec<usize>, width: Option<f32>, pad: f32, welcome: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let n = tabs.len();
         let now = std::time::Instant::now();
@@ -306,6 +336,9 @@ impl Workspace {
             is_tab.extend(more.iter().map(|_| false));
             els.extend(more);
         };
+        if welcome && self.welcome_open {
+            extra(&mut els, &mut is_tab, vec![self.render_welcome_tab(t, cx)]);
+        }
         extra(&mut els, &mut is_tab, m.ghosts(pane, None, t, now).collect());
         for (gi, &i) in tabs.iter().enumerate() {
             extra(&mut els, &mut is_tab, m.gap(pane, gi, t, now).into_iter().collect());
@@ -321,6 +354,7 @@ impl Workspace {
             Some(_) => self.front_of(pane),
             None => self.active_tab(),
         }
+        .filter(|_| !self.welcome_front)
         .map(|t| t.entity_id());
         // Followed while the front tab grows, and once more on the frame it stops (its full
         // width): a slow renderer's last growing frame can be well short of it.
@@ -485,9 +519,31 @@ impl Workspace {
         self.tab_motion.follow_drop(id, width, at, cx);
     }
 
+    /// The Welcome tab: the welcome to the front; its × closes it.
+    fn render_welcome_tab(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let front = self.welcome_front;
+        let group: SharedString = "tab-welcome".into();
+        let tx3 = t.tx3;
+        let close = tab_close("close-welcome", t)
+            .text_color(if front { tx3 } else { gpui::transparent_black() })
+            .group_hover(group.clone(), move |s| s.text_color(tx3))
+            .on_click(cx.listener(|w, _, window, cx| {
+                cx.stop_propagation();
+                w.close_welcome(window, cx);
+            }));
+        let tab = tab_frame(t, "tab-welcome", group.clone(), front, false)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|w, _, window, cx| w.show_welcome(window, cx)))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child("Welcome"))
+            .child(ui::probe("close-welcome", close))
+            .when(!front, |d| d.child(ui::tab_divider(t).group_hover(group, |s| s.invisible())));
+        ui::probe("tab-welcome", tab)
+    }
+
     fn render_tab(&self, i: usize, last: bool, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let focused_front = i == self.active;
-        let other_front = self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
+        // The Welcome tab in front: no query tab is.
+        let focused_front = i == self.active && !self.welcome_front;
+        let other_front = !self.welcome_front && self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
         let active = focused_front || other_front;
         let tab = self.tabs[i].read(cx);
         let title = tab.title(cx);
@@ -508,26 +564,14 @@ impl Workspace {
         let show_tx = tx.status.is_open() && !tab.is_running() && !tab.is_cancelling();
         let (ind, ind_color) = if show_tx { (None, ind_color) } else { (ind, ind_color) };
         let still = !tab.is_running() && !tab.is_cancelling() && ind.is_some();
-        let (hov, tx2) = (t.hov, t.tx2);
         // Identity, not position: tabs move when dragged.
         let entity = self.tabs[i].clone();
         let key = entity.entity_id().as_u64() as usize;
         let group: SharedString = format!("tab-{key}").into();
-        let (tx3, tx_c) = (t.tx3, t.tx);
+        let tx3 = t.tx3;
         let close = {
             let entity = entity.clone();
-            div()
-                .id(("close-tab", key))
-                .flex_none()
-                .size(px(16.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(crate::theme::text::TITLE))
-                .cursor_pointer()
-                .hover(move |s| s.text_color(tx_c))
-                .child("×")
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            tab_close(("close-tab", key), t)
                 .on_click(cx.listener(move |w, _, window, cx| {
                     cx.stop_propagation();
                     if let Some(ix) = w.tabs.iter().position(|t| *t == entity) {
@@ -570,25 +614,7 @@ impl Workspace {
         let middle = entity.clone();
         let drag_id = entity.entity_id();
         let ghost_label = title.clone();
-        div()
-            .id(("tab", key))
-            .group(group.clone())
-            .relative()
-            .h(px(metrics::TAB_H))
-            .min_w(px(TAB_MIN))
-            .max_w(px(220.))
-            .flex_shrink_1()
-            .pl(px(10.))
-            .pr(px(8.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(7.))
-            // The focus is told by the wash alone, never by a line.
-            .when(focused_front, |d| d.bg(t.prs).text_color(t.tx))
-            .when(other_front, |d| d.bg(t.hov).text_color(t.tx2))
-            .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
-            .cursor_pointer()
+        tab_frame(t, ("tab", key), group.clone(), focused_front, other_front)
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if crate::keymap::menu_click(&ev.modifiers) {
@@ -2332,6 +2358,49 @@ pub(crate) fn cut_chars(s: &str, n: usize) -> String {
 }
 
 const TOGGLE: f32 = 26.;
+const DISC_BOX: f32 = 22.;
+
+/// A tab of the strip as every tab looks, the Welcome tab's too: the wash of the one in `front`
+/// (of the focused group; `other`: the other group's), the hover's on the rest. The focus is told
+/// by the wash alone, never by a line.
+fn tab_frame(t: &Theme, id: impl Into<gpui::ElementId>, group: SharedString, front: bool, other: bool) -> gpui::Stateful<Div> {
+    let (hov, tx2) = (t.hov, t.tx2);
+    div()
+        .id(id)
+        .group(group)
+        .relative()
+        .h(px(metrics::TAB_H))
+        .min_w(px(TAB_MIN))
+        .max_w(px(220.))
+        .flex_shrink_1()
+        .pl(px(10.))
+        .pr(px(8.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(7.))
+        .when(front, |d| d.bg(t.prs).text_color(t.tx))
+        .when(other, |d| d.bg(t.hov).text_color(t.tx2))
+        .when(!front && !other, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
+        .cursor_pointer()
+}
+
+/// A tab's ×.
+fn tab_close(id: impl Into<gpui::ElementId>, t: &Theme) -> gpui::Stateful<Div> {
+    let tx = t.tx;
+    div()
+        .id(id)
+        .flex_none()
+        .size(px(16.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(crate::theme::text::TITLE))
+        .cursor_pointer()
+        .hover(move |s| s.text_color(tx))
+        .child("×")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+}
 
 fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
     let (hov, prs, ink) = (t.hov, t.prs, t.tx3);

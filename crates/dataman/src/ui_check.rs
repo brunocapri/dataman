@@ -467,7 +467,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let saved = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.config.connections().len()).unwrap_or(0);
     let saved_before = saved(cx);
     if let Some(d) = cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten() {
-        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_step(crate::conn_dialog::Step::Connection, window, cx)));
+        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.open_at(crate::conn_dialog::Step::Connection, window, cx)));
         draw(cx);
         use dataman_core::config::Engine;
         for (s, engine, host, port, user, db, pw) in [
