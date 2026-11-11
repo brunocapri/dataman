@@ -269,6 +269,9 @@ pub fn server_error_class(e: &anyhow::Error) -> Option<crate::result::ErrorClass
                 _ => None,
             };
         }
+        if let Some(e) = c.downcast_ref::<redis::ReplyError>() {
+            return Some(class::of(Engine::Redis, e.code()));
+        }
         c.downcast_ref::<ConnectError>().map(|ConnectError::Auth(_)| ErrorClass::Auth)
     })
 }
@@ -863,5 +866,14 @@ mod tests {
         assert!(duck.schemas && duck.explain && !duck.triggers && !duck.drop_database && duck.truncate && !duck.activity && !duck.functions);
         let ch = Caps::of(Engine::ClickHouse);
         assert!(!ch.schemas && !ch.transactional_ddl && !ch.row_edits && !ch.explain && !ch.agent_login && ch.read_only_on_connect && ch.truncate);
+    }
+
+    #[test]
+    fn redis_replies_are_classified_by_their_code() {
+        let reply = |text: &str| anyhow::Error::from(redis::ReplyError(text.into())).context("connecting");
+        assert!(needs_password(&reply("NOAUTH Authentication required.")));
+        assert!(needs_password(&reply("WRONGPASS invalid username-password pair or user is disabled.")));
+        assert!(!needs_password(&reply("WRONGTYPE Operation against a key holding the wrong kind of value")));
+        assert_eq!(server_error_class(&reply("NOPERM this user has no permissions")), Some(crate::result::ErrorClass::Permission));
     }
 }

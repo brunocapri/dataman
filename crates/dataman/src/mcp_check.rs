@@ -20,11 +20,6 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     pause(cx, 300).await;
     let first_run = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
     check("no connection saved: the welcome screen", first_run(cx), String::new());
-    let label = cx.update(|_, cx| ws.read(cx).welcome.clone().update(cx, |w, cx| w.demo_choose(1, cx))).unwrap_or_default();
-    draw(cx);
-    let section = cx.update(|_, cx| ws.read(cx).settings_view.as_ref().map(|v| v.read(cx).demo_section())).ok().flatten();
-    check("\"Add with an agent\" opens Settings › MCP", label == "Add with an agent" && section == Some("MCP"), format!("{label} {section:?}"));
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_settings(window, cx)));
     let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
     let _ = core.settings.update(|s| s.mcp_enabled = true);
     let _ = cx.update(|_, cx| crate::mcp::apply(&core, cx));
@@ -48,7 +43,52 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     pause(cx, 150).await;
     draw(cx);
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
-    check("an agent's connection shows at once: the welcome screen gives way to it", !err && !first_run(cx) && row.as_deref() == Some("first by agent"), format!("{out} {row:?}"));
+    let listed = cx.update(|_, cx| ws.read(cx).welcome.read(cx).demo_arrivals().into_iter().map(|a| a.0).collect::<Vec<_>>()).unwrap_or_default();
+    check("an agent's connection shows at once, in the explorer and on the welcome, which stays", !err && first_run(cx) && row.as_deref() == Some("first by agent") && listed == [made.clone()], format!("{out} {row:?} {listed:?}"));
+    let (err, out) = call(&ipc, "update_connection", json!({"connection": "first by agent", "database": "other"})).await;
+    let saved = |id: &str, cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).profile(id).cloned()).ok().flatten();
+    let edited = crate::check::until(cx, 5, |cx| saved(&made, cx).is_some_and(|p| p.database == "other")).await;
+    check("…the agent's own edit of it keeps the welcome", !err && edited && first_run(cx), out);
+
+    // The test server, the agent given a wrong password first.
+    let (pg, pw) = crate::check::profile(dataman_core::config::Engine::Postgres);
+    let (err, out) = call(&ipc, "create_connection", json!({"name": "pg by agent", "host": pg.host, "port": pg.port, "user": pg.user, "database": pg.database, "password": "not-the-password"})).await;
+    let on_pg = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["id"].as_str().map(str::to_string)).unwrap_or_default();
+    let listed = crate::check::until(cx, 5, |cx| saved(&on_pg, cx).is_some()).await;
+    let ids = [on_pg.clone()];
+    let _ = cx.update(|_, cx| ws.read(cx).store.clone().update(cx, |s, cx| s.demo_connect_quietly(&ids, cx)));
+    let refused = crate::check::until(cx, 15, |cx| matches!(crate::check::state(ws, &on_pg, cx), Some(crate::conns::ConnState::Failed { needs_password: true, .. }))).await;
+    check("a wrong password: it fails for want of the right one", !err && listed && refused, format!("{out} {:?}", crate::check::state(ws, &on_pg, cx).is_some()));
+    let attempts = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).demo_attempts()).unwrap_or(0);
+    let before = attempts(cx);
+    let (err, out) = call(&ipc, "update_connection", json!({"connection": "pg by agent", "password": pw, "name": "pg by agent, fixed"})).await;
+    let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    let up = crate::check::until(cx, 15, |cx| crate::check::is_connected(ws, &on_pg, cx)).await;
+    let tried = attempts(cx) - before;
+    check(
+        "the agent sets the right one with a new name: \"changed\" says both, it connects on its own in one attempt, the welcome stays",
+        !err && v["changed"] == json!(["name", "password"]) && up && tried == 1 && first_run(cx),
+        format!("{out} attempts {tried}"),
+    );
+    let conn = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).connection(&on_pg)).ok().flatten();
+    let before = conn(cx);
+    let (err, out) = call(&ipc, "update_connection", json!({"connection": "pg by agent, fixed", "name": "pg by agent, renamed"})).await;
+    let again = crate::check::until(cx, 15, |cx| conn(cx).zip(before.clone()).is_some_and(|(now, old)| !Arc::ptr_eq(&now, &old))).await;
+    check("the agent renames it: it reconnects on its own, and the welcome stays", !err && again && first_run(cx), out);
+    let (err, out) = call(&ipc, "show_in_dataman", json!({"destination": "agents_protection", "connection": "pg by agent, renamed"})).await;
+    let on_agents = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).view == dataman_core::layout::NavView::Agents).unwrap_or(false);
+    let sent = !err && crate::check::until(cx, 5, on_agents).await;
+    let focus = cx.update(|window, cx| window.focused(cx)).ok().flatten();
+    let (qerr, qout) = call(&ipc, "run_query", json!({"connection": "pg by agent, renamed", "sql": "SELECT 1 AS one"})).await;
+    draw(cx);
+    let tab = cx.update(|_, cx| ws.read(cx).active_tab().is_some_and(|t| t.read(cx).agent.is_some())).unwrap_or(false);
+    let kept = cx.update(|window, cx| window.focused(cx)).ok().flatten() == focus;
+    check(
+        "an agent's query while the user is on the Agents page it sent them to: the page and its focus stay, its tab is the one under it, the welcome gone",
+        sent && !qerr && on_agents(cx) && tab && kept && !first_run(cx),
+        format!("{out} {qout} tab {tab} focus kept {kept}"),
+    );
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::Explorer, window, cx)));
     let mut p = dataman_core::ConnectionProfile::new("written elsewhere");
     (p.host, p.port) = ("127.0.0.1".into(), 9);
     let other = p.id.clone();
@@ -64,6 +104,7 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     }
     draw(cx);
     check("one written to the file by another process shows within ~1 s", written.is_ok() && seen, format!("{:?} after {:?}", written.err(), t0.elapsed()));
+    check("…and, not an agent's, the welcome gives way", !first_run(cx), String::new());
     let (err, out) = call(&ipc, "update_connection", json!({"connection": "first by agent", "name": "renamed by agent"})).await;
     pause(cx, 150).await;
     draw(cx);
@@ -714,7 +755,7 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
     check(
         "update_connection: the explorer's label follows at once",
-        !err && row.as_deref() == Some("agent renamed") && v["changed"] == json!(["name", "color"]) && v["password"] == json!("set"),
+        !err && row.as_deref() == Some("agent renamed") && v["changed"] == json!(["name", "color", "password"]) && v["password"] == json!("set"),
         format!("{out} {row:?}"),
     );
     check("… and the password stays out of every answer", !out.contains("another-secret") && !out.contains(secret), out.clone());

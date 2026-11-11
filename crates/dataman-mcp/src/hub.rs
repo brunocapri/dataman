@@ -187,6 +187,11 @@ pub trait Front: Send + Sync {
         Box::pin(async { Vec::new() })
     }
     fn connections_changed(&self) {}
+    /// The saved connections changed, among them a password saved for this one: read again, and
+    /// the connection (failed, or connecting with the old one) tried once with it.
+    fn password_given(&self, _id: &str) {
+        self.connections_changed();
+    }
     fn show(&self, _place: Place) -> BoxFuture<'static, Result<(), String>> {
         Box::pin(async { Err(SHOW_NEEDS_APP.to_string()) })
     }
@@ -675,6 +680,25 @@ pub fn refusal(p: &ConnectionProfile) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A front that only reloads its connections when told they changed.
+    struct ReloadsOnly(std::sync::atomic::AtomicUsize);
+
+    impl Front for ReloadsOnly {
+        fn approve(&self, _a: Approval) -> BoxFuture<'static, bool> {
+            Box::pin(async { false })
+        }
+        fn connections_changed(&self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn a_password_saved_reaches_a_front_that_only_reloads() {
+        let f = ReloadsOnly(Default::default());
+        f.password_given("pg1");
+        assert_eq!(f.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
     use super::*;
 
     #[test]

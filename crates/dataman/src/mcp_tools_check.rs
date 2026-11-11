@@ -245,7 +245,7 @@ async fn show_destinations(ws: &Entity<Workspace>, client: &Arc<Client>, pg: &Co
         p.agents_refused = true;
         let _ = core.config.upsert(p);
     }
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.connections_on_disk(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.connections_on_disk(cx)));
     r.check("a connection turned off", !res.0, short(&res));
     let (fronted, at_before) = (forward(cx), agents_at(ws, cx));
     let mut went = Vec::new();

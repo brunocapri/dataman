@@ -272,7 +272,7 @@ pub async fn connected(ws: &Entity<Workspace>, id: &str, secs: u64, cx: &mut Asy
     for _ in 0..secs * 20 {
         match state(ws, id, cx) {
             Some(ConnState::Connected(_)) => return Ok(()),
-            Some(ConnState::Failed(e)) => return Err(e),
+            Some(ConnState::Failed { msg: e, .. }) => return Err(e),
             _ => {}
         }
         pause(cx, 50).await;

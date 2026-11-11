@@ -446,6 +446,13 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "x", "user": "y"}));
     assert!(err && text.contains("already exists"), "{text}");
 
+    // Whether a user is needed is the engine's (its connection form): Redis signs in with a
+    // password alone, PostgreSQL does not.
+    let (err, text) = m.tool("create_connection", json!({"name": "cache", "engine": "redis", "host": "127.0.0.1", "port": 6379}));
+    assert!(!err, "Redis without a user: {text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "no user", "engine": "postgres", "host": "127.0.0.1"}));
+    assert!(err && text.contains("\"user\" is required for PostgreSQL"), "{text}");
+
     // TLS not asked for: required for a remote host, opportunistic only on this machine.
     let (err, text) = m.tool("create_connection", json!({"name": "here", "host": "localhost", "user": "bob"}));
     assert!(!err, "{text}");
@@ -474,7 +481,7 @@ fn stdio_favorites_and_create_connection() {
     assert!(err && text.contains("must be one of"), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "no host"}));
-    assert!(err && text.contains("\"host\" and \"user\" are required"), "{text}");
+    assert!(err && text.contains("\"host\" is required"), "{text}");
 
     let (err, text) = m.tool("list_connections", json!({}));
     assert!(!err, "{text}");
@@ -572,6 +579,9 @@ fn stdio_update_connection() {
     m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
     let toml_of = |cfg: &std::path::Path| std::fs::read_to_string(cfg.join("dataman/connections.toml")).unwrap();
     let list = m.call("tools/list", json!({}));
+    let cc = list["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "create_connection").cloned().unwrap();
+    let user = cc["inputSchema"]["properties"]["user"]["description"].as_str().unwrap_or_default();
+    assert!(user.contains("Redis") && user.contains("MongoDB") && !user.contains("PostgreSQL"), "{user}");
     let uc = list["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "update_connection").cloned().unwrap();
     assert_eq!(uc["inputSchema"]["required"], json!(["connection"]));
     assert_eq!(uc["annotations"]["readOnlyHint"], false, "{uc}");
@@ -579,7 +589,7 @@ fn stdio_update_connection() {
     let (err, text) = m.tool("update_connection", json!({"connection": "local pg", "password": "hunter2", "database": "other"}));
     assert!(!err, "{text}");
     let v: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!((v["id"].as_str(), &v["changed"], v["password"].as_str()), (Some("pg1"), &json!(["database"]), Some("set")), "{text}");
+    assert_eq!((v["id"].as_str(), &v["changed"], v["password"].as_str()), (Some("pg1"), &json!(["database", "password"]), Some("set")), "{text}");
     assert!(!text.contains("hunter2") && !toml_of(cfg.path()).contains("hunter2"));
     let block = block_for(&toml_of(cfg.path()), "local pg").to_string();
     assert!(block.contains("database = \"other\"") && block.contains("save_password = true") && block.contains("port = 55432"), "{block}");
@@ -588,6 +598,8 @@ fn stdio_update_connection() {
     assert!(!err && v["changed"] == json!(["name", "color"]) && v["password"] == "kept", "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "local"}));
     assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["changed"] == json!([]), "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "local", "password": "hunter3"}));
+    assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["changed"] == json!(["password"]), "a new password alone is a change: {text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "local", "host": "10.0.0.9"}));
     assert!(err && text.contains("another server"), "{text}");
     let block = block_for(&toml_of(cfg.path()), "local").to_string();

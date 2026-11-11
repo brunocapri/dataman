@@ -8,7 +8,25 @@ use dataman_core::{ConnFolder, ConnectionProfile, Connection, Core, SshError};
 pub enum ConnState {
     Connecting,
     Connected(Arc<Connection>),
-    Failed(String),
+    /// `msg`: the whole error, as copied; `title` and `body`: as a failed test says it
+    /// (`server_message`), wherever it shows. `needs_password`: the server refused the sign-in;
+    /// `password_tried`: a password went with it (typed, saved, ~/.pgpass's), so a wrong one.
+    Failed { msg: String, title: String, body: String, needs_password: bool, password_tried: bool },
+}
+
+impl ConnState {
+    /// A failure with no more to it than its text (the checks' own).
+    #[cfg(feature = "checks")]
+    pub fn failed_with(msg: String) -> ConnState {
+        let (title, body) = msg.split_once('\n').map_or((msg.clone(), String::new()), |(t, b)| (t.to_string(), b.to_string()));
+        ConnState::Failed { msg, title, body, needs_password: false, password_tried: false }
+    }
+}
+
+/// Whether it may connect without the user asking: a DuckDB file, open, is locked for every
+/// other program.
+fn on_its_own(p: &ConnectionProfile) -> bool {
+    !p.engine.caps().exclusive_lock
 }
 
 pub enum ConnEvent {
@@ -130,7 +148,7 @@ impl ConnStore {
         cx.notify();
         // A cloud token has no password to ask for: its error says what to run instead.
         let token = profile.auth.is_token();
-        let task = self.core.connect(profile, password);
+        let (task, sent) = self.core.connect_telling(profile, password);
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
             let r = task.await;
@@ -164,7 +182,9 @@ impl ConnStore {
                         let needs_password = ssh.is_none() && !token && dataman_core::needs_password(&e);
                         let ssh = ssh.filter(|s| matches!(s, SshError::UnknownHostKey(_) | SshError::SecretNeeded { .. }));
                         let cloud = dataman_core::cloudauth::sign_in_error(&e).filter(|s| s.action.is_some()).cloned();
-                        s.states.insert(id.clone(), ConnState::Failed(msg));
+                        let (title, body, _) = crate::conn_dialog::server_message(&e);
+                        let password_tried = sent.load(std::sync::atomic::Ordering::Relaxed);
+                        s.states.insert(id.clone(), ConnState::Failed { msg, title, body, needs_password, password_tried });
                         if !s.quiet.remove(&id) {
                             cx.emit(ConnEvent::Failed { id, needs_password, ssh, cloud });
                         }
@@ -198,14 +218,50 @@ impl ConnStore {
     }
 
     pub fn connect_quietly(&mut self, ids: &[String], cx: &mut Context<Self>) {
-        if !auto_connect(&self.core) {
-            return;
+        if auto_connect(&self.core) {
+            self.quietly(ids, cx);
         }
-        let ids: Vec<String> = self.profiles.iter().filter(|p| ids.contains(&p.id) && !p.engine.caps().exclusive_lock && !self.states.contains_key(&p.id)).map(|p| p.id.clone()).collect();
+    }
+
+    /// How many connects have started, all connections together.
+    #[cfg(feature = "checks")]
+    pub fn demo_attempts(&self) -> u64 {
+        self.attempts.next
+    }
+
+    /// As Settings › Connections' auto-connect would, which the check stages turn off.
+    #[cfg(feature = "checks")]
+    pub fn demo_connect_quietly(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        self.quietly(ids, cx);
+    }
+
+    fn quietly(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.profiles.iter().filter(|p| ids.contains(&p.id) && on_its_own(p) && !self.states.contains_key(&p.id)).map(|p| p.id.clone()).collect();
         for id in ids {
             self.quiet.insert(id.clone());
             self.connect(&id, None, cx);
         }
+    }
+
+    /// Tried again on its own (a failure shows only where it is listed), whatever auto-connect
+    /// says: it was tried before. One that may not connect on its own (`on_its_own`) only
+    /// forgets its failure.
+    pub fn retry_quietly(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.forget(id, cx);
+        if self.profile(id).is_some_and(on_its_own) {
+            self.quiet.insert(id.to_string());
+            self.connect(id, None, cx);
+        }
+    }
+
+    /// A connect under way starts over (with what is saved now), as quietly as it was.
+    pub fn restart(&mut self, id: &str, cx: &mut Context<Self>) {
+        let quiet = self.quiet.contains(id);
+        self.forget(id, cx);
+        if quiet {
+            self.quiet.insert(id.to_string());
+        }
+        self.connect(id, None, cx);
     }
 
     pub fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -260,7 +316,7 @@ impl crate::app::Workspace {
                 let changed = cx.background_executor().spawn(async move { c.config.refresh() }).await;
                 let alive = if changed {
                     this.update_in(cx, |w, window, cx| {
-                        w.connections_reloaded(window, cx);
+                        w.connections_reloaded(cx);
                         w.check_outside_edits(window, cx);
                     })
                     .is_ok()
@@ -275,30 +331,60 @@ impl crate::app::Workspace {
         .detach();
     }
 
-    pub(crate) fn connections_on_disk(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    /// An agent saved a password for `id`, with whatever else it changed: the list read again,
+    /// and `id` tried once with it (`reload_connections`).
+    pub(crate) fn password_given(&mut self, id: &str, cx: &mut Context<Self>) {
         self.store.read(cx).core.config.refresh();
-        self.connections_reloaded(window, cx);
+        self.reload_connections(Some(id), cx);
+    }
+
+    /// Failed (for want of it, maybe), tried again; still connecting with the old one, started
+    /// over with the new. One attempt either way.
+    fn try_given_password(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.store.read(cx).states.get(id) {
+            Some(ConnState::Failed { .. }) => self.store.update(cx, |s, cx| s.retry_quietly(id, cx)),
+            Some(ConnState::Connecting) => self.store.update(cx, |s, cx| s.restart(id, cx)),
+            Some(ConnState::Connected(_)) | None => {}
+        }
+    }
+
+    pub(crate) fn connections_on_disk(&mut self, cx: &mut Context<Self>) {
+        self.store.read(cx).core.config.refresh();
+        self.connections_reloaded(cx);
     }
 
     /// A live connection whose settings changed reconnects, never ending a transaction: a tab
     /// with one open keeps the old connection until it is done.
-    pub(crate) fn connections_reloaded(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+    pub(crate) fn connections_reloaded(&mut self, cx: &mut Context<Self>) {
+        self.reload_connections(None, cx);
+    }
+
+    /// `given`: a connection an agent just saved a password for (`password_given`).
+    fn reload_connections(&mut self, given: Option<&str>, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.reload_folders(cx));
         let old = self.store.read(cx).profiles.clone();
         let new = self.store.read(cx).core.config.connections();
         if old == new {
+            if let Some(id) = given {
+                self.try_given_password(id, cx);
+            }
             return;
         }
-        let was_empty = old.is_empty();
+        let welcoming = self.first_run(cx);
         self.store.update(cx, |s, cx| s.reload(cx));
         // Saved elsewhere (another Dataman, an agent, the project): connected as the others were.
         let added: Vec<String> = new.iter().filter(|n| !old.iter().any(|o| o.id == n.id)).map(|n| n.id.clone()).collect();
+        self.welcome.update(cx, |w, cx| w.saved_elsewhere(&new, &added, welcoming, cx));
         if !added.is_empty() {
             self.store.update(cx, |s, cx| s.connect_quietly(&added, cx));
         }
         for p in &old {
             let change = edited(p, new.iter().find(|n| n.id == p.id));
             let state = self.store.read(cx).states.get(&p.id).cloned();
+            if given == Some(p.id.as_str()) && change != Edited::Removed && matches!(state, Some(ConnState::Failed { .. } | ConnState::Connecting)) {
+                self.try_given_password(&p.id, cx);
+                continue;
+            }
             let held = self.tabs.iter().any(|t| t.read(cx).tx_open() && t.read(cx).connection().is_some_and(|c| c.profile.id == p.id));
             match (change, state) {
                 (Edited::Same, _) => {}
@@ -309,40 +395,40 @@ impl crate::app::Workspace {
                         }
                     }
                 }
+                // One the welcome still lists came up on its own and was never picked: an edit
+                // (the agent's) brings it back the same way, never moving to it or asking.
                 (Edited::Settings, Some(ConnState::Connected(_))) => {
                     let id = p.id.clone();
+                    let quiet = self.welcome.read(cx).lists(&id);
                     self.store.update(cx, |s, cx| {
                         if held {
                             s.forget(&id, cx);
                         } else {
                             s.disconnect(&id, cx);
                         }
-                        s.connect(&id, None, cx);
-                    });
-                }
-                // Still connecting with the old settings: it starts over with the new ones.
-                (Edited::Settings, Some(ConnState::Connecting)) => {
-                    let id = p.id.clone();
-                    let quiet = self.store.read(cx).quiet.contains(&id);
-                    self.store.update(cx, |s, cx| {
-                        s.forget(&id, cx);
                         if quiet {
                             s.quiet.insert(id.clone());
                         }
                         s.connect(&id, None, cx);
                     });
                 }
+                // Still connecting with the old settings: it starts over with the new ones.
+                (Edited::Settings, Some(ConnState::Connecting)) => self.store.update(cx, |s, cx| s.restart(&p.id, cx)),
                 (Edited::Removed, Some(ConnState::Connected(_))) if !held => self.disconnect(p.id.clone(), cx),
                 (Edited::Removed, Some(ConnState::Connecting)) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
-                (Edited::Settings | Edited::Removed, Some(ConnState::Failed(_))) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
+                // Edited elsewhere after it failed: tried again, quietly, where connections come up
+                // on their own (auto-connect) or the agent's edit is of one the welcome lists.
+                // Otherwise its failure is forgotten, as for any edit.
+                (Edited::Settings, Some(ConnState::Failed { .. })) => {
+                    let again = auto_connect(&self.store.read(cx).core) || self.welcome.read(cx).lists(&p.id);
+                    self.store.update(cx, |s, cx| if again { s.retry_quietly(&p.id, cx) } else { s.forget(&p.id, cx) });
+                }
+                (Edited::Removed, Some(ConnState::Failed { .. })) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
                 _ => {}
             }
         }
         if self.current_conn.as_ref().is_none_or(|id| !new.iter().any(|p| p.id == *id)) {
             self.current_conn = new.first().map(|p| p.id.clone());
-        }
-        if was_empty && !new.is_empty() {
-            self.focus_editor(window, cx);
         }
         if let Some(v) = self.settings_view.clone() {
             v.update(cx, |_, cx| cx.notify());

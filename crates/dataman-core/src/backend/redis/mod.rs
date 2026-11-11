@@ -11,6 +11,25 @@ use crate::nosql::redis::{self as cmd};
 use crate::nosql::{Body, Doc, Docs, Item, ItemKind, Output, Page, Source};
 use crate::ssh::Tunnel;
 
+/// The server's error reply (`-NOAUTH Authentication required.`), whose first word is its code
+/// (`class::of` reads it).
+#[derive(Debug)]
+pub(crate) struct ReplyError(pub(crate) String);
+
+impl ReplyError {
+    pub(crate) fn code(&self) -> &str {
+        self.0.split_whitespace().next().unwrap_or("")
+    }
+}
+
+impl std::fmt::Display for ReplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ReplyError {}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Reply {
     Simple(String),
@@ -214,7 +233,7 @@ impl Client {
     pub(crate) async fn call<S: AsRef<[u8]>>(&self, db: u32, args: &[S]) -> Result<Reply> {
         let mut r = self.raw(db, &[args.iter().map(|a| a.as_ref()).collect()]).await?;
         match r.pop() {
-            Some(Reply::Error(e)) => Err(anyhow!(e)),
+            Some(Reply::Error(e)) => Err(ReplyError(e).into()),
             Some(r) => Ok(r),
             None => Err(anyhow!("no reply")),
         }
@@ -235,7 +254,7 @@ impl Client {
             if c.db != db {
                 write_command(&mut c.io, &[b"SELECT", db.to_string().as_bytes()]).await?;
                 if let Reply::Error(e) = read_reply(&mut c.io).await? {
-                    bail!(e);
+                    return Err(ReplyError(e).into());
                 }
                 c.db = db;
             }
@@ -462,7 +481,7 @@ pub(crate) async fn save(c: &Client, db: &str, key: &str, kind: &str, id: Option
     let e = entry.as_object().ok_or_else(|| anyhow!("an entry is an object, as shown"))?;
     let old = id.as_ref().map(|v| text_of(Some(v), "id")).transpose()?;
     let check = |r: Reply| match r {
-        Reply::Error(e) => Err(anyhow!(e)),
+        Reply::Error(e) => Err(anyhow::Error::from(ReplyError(e))),
         _ => Ok(()),
     };
     match kind {

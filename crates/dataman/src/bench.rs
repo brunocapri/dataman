@@ -186,7 +186,7 @@ fn demo_importable() -> Vec<dataman_core::Importable> {
 fn connected(ws: &Entity<Workspace>, id: &str, cx: &App) -> bool {
     match ws.read(cx).connection_state(id, cx) {
         Some(ConnState::Connected(_)) => true,
-        Some(ConnState::Failed(e)) => panic!("bench: connection failed: {e}"),
+        Some(ConnState::Failed { msg: e, .. }) => panic!("bench: connection failed: {e}"),
         _ => false,
     }
 }

@@ -66,7 +66,7 @@ async fn connected(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext
         pause(cx, 50).await;
         match cx.update(|_, cx| ws.read(cx).connection_state(id, cx)).ok().flatten() {
             Some(ConnState::Connected(_)) => return Ok(()),
-            Some(ConnState::Failed(e)) => return Err(e),
+            Some(ConnState::Failed { msg: e, .. }) => return Err(e),
             _ => {}
         }
     }

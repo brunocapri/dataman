@@ -1736,6 +1736,12 @@ impl QueryTab {
         cx.notify();
     }
 
+    /// Nothing in it yet: not an agent's, never run, no monitor or table, no text. It can be
+    /// given another connection, or to an agent, without losing anything.
+    pub fn pristine(&self, cx: &gpui::App) -> bool {
+        self.agent.is_none() && !self.has_run && self.monitor.is_none() && self.table.is_none() && self.editor.read(cx).text().trim().is_empty()
+    }
+
     pub fn adopt(&mut self, conn: Arc<Connection>, cx: &mut Context<Self>) {
         let db = self.want.take().and_then(|(_, db)| db);
         let waiting = self.waiting.take();

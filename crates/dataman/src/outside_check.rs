@@ -93,7 +93,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let shop = ConnectionProfile { id: "shop".into(), mcp: Some(McpAccess::Read), ..ConnectionProfile::new_file(Engine::Sqlite, db.display().to_string()) };
     let shop = ConnectionProfile { name: "Shop".into(), ..shop };
     core.config.upsert(shop.clone()).unwrap();
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.connections_on_disk(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.connections_on_disk(cx)));
     until(cx, 5, |cx| names(ws, cx).contains(&"Shop".to_string())).await;
 
     let outside = || ConfigStore::open(&core.dirs).unwrap();

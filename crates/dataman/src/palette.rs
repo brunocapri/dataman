@@ -881,6 +881,7 @@ impl Workspace {
                 window.dispatch_action(action, cx);
             }
             ItemKind::Connection { id } => {
+                self.leave_welcome(cx);
                 let connected = self.store.read(cx).connection(&id);
                 self.current_conn = Some(id.clone());
                 match connected {
@@ -995,7 +996,7 @@ impl Workspace {
             let (sub, connected) = match state {
                 Some(ConnState::Connected(c)) => (format!("connected · {} · {}", c.database(), c.info.short_version()), true),
                 Some(ConnState::Connecting) => ("connecting…".to_string(), false),
-                Some(ConnState::Failed(_)) => ("failed".to_string(), false),
+                Some(ConnState::Failed { .. }) => ("failed".to_string(), false),
                 None => ("not connected".to_string(), false),
             };
             items.push(Item {

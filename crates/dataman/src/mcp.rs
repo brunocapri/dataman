@@ -70,6 +70,7 @@ pub(crate) enum FrontMsg {
     Tab(crate::agent::TabMsg),
     OpenTx { connection_id: String, reply: oneshot::Sender<Vec<String>> },
     ConnectionsChanged,
+    PasswordGiven(String),
     Show { place: dataman_mcp::Place, reply: oneshot::Sender<Result<(), String>> },
 }
 
@@ -149,6 +150,10 @@ impl Front for AppFront {
 
     fn connections_changed(&self) {
         let _ = self.tx.send(FrontMsg::ConnectionsChanged);
+    }
+
+    fn password_given(&self, id: &str) {
+        let _ = self.tx.send(FrontMsg::PasswordGiven(id.to_string()));
     }
 
     fn show(&self, place: dataman_mcp::Place) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
@@ -336,10 +341,13 @@ fn arrived(m: FrontMsg, cx: &mut App) {
             let _ = reply.send(titles);
         }
         FrontMsg::ConnectionsChanged => {
-            if let Some((ws, window)) = workspace(cx) {
-                let _ = window.update(cx, |_, window, cx| {
-                    let _ = ws.update(cx, |w, cx| w.connections_on_disk(window, cx));
-                });
+            if let Some((ws, _)) = workspace(cx) {
+                let _ = ws.update(cx, |w, cx| w.connections_on_disk(cx));
+            }
+        }
+        FrontMsg::PasswordGiven(id) => {
+            if let Some((ws, _)) = workspace(cx) {
+                let _ = ws.update(cx, |w, cx| w.password_given(&id, cx));
             }
         }
         FrontMsg::Show { place, reply } => {
@@ -383,12 +391,8 @@ impl Workspace {
         match place {
             Place::NewConnection(p) => self.open_dialog_with(Some(*p), true, None, window, cx),
             Place::Connection(id) => {
-                let p = saved(self, &id, cx)?;
-                if p.save_password || p.auth.is_token() || p.engine.is_file() {
-                    self.open_dialog(Some(id), window, cx);
-                } else {
-                    self.open_dialog_for_password(id, window, cx);
-                }
+                saved(self, &id, cx)?;
+                self.open_connection_sheet(id, window, cx);
             }
             Place::Protection(id) => {
                 saved(self, &id, cx)?;
@@ -459,7 +463,7 @@ impl Workspace {
             {
                 log::warn!("saving the allowed queries: {e:#}");
             }
-            self.connections_on_disk(window, cx);
+            self.connections_on_disk(cx);
         }
         self.mcp_answer(true, window, cx);
     }

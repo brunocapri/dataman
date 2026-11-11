@@ -36,7 +36,7 @@ async fn tip_error(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext
                 let _ = core.save_connection(p, None, None);
                 w.store.update(cx, |s, cx| {
                     s.reload(cx);
-                    s.states.insert(id.clone(), crate::conns::ConnState::Failed(long.clone()));
+                    s.states.insert(id.clone(), crate::conns::ConnState::failed_with(long.clone()));
                 });
                 id
             })
@@ -1311,14 +1311,14 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     });
     for _ in 0..100 {
         pause(cx, 50).await;
-        if cx.update(|_, cx| matches!(ws.read(cx).store.read(cx).states.get(&off), Some(crate::conns::ConnState::Failed(_)))).unwrap_or(true) {
+        if cx.update(|_, cx| matches!(ws.read(cx).store.read(cx).states.get(&off), Some(crate::conns::ConnState::Failed { .. }))).unwrap_or(true) {
             break;
         }
     }
     let _ = cx.update(|_, cx| {
         ws.update(cx, |w, cx| {
             w.store.update(cx, |s, cx| {
-                s.states.insert(off.clone(), crate::conns::ConnState::Failed(long.clone()));
+                s.states.insert(off.clone(), crate::conns::ConnState::failed_with(long.clone()));
                 cx.notify();
             })
         })

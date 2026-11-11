@@ -3,11 +3,10 @@
 //! never into connections.toml.
 
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task,
     Window, actions, div, prelude::*,
 };
 use crate::theme::{Pt, px};
@@ -15,7 +14,7 @@ use dataman_core::config::Engine;
 use dataman_core::server::{FLAVORS, Flavor};
 use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
 use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode, connstr};
-use dataman_mcp::agents::{self, AGENTS, Added, Listing};
+use dataman_mcp::agents::{self, AGENTS, Added};
 
 const ENGINES: [Engine; 10] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") {
@@ -329,6 +328,8 @@ pub struct ConnDialog {
     str_bad: bool,
     /// A password is really saved for this connection.
     saved_pw: bool,
+    /// The sheet opened on a sign-in refused with the saved password: that one is not kept.
+    refused: bool,
     /// What the string gave for each: compared with the fields for the note under them.
     str_user: Option<String>,
     str_pw: Option<String>,
@@ -368,7 +369,7 @@ pub struct ConnDialog {
     body_scroll: gpui::ScrollHandle,
     /// A field that took the focus, to scroll to once it has been drawn.
     reveal: Option<Entity<TextInput>>,
-    agents: Option<Arc<Listing>>,
+    agents: Option<ui::Agents>,
     agent_adds: [AgentAdd; AGENTS.len()],
     copied: ui::CopiedFlash,
 }
@@ -533,7 +534,7 @@ impl ConnDialog {
                 };
                 let (pw, ssh) = (there("password", pw), there("SSH secret", ssh));
                 let _ = this.update(cx, |d, cx| {
-                    d.saved_pw = pw;
+                    d.saved_pw = pw && !d.refused;
                     if pw && !d.password_needed {
                         d.password.update(cx, |t, cx| t.set_placeholder(SAVED_IN, cx));
                     }
@@ -571,6 +572,7 @@ impl ConnDialog {
             conn_str,
             str_bad: false,
             saved_pw: false,
+            refused: false,
             str_user: None,
             str_pw: None,
             auto_name: None,
@@ -865,6 +867,23 @@ impl ConnDialog {
         self.test(cx);
     }
 
+    /// The saved connection's last connect failed: said as a failed test says it
+    /// (`server_message`'s words, kept when it failed), the password field marked when the
+    /// sign-in was refused.
+    pub fn show_failure(&mut self, title: &str, body: &str, password: bool, cx: &mut Context<Self>) {
+        if password {
+            // The saved one is what was refused: not offered to keep ("Keep user & password"),
+            // even once the Keychain's answer comes in.
+            (self.saved_pw, self.refused) = (false, true);
+            self.password.update(cx, |p, cx| {
+                p.set_text("", cx);
+                p.error = true;
+            });
+        }
+        self.test = Test::Failed { title: title.to_string(), body: body.to_string() };
+        cx.notify();
+    }
+
     pub fn set_host_key(&mut self, prompt: HostKeyPrompt, cx: &mut Context<Self>) {
         self.ssh.on = true;
         self.test = Test::HostKey(prompt);
@@ -1148,15 +1167,9 @@ impl ConnDialog {
             // Not laid out yet: the next frame is.
             return window.request_animation_frame();
         };
-        let view = self.body_scroll.bounds();
-        let mut at = self.body_scroll.offset();
-        let label = px(24.);
-        if b.top() - label < view.top() {
-            at.y += view.top() - (b.top() - label);
-        } else if b.bottom() + px(8.) > view.bottom() {
-            at.y -= b.bottom() + px(8.) - view.bottom();
+        if let Some(at) = ui::scrolled_to(&self.body_scroll, b, px(24.), px(8.)) {
+            self.body_scroll.set_offset(at);
         }
-        self.body_scroll.set_offset(at);
         self.reveal = None;
     }
 
@@ -1657,12 +1670,12 @@ impl ConnDialog {
 
     #[cfg(feature = "checks")]
     pub fn demo_installed(&self, id: &str) -> Option<bool> {
-        self.agents.as_ref()?.rows.iter().find(|r| r.agent.id == id).map(|r| r.installed)
+        self.agents.as_ref()?.listing.rows.iter().find(|r| r.agent.id == id).map(|r| r.installed)
     }
 
     #[cfg(feature = "checks")]
     pub fn demo_copy(&self, id: &str) -> Option<String> {
-        self.agents.as_ref()?.rows.iter().find(|r| r.agent.id == id).map(|r| r.copy.clone())
+        self.agents.as_ref()?.listing.rows.iter().find(|r| r.agent.id == id).map(|r| r.copy.clone())
     }
 
     #[cfg(feature = "checks")]
@@ -1941,18 +1954,11 @@ impl ConnDialog {
         if self.agents.is_some() {
             return;
         }
-        cx.spawn(async move |this, cx| {
-            let found = cx.background_executor().spawn(async { Listing::here() }).await;
-            let _ = this.update(cx, |d, cx| {
-                d.agents = Some(found);
-                cx.notify();
-            });
-        })
-        .detach();
+        ui::find_agents(cx, "agent-copy", |d: &mut Self, found| d.agents = Some(found));
     }
 
     fn add_agent(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(listing) = self.agents.clone() else { return };
+        let Some(listing) = self.agents.as_ref().map(|a| a.listing.clone()) else { return };
         if self.agent_adds[i] == AgentAdd::Adding {
             return;
         }
@@ -2354,11 +2360,10 @@ impl ConnDialog {
     }
 
     fn agent_rows(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let listing = self.agents.as_ref()?;
-        let rows = listing.rows.iter().map(|r| {
+        let agents = self.agents.as_ref()?;
+        let rows = agents.listing.rows.iter().enumerate().map(|(at, r)| {
             let (i, a) = (r.index, r.agent);
             let state = &self.agent_adds[i];
-            let logo = if a.mono { crate::assets::agent_logo_mono(a.logo).text_color(t.tx).into_any_element() } else { gpui::img(a.logo).flex_none().size(px(16.)).into_any_element() };
             let status = match state {
                 AgentAdd::Done => Some((if a.waits { "◌" } else { "●" }, if a.waits { t.tx3 } else { t.ok }, t.tx, a.done, a.done.to_string())),
                 AgentAdd::Failed(why) => Some(("✕", t.tx3, t.tx3, "Could not add", why.clone())),
@@ -2386,32 +2391,8 @@ impl ConnDialog {
                 };
                 ui::probe(id, b.h(px(24.)))
             });
-            let copy_id = format!("agent-copy-{}", a.id);
-            let text = r.copy.clone();
-            let copy = ui::copy_button(t, SharedString::from(copy_id.clone()), Btn::Ghost, "Copy", self.copied.on(&copy_id, cx))
-                .h(px(24.))
-                .tip(ui::text_tooltip(format!("{}: {}", a.copy_hint, r.copy)))
-                .on_click({
-                    let copy_id = copy_id.clone();
-                    cx.listener(move |d, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                        d.copied.start(copy_id.clone(), cx);
-                    })
-                });
-            let name = div().flex_1().min_w_0().text_size(px(crate::theme::text::BODY)).text_color(if r.installed { t.tx } else { t.tx3 }).child(a.label);
-            div()
-                .h(px(36.))
-                .flex_none()
-                .px(px(8.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .child(div().flex_none().mr(px(2.)).when(!r.installed, |d| d.opacity(0.45)).child(logo))
-                .child(name)
-                .children(status)
-                .children(add)
-                .child(ui::probe(copy_id, copy))
+            let between = status.map(IntoElement::into_any_element).into_iter().chain(add);
+            ui::agent_row(t, agents, at, between, &self.copied, |d: &mut Self| &mut d.copied, cx)
         });
         Some(div().flex().flex_col().gap(px(8.)).child(caption(t, "ADD TO YOUR AGENTS")).child(div().mx(px(-8.)).flex().flex_col().children(rows)))
     }
