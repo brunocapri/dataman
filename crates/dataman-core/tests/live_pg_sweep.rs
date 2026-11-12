@@ -1201,9 +1201,9 @@ fn types_without_binary_output() {
         "SELECT * FROM pg_ls_waldir() LIMIT 1",
         "SELECT '1'::regclass::oid, (SELECT array_agg(c) FROM pg_class c LIMIT 1)",
     ]
-    // Before PostgreSQL 13 a catalog's row type has no array type.
+    // Before PostgreSQL 14 a catalog's row type has no array type.
     .into_iter()
-    .filter(|q| c.info.major() >= 13 || !q.contains("array_agg(c) FROM pg_class"))
+    .filter(|q| c.info.major() >= 14 || !q.contains("array_agg(c) FROM pg_class"))
     {
         let rs = s.execute(q);
         let ph = finish(&e, &rs);

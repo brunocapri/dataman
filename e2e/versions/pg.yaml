@@ -91,6 +91,8 @@ services:
   pg-18:
     <<: *pg
     image: postgres:18
+    # From 18 the image keeps its data under /var/lib/postgresql/18, and refuses a mount at …/data.
+    tmpfs: [/var/lib/postgresql]
     ports: ["127.0.0.1:54118:5432"]
     labels:
       dataman.url: postgres://postgres:dataman@127.0.0.1:54118/dataman?sslmode=disable

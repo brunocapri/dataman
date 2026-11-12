@@ -123,7 +123,7 @@ fn recursive_ctes_and_lateral() {
              CYCLE id SET looped USING path
              SELECT id, looped FROM walk ORDER BY path",
         );
-        assert_eq!(cells(&rows), [["1", "f"], ["2", "f"], ["3", "f"], ["1", "t"]]);
+        assert_eq!(cells(&rows), [["1", "false"], ["2", "false"], ["3", "false"], ["1", "true"]]);
     }
 }
 
@@ -131,8 +131,8 @@ fn recursive_ctes_and_lateral() {
 fn json_aggregates() {
     let Some(t) = target(Engine::Postgres) else { return };
     let rows = t.rows(
-        "SELECT jsonb_agg(x ORDER BY x DESC), json_agg(x ORDER BY x), jsonb_object_agg('k' || x, x * 1.5), json_object_agg(x, NULL),
-                jsonb_build_object('a', array_agg(x), 'n', NULL, 'q', 'it''s \"x\"'), jsonb_agg(DISTINCT x % 2)
+        "SELECT jsonb_agg(x ORDER BY x DESC), json_agg(x ORDER BY x), jsonb_object_agg('k' || x, x * 1.5), json_object_agg(x, NULL ORDER BY x),
+                jsonb_build_object('a', array_agg(x ORDER BY x), 'n', NULL, 'q', 'it''s \"x\"'), jsonb_agg(DISTINCT x % 2)
          FROM generate_series(1, 3) x",
     );
     assert_eq!(
@@ -428,4 +428,30 @@ fn activity_reads_this_session() {
     t.e.core.block_on(t.c.activity_locks(&db)).unwrap();
     t.e.core.block_on(t.c.activity_tables(&db, true)).unwrap();
     t.e.core.block_on(t.c.activity_statements(&db)).unwrap();
+}
+
+/// A catalog the login may not read is an error, never an empty list kept as the truth.
+#[test]
+fn a_refused_catalog_is_an_error() {
+    let Some(t) = target(Engine::Postgres) else { return };
+    if t.yugabyte() {
+        // Its catalog's grants are its own; the rest of the battery covers it.
+        return;
+    }
+    t.ok("DROP ROLE IF EXISTS dv_pg_lowly");
+    t.ok("CREATE ROLE dv_pg_lowly LOGIN PASSWORD 'lowly'");
+    t.ok("REVOKE SELECT ON pg_catalog.pg_roles, pg_catalog.pg_extension FROM PUBLIC");
+    let p = dataman_core::ConnectionProfile { user: "dv_pg_lowly".into(), ..t.c.profile.clone() };
+    let low = t.e.core.block_on(t.e.core.connect(p, Some("lowly".into())));
+    let refused = low.as_ref().map(|low| (t.e.core.block_on(low.roles()).map_err(|e| format!("{e:#}")), t.e.core.block_on(low.extensions(low.database())).map_err(|e| format!("{e:#}")))).map_err(|e| format!("{e:#}"));
+    t.ok("GRANT SELECT ON pg_catalog.pg_roles, pg_catalog.pg_extension TO PUBLIC");
+    let low = low.unwrap();
+    let (roles, exts) = refused.unwrap();
+    assert!(roles.as_ref().is_err_and(|e| e.contains("permission denied")), "{roles:?}");
+    assert!(exts.as_ref().is_err_and(|e| e.contains("permission denied")), "{exts:?}");
+    // The refusal was not kept: readable again, they list.
+    assert!(t.e.core.block_on(low.roles()).is_ok_and(|r| r.iter().any(|r| r.name == "dv_pg_lowly")));
+    assert!(t.e.core.block_on(low.extensions(low.database())).is_ok_and(|x| x.iter().any(|x| x.name == "plpgsql")));
+    drop(low);
+    t.ok("DROP ROLE dv_pg_lowly");
 }
