@@ -107,3 +107,57 @@ services:
       dataman.expect: MariaDB 11.8.
       dataman.env: DATAMAN_MYSQL=127.0.0.1:33118 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33118/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33118 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
       dataman.tests: *flavor-tests
+  percona-5-7:
+    <<: *mysql
+    image: percona/percona-server:5.7
+    # It runs as its own user, not root: the tmpfs must let it write.
+    tmpfs: ["/var/lib/mysql:mode=1777"]
+    platform: linux/amd64
+    ports: ["127.0.0.1:33185:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33185/?ssl-mode=disabled
+      dataman.expect: Percona Server 5.7.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33185 DATAMAN_PERCONA=mysql://root:dataman-root@127.0.0.1:33185/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33185 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  percona-8-0:
+    <<: *mysql
+    image: percona/percona-server:8.0
+    # It runs as its own user, not root: the tmpfs must let it write.
+    tmpfs: ["/var/lib/mysql:mode=1777"]
+    ports: ["127.0.0.1:33188:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33188/?ssl-mode=disabled
+      dataman.expect: Percona Server 8.0.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33188 DATAMAN_PERCONA=mysql://root:dataman-root@127.0.0.1:33188/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33188 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  # vttestserver (amd64 only): vtgate's MySQL port is its --port + 3. It takes any password.
+  vitess:
+    image: vitess/vttestserver:mysql80
+    platform: linux/amd64
+    command: /vt/bin/vttestserver --port=33574 --mysql_bind_host=0.0.0.0 --keyspaces=dataman --num_shards=1 --schema_dir=/schema
+    volumes: ["../vitess/unsharded:/schema:ro"]
+    ports: ["127.0.0.1:33197:33577"]
+    healthcheck:
+      test: mysql -h 127.0.0.1 -P 33577 -u root -e 'SELECT 1'
+      interval: 3s
+      retries: 100
+    labels:
+      dataman.url: mysql://root:x@127.0.0.1:33197/dataman?ssl-mode=disabled
+      dataman.expect: Vitess
+      dataman.env: DATAMAN_VITESS=127.0.0.1:33197 DATAMAN_VITESS_SHARDED=127.0.0.1:9
+      dataman.tests: live_versions live_vitess
+  vitess-sharded:
+    image: vitess/vttestserver:mysql80
+    platform: linux/amd64
+    command: /vt/bin/vttestserver --port=33574 --mysql_bind_host=0.0.0.0 --keyspaces=dataman --num_shards=2 --schema_dir=/schema
+    volumes: ["../vitess/sharded:/schema:ro"]
+    ports: ["127.0.0.1:33198:33577"]
+    healthcheck:
+      test: mysql -h 127.0.0.1 -P 33577 -u root -e 'SELECT 1'
+      interval: 3s
+      retries: 100
+    labels:
+      dataman.url: mysql://root:x@127.0.0.1:33198/dataman?ssl-mode=disabled
+      dataman.expect: Vitess
+      dataman.env: DATAMAN_VITESS=127.0.0.1:9 DATAMAN_VITESS_SHARDED=127.0.0.1:33198
+      dataman.tests: live_versions live_vitess
