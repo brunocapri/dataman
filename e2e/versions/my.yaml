@@ -145,7 +145,9 @@ services:
       dataman.url: mysql://root:x@127.0.0.1:33197/dataman?ssl-mode=disabled
       dataman.expect: Vitess
       dataman.env: DATAMAN_VITESS=127.0.0.1:33197 DATAMAN_VITESS_SHARDED=127.0.0.1:9
-      dataman.tests: live_versions live_vitess
+      # Not live_versions: its databases are keyspaces, and with more than one vtgate takes no
+      # unqualified view DDL, which live_vitess runs here (the sharded one runs both).
+      dataman.tests: live_vitess
   vitess-sharded:
     image: vitess/vttestserver:mysql80
     platform: linux/amd64

@@ -6,6 +6,7 @@ use super::*;
 use dataman_core::Session;
 use dataman_core::bounded::{Limits, Mode};
 use dataman_core::schema::{ConstraintKind, RelKind};
+use dataman_core::server::Flavor;
 
 fn mysql() -> Option<Target> {
     target(Engine::MySql)
@@ -21,11 +22,17 @@ impl Target {
         self.c.info.release >= v
     }
 
-    /// A database of the test's own, empty, on a session that stays on it.
-    fn scratch(&self, name: &str) -> Arc<Session> {
+    fn vitess(&self) -> bool {
+        self.c.info.flavor == Flavor::Vitess
+    }
+
+    /// A database of the test's own, empty, on a session that stays on it, dropped when the
+    /// test ends. On Vitess each one is a keyspace of its own, which vttestserver drops halfway
+    /// ("database not found", a closed connection): there they stay until the server goes.
+    fn scratch(&self, name: &str) -> Scratch<'_> {
         self.ok(&format!("DROP DATABASE IF EXISTS {name}"));
         self.ok(&format!("CREATE DATABASE {name}"));
-        self.c.session(Some(name))
+        Scratch { t: self, name: name.to_string(), s: self.c.session(Some(name)) }
     }
 
     pub(crate) fn on(&self, s: &Arc<Session>, sql: &str) -> Arc<ResultSet> {
@@ -44,6 +51,31 @@ impl Target {
         self.e.core.block_on(async { tokio::time::timeout(Duration::from_secs(120), rs.wait_finished()).await.expect("timeout") });
         assert_eq!(rs.phase(), Phase::Failed, "{sql} ran");
         rs.status().error.expect("an error")
+    }
+}
+
+struct Scratch<'a> {
+    t: &'a Target,
+    name: String,
+    s: Arc<Session>,
+}
+
+impl std::ops::Deref for Scratch<'_> {
+    type Target = Arc<Session>;
+    fn deref(&self) -> &Arc<Session> {
+        &self.s
+    }
+}
+
+impl Drop for Scratch<'_> {
+    fn drop(&mut self) {
+        if self.t.vitess() {
+            return;
+        }
+        let rs = self.t.run(&format!("DROP DATABASE IF EXISTS {}", self.name));
+        if rs.phase() != Phase::Done && !std::thread::panicking() {
+            panic!("{} stays: {:?}", self.name, rs.status().error);
+        }
     }
 }
 
@@ -103,7 +135,7 @@ fn rollup_group_concat_and_variables() {
         assert_eq!(strs(rows.last().unwrap()), ["NULL", "NULL", "1", "1", "10"]);
         assert_eq!(rows.len(), 4 + 3 + 1, "{rows:?}");
     }
-    t.on(&s, "SET @total := 0, @label := 'sum: '");
+    t.on(&s, "SET @total = 0, @label = 'sum: '");
     let rows = cells(&t.on(&s, "SELECT CONCAT(@label, SUM(qty)), @total IS NULL FROM sales"));
     assert_eq!(strs(&rows[0]), ["sum: 10", "0"]);
     // A user variable comes back as the type it holds.
@@ -165,10 +197,10 @@ fn json_functions_by_release() {
     } else {
         t.fails_on(&s, agg);
     }
-    // JSON_TABLE: MySQL 8.0.4, MariaDB 10.6.
+    // JSON_TABLE: MySQL 8.0.4, MariaDB 10.6; vtgate plans none.
     let table = "SELECT jt.id, jt.name, jt.tag FROM JSON_TABLE('[{\"id\": 1, \"name\": \"x\", \"tags\": [\"p\", \"q\"]}, {\"id\": 2, \"name\": null}]', \
                  '$[*]' COLUMNS (id INT PATH '$.id', name VARCHAR(10) PATH '$.name', NESTED PATH '$.tags[*]' COLUMNS (tag VARCHAR(5) PATH '$'))) AS jt ORDER BY jt.id, jt.tag";
-    if t.at_least(if t.mariadb() { (10, 6, 0) } else { (8, 0, 4) }) {
+    if t.at_least(if t.mariadb() { (10, 6, 0) } else { (8, 0, 4) }) && !t.vitess() {
         let rows = cells(&t.on(&s, table));
         let got: Vec<Vec<&str>> = rows.iter().map(|r| strs(r)).collect();
         assert_eq!(got, [["1", "x", "p"], ["1", "x", "q"], ["2", "NULL", "NULL"]]);
@@ -186,6 +218,11 @@ fn a_call_with_several_result_sets() {
     t.on(&s, SALES);
     t.on(&s, SALES_ROWS);
     t.on(&s, "CREATE PROCEDURE two_sets(IN r VARCHAR(8)) BEGIN SELECT product, qty FROM sales WHERE region = r ORDER BY product; SELECT COUNT(*) AS n, SUM(price) FROM sales; END");
+    // vtgate refuses a procedure's several sets (and says so).
+    if t.vitess() {
+        assert_eq!(t.fails_on(&s, "CALL two_sets('east')").code.as_deref(), Some("1235"));
+        return;
+    }
     let all = sets(&t, s.execute("CALL two_sets('east')"));
     assert_eq!(all.len(), 2, "{:?}", all.iter().map(|r| r.columns()).collect::<Vec<_>>());
     assert_eq!(cells(&all[0]).iter().map(|r| strs(r).join(",")).collect::<Vec<_>>(), ["a,1", "b,2"]);
