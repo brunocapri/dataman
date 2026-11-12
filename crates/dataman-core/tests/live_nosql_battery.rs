@@ -220,7 +220,10 @@ fn mongodb_battery() {
     b.expect("aggregate with options", "db.orders.aggregate([{$sort: {total: -1}}, {$limit: 1}], {allowDiskUse: true})", |o| n_docs(o, 1));
     b.expect("aggregate stages as arguments", "db.orders.aggregate({$match: {n: 1}}, {$project: {n: 1}})", |o| n_docs(o, 1));
     b.expect("paging an aggregation", "db.orders.aggregate([{$sort: {n: 1}}])", |o| { let d = docs(o)?; if d.more && d.docs.len() == 50 { Ok(()) } else { Err(format!("{} more {}", d.docs.len(), d.more)) } });
-    b.expect("db.aggregate $documents", "db.aggregate([{$documents: [{x: 1}, {x: 2}]}])", |o| n_docs(o, 2));
+    // `$documents` from 5.1 (5.0 refuses it in user requests).
+    if b.c.info.release >= (5, 1, 0) {
+        b.expect("db.aggregate $documents", "db.aggregate([{$documents: [{x: 1}, {x: 2}]}])", |o| n_docs(o, 2));
+    }
     b.expect("distinct nested", "db.people.distinct('address.city')", |o| { let v = json_of(o)?; if v.as_array().map(Vec::len) == Some(4) { Ok(()) } else { Err(v.to_string()) } });
     b.expect("distinct with filter", "db.people.distinct('skills', {vip: true})", |o| json_of(o).map(|_| ()));
     b.expect("explain", "db.orders.find({status: 'paid'}).explain('executionStats')", |o| text_has(o, "executionStats"));
