@@ -28,11 +28,13 @@ for a in "$@"; do
   case "$a" in --list) list=1 ;; *) filters+=("$a") ;; esac
 done
 
-# One line per service: file, name, url, expect, env, tests (tab separated).
+# One line per service: file, name, url, expect, env, tests. Separated by US (0x1f), which is not
+# whitespace to `read`, so an empty label keeps its field.
+sep=$'\x1f'
 services() {
   for f in e2e/versions/*.yaml; do
     docker compose -f "$f" config --format json | jq -r --arg f "$f" '.services | to_entries[] |
-      [$f, .key, .value.labels["dataman.url"], .value.labels["dataman.expect"] // "", .value.labels["dataman.env"] // "", .value.labels["dataman.tests"]] | @tsv'
+      [$f, .key, .value.labels["dataman.url"], .value.labels["dataman.expect"] // "", .value.labels["dataman.env"] // "", .value.labels["dataman.tests"]] | join("\u001f")'
   done
 }
 
@@ -43,18 +45,18 @@ picked() {
 }
 
 rows=()
-while IFS=$'\t' read -r file svc url expect env tests; do
-  picked "$svc" && rows+=("$file"$'\t'"$svc"$'\t'"$url"$'\t'"$expect"$'\t'"$env"$'\t'"$tests")
+while IFS=$sep read -r file svc url expect env tests; do
+  picked "$svc" && rows+=("$file$sep$svc$sep$url$sep$expect$sep$env$sep$tests")
 done < <(services)
 [ ${#rows[@]} -eq 0 ] && { echo "no service matches: ${filters[*]}" >&2; exit 2; }
 
 if [ $list = 1 ]; then
-  for r in "${rows[@]}"; do IFS=$'\t' read -r file svc url expect env tests <<<"$r"; printf '%-16s %-28s %s\n' "$svc" "$expect" "$tests"; done
+  for r in "${rows[@]}"; do IFS=$sep read -r file svc url expect env tests <<<"$r"; printf '%-16s %-28s %s\n' "$svc" "$expect" "$tests"; done
   exit 0
 fi
 
 # Every test binary any picked service needs, built before a server starts.
-all_tests=$(for r in "${rows[@]}"; do IFS=$'\t' read -r _ _ _ _ _ tests <<<"$r"; echo $tests; done | tr ' ' '\n' | sort -u)
+all_tests=$(for r in "${rows[@]}"; do IFS=$sep read -r _ _ _ _ _ tests <<<"$r"; echo $tests; done | tr ' ' '\n' | sort -u)
 targs=()
 for t in $all_tests; do targs+=(--test "$t"); done
 cargo test -p dataman-core "${targs[@]}" --no-run -q
@@ -62,7 +64,7 @@ cargo test -p dataman-core "${targs[@]}" --no-run -q
 summary=()
 failed=0
 for r in "${rows[@]}"; do
-  IFS=$'\t' read -r file svc url expect env tests <<<"$r"
+  IFS=$sep read -r file svc url expect env tests <<<"$r"
   start=$SECONDS
   out="$log/$svc.log"
   result=ok
