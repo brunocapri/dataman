@@ -119,6 +119,18 @@ fn create(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile) -> (AgentLogi
     (live::record(p, &rv.plan, &opts()), rv.password.clone(), rv)
 }
 
+/// Below the release the login's steps need (MySQL 8.0.21, MariaDB 10.5) the review refuses
+/// before any step runs, and says why: the test has nothing more to try there.
+fn below_mysql_floor(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile) -> bool {
+    let floor = if admin.info.is_mariadb() { (10, 5, 0) } else { (8, 0, 21) };
+    if admin.info.release >= floor {
+        return false;
+    }
+    let rv = e.core.block_on(live::review(admin, p, &opts())).unwrap();
+    assert!(!rv.probe.can_create && rv.plan.lacks.iter().any(|l| l.contains("or later is needed")), "{}: {:?}", admin.info.version, rv.plan.lacks);
+    true
+}
+
 fn as_agent(e: &Env, p: &ConnectionProfile, user: &str, password: &str) -> Result<Arc<Connection>, String> {
     connect(e, &live::agent_profile(p, user), password)
 }
@@ -339,6 +351,9 @@ fn mysql() {
     let user = agent_login::login_name(&p.id);
     let space = agent_login::space_of(&user);
     let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
+    if below_mysql_floor(&e, &root, &p) {
+        return;
+    }
     let rs = root.session(None);
     for sql in [
         "DROP DATABASE IF EXISTS au_shop".to_string(),
@@ -955,6 +970,9 @@ fn mysql_redteam() {
     let user = agent_login::login_name(&p.id);
     let space = agent_login::space_of(&user);
     let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
+    if below_mysql_floor(&e, &root, &p) {
+        return;
+    }
     let rs = root.session(None);
     // MariaDB has no mandatory roles.
     let maria = root.info.is_mariadb();

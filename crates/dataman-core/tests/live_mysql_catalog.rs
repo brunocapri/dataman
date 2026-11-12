@@ -36,7 +36,9 @@ fn explorer_levels_and_objects() {
     let tier = cols.iter().find(|c| c.name == "tier").unwrap();
     assert_eq!(tier.type_name, "enum('bronze','silver','gold')");
     assert_eq!((tier.nullable, tier.default.as_deref()), (Some(false), Some("'bronze'")));
-    assert_eq!(cols.iter().find(|c| c.name == "code").unwrap().type_name, "bigint unsigned");
+    // An integer's display width, as the server keeps it: gone from MySQL 8.0.19, never on MariaDB.
+    let widths = c.info.is_mariadb() || c.info.release < (8, 0, 19);
+    assert_eq!(cols.iter().find(|c| c.name == "code").unwrap().type_name, if widths { "bigint(20) unsigned" } else { "bigint unsigned" });
     let idx = e.core.block_on(c.indexes(db, db, "orders")).unwrap();
     assert!(idx[0].primary, "{idx:?}");
     let st = idx.iter().find(|i| i.name == "orders_status_idx").unwrap();
@@ -47,7 +49,8 @@ fn explorer_levels_and_objects() {
     assert_eq!((counts.functions, counts.triggers, counts.sequences), (Some(2), Some(1), None));
     let fs = e.core.block_on(c.functions(db, db)).unwrap();
     let p = fs.iter().find(|f| f.name == "customer_orders").unwrap();
-    assert_eq!((p.kind, p.identity.as_str(), p.arg_types.clone()), (FuncKind::Procedure, "IN c int", vec!["int".to_string()]));
+    let int = if widths { "int(11)" } else { "int" };
+    assert_eq!((p.kind, p.identity.clone(), p.arg_types.clone()), (FuncKind::Procedure, format!("IN c {int}"), vec![int.to_string()]));
     let f = fs.iter().find(|f| f.name == "customer_total").unwrap();
     assert_eq!((f.kind, f.result.as_deref()), (FuncKind::Function, Some("decimal(12,2)")));
     let def = e.core.block_on(c.routine_definition(db, db, f)).unwrap().unwrap();

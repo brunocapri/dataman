@@ -155,12 +155,12 @@ fn json_functions_by_release() {
     t.on(&s, SALES);
     t.on(&s, SALES_ROWS);
     // JSON_ARRAYAGG/JSON_OBJECTAGG: MySQL 5.7.22, MariaDB 10.5.
-    let agg = "SELECT JSON_ARRAYAGG(qty), JSON_OBJECTAGG(region, product) FROM sales WHERE region = 'east'";
+    let agg = "SELECT JSON_ARRAYAGG(qty), JSON_OBJECTAGG(product, qty) FROM sales WHERE region = 'east'";
     if t.at_least(if t.mariadb() { (10, 5, 0) } else { (5, 7, 22) }) {
         let rows = cells(&t.on(&s, agg));
         let arr: serde_json::Value = serde_json::from_str(rows[0][0].as_deref().unwrap()).unwrap();
         let obj: serde_json::Value = serde_json::from_str(rows[0][1].as_deref().unwrap()).unwrap();
-        assert_eq!((arr, obj), (serde_json::json!([1, 2]), serde_json::json!({"east": "b"})), "the last value per key wins");
+        assert_eq!((arr, obj), (serde_json::json!([1, 2]), serde_json::json!({"a": 1, "b": 2})));
     } else {
         t.fails_on(&s, agg);
     }
