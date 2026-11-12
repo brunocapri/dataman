@@ -995,8 +995,18 @@ fn mysql_redteam() {
     }
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
-    verify_all(&e, &agent, &rv);
-    if !maria {
+    // MySQL 9 turns mandatory roles on at every login (`activate_mandatory_roles`): Verify must
+    // then find the hidden table read, as the review warned.
+    let active = !maria && ok(&e, &rs, "SHOW GLOBAL VARIABLES LIKE 'activate_mandatory_roles'").first().is_some_and(|r| r[1].as_deref() == Some("ON"));
+    if active {
+        let checks = e.core.block_on(live::verify(&agent, &rv.spec, &rv.inventory, &rv.probe)).unwrap();
+        let bad: Vec<_> = checks.iter().filter(|c| !c.ok).map(|c| (c.what.as_str(), c.on.as_str())).collect();
+        assert_eq!(bad, [("Can't read hidden tables", "au_rt.secrets")], "{checks:?}");
+        ok(&e, &rs, "SET GLOBAL mandatory_roles = ''");
+    } else {
+        verify_all(&e, &agent, &rv);
+    }
+    if !maria && !active {
         let g = agent.session(None);
         ok(&e, &g, "SET ROLE 'au_reader'");
         assert_eq!(first(&ok(&e, &g, "SELECT s FROM au_rt.secrets")), "top-secret", "what mandatory_roles gives, said in the review");

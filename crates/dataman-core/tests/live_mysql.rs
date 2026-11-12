@@ -134,14 +134,16 @@ fn streams_pauses_and_fetches_all() {
     ok(&e, &s, "SET SESSION cte_max_recursion_depth = 2000000");
     let t0 = Instant::now();
     let rs = s.execute(
-        "WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g",
+        "WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, SHA2(n, 256) AS h, n % 7 = 0 AS seven FROM g",
     );
+    // MySQL 9.7 dropped MD5() and SHA1(): a statement that fails never pauses.
     e.core.block_on(async {
         let mut rx = rs.subscribe();
-        while rs.phase() != Phase::Paused {
+        while rs.phase() != Phase::Paused && !rs.phase().is_finished() {
             rx.changed().await.unwrap();
         }
     });
+    assert_eq!(rs.phase(), Phase::Paused, "{:?}", rs.status().error);
     let first_pause = t0.elapsed();
     let loaded = rs.rows();
     assert!((PREFETCH..PREFETCH + 2 * dataman_core::result::CHUNK).contains(&loaded), "{loaded}");
@@ -157,10 +159,11 @@ fn streams_pauses_and_fetches_all() {
     let big = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n FROM g");
     e.core.block_on(async {
         let mut rx = big.subscribe();
-        while big.phase() != Phase::Paused {
+        while big.phase() != Phase::Paused && !big.phase().is_finished() {
             rx.changed().await.unwrap();
         }
     });
+    assert_eq!(big.phase(), Phase::Paused, "{:?}", big.status().error);
     let next = ok(&e, &s, "SELECT 'next'");
     assert_eq!(next.snapshot().text(0, 0).as_deref(), Some("next"));
     assert!(big.phase().is_finished());
@@ -176,7 +179,7 @@ fn bench_fetch_all() {
     let mut times = Vec::new();
     for _ in 0..n {
         let t0 = Instant::now();
-        let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g");
+        let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, SHA2(n, 256) AS h, n % 7 = 0 AS seven FROM g");
         rs.fetch_all();
         e.core.block_on(rs.wait_finished());
         assert_eq!(rs.rows(), 1_000_000);
