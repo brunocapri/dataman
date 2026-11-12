@@ -415,7 +415,9 @@ fn catalog_reads_what_the_server_has() {
         .unwrap();
     assert_eq!(out.rows.len(), 2);
     assert_eq!(out.rows[1][1], Value::String("b c".into()));
-    assert_eq!(out.rows[0][2].to_string().trim_matches('"'), "3.00");
+    // As the server keeps it (YugabyteDB drops the scale of a stored numeric: 3, not 3.00).
+    let twice = t.one(&format!("SELECT twice::text FROM {sc}.t WHERE id = 1")).unwrap();
+    assert_eq!(out.rows[0][2].to_string().trim_matches('"'), twice);
     t.ok(&format!("DROP SCHEMA {sc} CASCADE"));
 }
 

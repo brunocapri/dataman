@@ -133,5 +133,6 @@ services:
     labels:
       dataman.url: postgres://yugabyte@127.0.0.1:54130/yugabyte?sslmode=disable
       dataman.expect: YugabyteDB 2026.1
-      dataman.env: DATAMAN_YUGABYTE=postgres://yugabyte@127.0.0.1:54130/yugabyte?sslmode=disable
+      # One test at a time: DDL in one session fails another's statements with 40001 there.
+      dataman.env: DATAMAN_YUGABYTE=postgres://yugabyte@127.0.0.1:54130/yugabyte?sslmode=disable RUST_TEST_THREADS=1
       dataman.tests: live_versions live_flavors
