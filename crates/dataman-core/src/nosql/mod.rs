@@ -396,7 +396,7 @@ async fn run_script(conn: Arc<Connection>, client: Arc<mongo::Client>, db: Strin
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
         .name("dataman-js".into())
-        .stack_size(64 << 20)
+        .stack_size(js::STACK)
         .spawn(move || {
             let _ = tx.send(js::run(&text, &db, &class, Box::new(server), page));
         })
