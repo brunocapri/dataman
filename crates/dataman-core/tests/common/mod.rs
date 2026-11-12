@@ -145,6 +145,12 @@ pub fn exec(e: &Env, c: &Arc<Connection>, sqls: &[&str]) {
     }
 }
 
+/// What DROP DATABASE … WITH (FORCE) does, before PostgreSQL 13 had it: the sessions on `db`
+/// end (DROP DATABASE then waits a few seconds for them to go).
+pub fn end_sessions_on(db: &str) -> String {
+    format!("SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE datname = '{db}' AND pid <> pg_backend_pid()")
+}
+
 pub fn exec_quiet(e: &Env, c: &Arc<Connection>, sqls: &[&str]) {
     let s = c.session(None);
     for sql in sqls {
