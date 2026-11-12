@@ -28,7 +28,7 @@ impl Target {
         self.c.session(Some(name))
     }
 
-    fn on(&self, s: &Arc<Session>, sql: &str) -> Arc<ResultSet> {
+    pub(crate) fn on(&self, s: &Arc<Session>, sql: &str) -> Arc<ResultSet> {
         let rs = s.execute(sql);
         rs.fetch_all();
         self.e.core.block_on(async { tokio::time::timeout(Duration::from_secs(120), rs.wait_finished()).await.expect("timeout") });
@@ -38,7 +38,7 @@ impl Target {
         rs
     }
 
-    fn fails_on(&self, s: &Arc<Session>, sql: &str) -> ErrorInfo {
+    pub(crate) fn fails_on(&self, s: &Arc<Session>, sql: &str) -> ErrorInfo {
         let rs = s.execute(sql);
         rs.fetch_all();
         self.e.core.block_on(async { tokio::time::timeout(Duration::from_secs(120), rs.wait_finished()).await.expect("timeout") });
@@ -47,18 +47,18 @@ impl Target {
     }
 }
 
-fn cells(rs: &ResultSet) -> Vec<Vec<Option<String>>> {
+pub(crate) fn cells(rs: &ResultSet) -> Vec<Vec<Option<String>>> {
     let cols = rs.columns().map_or(0, |c| c.len());
     let s = rs.snapshot();
     (0..s.rows()).map(|r| (0..cols).map(|c| s.text(r, c).map(|t| t.into_owned())).collect()).collect()
 }
 
-fn strs(row: &[Option<String>]) -> Vec<&str> {
+pub(crate) fn strs(row: &[Option<String>]) -> Vec<&str> {
     row.iter().map(|c| c.as_deref().unwrap_or("NULL")).collect()
 }
 
 /// Every result set a statement sent, the first one included.
-fn sets(t: &Target, first: Arc<ResultSet>) -> Vec<Arc<ResultSet>> {
+pub(crate) fn sets(t: &Target, first: Arc<ResultSet>) -> Vec<Arc<ResultSet>> {
     let mut out = vec![first];
     loop {
         let cur = out.last().unwrap().clone();

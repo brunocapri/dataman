@@ -1,0 +1,56 @@
+# SQL Server's releases: see scripts/versions.sh. Every image is amd64 only (Rosetta on Apple
+# silicon). Its data stays in the container (SQL Server needs O_DIRECT, which tmpfs lacks) and
+# goes with it. DATAMAN_PG and DATAMAN_MYSQL point at a closed port so the suites' other engines
+# skip instead of reaching the shared e2e servers.
+name: dataman-versions
+
+x-tests: &tests >-
+  live_versions live_mssql live_mssql_catalog live_mssql_ddl live_mssql_edit live_mssql_lint
+  live_mssql_results live_mssql_sweep live_mssql_types live_my_ms_complete live_estimate
+  live_weird_names live_new_row live_agent_scan live_agent_login
+
+x-mssql: &mssql
+  platform: linux/amd64
+  environment:
+    ACCEPT_EULA: "Y"
+    MSSQL_PID: Developer
+    MSSQL_SA_PASSWORD: Dataman-sa-1!
+    MSSQL_MEMORY_LIMIT_MB: "2048"
+  healthcheck:
+    test: /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Dataman-sa-1!' -b -Q 'SELECT 1'
+    interval: 3s
+    retries: 100
+
+services:
+  mssql-2017:
+    <<: *mssql
+    image: mcr.microsoft.com/mssql/server:2017-latest
+    # 2017 keeps the older sqlcmd, which has no -C (it trusts the certificate by default).
+    healthcheck:
+      test: /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P 'Dataman-sa-1!' -b -Q 'SELECT 1'
+      interval: 3s
+      retries: 100
+    ports: ["127.0.0.1:14317:1433"]
+    labels:
+      dataman.url: sqlserver://sa:Dataman-sa-1!@127.0.0.1:14317/master?encrypt=true&trustServerCertificate=true
+      dataman.expect: SQL Server 2017
+      dataman.env: DATAMAN_MSSQL=127.0.0.1:14317 DATAMAN_PG=127.0.0.1:9 DATAMAN_MYSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MSSQL=127.0.0.1:14317 DATAMAN_AU_MSSQL_PASSWORD=Dataman-sa-1!
+      dataman.tests: *tests
+  mssql-2019:
+    <<: *mssql
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    ports: ["127.0.0.1:14319:1433"]
+    labels:
+      dataman.url: sqlserver://sa:Dataman-sa-1!@127.0.0.1:14319/master?encrypt=true&trustServerCertificate=true
+      dataman.expect: SQL Server 2019
+      dataman.env: DATAMAN_MSSQL=127.0.0.1:14319 DATAMAN_PG=127.0.0.1:9 DATAMAN_MYSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MSSQL=127.0.0.1:14319 DATAMAN_AU_MSSQL_PASSWORD=Dataman-sa-1!
+      dataman.tests: *tests
+  mssql-2025:
+    <<: *mssql
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    ports: ["127.0.0.1:14325:1433"]
+    labels:
+      dataman.url: sqlserver://sa:Dataman-sa-1!@127.0.0.1:14325/master?encrypt=true&trustServerCertificate=true
+      dataman.expect: SQL Server 2025
+      dataman.env: DATAMAN_MSSQL=127.0.0.1:14325 DATAMAN_PG=127.0.0.1:9 DATAMAN_MYSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MSSQL=127.0.0.1:14325 DATAMAN_AU_MSSQL_PASSWORD=Dataman-sa-1!
+      dataman.tests: *tests
