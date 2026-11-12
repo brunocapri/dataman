@@ -1,4 +1,5 @@
 # PostgreSQL's older releases and the servers that speak its protocol: see scripts/versions.sh.
+# Ports 541xx. Data in memory (tmpfs); pg-shop.sql seeds the tables the plans of live_explain read.
 name: dataman-versions
 
 x-pg: &pg
@@ -6,12 +7,27 @@ x-pg: &pg
     POSTGRES_PASSWORD: dataman
     POSTGRES_DB: dataman
   tmpfs: [/var/lib/postgresql/data]
+  volumes: ["./pg-shop.sql:/docker-entrypoint-initdb.d/shop.sql:ro"]
+  # Over TCP: the entrypoint's first server, while the seed loads, listens on its socket only.
   healthcheck:
-    test: pg_isready -U postgres -d dataman
+    test: pg_isready -h 127.0.0.1 -U postgres -d dataman
     interval: 2s
-    retries: 60
+    retries: 150
+
+x-suites: &suites live_versions live_pg_sweep live_ddl live_explain live_activity live_objects live_estimate live_agent_guard
 
 services:
+  # Below the floor: only its refusal is checked.
+  pg-11:
+    <<: *pg
+    image: postgres:11
+    ports: ["127.0.0.1:54111:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54111/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 11.
+      dataman.env: DATAMAN_VERSIONS_REFUSED=1
+      dataman.tests: live_versions
+
   pg-12:
     <<: *pg
     image: postgres:12
@@ -20,4 +36,100 @@ services:
       dataman.url: postgres://postgres:dataman@127.0.0.1:54112/dataman?sslmode=disable
       dataman.expect: PostgreSQL 12.
       dataman.env: DATAMAN_PG=127.0.0.1:54112
-      dataman.tests: live_versions live_pg_sweep live_ddl live_explain live_activity live_objects live_estimate live_agent_guard
+      dataman.tests: *suites
+
+  pg-13:
+    <<: *pg
+    image: postgres:13
+    ports: ["127.0.0.1:54113:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54113/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 13.
+      dataman.env: DATAMAN_PG=127.0.0.1:54113
+      dataman.tests: *suites
+
+  pg-14:
+    <<: *pg
+    image: postgres:14
+    ports: ["127.0.0.1:54114:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54114/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 14.
+      dataman.env: DATAMAN_PG=127.0.0.1:54114
+      dataman.tests: *suites
+
+  pg-15:
+    <<: *pg
+    image: postgres:15
+    ports: ["127.0.0.1:54115:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54115/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 15.
+      dataman.env: DATAMAN_PG=127.0.0.1:54115
+      dataman.tests: *suites
+
+  pg-16:
+    <<: *pg
+    image: postgres:16
+    ports: ["127.0.0.1:54116:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54116/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 16.
+      dataman.env: DATAMAN_PG=127.0.0.1:54116
+      dataman.tests: *suites
+
+  pg-17:
+    <<: *pg
+    image: postgres:17
+    ports: ["127.0.0.1:54117:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54117/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 17.
+      dataman.env: DATAMAN_PG=127.0.0.1:54117
+      dataman.tests: *suites
+
+  pg-18:
+    <<: *pg
+    image: postgres:18
+    ports: ["127.0.0.1:54118:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54118/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 18.
+      dataman.env: DATAMAN_PG=127.0.0.1:54118
+      dataman.tests: *suites
+
+  timescale-2.9:
+    <<: *pg
+    image: timescale/timescaledb:2.9.3-pg13
+    ports: ["127.0.0.1:54120:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54120/dataman?sslmode=disable
+      dataman.expect: TimescaleDB 2.9
+      dataman.env: DATAMAN_PG=127.0.0.1:54120 DATAMAN_TIMESCALE=postgres://postgres:dataman@127.0.0.1:54120/dataman?sslmode=disable
+      dataman.tests: live_flavors live_versions live_pg_sweep live_ddl live_explain live_activity live_objects live_estimate live_agent_guard
+
+  timescale-2.32:
+    <<: *pg
+    image: timescale/timescaledb:2.32.0-pg17
+    ports: ["127.0.0.1:54121:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54121/dataman?sslmode=disable
+      dataman.expect: TimescaleDB 2.32
+      dataman.env: DATAMAN_PG=127.0.0.1:54121 DATAMAN_TIMESCALE=postgres://postgres:dataman@127.0.0.1:54121/dataman?sslmode=disable
+      dataman.tests: live_flavors live_versions live_pg_sweep live_ddl live_explain live_activity live_objects live_estimate live_agent_guard
+
+  # Its own server (no POSTGRES_* nor seed): the batteries, and what tells it apart.
+  yugabyte-2026.1:
+    image: yugabytedb/yugabyte:2026.1.3.0-b100
+    command: [bin/yugabyted, start, --background=false]
+    ports: ["127.0.0.1:54130:5433"]
+    tmpfs: [/root/var]
+    healthcheck:
+      test: bin/ysqlsh -h $$(hostname) -c 'SELECT 1'
+      interval: 3s
+      retries: 100
+    labels:
+      dataman.url: postgres://yugabyte@127.0.0.1:54130/yugabyte?sslmode=disable
+      dataman.expect: YugabyteDB 2026.1
+      dataman.env: DATAMAN_YUGABYTE=postgres://yugabyte@127.0.0.1:54130/yugabyte?sslmode=disable
+      dataman.tests: live_versions live_flavors
