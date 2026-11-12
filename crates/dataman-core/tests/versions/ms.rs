@@ -42,7 +42,7 @@ fn cube_grouping_sets_pivot_and_string_agg() {
     assert_eq!(got.last().unwrap(), &["NULL", "NULL", "10", "3"]);
     assert_eq!(got.len(), 4 + 3 + 1);
     let rows = cells(&t.on(&s, "SELECT COUNT(*) FROM (SELECT region, product FROM sales GROUP BY CUBE (region, product)) c"));
-    assert_eq!(rows[0][0].as_deref(), Some("12"));
+    assert_eq!(rows[0][0].as_deref(), Some("11"), "4 pairs, 3 regions, 3 products, the total");
     let rows = cells(&t.on(
         &s,
         "SELECT region, [a], [b], [c] FROM (SELECT region, product, qty FROM sales) s PIVOT (SUM(qty) FOR product IN ([a], [b], [c])) p ORDER BY region",
@@ -117,7 +117,7 @@ fn output_messages_and_several_result_sets() {
     t.on(&s, "CREATE PROCEDURE two_sets AS BEGIN SET NOCOUNT ON; PRINT N'first'; SELECT region FROM sales WHERE qty > 5 ORDER BY region; RAISERROR(N'between %d', 0, 1, 7) WITH NOWAIT; SELECT COUNT(*) AS n FROM sales; END");
     let all = sets(&t, s.execute("EXEC two_sets"));
     assert_eq!(all.len(), 2);
-    assert_eq!(cells(&all[0]).iter().map(|r| strs(r).join("")).collect::<Vec<_>>(), ["east", "west", "west"]);
+    assert_eq!(cells(&all[0]).iter().map(|r| strs(r).join("")).collect::<Vec<_>>(), ["east", "east"], "east's after the UPDATE");
     assert_eq!(cells(&all[1])[0][0].as_deref(), Some("5"));
     let messages: Vec<String> = all.iter().flat_map(|r| r.messages().0.iter().cloned().collect::<Vec<_>>()).collect();
     assert!(messages.iter().any(|m| m.contains("first")) && messages.iter().any(|m| m.contains("between 7")), "{messages:?}");
