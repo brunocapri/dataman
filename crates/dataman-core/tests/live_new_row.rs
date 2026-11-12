@@ -168,13 +168,19 @@ fn mysql() {
         &[
             "CREATE TABLE nr_cols (id bigint AUTO_INCREMENT PRIMARY KEY, calc int AS (c + 1), a varchar(5) NOT NULL, b varchar(5), c int NOT NULL DEFAULT 1, d timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP)",
             "CREATE TABLE nr_char (id char(36) NOT NULL PRIMARY KEY, n int NOT NULL)",
-            "CREATE TABLE nr_gen (id char(36) NOT NULL PRIMARY KEY DEFAULT (uuid()))",
         ],
     );
+    // An expression default: MySQL 8.0.13, MariaDB 10.2.
+    let expr_default = c.info.is_mariadb() || c.info.release >= (8, 0, 13);
+    if expr_default {
+        exec(&e, &c, &["CREATE TABLE nr_gen (id char(36) NOT NULL PRIMARY KEY DEFAULT (uuid()))"]);
+    }
     assert_eq!(case.blanks("nr_cols"), [Blank::Default, Blank::Default, Blank::Required, Blank::Null, Blank::Default, Blank::Default]);
     assert_eq!(case.offered("nr_char"), None, "MySQL has no UUID type: a char(36) is only text");
     assert_eq!(case.blanks("nr_char"), [Blank::Required, Blank::Required]);
-    assert_eq!(case.blanks("nr_gen"), [Blank::Default]);
+    if expr_default {
+        assert_eq!(case.blanks("nr_gen"), [Blank::Default]);
+    }
     exec(&e, &c0, &[&format!("DROP DATABASE {db}")]);
 }
 

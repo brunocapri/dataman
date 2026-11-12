@@ -801,12 +801,10 @@ impl Connection {
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::MySql {
                 let client = this.meta(&db).await?;
-                let qs = my::constraints_sql(&schema, &rel);
                 let mut cons: Vec<Constraint> = Vec::new();
-                for q in &qs {
-                    if let Ok(rows) = first_ok(&client, &[q]).await {
-                        cons.extend(rows.iter().filter_map(|r| my::parse_constraint(&schema, r)));
-                    }
+                for q in my::constraints_sql(&schema, &rel, my::keeps_checks(&this.info)) {
+                    let rows = uncached(first_ok(&client, &[&q]).await, "constraints")?;
+                    cons.extend(rows.iter().filter_map(|r| my::parse_constraint(&schema, r)));
                 }
                 cons.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
                 t.constraints = Some(cons);

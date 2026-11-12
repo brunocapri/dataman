@@ -183,7 +183,16 @@ fn routine_scripts_without_delimiter() {
     for st in &stmts {
         eprintln!("--- {}", src[st.range.clone()].lines().next().unwrap_or(""));
     }
-    let bad = script(&e, &s, src);
+    // MySQL 5.7 has no CTE, window or JSON_TABLE, MariaDB no JSON_TABLE before 10.6: there those
+    // fail as syntax, and only those.
+    let (maria, release) = (c.info.is_mariadb(), c.info.release);
+    let lacks: &[&str] = match () {
+        _ if !maria && release < (8, 0, 0) => &["WITH RECURSIVE", " OVER (", "JSON_TABLE("],
+        _ if maria && release < (10, 6, 0) => &["JSON_TABLE("],
+        _ => &[],
+    };
+    let unknown = |sql: &str, err: &str| lacks.iter().any(|k| sql.contains(k)) && err.contains("\"1064\"");
+    let bad: Vec<_> = script(&e, &s, src).into_iter().filter(|(sql, err)| !unknown(sql, err)).collect();
     for b in &bad {
         eprintln!("FAIL {:?}", b);
     }
