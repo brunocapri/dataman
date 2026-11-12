@@ -3,7 +3,7 @@
 
 use super::my::{cells, sets, strs};
 use super::*;
-use dataman_core::Session;
+use dataman_core::{Session, TxStatus};
 use dataman_core::bounded::{Limits, Mode};
 
 fn mssql() -> Option<Target> {
@@ -217,4 +217,38 @@ fn the_agent_read_path_on_odd_types() {
     assert_eq!(o.rows[0][3], serde_json::json!("2024-01-02"));
     let o = read("SELECT qty FROM sales ORDER BY qty", Limits { max_rows: 2, ..Default::default() });
     assert_eq!((o.rows.len(), o.truncated.is_some()), (2, true));
+}
+
+/// SHOWPLAN, FMTONLY, NOEXEC and PARSEONLY make the server compile what it is sent and run none of
+/// it, Dataman's own state query after each statement included: the session (and the open
+/// transaction on it) must outlive them.
+#[test]
+fn options_that_run_nothing_keep_the_session() {
+    let Some(t) = mssql() else { return };
+    let s = scratch(&t, "dataman_v_noexec");
+    t.on(&s, "CREATE TABLE n (id INT)");
+    let spid = cells(&t.on(&s, "SELECT @@SPID"))[0][0].clone();
+    t.on(&s, "BEGIN TRAN");
+    t.on(&s, "INSERT INTO n VALUES (1)");
+    t.on(&s, "SET SHOWPLAN_XML ON");
+    let plan = cells(&t.on(&s, "SELECT id FROM n"));
+    assert!(plan[0][0].as_deref().is_some_and(|x| x.starts_with("<ShowPlanXML")), "{plan:?}");
+    t.on(&s, "SET SHOWPLAN_XML OFF");
+    t.on(&s, "SET SHOWPLAN_ALL ON");
+    assert!(t.on(&s, "SELECT id FROM n").columns().unwrap().len() > 3);
+    t.on(&s, "SET SHOWPLAN_ALL OFF");
+    t.on(&s, "SET FMTONLY ON");
+    let rs = t.on(&s, "SELECT id, 2 AS two FROM n");
+    assert_eq!((rs.columns().unwrap().len(), rs.rows()), (2, 0));
+    t.on(&s, "SET FMTONLY OFF");
+    t.on(&s, "SET NOEXEC ON");
+    assert_eq!(t.on(&s, "SELECT id FROM n").rows(), 0);
+    t.on(&s, "SET NOEXEC OFF");
+    t.on(&s, "SET PARSEONLY ON");
+    t.on(&s, "SET PARSEONLY OFF");
+    assert_eq!(s.tx().status, TxStatus::Open);
+    let rows = cells(&t.on(&s, "SELECT @@SPID, @@TRANCOUNT, (SELECT COUNT(*) FROM n)"));
+    assert_eq!(rows[0], [spid, Some("1".into()), Some("1".into())], "the same session, its transaction and its row");
+    t.on(&s, "ROLLBACK");
+    assert_eq!(s.tx().status, TxStatus::Idle);
 }
