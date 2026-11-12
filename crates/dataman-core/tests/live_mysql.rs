@@ -31,7 +31,7 @@ fn connects_and_decodes_every_type() {
     let Some(c) = mysql_seeded(&e, "dataman_t_types") else { return };
     assert_eq!(c.engine(), Engine::MySql);
     assert_eq!(c.dialect(), Dialect::MySql);
-    assert!(c.info.version.starts_with("MySQL ") || c.info.version.starts_with("MariaDB "), "{}", c.info.version);
+    assert!(["MySQL ", "MariaDB ", "Percona Server "].iter().any(|p| c.info.version.starts_with(p)), "{}", c.info.version);
     assert_eq!(c.info.database, "dataman_t_types");
     assert_eq!(c.info.user, "root");
     assert!(!c.caps().schemas);
@@ -41,6 +41,9 @@ fn connects_and_decodes_every_type() {
     let rs = ok(&e, &s, "SELECT id, name, tier, balance, created, profile, photo, code, tags, birth_date, at_time, yr, flags, score, weight FROM customer ORDER BY id");
     let cols = rs.columns().unwrap();
     let kinds: Vec<Kind> = cols.iter().map(|c| c.kind).collect();
+    // MariaDB's JSON is a LONGTEXT: only its extended metadata says json, which the driver
+    // doesn't read.
+    let json = if c.info.is_mariadb() { Kind::Text } else { Kind::Json };
     assert_eq!(
         kinds,
         vec![
@@ -49,7 +52,7 @@ fn connects_and_decodes_every_type() {
             Kind::Text,
             Kind::Numeric,
             Kind::Timestamp,
-            Kind::Json,
+            json,
             Kind::Bytes,
             Kind::Numeric,
             Kind::Text,

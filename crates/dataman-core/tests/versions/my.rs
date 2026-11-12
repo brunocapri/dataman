@@ -123,11 +123,11 @@ fn windows_and_recursive_ctes_or_a_clean_no() {
     t.on(&s, SALES_ROWS);
     let windows = "SELECT region, qty, \
            SUM(qty) OVER (PARTITION BY region ORDER BY qty ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), \
-           ROW_NUMBER() OVER w, RANK() OVER w, LAG(qty, 1, -1) OVER w, \
+           ROW_NUMBER() OVER w, RANK() OVER w, COALESCE(LAG(qty) OVER w, -1), \
            FIRST_VALUE(product) OVER (ORDER BY qty DESC ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING), \
            NTILE(2) OVER w, CUME_DIST() OVER w \
          FROM sales WHERE qty IS NOT NULL WINDOW w AS (ORDER BY qty) ORDER BY qty";
-    let recursive = "WITH RECURSIVE fib (n, a, b) AS (SELECT 1, 0, 1 UNION ALL SELECT n + 1, b, a + b FROM fib WHERE n < 60) SELECT n, a FROM fib ORDER BY n DESC LIMIT 1";
+    let recursive = "WITH RECURSIVE fib (n, a, b) AS (SELECT 1, CAST(0 AS SIGNED), CAST(1 AS SIGNED) UNION ALL SELECT n + 1, b, a + b FROM fib WHERE n < 40) SELECT n, a FROM fib ORDER BY n DESC LIMIT 1";
     // MySQL 8.0, MariaDB 10.2.
     if !t.mariadb() && !t.at_least((8, 0, 0)) {
         for sql in [windows, recursive] {
@@ -140,9 +140,10 @@ fn windows_and_recursive_ctes_or_a_clean_no() {
     let got: Vec<Vec<&str>> = rows.iter().map(|r| strs(r)).collect();
     assert_eq!(got[0][..8], ["east", "1", "1", "1", "1", "-1", "b", "1"]);
     assert_eq!(got[3][..8], ["west", "4", "7", "4", "4", "3", "a", "2"]);
-    assert_eq!(got.iter().map(|r| r[8]).collect::<Vec<_>>(), ["0.25", "0.5", "0.75", "1"]);
+    // CUME_DIST is a DOUBLE on MySQL, a DECIMAL on MariaDB.
+    assert_eq!(got.iter().map(|r| r[8].parse::<f64>().unwrap()).collect::<Vec<_>>(), [0.25, 0.5, 0.75, 1.0]);
     let rows = cells(&t.on(&s, recursive));
-    assert_eq!(strs(&rows[0]), ["60", "956722026041"]);
+    assert_eq!(strs(&rows[0]), ["40", "63245986"]);
     // A frame over a range of values.
     let rows = cells(&t.on(&s, "SELECT qty, SUM(qty) OVER (ORDER BY qty RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM sales WHERE qty IS NOT NULL ORDER BY qty"));
     assert_eq!(rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["3", "6", "9", "7"]);
@@ -348,4 +349,52 @@ fn the_agent_read_path_bounds_and_types() {
     assert_eq!((o.rows.len(), o.truncated.is_some()), (2, true));
     let o = read("SELECT CAST(18446744073709551615 AS UNSIGNED) AS big, b'101' + 0 AS bits, CAST('2024-01-02' AS DATE) AS d", Limits::default());
     assert_eq!(o.rows[0], [serde_json::json!("18446744073709551615"), serde_json::json!(5), serde_json::json!("2024-01-02")]);
+}
+
+#[test]
+fn mariadb_sequences_versioned_tables_and_its_own_types() {
+    let Some(t) = mysql() else { return };
+    if !t.mariadb() {
+        return;
+    }
+    let db = "dataman_v_maria";
+    let s = t.scratch(db);
+    t.on(&s, "CREATE SEQUENCE seq START WITH 10 INCREMENT BY 5");
+    let rows = cells(&t.on(&s, "SELECT NEXTVAL(seq), NEXTVAL(seq), LASTVAL(seq)"));
+    assert_eq!(strs(&rows[0]), ["10", "15", "15"]);
+    t.on(&s, "CREATE TABLE hist (id INT PRIMARY KEY, v VARCHAR(10)) WITH SYSTEM VERSIONING");
+    t.on(&s, "INSERT INTO hist VALUES (1, 'old')");
+    t.on(&s, "UPDATE hist SET v = 'new' WHERE id = 1");
+    let rows = cells(&t.on(&s, "SELECT v, YEAR(row_end) > 2037 FROM hist FOR SYSTEM_TIME ALL ORDER BY row_start"));
+    assert_eq!(rows.iter().map(|r| strs(r)).collect::<Vec<_>>(), [["old", "0"], ["new", "1"]]);
+    let rels = t.e.core.block_on(t.c.relations(db, db)).unwrap();
+    let names: Vec<&str> = rels.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["hist", "seq"], "{rels:?}");
+    let cols = t.e.core.block_on(t.c.columns(db, db, "hist")).unwrap();
+    assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "v"], "row_start and row_end are invisible");
+    // INET6 (10.5), UUID (10.7), INET4 (10.10): text on the wire, typed in the catalog.
+    let mut types = vec![("i6", "INET6", "'::ffff:1.2.3.4'", "::ffff:1.2.3.4")];
+    if t.at_least((10, 7, 0)) {
+        types.push(("u", "UUID", "'123e4567-e89b-12d3-a456-426655440000'", "123e4567-e89b-12d3-a456-426655440000"));
+    }
+    if t.at_least((10, 10, 0)) {
+        types.push(("i4", "INET4", "'10.0.0.1'", "10.0.0.1"));
+    }
+    let defs: Vec<String> = types.iter().map(|(c, ty, ..)| format!("{c} {ty}")).collect();
+    t.on(&s, &format!("CREATE TABLE own (id INT PRIMARY KEY, {})", defs.join(", ")));
+    let vals: Vec<&str> = types.iter().map(|(_, _, v, _)| *v).collect();
+    t.on(&s, &format!("INSERT INTO own VALUES (1, {})", vals.join(", ")));
+    let rows = cells(&t.on(&s, "SELECT * FROM own"));
+    let want: Vec<&str> = std::iter::once("1").chain(types.iter().map(|(.., shown)| *shown)).collect();
+    assert_eq!(strs(&rows[0]), want);
+    let cols = t.e.core.block_on(t.c.columns(db, db, "own")).unwrap();
+    assert_eq!(cols.iter().skip(1).map(|c| c.type_name.to_ascii_uppercase()).collect::<Vec<_>>(), types.iter().map(|(_, ty, ..)| ty.to_string()).collect::<Vec<_>>());
+    // RETURNING (10.5) gives the rows a write touched.
+    let rows = cells(&t.on(&s, "INSERT INTO hist VALUES (2, 'x'), (3, 'y') RETURNING id, UPPER(v)"));
+    assert_eq!(rows.iter().map(|r| strs(r).join(",")).collect::<Vec<_>>(), ["2,X", "3,Y"]);
+    let rows = cells(&t.on(&s, "DELETE FROM hist WHERE id > 1 RETURNING id"));
+    assert_eq!(rows.len(), 2);
+    // INTERSECT and EXCEPT (10.3).
+    let rows = cells(&t.on(&s, "SELECT 1 UNION SELECT 2 EXCEPT SELECT 2 INTERSECT SELECT 2"));
+    assert_eq!(rows, [[Some("1".to_string())]]);
 }

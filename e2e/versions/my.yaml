@@ -17,6 +17,12 @@ x-mysql: &mysql
     interval: 2s
     retries: 150
 
+x-flavor-tests: &flavor-tests >-
+  live_versions live_flavors live_mysql live_mysql_catalog live_mysql_ddl live_mysql_edit
+  live_mysql_results live_mysql_types live_mysql_sweep live_mysql_lint live_my_ms_complete
+  live_estimate live_weird_names live_new_row live_agent live_agent_guard live_agent_scan
+  live_agent_login
+
 x-mariadb: &mariadb
   environment:
     MARIADB_ROOT_PASSWORD: dataman-root
@@ -55,3 +61,49 @@ services:
       dataman.expect: MySQL 9.
       dataman.env: DATAMAN_MYSQL=127.0.0.1:33190 DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33190 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
       dataman.tests: *tests
+  # Below MariaDB's floor (10.6): it must work or fail clean.
+  mariadb-10-5:
+    <<: *mariadb
+    image: mariadb:10.5
+    ports: ["127.0.0.1:33105:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33105/?ssl-mode=disabled
+      dataman.expect: MariaDB 10.5.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33105 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33105/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33105 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-10-6:
+    <<: *mariadb
+    image: mariadb:10.6
+    ports: ["127.0.0.1:33106:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33106/?ssl-mode=disabled
+      dataman.expect: MariaDB 10.6.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33106 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33106/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33106 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-10-11:
+    <<: *mariadb
+    image: mariadb:10.11
+    ports: ["127.0.0.1:33111:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33111/?ssl-mode=disabled
+      dataman.expect: MariaDB 10.11.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33111 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33111/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33111 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-11-4:
+    <<: *mariadb
+    image: mariadb:11.4
+    ports: ["127.0.0.1:33114:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33114/?ssl-mode=disabled
+      dataman.expect: MariaDB 11.4.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33114 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33114/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33114 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-11-8:
+    <<: *mariadb
+    image: mariadb:11.8
+    ports: ["127.0.0.1:33118:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33118/?ssl-mode=disabled
+      dataman.expect: MariaDB 11.8.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33118 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33118/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33118 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests

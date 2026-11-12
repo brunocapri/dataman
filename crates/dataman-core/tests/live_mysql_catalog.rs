@@ -120,7 +120,9 @@ fn foreign_keys_and_the_data_view() {
     assert_eq!(n, 1);
     let est = e.core.block_on(c.estimate_rows(db, db, "customer")).unwrap();
     assert!(est.is_some(), "TABLE_ROWS after ANALYZE");
-    let j = Filter::new("profile", Kind::Json, Op::Eq, "{\"city\": \"Denver\"}").sql_in(Dialect::MySql);
+    // A JSON column's filter compares JSON; MariaDB's columns read as text and compare as text.
+    let kind = run(&e, &c, "SELECT profile FROM customer").columns().unwrap()[0].kind;
+    let j = Filter::new("profile", kind, Op::Eq, "{\"city\": \"Denver\"}").sql_in(Dialect::MySql);
     assert_eq!(run(&e, &c, &format!("SELECT id FROM customer WHERE {j}")).snapshot().text(0, 0).as_deref(), Some("2"));
     let rs = run(&e, &c, "SELECT id, tier, tags FROM customer");
     assert_eq!(*e.core.block_on(c.result_enum_labels(db, &rs, 1)).unwrap(), vec!["bronze", "silver", "gold"]);
@@ -214,7 +216,9 @@ fn exports_and_bounded_statements() {
     let never = std::future::pending::<()>();
     let o = e.core.block_on(c.bounded(Some(db), "SELECT id, name, profile FROM customer ORDER BY id", vec![], Mode::Read, lim, never)).unwrap();
     assert_eq!(o.rows.len(), 2);
-    assert_eq!(o.rows[0][2], serde_json::json!({"city": "Boston", "points": 120}));
+    // MariaDB's JSON reads as text (see live_mysql's types): the agent gets it as written.
+    let profile = if c.info.is_mariadb() { serde_json::json!("{\"city\": \"Boston\", \"points\": 120}") } else { serde_json::json!({"city": "Boston", "points": 120}) };
+    assert_eq!(o.rows[0][2], profile);
     assert!(o.truncated.is_some());
     let r = e.core.block_on(c.bounded(Some(db), "DELETE FROM customer", vec![], Mode::Read, Limits::default(), std::future::pending::<()>()));
     assert!(matches!(r, Err(Stop::Refused(_))));
