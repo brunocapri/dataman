@@ -504,6 +504,15 @@ fn spawn_reader(mut resp: reqwest::Response) -> mpsc::UnboundedReceiver<Piece> {
     rx
 }
 
+/// How a server before the `__exception__` marker (23.8, 24.x) writes a failure after the first
+/// rows: `Code: 395. DB::Exception: boom: … (version 23.8.16.16 (official build))`.
+fn older_failure_at(line: &[u8]) -> Option<usize> {
+    let at = line.windows(6).position(|w| w == b"Code: ")?;
+    let rest = &line[at + 6..];
+    let digits = rest.iter().take_while(|c| c.is_ascii_digit()).count();
+    (digits > 0 && rest[digits..].starts_with(b". DB::Exception: ") && contains(rest, b" (version ")).then_some(at)
+}
+
 fn contains(text: &[u8], what: &[u8]) -> bool {
     text.windows(what.len()).any(|w| w == what)
 }
@@ -615,6 +624,17 @@ impl ChRows {
                 if self.raw && self.client.locked && contains(text, b"\"exception\"") && contains(text, b"DB::Exception") {
                     return self.server_failure().await;
                 }
+                // A server before the marker ends the body with the failure: on a line of its
+                // own, or after what a statement's own format wrote on its last line (`}Code: …`).
+                if let Some(at) = older_failure_at(text).filter(|&at| at == 0 || self.raw) {
+                    let len = line.len();
+                    if self.ends_after(len + 1).await? {
+                        self.pos += at;
+                        return self.server_failure().await;
+                    }
+                    // A value that reads like one: what was read may have moved to the buffer's start.
+                    line = self.pos..self.pos + len;
+                }
                 self.pos = line.end + 1;
                 if cr && self.crlf {
                     line.end -= 1;
@@ -671,6 +691,18 @@ impl ChRows {
     }
 
     /// The marker's line was read: what follows is the error, its first bytes kept.
+    /// Nothing follows the first `len` bytes from `pos`: the server closed the body there.
+    async fn ends_after(&mut self, len: usize) -> Result<bool, ChError> {
+        loop {
+            if self.buf.len() - self.pos > len {
+                return Ok(false);
+            }
+            if !self.fill().await? {
+                return Ok(true);
+            }
+        }
+    }
+
     async fn server_failure(&mut self) -> Result<Option<Range<usize>>, ChError> {
         while self.buf.len() - self.pos < ERROR_BYTES {
             if !matches!(self.fill().await, Ok(true)) {
@@ -736,7 +768,15 @@ impl RowSource for ChRows {
     type Error = ChError;
 
     async fn next_into(&mut self, b: &mut ChunkBuilder) -> Result<bool, ChError> {
-        let Some(line) = self.next_line().await? else { return Ok(false) };
+        let line = loop {
+            let Some(line) = self.next_line().await? else { return Ok(false) };
+            // WITH TOTALS and `extremes` set their rows apart with a blank line in TabSeparated;
+            // no row of two cells or more is blank (a tab parts them).
+            if !self.raw && line.is_empty() && self.kinds.len() > 1 {
+                continue;
+            }
+            break line;
+        };
         if self.raw {
             push_text_cell(b, 0, &self.buf[line], &mut self.scratch, false);
             b.end_row();
@@ -1028,6 +1068,11 @@ mod tests {
         assert_eq!(exception_at(b"1\t2\n__exception__\r\nCode: 1."), Some(4));
         assert_eq!(exception_at(b"a__exception__\r\n"), None);
         assert_eq!(exception_at(b"__exception__\n"), None, "a cell's text: its \\r would be escaped");
+        let failure = b"Code: 395. DB::Exception: boom: while executing 'x'. (FUNCTION_THROW_IF_VALUE_IS_NON_ZERO) (version 23.8.16.16 (official build))";
+        assert_eq!(older_failure_at(failure), Some(0));
+        assert_eq!(older_failure_at(&[b"\t\t}".as_slice(), failure].concat()), Some(3), "after a JSON format's last brace");
+        assert_eq!(older_failure_at(b"Code: 395. DB::Exception: boom"), None, "no release named: a value");
+        assert_eq!(older_failure_at(b"Code: x. DB::Exception: (version 1)"), None);
     }
 
     #[test]
