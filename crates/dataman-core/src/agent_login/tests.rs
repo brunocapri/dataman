@@ -239,6 +239,20 @@ fn hostile_names_are_quoted_everywhere() {
     assert_eq!(redis::key_pattern("user:[1]?\\*"), "user:\\[1\\]\\?\\\\*");
 }
 
+/// What `VERSION()` answers on each: below the floor the probe refuses before a step runs.
+#[test]
+fn mysql_releases_too_old_for_the_steps() {
+    for v in ["8.0.20", "5.7.44-log", "5.7.44-48", "8.0.0-dmr"] {
+        assert!(my::too_old(false, v).is_some_and(|w| w.contains("8.0.21")), "{v}");
+    }
+    for v in ["8.0.21", "8.0.44", "8.4.7", "9.5.0", "26.7.0"] {
+        assert_eq!(my::too_old(false, v), None, "{v}");
+    }
+    assert!(my::too_old(true, "10.4.34-MariaDB-1:10.4.34+maria~ubu2004").is_some_and(|w| w.contains("10.5")));
+    assert_eq!(my::too_old(true, "10.5.27-MariaDB-ubu2004"), None);
+    assert_eq!(my::too_old(true, "11.8.3-MariaDB-ubu2404"), None);
+}
+
 #[test]
 fn mysql_plan() {
     let p = guarded(Engine::MySql);
