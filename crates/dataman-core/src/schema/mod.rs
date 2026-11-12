@@ -61,14 +61,16 @@ async fn read_relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
     }
 }
 
-async fn read_columns(c: &Db, rel: &Relation, flavor: Option<&crate::server::FlavorSpec>) -> Option<Vec<Column>> {
+/// None: the engine's own catalog did not answer, `information_schema` is read instead. SQLite
+/// has no `information_schema`: its failure is the answer.
+async fn read_columns(c: &Db, rel: &Relation, flavor: Option<&crate::server::FlavorSpec>) -> Option<Result<Vec<Column>>> {
     match c {
-        Db::Pg(_) => pg::columns(c, rel.oid?).await,
-        Db::My(_) => my::columns(c, &rel.schema, &rel.name, flavor.is_some_and(|f| f.defaults_as_sql)).await,
-        Db::Ms(_) => ms::columns(c, &rel.schema, &rel.name).await,
-        Db::Lite(_) => lite::columns(c, &rel.schema, &rel.name).await,
-        Db::Duck(_) => duck::columns(c, "", &rel.schema, &rel.name).await,
-        Db::Ch(_) => ch::columns(c, &rel.schema, &rel.name).await,
+        Db::Pg(_) => pg::columns(c, rel.oid?).await.map(Ok),
+        Db::My(_) => my::columns(c, &rel.schema, &rel.name, flavor.is_some_and(|f| f.defaults_as_sql)).await.map(Ok),
+        Db::Ms(_) => ms::columns(c, &rel.schema, &rel.name).await.map(Ok),
+        Db::Lite(_) => Some(lite::columns(c, &rel.schema, &rel.name).await),
+        Db::Duck(_) => duck::columns(c, "", &rel.schema, &rel.name).await.map(Ok),
+        Db::Ch(_) => ch::columns(c, &rel.schema, &rel.name).await.map(Ok),
     }
 }
 
@@ -438,7 +440,8 @@ impl Connection {
             None => None,
         };
         let cols = match cols {
-            Some(c) => c,
+            Some(Ok(c)) => c,
+            Some(Err(e)) => return Err(e.context(format!("the columns of {schema}.{rel}"))),
             None => {
                 let q = format!(
                     "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns \
