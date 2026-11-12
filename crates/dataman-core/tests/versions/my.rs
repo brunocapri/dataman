@@ -435,3 +435,35 @@ fn mariadb_sequences_versioned_tables_and_its_own_types() {
     let rows = cells(&t.on(&s, "SELECT 1 UNION SELECT 2 EXCEPT SELECT 2 INTERSECT SELECT 2"));
     assert_eq!(rows, [[Some("1".to_string())]]);
 }
+
+/// SHOW WARNINGS, SHOW ERRORS and GET DIAGNOSTICS read what the statement before them left: no
+/// statement of Dataman's own may run between them (a prepare that fails leaves its own error).
+#[test]
+fn warnings_and_errors_are_the_previous_statements() {
+    let Some(t) = mysql() else { return };
+    let s = t.c.session(None);
+    t.on(&s, "SELECT CAST('12abc' AS SIGNED)");
+    let rows = cells(&t.on(&s, "SHOW WARNINGS"));
+    assert_eq!(rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["1292"], "{rows:?}");
+    assert_eq!(cells(&t.on(&s, "SHOW COUNT(*) WARNINGS"))[0][0].as_deref(), Some("1"));
+    t.fails_on(&s, "SELECT * FROM no_such_db.no_such_table");
+    let rows = cells(&t.on(&s, "SHOW ERRORS"));
+    assert_eq!(rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["1049"], "{rows:?}");
+    // GET DIAGNOSTICS: MySQL 5.6, MariaDB 10.0; vtgate has none.
+    if t.vitess() {
+        return;
+    }
+    // After an error the transaction's state is asked for without clearing it: a DDL that fails
+    // has committed first.
+    let s = t.scratch("dataman_v_diag");
+    t.on(&s, "CREATE TABLE d (id INT)");
+    t.on(&s, "START TRANSACTION");
+    t.on(&s, "INSERT INTO d VALUES (1)");
+    assert_eq!(s.tx().status, dataman_core::TxStatus::Open);
+    t.fails_on(&s, "CREATE TABLE d (id INT)");
+    assert_eq!(s.tx().status, dataman_core::TxStatus::Idle, "the failed DDL committed");
+    assert_eq!(cells(&t.on(&s, "SHOW ERRORS"))[0][1].as_deref(), Some("1050"));
+    t.on(&s, "SELECT CAST('7x' AS SIGNED)");
+    t.on(&s, "GET DIAGNOSTICS CONDITION 1 @code = MYSQL_ERRNO");
+    assert_eq!(cells(&t.on(&s, "SELECT @code"))[0][0].as_deref(), Some("1292"));
+}
