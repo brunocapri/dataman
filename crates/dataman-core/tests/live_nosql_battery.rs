@@ -433,7 +433,10 @@ fn search_battery(engine: Engine) {
     if os {
         b.expect("PPL", &format!("POST _plugins/_ppl\n{{\"query\": \"source={ix} | stats count() by status\"}}"), |o| text_has(o, "paid"));
     } else {
-        b.expect("ES|QL", &format!("POST _query?format=json\n{{\"query\": \"FROM {ix} | STATS n = COUNT(*) BY status\"}}"), |o| text_has(o, "paid"));
+        // ES|QL from 8.11.
+        if b.c.info.release >= (8, 11, 0) {
+            b.expect("ES|QL", &format!("POST _query?format=json\n{{\"query\": \"FROM {ix} | STATS n = COUNT(*) BY status\"}}"), |o| text_has(o, "paid"));
+        }
         b.ok("point in time", &format!("POST /{ix}/_pit?keep_alive=1m"));
     }
     b.expect("update a document", &format!("POST /{ix}/_update/1?refresh=true\n{{\"doc\": {{\"status\": \"returned\"}}}}"), |o| text_has(o, "updated"));
