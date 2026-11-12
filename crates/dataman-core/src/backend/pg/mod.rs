@@ -555,13 +555,16 @@ const REG_TYPES: &[&str] = &[
 ];
 
 /// `aclitem` has no binary output function (the server fails the whole query), and an
-/// extension type the grid has no decoder for would show as hex.
+/// extension type the grid has no decoder for would show as hex. An anonymous record
+/// (`ROW(…)`) says its fields' types only in its rows, too late: one of them may have no binary
+/// output (`isn`'s types, or `cube` before PostgreSQL 14).
 fn sendless(ty: &Type) -> bool {
     use tokio_postgres::types::Kind as K;
     match ty.kind() {
         K::Array(e) | K::Range(e) | K::Multirange(e) | K::Domain(e) => sendless(e),
         K::Composite(fields) => fields.iter().any(|f| sendless(f.type_())),
-        K::Enum(_) | K::Pseudo => false,
+        K::Pseudo => *ty == Type::RECORD || *ty == Type::RECORD_ARRAY,
+        K::Enum(_) => false,
         // OIDs from 16384 up are created by users and extensions.
         K::Simple => ty.name() == "aclitem" || REG_TYPES.contains(&ty.name()) || (ty.oid() >= 16384 && !BINARY_DECODED.contains(&ty.name())),
         _ => false,
