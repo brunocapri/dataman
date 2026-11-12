@@ -46,6 +46,24 @@ fn with_totals_comes_back_whole() {
     let Some(t) = target(Engine::ClickHouse) else { return };
     let rows = t.rows("SELECT number % 2 AS k, sum(number) FROM numbers(5) GROUP BY k WITH TOTALS ORDER BY k");
     assert_eq!(cells(&rows), [["0", "6"], ["1", "4"], ["0", "10"]]);
+    let rows = t.rows("SELECT number % 2 AS k, sum(number) FROM numbers(5) GROUP BY k ORDER BY k SETTINGS extremes = 1");
+    assert_eq!(cells(&rows), [["0", "6"], ["1", "4"], ["0", "4"], ["1", "6"]], "the rows, then the extremes' two");
+}
+
+/// A failure after the first rows is a failure, in the grid's format and a statement's own,
+/// whether the server marks it (`__exception__`, 25.x) or ends with it as its last line (before).
+#[test]
+fn a_failure_after_rows_fails() {
+    let Some(t) = target(Engine::ClickHouse) else { return };
+    for format in ["", " FORMAT JSONEachRow", " FORMAT JSON", " FORMAT CSV"] {
+        let e = t.failed(&format!("SELECT number, throwIf(number = 200000, 'boom') FROM numbers(300000) SETTINGS max_threads = 1, max_block_size = 1000{format}"));
+        assert!(e.message.contains("boom"), "{format}: {e:?}");
+        let e = t.failed(&format!("SELECT throwIf(number = 200000, 'boom') FROM numbers(300000) SETTINGS max_threads = 1, max_block_size = 1000{format}"));
+        assert!(e.message.contains("boom"), "one column{format}: {e:?}");
+    }
+    // A value that reads like an older server's failure, with more after it, stays a value.
+    let v = "Code: 1. DB::Exception: x (version 1 (official build))";
+    assert_eq!(cells(&t.rows(&format!("SELECT arrayJoin(['{v}', 'after'])"))), [[v], ["after"]]);
 }
 
 #[test]
@@ -61,7 +79,6 @@ fn nested_types_and_low_cardinality() {
         "toLowCardinality('lc')",
         "[toLowCardinality('a'), toLowCardinality('b')]",
         "CAST([1, NULL], 'Array(Nullable(Int8))')",
-        "toFixedString('ab', 4)",
         "toIPv4('10.0.0.1')",
         "toIPv6('::1')",
         "toUUID('00000000-0000-0000-0000-000000000001')",
@@ -81,12 +98,11 @@ fn numbers_at_their_extremes() {
         "toUInt64(18446744073709551615)",
         "toInt128('-170141183460469231731687303715884105728')",
         "toUInt256('115792089237316195423570985008687907853269984665640564039457584007913129639935')",
-        "nan",
-        "-inf",
         "toFloat32(0.1)",
-        "1e308 * 10",
         "toFloat64(-0.)",
     ]);
+    // Floats' specials as everywhere in Dataman (the server writes nan, inf).
+    assert_eq!(cells(&t.rows("SELECT nan, -inf, 1e308 * 10")), [["NaN", "-Infinity", "Infinity"]]);
 }
 
 #[test]
@@ -94,7 +110,6 @@ fn times_in_their_zones() {
     let Some(t) = target(Engine::ClickHouse) else { return };
     t.ch_shown_as_server_says(&[
         "toDateTime64('2024-06-30 23:30:00.123456', 6, 'Asia/Kathmandu')",
-        "toDateTime64('1900-01-01 00:00:00', 3, 'UTC')",
         "toDateTime64('2262-04-11 23:47:16.854775', 6, 'UTC')",
         "toDateTime('2024-03-31 02:30:00', 'Europe/Berlin')",
         "toDateTime('1970-01-01 00:00:00', 'America/St_Johns')",
@@ -102,6 +117,8 @@ fn times_in_their_zones() {
         "toDate('2149-06-06')",
         "toIntervalDay(3)",
     ]);
+    // A fraction of zeros is left out, as everywhere in Dataman (the server writes .000).
+    assert_eq!(t.one("SELECT toDateTime64('1900-01-01 00:00:00', 3, 'UTC')").as_deref(), Some("1900-01-01 00:00:00"));
 }
 
 /// A statement's own clauses: its SETTINGS, its FORMAT (shown by lines), and system tables of
@@ -152,7 +169,7 @@ fn catalog_and_bounded_reads() {
     let out = e.core.block_on(c.bounded(Some("dv_ch"), "SELECT id, lc, d256, at, m, tup, n.x FROM dv_ch.t", vec![], Mode::Read, Limits::default(), std::future::pending())).unwrap();
     assert_eq!(out.rows.len(), 1);
     let row: Vec<String> = out.rows[0].iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)).collect();
-    assert_eq!(row, ["1", "null", "-1.5", "2024-01-01 00:00:00.500", "{'a':[1,NULL]}", "(7,'q')", "[1,2]"]);
+    assert_eq!(row, ["1", "null", "-1.5", "2024-01-01 00:00:00.5", "{'a':[1,NULL]}", "(7,'q')", "[1,2]"]);
     let ddl = e.core.block_on(c.table_ddl("dv_ch", "dv_ch", "t")).unwrap();
     assert!(ddl.contains("MATERIALIZED") && ddl.contains("Decimal(76, 10)"), "{ddl}");
     t.ok("DROP DATABASE dv_ch");

@@ -1,0 +1,69 @@
+# ClickHouse's older releases (plain HTTP): see scripts/versions.sh. Ports 182xx (HTTP), 192xx
+# (native, which Dataman only names). Data in memory.
+name: dataman-versions
+
+x-ch: &ch
+  environment:
+    CLICKHOUSE_PASSWORD: dataman
+    CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+  tmpfs: [/var/lib/clickhouse]
+  ulimits:
+    nofile: 262144
+  healthcheck:
+    test: clickhouse-client --password dataman -q 'SELECT 1'
+    interval: 2s
+    retries: 60
+
+x-suites: &suites live_versions live_clickhouse live_clickhouse_proxy clickhouse_row_memory
+
+services:
+  # Below the floor: only its refusal is checked.
+  ch-23.3:
+    <<: *ch
+    image: clickhouse/clickhouse-server:23.3.22.3-alpine
+    ports: ["127.0.0.1:18233:8123"]
+    labels:
+      dataman.url: clickhouse://default:dataman@127.0.0.1:18233/default
+      dataman.expect: ClickHouse 23.3
+      dataman.env: DATAMAN_VERSIONS_REFUSED=1
+      dataman.tests: live_versions
+
+  ch-23.8:
+    <<: *ch
+    image: clickhouse/clickhouse-server:23.8.16.16-alpine
+    ports: ["127.0.0.1:18238:8123", "127.0.0.1:19238:9000"]
+    labels:
+      dataman.url: clickhouse://default:dataman@127.0.0.1:18238/default
+      dataman.expect: ClickHouse 23.8
+      dataman.env: DATAMAN_CLICKHOUSE=127.0.0.1:18238 DATAMAN_CLICKHOUSE_NATIVE=127.0.0.1:19238
+      dataman.tests: *suites
+
+  ch-24.3:
+    <<: *ch
+    image: clickhouse/clickhouse-server:24.3.18.7-alpine
+    ports: ["127.0.0.1:18243:8123", "127.0.0.1:19243:9000"]
+    labels:
+      dataman.url: clickhouse://default:dataman@127.0.0.1:18243/default
+      dataman.expect: ClickHouse 24.3
+      dataman.env: DATAMAN_CLICKHOUSE=127.0.0.1:18243 DATAMAN_CLICKHOUSE_NATIVE=127.0.0.1:19243
+      dataman.tests: *suites
+
+  ch-24.8:
+    <<: *ch
+    image: clickhouse/clickhouse-server:24.8.14.39-alpine
+    ports: ["127.0.0.1:18248:8123", "127.0.0.1:19248:9000"]
+    labels:
+      dataman.url: clickhouse://default:dataman@127.0.0.1:18248/default
+      dataman.expect: ClickHouse 24.8
+      dataman.env: DATAMAN_CLICKHOUSE=127.0.0.1:18248 DATAMAN_CLICKHOUSE_NATIVE=127.0.0.1:19248
+      dataman.tests: *suites
+
+  ch-25.3:
+    <<: *ch
+    image: clickhouse/clickhouse-server:25.3.14.14-alpine
+    ports: ["127.0.0.1:18253:8123", "127.0.0.1:19253:9000"]
+    labels:
+      dataman.url: clickhouse://default:dataman@127.0.0.1:18253/default
+      dataman.expect: ClickHouse 25.3
+      dataman.env: DATAMAN_CLICKHOUSE=127.0.0.1:18253 DATAMAN_CLICKHOUSE_NATIVE=127.0.0.1:19253
+      dataman.tests: *suites

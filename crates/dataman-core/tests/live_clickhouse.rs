@@ -30,6 +30,13 @@ fn profile(database: &str) -> ConnectionProfile {
     }
 }
 
+/// At least the release e2e/compose.yaml runs: the server's own lists are held whole to Dataman's
+/// there, and the syntax and types of its release are tried. An older one (`scripts/versions.sh`)
+/// lacks some of them.
+fn newest(c: &Connection) -> bool {
+    c.info.release >= (25, 8, 0)
+}
+
 fn password() -> String {
     std::env::var("DATAMAN_CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "dataman".into())
 }
@@ -280,7 +287,10 @@ fn a_statement_with_its_own_format_is_shown_by_lines() {
     let s = c.session(None);
     let rs = ok(&e, &s, "SELECT number AS a FROM numbers(2) FORMAT JSONEachRow");
     assert_eq!(rs.columns().unwrap()[0].name, "result");
-    assert_eq!((shown(&rs, 0, 0).as_deref(), shown(&rs, 1, 0).as_deref()), (Some("{\"a\":0}"), Some("{\"a\":1}")));
+    // Quoted where the server quotes 64-bit numbers in JSON (its default before 25.8).
+    let quoted = column(&e, &s, "SELECT toUInt8(getSetting('output_format_json_quote_64bit_integers'))") == ["1"];
+    let want = if quoted { ("{\"a\":\"0\"}", "{\"a\":\"1\"}") } else { ("{\"a\":0}", "{\"a\":1}") };
+    assert_eq!((shown(&rs, 0, 0).as_deref(), shown(&rs, 1, 0).as_deref()), (Some(want.0), Some(want.1)));
     let rs = ok(&e, &s, "SELECT 1 WHERE 0");
     assert_eq!((rs.columns().unwrap().len(), rs.rows()), (1, 0), "no rows still has its columns");
 }
@@ -690,7 +700,7 @@ fn every_table_function_the_server_lists_is_refused_or_known_to_read_nothing() {
     let unknown: Vec<&String> = listed.iter().filter(|n| !functions::CLICKHOUSE_PLAIN_TABLE_FUNCTIONS.contains(&n.as_str()) && guard::file_access(&format!("SELECT * FROM {n}('x')"), CH).is_none()).collect();
     assert!(unknown.is_empty(), "the server has table functions nothing refuses: {unknown:?}. Add them to CLICKHOUSE_FILE, or to the allowlist if they read only their arguments");
     for n in functions::CLICKHOUSE_PLAIN_TABLE_FUNCTIONS {
-        assert!(listed.iter().any(|l| l == n), "{n} is gone from the server: drop it from the allowlist");
+        assert!(!newest(&c) || listed.iter().any(|l| l == n), "{n} is gone from the server: drop it from the allowlist");
         assert_eq!(guard::file_access(&format!("SELECT * FROM {n}('x')"), CH), None, "{n}");
     }
 }
@@ -706,7 +716,9 @@ fn every_engine_the_server_lists_is_refused_or_keeps_to_its_own_disks() {
         .filter(|n| !functions::CLICKHOUSE_PLAIN_TABLE_ENGINES.contains(&n.as_str()) && !n.starts_with("Replicated") && guard::file_access(&format!("CREATE TABLE t (a Int8) ENGINE = {n}('x')"), CH).is_none())
         .collect();
     assert!(unknown.is_empty(), "table engines nothing refuses: {unknown:?}");
-    let databases = column(&e, &s, "SELECT name FROM system.database_engines ORDER BY name");
+    // Listed from 24.x on; before it the guard's refusals are all there is to check.
+    let listed = column(&e, &s, "SELECT count() FROM system.tables WHERE database = 'system' AND name = 'database_engines'") == ["1"];
+    let databases = if listed { column(&e, &s, "SELECT name FROM system.database_engines ORDER BY name") } else { Vec::new() };
     let unknown: Vec<&String> = databases.iter().filter(|n| !functions::CLICKHOUSE_PLAIN_DATABASE_ENGINES.contains(&n.as_str()) && guard::file_access(&format!("CREATE DATABASE d ENGINE = {n}('x')"), CH).is_none()).collect();
     assert!(unknown.is_empty(), "database engines nothing refuses: {unknown:?}");
     // What no list names yet is refused where it stands, and a word that is no table stays free.
@@ -822,7 +834,7 @@ fn every_function_that_reads_past_the_rules_is_refused() {
         assert!(guard::agent_read_refusal_in(&format!("SELECT {f}('x')"), CH).is_some(), "{f}");
         assert!(guard::file_access(&format!("SELECT {f}('x')"), CH).is_some(), "{f}");
     }
-    for f in others {
+    for f in others.iter().filter(|_| newest(&c)) {
         assert_eq!(column(&e, &s, &format!("SELECT count() FROM system.functions WHERE name = '{f}'")), ["1"], "{f} is not a function of this server");
     }
     // What is named so without being called stays a column.
@@ -832,7 +844,7 @@ fn every_function_that_reads_past_the_rules_is_refused() {
 #[test]
 fn dictionary_sources_that_reach_out_are_refused() {
     let e = env();
-    let Some((_c, s)) = own(&e, "dataman_ch_dict") else { return };
+    let Some((c, s)) = own(&e, "dataman_ch_dict") else { return };
     let dictionary = |src: &str| format!("CREATE DICTIONARY dataman_ch_dict.d (a UInt64) PRIMARY KEY a SOURCE({src}(HOST 'h')) LAYOUT(HASHED()) LIFETIME(0)");
     for src in ["FILE", "EXECUTABLE", "EXECUTABLE_POOL", "HTTP", "CLICKHOUSE", "MYSQL", "POSTGRESQL", "MONGODB", "REDIS", "ODBC", "JDBC", "CASSANDRA", "YAMLRegExpTree", "YTSAURUS"] {
         let sql = dictionary(src);
@@ -840,11 +852,15 @@ fn dictionary_sources_that_reach_out_are_refused() {
         // The server does know it: the name in the list is the name it takes.
         let rs = run(&e, &s, &sql);
         let said = rs.status().error.map(|i| i.message).unwrap_or_default();
-        assert!(!said.contains("unknown dictionary source"), "{src}: {said}");
+        assert!(!newest(&c) || !said.contains("unknown dictionary source"), "{src}: {said}");
         ok(&e, &s, "DROP DICTIONARY IF EXISTS dataman_ch_dict.d");
     }
     let rs = run(&e, &s, &dictionary("NOSUCH"));
-    assert!(rs.status().error.unwrap().message.contains("unknown dictionary source"), "the check above can fail");
+    // Before 24.x a source is checked when the dictionary first loads, not when it is made.
+    if newest(&c) {
+        assert!(rs.status().error.unwrap().message.contains("unknown dictionary source"), "the check above can fail");
+    }
+    ok(&e, &s, "DROP DICTIONARY IF EXISTS dataman_ch_dict.d");
     ok(&e, &s, "DROP DATABASE dataman_ch_dict");
 }
 
@@ -1013,7 +1029,8 @@ fn the_splitter_cuts_exactly_where_the_server_does() {
         "SELECT {x:Enum(';' = 1)}",
         "SELECT {x:Enum('}' = 1)}; SELECT 2",
     ];
-    for t in cases {
+    // Before 25.x the server's lexer takes no typographic quotes: there it reads them otherwise.
+    for t in cases.iter().filter(|t| newest(&c) || !t.contains(['‘', '“'])) {
         let two = matches!(parsed(&e, &s, t), Err(m) if m.contains("Multi-statements"));
         let n = dataman_core::sql::split_in(t, CH).into_iter().filter(|st| dataman_core::sql::tokenize_in(&t[st.range.clone()], CH).iter().any(|k| !k.kind.is_trivia() && k.text(&t[st.range.clone()]) != ";")).count();
         assert_eq!(n > 1, two, "{t:?}: {n} statements here");
@@ -1069,7 +1086,8 @@ fn parallel_with_is_each_of_its_statements() {
     // so the drop may have run by then. Whether it did this time depends on the race.
     let rs = run(&e, &s, "SELECT 1 PARALLEL WITH DROP TABLE b");
     assert_eq!(rs.phase(), Phase::Failed);
-    assert!(rs.status().error.unwrap().message.contains("PARALLEL WITH"));
+    // Before 25.x the server does not know the clause: a syntax error, and nothing runs.
+    assert!(!newest(&c) || rs.status().error.unwrap().message.contains("PARALLEL WITH"));
     let sql = "SELECT 1 PARALLEL WITH DROP TABLE a";
     assert_eq!(guard::classify_in(sql, CH).effect, guard::Effect::Ddl);
     assert!(guard::agent_write_class(sql, CH).is_destructive());
@@ -1101,6 +1119,7 @@ fn the_server_s_read_only_stops_the_writes_and_the_guard_the_rest() {
     for sql in [
         "INSERT INTO events (id) VALUES (9)",
         "DELETE FROM events WHERE id = 1",
+        // Lightweight UPDATE is 25.x's: before it, a syntax error (see below).
         "UPDATE events SET note = 'x' WHERE id = 1",
         "ALTER TABLE events DELETE WHERE 1",
         "ALTER TABLE events ADD COLUMN x Int8",
@@ -1125,7 +1144,8 @@ fn the_server_s_read_only_stops_the_writes_and_the_guard_the_rest() {
     ] {
         let rs = run(&e, &s, sql);
         assert_eq!(rs.phase(), Phase::Failed, "{sql}");
-        assert_eq!(rs.status().error.unwrap().class(Engine::ClickHouse), ErrorClass::ReadOnly, "{sql}");
+        let class = if sql.starts_with("UPDATE") && !newest(&c) { ErrorClass::Syntax } else { ErrorClass::ReadOnly };
+        assert_eq!(rs.status().error.unwrap().class(Engine::ClickHouse), class, "{sql}");
     }
     assert_eq!(column(&e, &a, "SELECT count() FROM events"), ["3"]);
     // These reach the server's own actions on a read-only connection: the app stops them first.
@@ -1133,8 +1153,11 @@ fn the_server_s_read_only_stops_the_writes_and_the_guard_the_rest() {
         assert!(guard::read_only_refusal_in(sql, CH).is_some(), "{sql} is not refused on a read-only tab");
         assert!(guard::agent_read_refusal_in(sql, CH).is_some(), "{sql}");
     }
-    assert_eq!(ok(&e, &s, "UNDROP TABLE gone").phase(), Phase::Done, "the server takes it: if this ever fails, the guard's list above can shrink");
-    assert_eq!(column(&e, &a, "EXISTS TABLE gone"), ["1"], "a read-only connection brought a table back");
+    // Before 24.x UNDROP is experimental, off by default: the server refuses it there.
+    if newest(&c) {
+        assert_eq!(ok(&e, &s, "UNDROP TABLE gone").phase(), Phase::Done, "the server takes it: if this ever fails, the guard's list above can shrink");
+        assert_eq!(column(&e, &a, "EXISTS TABLE gone"), ["1"], "a read-only connection brought a table back");
+    }
     // What a read-only tab may still do: nothing that outlives the session.
     for sql in ["USE system", "USE dataman_ch_held", "SHOW TABLES", "EXISTS TABLE events", "DESCRIBE TABLE events", "EXPLAIN SELECT 1"] {
         assert_eq!(guard::read_only_refusal_in(sql, CH), None, "{sql}");
@@ -1284,7 +1307,13 @@ fn every_statement_is_classified_as_what_it_does() {
 #[test]
 fn types_show_their_values() {
     let e = env();
-    let Some((_c, s)) = own(&e, "dataman_ch_kinds") else { return };
+    let Some((c, s)) = own(&e, "dataman_ch_kinds") else { return };
+    // Variant, Dynamic and JSON as 25.8 has them; tests/versions/ch.rs reads the older types.
+    if !newest(&c) {
+        eprintln!("skipping: {} has its own Variant, Dynamic and JSON", c.info.version);
+        ok(&e, &s, "DROP DATABASE dataman_ch_kinds");
+        return;
+    }
     ok(
         &e,
         &s,
@@ -1344,7 +1373,12 @@ fn types_show_their_values() {
 #[test]
 fn the_grid_s_filters_find_what_they_say() {
     let e = env();
-    let Some((_c, s)) = own(&e, "dataman_ch_filters") else { return };
+    let Some((c, s)) = own(&e, "dataman_ch_filters") else { return };
+    if !newest(&c) {
+        eprintln!("skipping: {} has its own Variant and JSON", c.info.version);
+        ok(&e, &s, "DROP DATABASE dataman_ch_filters");
+        return;
+    }
     ok(
         &e,
         &s,
@@ -1610,7 +1644,8 @@ fn use_follows_names_of_any_shape() {
     // The words the server takes: bare, `DATABASE`, a comment, a closing `;`.
     ok(&e, &s, "DROP DATABASE IF EXISTS `database`");
     ok(&e, &s, "CREATE DATABASE `database`");
-    for sql in ["USE database", "USE DATABASE database", "use `database`", "/* c */ USE database ;", "USE\u{a0}database", "USE “database”", "USE `databas\\x65`"] {
+    // `USE DATABASE` and typographic quotes are 25.x's.
+    for sql in ["USE database", "USE DATABASE database", "use `database`", "/* c */ USE database ;", "USE\u{a0}database", "USE “database”", "USE `databas\\x65`"].into_iter().filter(|q| newest(&c) || !(q.contains("DATABASE database") || q.contains('“'))) {
         ok(&e, &s, "USE default");
         ok(&e, &s, sql);
         assert_eq!(here(&s), "database", "{sql:?}");
@@ -1850,7 +1885,7 @@ fn view_sources_read_what_a_relation_reads() {
         format!("CREATE DICTIONARY {name}.dict_far (id UInt64, v String) PRIMARY KEY id SOURCE(CLICKHOUSE(HOST 'elsewhere' DB 'x' TABLE 'y')) LAYOUT(FLAT()) LIFETIME(0)"),
         format!("CREATE DICTIONARY {name}.dict_null (id UInt64, v String) PRIMARY KEY id SOURCE(NULL()) LAYOUT(FLAT()) LIFETIME(0)"),
         format!("CREATE TABLE {name}.dict_t (id UInt64, v String) ENGINE = Dictionary('{name}.dict')"),
-        format!("CREATE TABLE {name}.outside (id UInt64) ENGINE = S3('http://127.0.0.1:1/x.csv', 'CSV')"),
+        format!("CREATE TABLE {name}.outside (id UInt64) ENGINE = S3('http://127.0.0.1:1/bucket/x.csv', 'CSV')"),
     ] {
         ok(&e, &s, &sql);
     }
