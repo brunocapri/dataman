@@ -3,6 +3,7 @@
 //! mapping's every field (multi-fields, runtime ones) is listed, and SQL answers on each release.
 
 use super::*;
+use dataman_core::agent_login::live;
 use dataman_core::nosql::Body;
 use serde_json::{Value, json};
 
@@ -148,4 +149,19 @@ fn sql_answers() {
     let rows = if os { &v["datarows"] } else { &v["rows"] };
     let rows: Vec<(Value, f64)> = rows.as_array().unwrap_or_else(|| panic!("{v}")).iter().map(|r| (r[0].clone(), r[1].as_f64().unwrap())).collect();
     assert_eq!(rows, [(json!("a"), 6.0), (json!("b"), 3.0)]);
+}
+
+/// The agent login sets its password as a hash, which Elasticsearch takes from 7.17: before it,
+/// the login says so before anything runs. OpenSearch here has its security off, which it says.
+#[test]
+fn the_agent_login_needs_7_17() {
+    let Some((t, os)) = search("dataman_v_acl") else { return };
+    let p = t.c.profile.clone();
+    let (probe, _) = t.e.core.block_on(live::probe(&t.c, &p)).unwrap();
+    if os {
+        assert!(probe.lacks.iter().any(|l| l.contains("security is off")), "{probe:?}");
+        return;
+    }
+    let old = t.c.info.release < (7, 17, 0);
+    assert_eq!((probe.lacks.iter().any(|l| l.contains("Elasticsearch 7.17 or later")), probe.can_create), (old, !old), "{}: {probe:?}", t.c.info.version);
 }
