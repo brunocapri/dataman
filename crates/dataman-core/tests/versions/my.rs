@@ -441,18 +441,18 @@ fn mariadb_sequences_versioned_tables_and_its_own_types() {
 #[test]
 fn warnings_and_errors_are_the_previous_statements() {
     let Some(t) = mysql() else { return };
+    // vtgate answers SHOW WARNINGS from its own session: a SELECT it evaluates itself leaves none.
+    if t.vitess() {
+        return;
+    }
     let s = t.c.session(None);
     t.on(&s, "SELECT CAST('12abc' AS SIGNED)");
     let rows = cells(&t.on(&s, "SHOW WARNINGS"));
     assert_eq!(rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["1292"], "{rows:?}");
     assert_eq!(cells(&t.on(&s, "SHOW COUNT(*) WARNINGS"))[0][0].as_deref(), Some("1"));
-    t.fails_on(&s, "SELECT * FROM no_such_db.no_such_table");
+    t.fails_on(&s, "SELECT * FROM mysql.no_such_table");
     let rows = cells(&t.on(&s, "SHOW ERRORS"));
-    assert_eq!(rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["1049"], "{rows:?}");
-    // GET DIAGNOSTICS: MySQL 5.6, MariaDB 10.0; vtgate has none.
-    if t.vitess() {
-        return;
-    }
+    assert_eq!(rows.iter().map(|r| r[1].clone().unwrap()).collect::<Vec<_>>(), ["1146"], "{rows:?}");
     // After an error the transaction's state is asked for without clearing it: a DDL that fails
     // has committed first.
     let s = t.scratch("dataman_v_diag");
