@@ -265,9 +265,16 @@ pub(super) fn parse_trigger(r: &[Option<String>]) -> Option<super::Trigger> {
     Some(super::Trigger { name, table, enabled: true, events: format!("{timing} {event}").to_lowercase(), definition })
 }
 
-pub(super) fn constraints_sql(schema: &str, table: &str) -> [String; 2] {
+/// CHECK constraints are kept, and listed in `information_schema.CHECK_CONSTRAINTS`, from MySQL
+/// 8.0.16 and MariaDB 10.2.22: an older server parses a CHECK and drops it, so its tables have none.
+pub(super) fn keeps_checks(info: &crate::ServerInfo) -> bool {
+    info.release >= if info.is_mariadb() { (10, 2, 22) } else { (8, 0, 16) }
+}
+
+/// The keys' query, then the checks' where the server keeps any.
+pub(super) fn constraints_sql(schema: &str, table: &str, checks: bool) -> Vec<String> {
     let (s, t) = (lit(schema), lit(table));
-    [
+    let mut qs = vec![
         format!(
             "SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, \
                     GROUP_CONCAT(k.COLUMN_NAME ORDER BY k.ORDINAL_POSITION SEPARATOR ', '), \
@@ -288,7 +295,11 @@ pub(super) fn constraints_sql(schema: &str, table: &str) -> [String; 2] {
                JOIN information_schema.TABLE_CONSTRAINTS tc ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME \
               WHERE tc.TABLE_SCHEMA = {s} AND tc.TABLE_NAME = {t} AND tc.CONSTRAINT_TYPE = 'CHECK'"
         ),
-    ]
+    ];
+    if !checks {
+        qs.pop();
+    }
+    qs
 }
 
 pub(super) fn parse_constraint(schema: &str, r: &[Option<String>]) -> Option<super::Constraint> {
@@ -338,5 +349,17 @@ mod tests {
         assert_eq!(default_of(None, "VIRTUAL GENERATED", Some("`b` * 2".into()), true).as_deref(), Some("GENERATED (`b` * 2)"));
         assert_eq!(lit("a\\b'c"), "'a\\\\b''c'");
         assert!(is_system("sys") && !is_system("shop"));
+    }
+
+    #[test]
+    fn checks_only_where_the_server_keeps_them() {
+        use crate::server::{Flavor, ServerInfo};
+        let my = |raw: &str| ServerInfo::of(crate::Engine::MySql, Flavor::Standard, String::new(), raw);
+        let maria = |raw: &str| ServerInfo::of(crate::Engine::MySql, Flavor::MariaDb, String::new(), raw);
+        assert!(!keeps_checks(&my("5.7.44")) && !keeps_checks(&my("8.0.15")));
+        assert!(keeps_checks(&my("8.0.16")) && keeps_checks(&my("9.5.0")) && keeps_checks(&maria("10.6.24-MariaDB")));
+        assert!(!keeps_checks(&maria("10.2.21-MariaDB")));
+        assert_eq!(constraints_sql("s", "t", false).len(), 1);
+        assert!(constraints_sql("s", "t", true)[1].contains("CHECK_CONSTRAINTS"));
     }
 }

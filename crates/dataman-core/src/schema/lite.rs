@@ -46,15 +46,17 @@ pub(crate) fn is_generated(hidden: Option<&str>) -> bool {
     matches!(hidden, Some("2" | "3"))
 }
 
-pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Column>> {
+/// A view whose table is gone fails here (SQLite reads its columns by preparing it): an error,
+/// not a view with no columns.
+pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Result<Vec<Column>> {
     let q = format!(
         "SELECT name, type, \"notnull\", dflt_value, pk, hidden FROM pragma_table_xinfo({}, {}) WHERE hidden <> 1 ORDER BY cid",
         lit(table),
         lit(schema)
     );
-    let rows = first_ok(c, &[&q]).await.ok()?;
+    let rows = first_ok(c, &[&q]).await?;
     let generated = if rows.iter().any(|r| is_generated(get(r, 5).as_deref())) { generated_columns(c, schema, table).await } else { HashMap::new() };
-    Some(
+    Ok(
         rows.into_iter()
             .filter_map(|r| {
                 let name = get(&r, 0)?;

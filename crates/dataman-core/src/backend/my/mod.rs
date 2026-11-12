@@ -174,7 +174,9 @@ impl Client {
         }
     }
 
-    /// An error carries no status flags, so a `DO 0` asks for the transaction status.
+    /// An error carries no status flags, so a statement asks for the transaction status: one that
+    /// reads the diagnostics area and leaves it as the error left it (a `DO 0` would clear it,
+    /// and the user's SHOW ERRORS would then find nothing).
     async fn settle(&self, slot: &mut Option<Conn>, failed: Option<&MyError>) {
         let Some(conn) = slot.as_mut() else { return };
         if failed.is_some_and(|e| !matches!(e, MyError::Server(_))) || conn.is_disconnected() {
@@ -182,7 +184,7 @@ impl Client {
         }
         let Some(w) = &self.watch else { return };
         if failed.is_some()
-            && let Err(e) = conn.query_drop("DO 0").await
+            && let Err(e) = conn.query_drop("SHOW COUNT(*) ERRORS").await
         {
             if !matches!(e, MyError::Server(_)) {
                 self.lost(slot);
@@ -590,7 +592,24 @@ pub(crate) fn near_position(sql: &str, message: &str) -> Option<u32> {
     Some(sql[..at].chars().count() as u32 + 1)
 }
 
+/// SHOW WARNINGS, SHOW ERRORS, SHOW COUNT(*) …, GET DIAGNOSTICS: they read what the previous
+/// statement left, and a prepare of one fails (1295), leaving its own error in its place. They
+/// go as they are.
+fn reads_diagnostics(sql: &str) -> bool {
+    use crate::sql::lexer::eq_kw;
+    let tokens = crate::sql::tokenize_in(sql, crate::sql::Dialect::MySql);
+    let mut words = tokens.iter().filter(|t| !t.kind.is_trivia()).map(|t| t.text(sql));
+    match (words.next(), words.next()) {
+        (Some(show), Some(what)) if eq_kw(show, "SHOW") => ["WARNINGS", "ERRORS", "COUNT"].iter().any(|k| eq_kw(what, k)),
+        (Some(get), Some(_)) => eq_kw(get, "GET"),
+        _ => false,
+    }
+}
+
 async fn plan(client: &Client, sql: &str, params: &[Option<String>], aborted: &(dyn Fn() -> bool + Sync)) -> Result<Option<Exec>, MyError> {
+    if params.is_empty() && reads_diagnostics(sql) {
+        return Ok(Some(Exec::Text(sql.to_string())));
+    }
     match client.prepare(sql).await {
         Ok(stmt) if aborted() => {
             client.close(stmt).await;
@@ -683,6 +702,16 @@ mod tests {
         let percona = identify("8.4.11-11", "Percona Server (GPL), Release 11, Revision 57878ff8");
         assert_eq!(percona, (Flavor::Percona, "Percona Server 8.4.11".into(), "8.4.11-11".into()));
         assert_eq!(identify("8.0.39-0ubuntu0.22.04.1", "(Ubuntu)"), (Flavor::Standard, "MySQL 8.0.39".into(), "8.0.39-0ubuntu0.22.04.1".into()));
+    }
+
+    #[test]
+    fn diagnostics_go_unprepared() {
+        for sql in ["SHOW WARNINGS", "show errors limit 1", "/* x */ SHOW COUNT(*) WARNINGS", "GET DIAGNOSTICS @n = NUMBER", "get current diagnostics condition 1 @c = MYSQL_ERRNO"] {
+            assert!(reads_diagnostics(sql), "{sql}");
+        }
+        for sql in ["SHOW TABLES", "SELECT 'SHOW WARNINGS'", "-- SHOW WARNINGS\nSELECT 1", "SHOW", ""] {
+            assert!(!reads_diagnostics(sql), "{sql}");
+        }
     }
 
     #[test]

@@ -31,7 +31,7 @@ fn connects_and_decodes_every_type() {
     let Some(c) = mysql_seeded(&e, "dataman_t_types") else { return };
     assert_eq!(c.engine(), Engine::MySql);
     assert_eq!(c.dialect(), Dialect::MySql);
-    assert!(c.info.version.starts_with("MySQL ") || c.info.version.starts_with("MariaDB "), "{}", c.info.version);
+    assert!(["MySQL ", "MariaDB ", "Percona Server "].iter().any(|p| c.info.version.starts_with(p)), "{}", c.info.version);
     assert_eq!(c.info.database, "dataman_t_types");
     assert_eq!(c.info.user, "root");
     assert!(!c.caps().schemas);
@@ -41,6 +41,9 @@ fn connects_and_decodes_every_type() {
     let rs = ok(&e, &s, "SELECT id, name, tier, balance, created, profile, photo, code, tags, birth_date, at_time, yr, flags, score, weight FROM customer ORDER BY id");
     let cols = rs.columns().unwrap();
     let kinds: Vec<Kind> = cols.iter().map(|c| c.kind).collect();
+    // MariaDB's JSON is a LONGTEXT: only its extended metadata says json, which the driver
+    // doesn't read.
+    let json = if c.info.is_mariadb() { Kind::Text } else { Kind::Json };
     assert_eq!(
         kinds,
         vec![
@@ -49,7 +52,7 @@ fn connects_and_decodes_every_type() {
             Kind::Text,
             Kind::Numeric,
             Kind::Timestamp,
-            Kind::Json,
+            json,
             Kind::Bytes,
             Kind::Numeric,
             Kind::Text,
@@ -126,22 +129,30 @@ fn errors_point_at_the_statement() {
     assert_eq!(info.code.as_deref(), Some("1045"));
 }
 
+/// 1 to 1 000 000 from six digits crossed: MySQL 5.7 has no recursive CTE.
+const MILLION: &str = "(SELECT a.d + 10 * b.d + 100 * c.d + 1000 * e.d + 10000 * f.d + 100000 * g.d + 1 AS n FROM \
+    (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) a \
+    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) b \
+    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) c \
+    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) e \
+    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) f \
+    CROSS JOIN (SELECT 0 AS d UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) g) m";
+
 #[test]
 fn streams_pauses_and_fetches_all() {
     let e = env();
     let Some(c) = mysql_on(&e, mysql_profile("")) else { return };
     let s = c.session(None);
-    ok(&e, &s, "SET SESSION cte_max_recursion_depth = 2000000");
     let t0 = Instant::now();
-    let rs = s.execute(
-        "WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g",
-    );
+    let rs = s.execute(format!("SELECT n, SHA2(n, 256) AS h, n % 7 = 0 AS seven FROM {MILLION} ORDER BY n"));
+    // MySQL 9.7 dropped MD5() and SHA1(): a statement that fails never pauses.
     e.core.block_on(async {
         let mut rx = rs.subscribe();
-        while rs.phase() != Phase::Paused {
+        while rs.phase() != Phase::Paused && !rs.phase().is_finished() {
             rx.changed().await.unwrap();
         }
     });
+    assert_eq!(rs.phase(), Phase::Paused, "{:?}", rs.status().error);
     let first_pause = t0.elapsed();
     let loaded = rs.rows();
     assert!((PREFETCH..PREFETCH + 2 * dataman_core::result::CHUNK).contains(&loaded), "{loaded}");
@@ -154,13 +165,14 @@ fn streams_pauses_and_fetches_all() {
     assert_eq!(snap.text(6, 2).as_deref(), Some("1"));
     eprintln!("MySQL 1M rows x 3 cols: first pause after {first_pause:?}, all rows after {:?}", t0.elapsed());
 
-    let big = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n FROM g");
+    let big = s.execute(format!("SELECT n FROM {MILLION}"));
     e.core.block_on(async {
         let mut rx = big.subscribe();
-        while big.phase() != Phase::Paused {
+        while big.phase() != Phase::Paused && !big.phase().is_finished() {
             rx.changed().await.unwrap();
         }
     });
+    assert_eq!(big.phase(), Phase::Paused, "{:?}", big.status().error);
     let next = ok(&e, &s, "SELECT 'next'");
     assert_eq!(next.snapshot().text(0, 0).as_deref(), Some("next"));
     assert!(big.phase().is_finished());
@@ -176,7 +188,7 @@ fn bench_fetch_all() {
     let mut times = Vec::new();
     for _ in 0..n {
         let t0 = Instant::now();
-        let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, MD5(n) AS h, n % 7 = 0 AS seven FROM g");
+        let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n, SHA2(n, 256) AS h, n % 7 = 0 AS seven FROM g");
         rs.fetch_all();
         e.core.block_on(rs.wait_finished());
         assert_eq!(rs.rows(), 1_000_000);
@@ -199,8 +211,7 @@ fn cancel_a_sleep() {
     // SLEEP interrupted by KILL QUERY returns 1 (not an error) on MySQL; either way it is over fast.
     assert!(rs.phase().is_finished());
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
-    ok(&e, &s, "SET SESSION cte_max_recursion_depth = 100000000");
-    let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 50000000) SELECT COUNT(*) FROM g");
+    let rs = s.execute("SELECT BENCHMARK(2000000000, SHA2('x', 256))");
     std::thread::sleep(Duration::from_millis(300));
     s.cancel();
     e.core.block_on(async { tokio::time::timeout(Duration::from_secs(10), rs.wait_finished()).await.expect("timeout") });

@@ -148,7 +148,7 @@ fn statements_presence() {
     assert!(matches!(here, Statements::NotInstalled | Statements::NotLoaded | Statements::Rows(_)), "{here:?}");
 
     let db = "dataman_pgss_t";
-    exec_quiet(&e, &c, &[&format!("DROP DATABASE IF EXISTS {db} WITH (FORCE)")]);
+    exec_quiet(&e, &c, &[&end_sessions_on(db), &format!("DROP DATABASE IF EXISTS {db}")]);
     exec(&e, &c, &[&format!("CREATE DATABASE {db}")]);
     let s = c.session(Some(db));
     let ext = s.execute("CREATE EXTENSION pg_stat_statements");
@@ -167,5 +167,5 @@ fn statements_presence() {
         eprintln!("pg_stat_statements is not available on this server: {:?}", ext.status().error);
     }
     drop(s);
-    exec(&e, &c, &[&format!("DROP DATABASE {db} WITH (FORCE)")]);
+    exec(&e, &c, &[&end_sessions_on(db), &format!("DROP DATABASE {db}")]);
 }

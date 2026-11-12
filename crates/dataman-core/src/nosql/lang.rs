@@ -411,7 +411,7 @@ pub fn complete(engine: Engine, src: &str, cursor: usize, hints: &Hints) -> Comp
             v.dedup();
             v.into_iter().map(|c| word(c, CandidateKind::Keyword, "")).collect()
         } else {
-            hints.collections.iter().filter(|k| k.starts_with(typed)).map(|k| word(&super::redis::quote(k), CandidateKind::Table, "key")).collect()
+            hints.collections.iter().filter(|k| k.starts_with(typed)).map(|k| word(&super::redis::key_arg(k), CandidateKind::Table, "key")).collect()
         };
         items.truncate(MAX_ITEMS);
         return Completion { replace: start..cursor, items };

@@ -1171,11 +1171,15 @@ fn generated_columns_follow_their_sources() {
     if up(PG) {
         let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"gen.email\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"gen.pw\", kind = \"column\" }]\n";
         let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", None);
+        // VIRTUAL came with PostgreSQL 18; before it the column is STORED, and its sources are
+        // kept elsewhere in the catalog (PostgreSQL 12).
+        let version = e.ok("run_query", with("pgadmin", json!({"sql": "SELECT current_setting('server_version_num')::int"})));
+        let virtual_ = if version["rows"][0][0].as_i64().expect("a number") >= 180_000 { "VIRTUAL" } else { "STORED" };
         e.admin(
             "execute",
             with("pgadmin", json!({"sql": format!(
                 "CREATE SCHEMA {s}; CREATE TABLE {s}.gen (id int PRIMARY KEY, name text, email text, pw text, \
-                 pw_len int GENERATED ALWAYS AS (length(pw)) STORED, pw_v text GENERATED ALWAYS AS (pw || '!') VIRTUAL, \
+                 pw_len int GENERATED ALWAYS AS (length(pw)) STORED, pw_v text GENERATED ALWAYS AS (pw || '!') {virtual_}, \
                  email_up text GENERATED ALWAYS AS (upper(email)) STORED, name_up text GENERATED ALWAYS AS (upper(name)) STORED); \
                  INSERT INTO {s}.gen (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"
             )})),

@@ -801,12 +801,10 @@ impl Connection {
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::MySql {
                 let client = this.meta(&db).await?;
-                let qs = my::constraints_sql(&schema, &rel);
                 let mut cons: Vec<Constraint> = Vec::new();
-                for q in &qs {
-                    if let Ok(rows) = first_ok(&client, &[q]).await {
-                        cons.extend(rows.iter().filter_map(|r| my::parse_constraint(&schema, r)));
-                    }
+                for q in my::constraints_sql(&schema, &rel, my::keeps_checks(&this.info)) {
+                    let rows = uncached(first_ok(&client, &[&q]).await, "constraints")?;
+                    cons.extend(rows.iter().filter_map(|r| my::parse_constraint(&schema, r)));
                 }
                 cons.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
                 t.constraints = Some(cons);
@@ -854,7 +852,7 @@ impl Connection {
             }
             let client = this.meta(&db).await?;
             let qs = pg::extensions_sql();
-            let v: Vec<Extension> = first_ok(&client, &qs).await.map(|rows| rows.iter().filter_map(|r| pg::parse_extension(r)).collect()).unwrap_or_default();
+            let v: Vec<Extension> = uncached(first_ok(&client, &qs).await, "extensions")?.iter().filter_map(|r| pg::parse_extension(r)).collect();
             this.schema.with_db(&db, |d| d.extensions = Some(v.clone()));
             Ok(v)
         })
@@ -871,7 +869,7 @@ impl Connection {
             }
             let client = this.meta(this.database()).await?;
             let qs = pg::roles_sql();
-            let v: Vec<Role> = first_ok(&client, &qs).await.map(|rows| rows.iter().filter_map(|r| pg::parse_role(r)).collect()).unwrap_or_default();
+            let v: Vec<Role> = uncached(first_ok(&client, &qs).await, "roles")?.iter().filter_map(|r| pg::parse_role(r)).collect();
             *this.schema.roles.write() = Some(v.clone());
             this.schema.bump();
             Ok(v)

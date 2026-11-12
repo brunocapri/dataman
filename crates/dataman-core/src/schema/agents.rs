@@ -14,11 +14,15 @@ use crate::config::Engine;
 use crate::privacy::Generated;
 use crate::sql::{Dialect, TokenKind, tokenize_in};
 
+/// What a generated column is computed from, in pg_depend: its expression's dependencies, kept on
+/// its default (`pg_attrdef`) or, through PostgreSQL 12, on the column itself (`pg_class` and its
+/// number); either way the default also depends on its own column, which is not a source.
 const PG_GENERATED: &str = "SELECT n.nspname, c.relname, a.attname, d.attname FROM pg_catalog.pg_attribute a \
   JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
   JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
-  JOIN pg_catalog.pg_depend dep ON dep.classid = 'pg_catalog.pg_attrdef'::regclass AND dep.objid = ad.oid \
-   AND dep.refclassid = 'pg_catalog.pg_class'::regclass AND dep.refobjid = a.attrelid AND dep.refobjsubid > 0 \
+  JOIN pg_catalog.pg_depend dep ON ((dep.classid = 'pg_catalog.pg_attrdef'::regclass AND dep.objid = ad.oid) \
+    OR (dep.classid = 'pg_catalog.pg_class'::regclass AND dep.objid = a.attrelid AND dep.objsubid = a.attnum)) \
+   AND dep.refclassid = 'pg_catalog.pg_class'::regclass AND dep.refobjid = a.attrelid AND dep.refobjsubid > 0 AND dep.refobjsubid <> a.attnum \
   JOIN pg_catalog.pg_attribute d ON d.attrelid = a.attrelid AND d.attnum = dep.refobjsubid \
   WHERE a.attgenerated <> '' AND NOT a.attisdropped";
 

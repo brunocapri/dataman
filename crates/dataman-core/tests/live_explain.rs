@@ -46,7 +46,9 @@ fn explain_and_analyze_on_postgres() {
     run(&e, &s, "SET work_mem = '64kB'");
     let t0 = Instant::now();
     let rs = run(&e, &s, &explain::sql(JOIN, true, t));
-    assert!(rs.sql.starts_with("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS, WAL)"));
+    // WAL came with PostgreSQL 13.
+    let options = if t.major >= 13 { "ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS, WAL" } else { "ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS" };
+    assert!(rs.sql.starts_with(&format!("EXPLAIN ({options})")), "{}", rs.sql);
     assert!(!rs.rolled_back(), "a plain session run");
     let p = plan_of(&rs);
     eprintln!("explain analyze: {} nodes in {:?}, execution {:?} ms", p.nodes.len(), t0.elapsed(), p.totals.execution_ms);

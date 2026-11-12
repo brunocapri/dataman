@@ -54,6 +54,19 @@ pub fn admin(engine: Engine, id: &str) -> (ConnectionProfile, String) {
     (p, password)
 }
 
+/// Before PostgreSQL 15 PUBLIC may create in schema public, and so may the agent: the
+/// database's gap, which the review says.
+fn public_create(e: &Env, g: &Arc<Session>, rv: &live::Review) {
+    let old = rv.probe.flavor.major < 15;
+    assert_eq!(rv.plan.rules.iter().any(|r| r.how.contains("before PostgreSQL 15")), old, "{:?}", rv.plan.rules);
+    if old {
+        ok(e, g, "CREATE TABLE public.mine (i int)");
+        ok(e, g, "DROP TABLE public.mine");
+    } else {
+        denied(e, g, "CREATE TABLE public.mine (i int)");
+    }
+}
+
 fn up(p: &ConnectionProfile) -> bool {
     std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
@@ -119,6 +132,18 @@ fn create(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile) -> (AgentLogi
     (live::record(p, &rv.plan, &opts()), rv.password.clone(), rv)
 }
 
+/// Below the release the login's steps need (MySQL 8.0.21, MariaDB 10.5) the review refuses
+/// before any step runs, and says why: the test has nothing more to try there.
+fn below_mysql_floor(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile) -> bool {
+    let floor = if admin.info.is_mariadb() { (10, 5, 0) } else { (8, 0, 21) };
+    if admin.info.release >= floor {
+        return false;
+    }
+    let rv = e.core.block_on(live::review(admin, p, &opts())).unwrap();
+    assert!(!rv.probe.can_create && rv.plan.lacks.iter().any(|l| l.contains("or later is needed")), "{}: {:?}", admin.info.version, rv.plan.lacks);
+    true
+}
+
 fn as_agent(e: &Env, p: &ConnectionProfile, user: &str, password: &str) -> Result<Arc<Connection>, String> {
     connect(e, &live::agent_profile(p, user), password)
 }
@@ -180,7 +205,8 @@ fn postgres() {
     let root = connect(&e, &ConnectionProfile { database: "postgres".into(), ..p.clone() }, &apw).unwrap();
     let rs = root.session(None);
     for sql in [
-        "DROP DATABASE IF EXISTS au_shop WITH (FORCE)".to_string(),
+        end_sessions_on("au_shop"),
+        "DROP DATABASE IF EXISTS au_shop".to_string(),
         format!("DROP ROLE IF EXISTS {user}"),
         "DROP ROLE IF EXISTS dataman_agent_decoy".into(),
         "DROP ROLE IF EXISTS dataman_agent_auclash1".into(),
@@ -232,7 +258,7 @@ fn postgres() {
     denied(&e, &g, "UPDATE public.users SET email = 'x' WHERE id = 1");
     denied(&e, &g, "TRUNCATE public.orders");
     denied(&e, &g, "DROP TABLE public.orders");
-    denied(&e, &g, "CREATE TABLE public.mine (i int)");
+    public_create(&e, &g, &rv);
     denied(&e, &g, "ALTER TABLE public.orders ADD COLUMN x int");
     denied(&e, &g, "GRANT SELECT ON public.audit_log TO PUBLIC");
     // Activity is off while data is kept: others' statements are hidden by the server.
@@ -285,7 +311,8 @@ fn postgres_createrole_admin() {
     let root = connect(&e, &ConnectionProfile { database: "postgres".into(), ..p.clone() }, &apw).unwrap();
     let rs = root.session(None);
     for sql in [
-        "DROP DATABASE IF EXISTS au_shop2 WITH (FORCE)".to_string(),
+        end_sessions_on("au_shop2"),
+        "DROP DATABASE IF EXISTS au_shop2".to_string(),
         format!("DROP ROLE IF EXISTS {user}"),
         "DROP ROLE IF EXISTS au_admin".into(),
         "CREATE ROLE au_admin LOGIN CREATEROLE PASSWORD 'au-admin-pw'".into(),
@@ -305,7 +332,9 @@ fn postgres_createrole_admin() {
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     assert!(rv.probe.can_create && !rv.probe.flavor.superuser, "{:?}", rv.probe);
     assert!(rv.plan.not_granted.iter().any(|n| n.object == "public.theirs" && n.reason.contains("postgres")), "{:?}", rv.plan.not_granted);
-    assert!(!rv.plan.shown().contains("pg_read_all_stats\" TO"), "it can't grant the predefined role");
+    // Before PostgreSQL 16 CREATEROLE grants any role but a superuser's.
+    let major = a.info.major();
+    assert_eq!(rv.plan.shown().contains("pg_read_all_stats\" TO"), major < 16, "it can grant the predefined role only before PostgreSQL 16");
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
@@ -320,7 +349,8 @@ fn postgres_createrole_admin() {
     assert!(!plan.shown().contains("DROP OWNED") && plan.shown().contains("REVOKE"), "{}", plan.shown());
     remove(&e, &a, &p, &login, &password);
     drop((s, a, su));
-    ok(&e, &rs, "DROP DATABASE IF EXISTS au_shop2 WITH (FORCE)");
+    ok(&e, &rs, &end_sessions_on("au_shop2"));
+    ok(&e, &rs, "DROP DATABASE IF EXISTS au_shop2");
     ok(&e, &rs, "DROP ROLE IF EXISTS au_admin");
 }
 
@@ -339,6 +369,9 @@ fn mysql() {
     let user = agent_login::login_name(&p.id);
     let space = agent_login::space_of(&user);
     let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
+    if below_mysql_floor(&e, &root, &p) {
+        return;
+    }
     let rs = root.session(None);
     for sql in [
         "DROP DATABASE IF EXISTS au_shop".to_string(),
@@ -767,7 +800,8 @@ fn postgres_redteam() {
     let root = connect(&e, &ConnectionProfile { database: "postgres".into(), ..p.clone() }, &apw).unwrap();
     let rs = root.session(None);
     for sql in [
-        "DROP DATABASE IF EXISTS au_rt WITH (FORCE)".to_string(),
+        end_sessions_on("au_rt"),
+        "DROP DATABASE IF EXISTS au_rt".to_string(),
         format!("DROP ROLE IF EXISTS {user}"),
         "DROP ROLE IF EXISTS dataman_agent_lookalike".into(),
         "DROP ROLE IF EXISTS dataman_agent_aupgcoll".into(),
@@ -866,7 +900,7 @@ fn postgres_redteam() {
     assert_eq!(first(&ok(&e, &g, "SELECT s FROM pub_leak")), "public-secret");
     assert_eq!(first(&ok(&e, &g, "SELECT pw FROM cols_leak")), "col-secret");
     assert_eq!(first(&ok(&e, &g, "SELECT leak_secrets()")), "top-secret", "SECURITY DEFINER, said in the notes");
-    denied(&e, &g, "CREATE TABLE public.mine (i int)");
+    public_create(&e, &g, &rv);
     denied(&e, &g, "CREATE SCHEMA mine");
     // PostgreSQL takes a GRANT without the grant option with a warning, granting nothing.
     let _ = run(&e, &g, "GRANT SELECT ON users TO PUBLIC");
@@ -936,7 +970,8 @@ fn postgres_redteam() {
     assert_eq!(first(&ok(&e, &s, &format!("SELECT count(*) FROM pg_views WHERE schemaname = '{space}'"))), "1", "only the look-alike is left");
     assert_eq!(first(&ok(&e, &s, "SELECT count(*) FROM pg_class WHERE relname = 'salt' AND relnamespace = 'public'::regnamespace")), "1");
     drop((ls, left, s, a));
-    ok(&e, &rs, "DROP DATABASE IF EXISTS au_rt WITH (FORCE)");
+    ok(&e, &rs, &end_sessions_on("au_rt"));
+    ok(&e, &rs, "DROP DATABASE IF EXISTS au_rt");
     ok(&e, &rs, "DROP ROLE IF EXISTS dataman_agent_lookalike");
 }
 
@@ -955,6 +990,9 @@ fn mysql_redteam() {
     let user = agent_login::login_name(&p.id);
     let space = agent_login::space_of(&user);
     let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
+    if below_mysql_floor(&e, &root, &p) {
+        return;
+    }
     let rs = root.session(None);
     // MariaDB has no mandatory roles.
     let maria = root.info.is_mariadb();
@@ -995,8 +1033,19 @@ fn mysql_redteam() {
     }
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
-    verify_all(&e, &agent, &rv);
-    if !maria {
+    // MySQL 9 turns mandatory roles on at every login (`activate_mandatory_roles`): Verify must
+    // then find the hidden table read, as the review warned.
+    let active = !maria && ok(&e, &rs, "SHOW GLOBAL VARIABLES LIKE 'activate_mandatory_roles'").first().is_some_and(|r| r[1].as_deref() == Some("ON"));
+    if active {
+        assert!(rv.plan.exposed.iter().any(|x| x.object.contains("au_reader") && x.reason.contains("turned on at login")), "{:?}", rv.plan.exposed);
+        let checks = e.core.block_on(live::verify(&agent, &rv.spec, &rv.inventory, &rv.probe)).unwrap();
+        let bad: Vec<_> = checks.iter().filter(|c| !c.ok).map(|c| (c.what.as_str(), c.on.as_str())).collect();
+        assert_eq!(bad, [("Can't read hidden tables", "au_rt.secrets")], "{checks:?}");
+        ok(&e, &rs, "SET GLOBAL mandatory_roles = ''");
+    } else {
+        verify_all(&e, &agent, &rv);
+    }
+    if !maria && !active {
         let g = agent.session(None);
         ok(&e, &g, "SET ROLE 'au_reader'");
         assert_eq!(first(&ok(&e, &g, "SELECT s FROM au_rt.secrets")), "top-secret", "what mandatory_roles gives, said in the review");

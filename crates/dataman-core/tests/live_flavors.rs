@@ -157,7 +157,7 @@ fn yugabyte_is_told_by_its_version_and_listen_fails_clean() {
 #[test]
 fn percona_is_told_by_its_version_comment() {
     let Some((e, c)) = server("DATAMAN_PERCONA", false) else { return };
-    told(&c, Flavor::Percona, "Percona Server 8.", 8..=8);
+    told(&c, Flavor::Percona, "Percona Server ", 5..=9);
     assert!(!c.info.is_mariadb());
     ok(&e, &c, "CREATE DATABASE IF NOT EXISTS dataman_flavor");
     ok(&e, &c, "CREATE TABLE IF NOT EXISTS dataman_flavor.ro (id int PRIMARY KEY)");

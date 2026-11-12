@@ -187,14 +187,20 @@ impl Probe {
 
 const PROBE: &str = "SELECT CAST(@@ROWCOUNT AS bigint), @@TRANCOUNT, CAST(XACT_STATE() AS smallint)";
 
-async fn probe(c: &mut TClient) -> Result<Probe, MsError> {
-    let row = c.simple_query(PROBE).await?.into_row().await?;
-    let row = row.ok_or_else(|| MsError::Protocol("the state query returned no row".into()))?;
-    Ok(Probe {
-        rowcount: row.get::<i64, _>(0).unwrap_or(0).max(0) as u64,
-        trancount: row.get::<i32, _>(1).unwrap_or(0),
-        xact_state: row.get::<i16, _>(2).unwrap_or(0),
-    })
+/// None: the server ran no statement. Under `SET SHOWPLAN_XML`, `SHOWPLAN_TEXT`, `SHOWPLAN_ALL`,
+/// `FMTONLY`, `NOEXEC` or `PARSEONLY` it compiles what it is sent and answers with a plan, bare
+/// columns or nothing, this query included: then the statement before it ran none either (only a
+/// SET does), so nothing the probe reads has changed.
+async fn probe(c: &mut TClient) -> Result<Option<Probe>, MsError> {
+    let Some(row) = c.simple_query(PROBE).await?.into_row().await? else { return Ok(None) };
+    if row.len() != 3 {
+        return Ok(None);
+    }
+    Ok(Some(Probe {
+        rowcount: row.try_get::<i64, _>(0)?.unwrap_or(0).max(0) as u64,
+        trancount: row.try_get::<i32, _>(1)?.unwrap_or(0),
+        xact_state: row.try_get::<i16, _>(2)?.unwrap_or(0),
+    }))
 }
 
 impl Client {
@@ -234,10 +240,11 @@ impl Client {
         }
         let c = slot.as_mut()?;
         match probe(c).await {
-            Ok(p) => {
+            Ok(Some(p)) => {
                 self.report(&p);
                 Some(p)
             }
+            Ok(None) => None,
             Err(e) => {
                 if breaks_connection(&e) {
                     self.lost(slot);

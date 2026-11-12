@@ -151,7 +151,7 @@ var __B = (function () {
   method(BSONRegExp, "__shell", function () { return "RegExp(" + JSON.stringify(this.pattern) + ", " + JSON.stringify(this.flags) + ")"; });
 
   function enc(v, depth) {
-    if (depth > 150) throw new RangeError("this value nests too deeply (or contains itself)");
+    if (depth > __max_depth) throw new RangeError("this value nests more than " + __max_depth + " levels deep (or contains itself)");
     if (v === null) return "null";
     switch (typeof v) {
       case "undefined": return "undefined";

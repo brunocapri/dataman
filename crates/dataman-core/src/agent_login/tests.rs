@@ -239,6 +239,30 @@ fn hostile_names_are_quoted_everywhere() {
     assert_eq!(redis::key_pattern("user:[1]?\\*"), "user:\\[1\\]\\?\\\\*");
 }
 
+/// SERVERPROPERTY('ProductVersion') as each answers it.
+#[test]
+fn sql_server_releases_too_old_for_the_steps() {
+    assert!(ms::too_old(false, "12.0.6024.0").is_some(), "2014");
+    assert_eq!(ms::too_old(false, "13.0.1601.5"), None);
+    assert_eq!(ms::too_old(false, "14.0.3515.1"), None);
+    assert_eq!(ms::too_old(false, "17.0.1000.7"), None);
+    assert_eq!(ms::too_old(true, "12.0.2000.8"), None, "Azure SQL Database");
+}
+
+/// What `VERSION()` answers on each: below the floor the probe refuses before a step runs.
+#[test]
+fn mysql_releases_too_old_for_the_steps() {
+    for v in ["8.0.20", "5.7.44-log", "5.7.44-48", "8.0.0-dmr"] {
+        assert!(my::too_old(false, v).is_some_and(|w| w.contains("8.0.21")), "{v}");
+    }
+    for v in ["8.0.21", "8.0.44", "8.4.7", "9.5.0", "26.7.0"] {
+        assert_eq!(my::too_old(false, v), None, "{v}");
+    }
+    assert!(my::too_old(true, "10.4.34-MariaDB-1:10.4.34+maria~ubu2004").is_some_and(|w| w.contains("10.5")));
+    assert_eq!(my::too_old(true, "10.5.27-MariaDB-ubu2004"), None);
+    assert_eq!(my::too_old(true, "11.8.3-MariaDB-ubu2404"), None);
+}
+
 #[test]
 fn mysql_plan() {
     let p = guarded(Engine::MySql);
@@ -598,7 +622,11 @@ fn what_every_login_reads_is_said_not_claimed() {
     let mut minv = inv_sql("shop");
     minv.open_roles = vec!["`app_read`@`%`".into()];
     let plan = my::create_plan(&compile(&guarded(Engine::MySql), "", &opts()), &minv, &probe_sql(), "pw", false);
-    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read")), "{:?}", plan.exposed);
+    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read") && e.reason.contains("SET ROLE")), "{:?}", plan.exposed);
+    // MySQL 9 turns them on at login.
+    minv.open_roles_active = true;
+    let plan = my::create_plan(&compile(&guarded(Engine::MySql), "", &opts()), &minv, &probe_sql(), "pw", false);
+    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read") && e.reason.contains("turned on at login")), "{:?}", plan.exposed);
 }
 
 #[test]

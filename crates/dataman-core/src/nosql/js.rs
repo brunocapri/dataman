@@ -12,7 +12,9 @@ use crate::guard::WriteClass;
 const PRELUDE: &str = include_str!("js_prelude.js");
 
 const LOOP_LIMIT: u64 = if cfg!(test) { 200_000 } else { 20_000_000 };
-const RECURSION_LIMIT: usize = 400;
+/// The prelude's `enc` takes three calls a level (itself, `forEach`, the callback): a value as
+/// deep as the shell reads (`shell::MAX_DEPTH`) must encode before the limit stops it.
+const RECURSION_LIMIT: usize = 4 * shell::MAX_DEPTH;
 const PRINT_LINES: usize = 5_000;
 const PRINT_BYTES: usize = 1 << 20;
 const SHOWN_DOCS: usize = 1_000;
@@ -364,6 +366,7 @@ fn context() -> Result<Context, Failed> {
     for (name, n, f) in natives {
         ctx.register_global_callable(JsString::from(name), n, NativeFunction::from_fn_ptr(f)).map_err(|e| Failed { message: e.to_string(), at: None })?;
     }
+    ctx.register_global_property(js_string!("__max_depth"), shell::MAX_DEPTH as i32, boa_engine::property::Attribute::empty()).map_err(|e| Failed { message: e.to_string(), at: None })?;
     ctx.eval(Source::from_bytes(PRELUDE)).map_err(|e| Failed { message: format!("the shell did not start: {e}"), at: None })?;
     Ok(ctx)
 }
@@ -407,11 +410,21 @@ fn syntax_at(message: &str, text: &str) -> Option<usize> {
     Some((start + off).min(text.len()))
 }
 
+/// The stack a script parses and runs on: Boa recurses deeply for each level a script nests (a
+/// debug build fills 8 MiB in under 50 levels), and running out aborts the app.
+pub(crate) const STACK: usize = 64 << 20;
+
 pub(crate) fn check(text: &str) -> Result<(), Failed> {
+    if mql::nesting(text) > shell::MAX_DEPTH {
+        return Err(Failed { message: shell::too_deep(), at: None });
+    }
     let prepared = prepare(text);
-    let mut ctx = Context::default();
-    boa_engine::Script::parse(Source::from_bytes(&prepared), None, &mut ctx).map(|_| ()).map_err(|e| {
-        let m = e.to_string();
+    let parsed = std::thread::scope(|s| {
+        let parse = || boa_engine::Script::parse(Source::from_bytes(&prepared), None, &mut Context::default()).map(|_| ()).map_err(|e| e.to_string());
+        let h = std::thread::Builder::new().name("dataman-js".into()).stack_size(STACK).spawn_scoped(s, parse);
+        h.map_err(|e| Failed { message: format!("the script was not read: {e}"), at: None }).map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+    })?;
+    parsed.map_err(|m| {
         let at = syntax_at(&m, text);
         let m = m.strip_prefix("SyntaxError: ").unwrap_or(&m);
         let m = m.rfind(" at line ").map_or(m, |i| &m[..i]);

@@ -63,8 +63,8 @@ pub const CLICKHOUSE_PLAIN_DATABASE_ENGINES: &[&str] = &["Atomic", "Lazy", "Memo
 pub const CLICKHOUSE_PLAIN_SYSTEM_TABLES: &[&str] = &[
     "aggregate_function_combinators", "asynchronous_metrics", "azure_queue_settings", "build_options", "certificates", "clusters", "codecs", "collations", "columns", "completions",
     "contributors", "current_roles", "dashboards", "data_skipping_indices", "data_type_families", "database_engines", "databases", "detached_parts", "detached_tables", "dictionaries", "dimensional_metrics",
-    "disks", "dns_cache", "dropped_tables", "dropped_tables_parts", "enabled_roles", "events", "filesystem_cache_settings", "formats", "functions", "grants", "graphite_retentions", "histogram_metrics",
-    "iceberg_history", "jemalloc_bins", "keywords", "licenses", "macros", "merge_tree_settings", "metrics", "models", "named_collections", "numbers", "numbers_mt", "one", "parts", "parts_columns", "privileges",
+    "disks", "dns_cache", "dropped_tables", "dropped_tables_parts", "enabled_roles", "events", "filesystem_cache_settings", "formats", "functions", "generateSeries", "generate_series", "grants", "graphite_retentions", "histogram_metrics",
+    "iceberg_history", "jemalloc_bins", "keywords", "latency_buckets", "licenses", "macros", "merge_tree_settings", "metrics", "models", "named_collections", "numbers", "numbers_mt", "one", "parts", "parts_columns", "privileges",
     "projection_parts", "projection_parts_columns", "projections", "quota_limits", "quota_usage", "quotas", "quotas_usage", "remote_data_paths", "replicas", "replicated_merge_tree_settings", "resources", "rocksdb",
     "role_grants", "roles", "row_policies", "s3_queue_settings", "scheduler", "server_settings", "settings", "settings_changes", "settings_profile_elements", "settings_profiles", "storage_policies", "symbols",
     "table_engines", "table_functions", "tables", "time_zones", "user_directories", "users", "warnings", "workloads", "zeros", "zeros_mt",
@@ -74,7 +74,7 @@ pub const CLICKHOUSE_PLAIN_SYSTEM_TABLES: &[&str] = &[
 /// values. Nothing reads this but the live test that holds a server's list to both.
 pub const CLICKHOUSE_ACTIVITY_SYSTEM_TABLES: &[&str] = &[
     "asynchronous_insert_log", "asynchronous_inserts", "asynchronous_loader", "asynchronous_metric_log", "azure_queue", "backup_log", "backups", "blob_storage_log", "crash_log", "distributed_ddl_queue", "distribution_queue", "error_log", "errors",
-    "filesystem_cache", "iceberg_metadata_log", "kafka_consumers", "merges", "metric_log", "moves", "mutations", "opentelemetry_span_log", "part_log", "part_moves_between_shards", "processes", "processors_profile_log",
+    "filesystem_cache", "iceberg_metadata_log", "kafka_consumers", "latency_log", "merges", "metric_log", "moves", "mutations", "mysql_binlogs", "opentelemetry_span_log", "part_log", "part_moves_between_shards", "processes", "processors_profile_log",
     "query_cache", "query_condition_cache", "query_log", "query_metric_log", "query_thread_log", "query_views_log", "replicated_fetches", "replication_queue", "s3queue", "s3queue_log", "schema_inference_cache", "session_log",
     "stack_trace", "text_log", "trace_log", "user_processes", "view_refreshes",
 ];

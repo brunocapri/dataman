@@ -145,10 +145,21 @@ pub fn split(text: &str) -> Vec<Range<usize>> {
 }
 
 pub(crate) fn statements(text: &str) -> Vec<Range<usize>> {
+    scan(text).0
+}
+
+/// How deep the text's objects and arrays nest, read as `statements` reads it (strings, comments
+/// and regular expressions are not counted).
+pub(crate) fn nesting(text: &str) -> usize {
+    scan(text).1
+}
+
+fn scan(text: &str) -> (Vec<Range<usize>>, usize) {
     let b = text.as_bytes();
     let mut out = Vec::new();
     let mut start = 0;
     let mut depth = 0i32;
+    let (mut nest, mut deepest) = (0usize, 0usize);
     let mut i = 0;
     let mut last = b'(';
     let push = |s: usize, e: usize, out: &mut Vec<Range<usize>>| {
@@ -198,10 +209,17 @@ pub(crate) fn statements(text: &str) -> Vec<Range<usize>> {
             }
             b'(' | b'[' | b'{' => {
                 depth += 1;
+                if c != b'(' {
+                    nest += 1;
+                    deepest = deepest.max(nest);
+                }
                 last = c;
             }
             b')' | b']' | b'}' => {
                 depth -= 1;
+                if c != b')' {
+                    nest = nest.saturating_sub(1);
+                }
                 last = c;
             }
             b';' if depth <= 0 => {
@@ -225,7 +243,7 @@ pub(crate) fn statements(text: &str) -> Vec<Range<usize>> {
         i += 1;
     }
     push(start, b.len().max(start), &mut out);
-    out
+    (out, deepest)
 }
 
 fn only_comments(s: &str) -> bool {

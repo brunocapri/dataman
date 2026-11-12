@@ -1,0 +1,141 @@
+# Redis' older releases and the servers that speak its protocol: see scripts/versions.sh. 6.0 is
+# below the floor (6.2); the agent login needs Redis 7, so before it only the refusal is tested
+# (tests/versions/redis.rs), not live_agent_login. Dragonfly and Garnet without the battery:
+# it expects Redis' own commands (Dragonfly has no OBJECT and has JSON, Garnet has no streams).
+# The other engines' addresses point nowhere, so the shared suites skip them instead of reaching
+# the e2e servers.
+name: dataman-versions
+
+x-redis: &redis
+  command: redis-server --requirepass dataman
+  tmpfs: [/data]
+  healthcheck:
+    test: redis-cli -a dataman --no-auth-warning ping
+    interval: 2s
+    retries: 30
+
+x-valkey: &valkey
+  command: valkey-server --requirepass dataman
+  tmpfs: [/data]
+  healthcheck:
+    test: valkey-cli -a dataman --no-auth-warning ping
+    interval: 2s
+    retries: 30
+
+x-tests: &tests live_versions live_redis live_nosql_battery live_flavors live_agent_login
+
+services:
+  redis-6-0:
+    <<: *redis
+    image: redis:6.0
+    ports: ["127.0.0.1:6360:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6360/9
+      dataman.expect: Redis 6.0.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6360 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
+      dataman.tests: live_versions live_redis live_nosql_battery
+
+  redis-6-2:
+    <<: *redis
+    image: redis:6.2
+    ports: ["127.0.0.1:6362:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6362/9
+      dataman.expect: Redis 6.2.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6362 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
+      dataman.tests: live_versions live_redis live_nosql_battery
+
+  redis-7-2:
+    <<: *redis
+    image: redis:7.2
+    ports: ["127.0.0.1:6372:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6372/9
+      dataman.expect: Redis 7.2.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6372 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_REDIS=127.0.0.1:6372 DATAMAN_AU_REDIS_PASSWORD=dataman DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_MONGO=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  redis-7-4:
+    <<: *redis
+    image: redis:7.4
+    ports: ["127.0.0.1:6374:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6374/9
+      dataman.expect: Redis 7.4.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6374 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_REDIS=127.0.0.1:6374 DATAMAN_AU_REDIS_PASSWORD=dataman DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_MONGO=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  # Redis Open Source 8 carries JSON, TimeSeries, Bloom and the query engine.
+  redis-8:
+    <<: *redis
+    image: redis:8.8
+    ports: ["127.0.0.1:6380:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6380/9
+      dataman.expect: Redis 8.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6380 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_REDIS=127.0.0.1:6380 DATAMAN_AU_REDIS_PASSWORD=dataman DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_MONGO=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  valkey-7:
+    <<: *valkey
+    image: valkey/valkey:7.2
+    ports: ["127.0.0.1:6387:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6387/9
+      dataman.expect: Valkey 7.2.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6387 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_REDIS=127.0.0.1:6387 DATAMAN_AU_REDIS_PASSWORD=dataman DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_MONGO=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  valkey-8:
+    <<: *valkey
+    image: valkey/valkey:8.1
+    ports: ["127.0.0.1:6388:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6388/9
+      dataman.expect: Valkey 8.1.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6388 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_REDIS=127.0.0.1:6388 DATAMAN_AU_REDIS_PASSWORD=dataman DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_MONGO=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    command: --requirepass=dataman --proactor_threads=2 --maxmemory=512mb
+    ulimits:
+      memlock: -1
+    tmpfs: [/data]
+    ports: ["127.0.0.1:6390:6379"]
+    healthcheck:
+      test: redis-cli -a dataman --no-auth-warning ping
+      interval: 2s
+      retries: 30
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6390/9
+      dataman.expect: Dragonfly
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6390 DATAMAN_DRAGONFLY=redis://:dataman@127.0.0.1:6390/0 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
+      dataman.tests: live_versions live_redis live_flavors
+
+  keydb:
+    image: eqalpha/keydb:latest
+    command: keydb-server --requirepass dataman
+    tmpfs: [/data]
+    ports: ["127.0.0.1:6391:6379"]
+    healthcheck:
+      test: keydb-cli -a dataman --no-auth-warning ping
+      interval: 2s
+      retries: 30
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6391/9
+      dataman.expect: KeyDB 6.
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6391 DATAMAN_KEYDB=redis://:dataman@127.0.0.1:6391/0 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
+      dataman.tests: live_versions live_redis live_nosql_battery live_flavors
+
+  # No shell in the image to check it with: Compose waits for it to run, and the tests
+  # connect with the client's own timeout.
+  garnet:
+    image: ghcr.io/microsoft/garnet:latest
+    command: --auth Password --password dataman
+    ports: ["127.0.0.1:6392:6379"]
+    labels:
+      dataman.url: redis://:dataman@127.0.0.1:6392/0
+      dataman.expect: Garnet
+      dataman.env: DATAMAN_REDIS=127.0.0.1:6392 DATAMAN_GARNET=redis://:dataman@127.0.0.1:6392/0 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
+      dataman.tests: live_versions live_redis live_flavors

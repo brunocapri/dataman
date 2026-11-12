@@ -384,6 +384,10 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
             p.lacks.push(format!("{login} can't create logins: it needs ALTER ANY LOGIN (securityadmin)"));
         }
     }
+    if let Some(why) = too_old(azure, &s(&row[1])) {
+        p.can_create = false;
+        p.lacks.push(why.into());
+    }
     p.checks.push((p.can_create, if p.can_create { format!("{login} can create logins and users") } else { format!("{login} can't create logins") }));
     p.checks.push((tls, if tls { "TLS on".into() } else { "TLS off".into() }));
     if azure {
@@ -392,6 +396,12 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
     p.exists = exists(db, user, conn).await?;
     p.orphan = p.exists == Some(false) && !azure && orphan(db, user).await?;
     Ok(p)
+}
+
+/// The steps drop with `DROP … IF EXISTS`, SQL Server 2016's (13): an older server fails
+/// halfway through them. Azure SQL Database reports 12 and has it.
+pub(super) fn too_old(azure: bool, product_version: &str) -> Option<&'static str> {
+    (!azure && crate::server::parse_release(product_version).0 < 13).then_some("SQL Server 2016 or later is needed (DROP … IF EXISTS)")
 }
 
 /// A login named `user` with no user in this database, by its name or its SID: what a restore or

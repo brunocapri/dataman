@@ -7,7 +7,9 @@
 -- DECIMAL, DATETIME, TIMESTAMP, TIME, YEAR, BIT, BLOB, unsigned BIGINT past i64, zero dates),
 -- a view, a trigger, a procedure and a function.
 DROP DATABASE IF EXISTS dataman_test;
-CREATE DATABASE dataman_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+-- The server's default utf8mb4 collation: MySQL 8's utf8mb4_0900_ai_ci is neither MySQL 5.7's
+-- nor MariaDB's.
+CREATE DATABASE dataman_test CHARACTER SET utf8mb4;
 USE dataman_test;
 
 CREATE TABLE customer (

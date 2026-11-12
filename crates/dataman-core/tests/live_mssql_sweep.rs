@@ -299,8 +299,11 @@ fn ssms_script_runs() {
     let Some(c0) = mssql_on(&e, mssql_profile("master")) else { return };
     mssql_drop(&e, "dataman_msw4");
     let s = c0.session(None);
-    let bad = script(&e, &s, SSMS);
-    let n = batches_in(SSMS, Dialect::TSql).len();
+    // As SSMS scripts it for SQL Server 2017: its compatibility level, and no
+    // OPTIMIZE_FOR_SEQUENTIAL_KEY (2019's).
+    let src = if c0.info.release.0 < 15 { SSMS.replace("COMPATIBILITY_LEVEL = 150", "COMPATIBILITY_LEVEL = 140").replace(", OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF", "") } else { SSMS.to_string() };
+    let bad = script(&e, &s, &src);
+    let n = batches_in(&src, Dialect::TSql).len();
     let check = cell(&e, &s, "SELECT COUNT(*) FROM [dataman_msw4].dbo.Customers WHERE Notes LIKE N'line1%line3%'");
     mssql_drop(&e, "dataman_msw4");
     assert!(bad.is_empty(), "{n} batches: {bad:#?}");

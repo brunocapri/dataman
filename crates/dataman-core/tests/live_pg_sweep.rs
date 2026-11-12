@@ -9,7 +9,18 @@ fn finish(e: &Env, rs: &Arc<dataman_core::ResultSet>) -> Phase {
     e.core.block_on(async { tokio::time::timeout(Duration::from_secs(60), rs.wait_finished()).await.expect("timeout") })
 }
 
+/// SQL a release before this one does not parse: (what the statement holds, the release).
+const NEWER: &[(&str, u32)] = &[("merge_action()", 17), ("MERGE ", 15), ("BEGIN ATOMIC", 14), ("RETURN a + 1", 14), ("sqlf(", 14), ("regcollation", 13)];
+
+/// The statements the server's release runs: the sweeps hold the newest SQL, and run on older
+/// servers too (scripts/versions.sh).
+fn runs_here<'a>(c: &Connection, stmts: &[&'a str]) -> Vec<&'a str> {
+    let major = c.info.major();
+    stmts.iter().copied().filter(|s| NEWER.iter().all(|(w, v)| major >= *v || !s.contains(w))).collect()
+}
+
 fn check_script(e: &Env, c: &Arc<Connection>, stmts: &[&str]) {
+    let stmts = &runs_here(c, stmts)[..];
     let script = stmts.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n\n");
     let parts = split::split(&script);
     let got: Vec<&str> = parts.iter().map(|s| &script[s.range.clone()]).collect();
@@ -615,7 +626,7 @@ fn lint_quiet_on_valid_queries() {
     ];
     let s = c.session(None);
     let mut failures = Vec::new();
-    for q in qs {
+    for q in &runs_here(&c, qs) {
         let rs = s.execute(*q);
         let ph = finish(&e, &rs);
         if ph != Phase::Done {
@@ -1189,7 +1200,11 @@ fn types_without_binary_output() {
         "SELECT * FROM pg_hba_file_rules",
         "SELECT * FROM pg_ls_waldir() LIMIT 1",
         "SELECT '1'::regclass::oid, (SELECT array_agg(c) FROM pg_class c LIMIT 1)",
-    ] {
+    ]
+    // Before PostgreSQL 14 a catalog's row type has no array type.
+    .into_iter()
+    .filter(|q| c.info.major() >= 14 || !q.contains("array_agg(c) FROM pg_class"))
+    {
         let rs = s.execute(q);
         let ph = finish(&e, &rs);
         if ph != Phase::Done {
@@ -1224,17 +1239,19 @@ fn sendless_types_in_every_reader() {
     let snap = rs.snapshot();
     assert_eq!(snap.rows(), 1);
     assert_eq!(snap.text(0, 1).as_deref(), Some("pg_class"));
-    assert!(snap.text(0, 4).unwrap().starts_with("{postgres=arwdDxtm/postgres"), "{:?}", snap.text(0, 4));
+    // MAINTAIN (`m`) came with PostgreSQL 17.
+    let acl = if c.info.major() >= 17 { "postgres=arwdDxtm/postgres" } else { "postgres=arwdDxt/postgres" };
+    assert!(snap.text(0, 4).unwrap().starts_with(&format!("{{{acl}")), "{:?}", snap.text(0, 4));
     assert_eq!(rs.columns().unwrap()[0].kind, dataman_core::value::Kind::Int);
     assert!(matches!(snap.cell(0, 0), dataman_core::result::Cell::Int(1259)));
     let out = e.core.block_on(c.bounded(None, q, vec![], Mode::Read, Limits::default(), std::future::pending())).unwrap();
     assert_eq!(out.rows.len(), 1);
-    assert!(out.rows[0][4].to_string().contains("postgres=arwdDxtm/postgres"), "{:?}", out.rows[0]);
+    assert!(out.rows[0][4].to_string().contains(acl), "{:?}", out.rows[0]);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("o.csv");
     let x = c.export_query(None, q, &path, ExportOptions::new(ExportFormat::Csv), None);
     assert_eq!(e.core.block_on(x.task).unwrap().rows, 1);
-    assert!(std::fs::read_to_string(&path).unwrap().contains("postgres=arwdDxtm/postgres"));
+    assert!(std::fs::read_to_string(&path).unwrap().contains(acl));
     let rs = query(&e, &c, "SELECT * FROM pg_namespace");
     assert!(rs.snapshot().rows() >= 3);
 }
@@ -1273,10 +1290,15 @@ fn notices_reach_the_result() {
 fn reg_types_show_names_and_ranges_are_listed() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    let rs = query(&e, &c, "SELECT 'pg_class'::regclass, 'int4'::regtype, pg_typeof(1), 'pg_catalog'::regnamespace, 'postgres'::regrole, 'abs(int4)'::regprocedure, '+(int4,int4)'::regoperator, 'english'::regconfig, 'simple'::regdictionary, 'pg_catalog.\"default\"'::regcollation, to_regclass('pg_class')");
+    let rs = query(&e, &c, "SELECT 'pg_class'::regclass, 'int4'::regtype, pg_typeof(1), 'pg_catalog'::regnamespace, 'postgres'::regrole, 'abs(int4)'::regprocedure, '+(int4,int4)'::regoperator, 'english'::regconfig, 'simple'::regdictionary, to_regclass('pg_class')");
     let snap = rs.snapshot();
     let got: Vec<String> = (0..snap.columns.len()).map(|i| snap.text(0, i).unwrap().into_owned()).collect();
-    assert_eq!(got, ["pg_class", "integer", "integer", "pg_catalog", "postgres", "abs(integer)", "+(integer,integer)", "english", "simple", "\"default\"", "pg_class"]);
+    assert_eq!(got, ["pg_class", "integer", "integer", "pg_catalog", "postgres", "abs(integer)", "+(integer,integer)", "english", "simple", "pg_class"]);
+    // regcollation came with PostgreSQL 13.
+    if c.info.major() >= 13 {
+        let rs = query(&e, &c, "SELECT 'pg_catalog.\"default\"'::regcollation");
+        assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("\"default\""));
+    }
     let rs = query(&e, &c, "SELECT ARRAY['pg_class'::regclass]");
     assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("{pg_class}"));
 

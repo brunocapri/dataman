@@ -1,0 +1,165 @@
+# MySQL's older and newer releases and the servers that speak its protocol: see scripts/versions.sh.
+# DATAMAN_PG and DATAMAN_MSSQL point at a closed port so the suites' other engines skip instead of
+# reaching the shared e2e servers.
+name: dataman-versions
+
+x-tests: &tests >-
+  live_versions live_mysql live_mysql_catalog live_mysql_ddl live_mysql_edit live_mysql_results
+  live_mysql_types live_mysql_sweep live_mysql_lint live_my_ms_complete live_estimate
+  live_weird_names live_new_row live_agent live_agent_guard live_agent_scan live_agent_login
+
+x-mysql: &mysql
+  environment:
+    MYSQL_ROOT_PASSWORD: dataman-root
+  tmpfs: [/var/lib/mysql]
+  healthcheck:
+    test: mysqladmin ping -h 127.0.0.1 -uroot -pdataman-root --silent
+    interval: 2s
+    retries: 150
+
+x-flavor-tests: &flavor-tests >-
+  live_versions live_flavors live_mysql live_mysql_catalog live_mysql_ddl live_mysql_edit
+  live_mysql_results live_mysql_types live_mysql_sweep live_mysql_lint live_my_ms_complete
+  live_estimate live_weird_names live_new_row live_agent live_agent_guard live_agent_scan
+  live_agent_login
+
+x-mariadb: &mariadb
+  environment:
+    MARIADB_ROOT_PASSWORD: dataman-root
+  tmpfs: [/var/lib/mysql]
+  healthcheck:
+    test: healthcheck.sh --connect --innodb_initialized
+    interval: 2s
+    retries: 150
+
+services:
+  mysql-5-7:
+    <<: *mysql
+    image: mysql:5.7
+    platform: linux/amd64
+    ports: ["127.0.0.1:33157:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33157/?ssl-mode=disabled
+      dataman.expect: MySQL 5.7.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33157 DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33157 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *tests
+  mysql-8-0:
+    <<: *mysql
+    image: mysql:8.0
+    ports: ["127.0.0.1:33180:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33180/?ssl-mode=disabled
+      dataman.expect: MySQL 8.0.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33180 DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33180 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *tests
+  mysql-9:
+    <<: *mysql
+    image: mysql:9
+    ports: ["127.0.0.1:33190:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33190/?ssl-mode=disabled
+      dataman.expect: MySQL 9.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33190 DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33190 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *tests
+  # Below MariaDB's floor (10.6): it must work or fail clean.
+  mariadb-10-5:
+    <<: *mariadb
+    image: mariadb:10.5
+    ports: ["127.0.0.1:33105:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33105/?ssl-mode=disabled
+      dataman.expect: MariaDB 10.5.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33105 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33105/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33105 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-10-6:
+    <<: *mariadb
+    image: mariadb:10.6
+    ports: ["127.0.0.1:33106:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33106/?ssl-mode=disabled
+      dataman.expect: MariaDB 10.6.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33106 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33106/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33106 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-10-11:
+    <<: *mariadb
+    image: mariadb:10.11
+    ports: ["127.0.0.1:33111:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33111/?ssl-mode=disabled
+      dataman.expect: MariaDB 10.11.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33111 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33111/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33111 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-11-4:
+    <<: *mariadb
+    image: mariadb:11.4
+    ports: ["127.0.0.1:33114:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33114/?ssl-mode=disabled
+      dataman.expect: MariaDB 11.4.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33114 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33114/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33114 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  mariadb-11-8:
+    <<: *mariadb
+    image: mariadb:11.8
+    ports: ["127.0.0.1:33118:3306"]
+    labels:
+      dataman.url: mariadb://root:dataman-root@127.0.0.1:33118/?ssl-mode=disabled
+      dataman.expect: MariaDB 11.8.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33118 DATAMAN_MARIADB=mariadb://root:dataman-root@127.0.0.1:33118/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33118 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  percona-5-7:
+    <<: *mysql
+    image: percona/percona-server:5.7
+    # It runs as its own user, not root: the tmpfs must let it write.
+    tmpfs: ["/var/lib/mysql:mode=1777"]
+    platform: linux/amd64
+    ports: ["127.0.0.1:33185:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33185/?ssl-mode=disabled
+      dataman.expect: Percona Server 5.7.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33185 DATAMAN_PERCONA=mysql://root:dataman-root@127.0.0.1:33185/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33185 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  percona-8-0:
+    <<: *mysql
+    image: percona/percona-server:8.0
+    # It runs as its own user, not root: the tmpfs must let it write.
+    tmpfs: ["/var/lib/mysql:mode=1777"]
+    ports: ["127.0.0.1:33188:3306"]
+    labels:
+      dataman.url: mysql://root:dataman-root@127.0.0.1:33188/?ssl-mode=disabled
+      dataman.expect: Percona Server 8.0.
+      dataman.env: DATAMAN_MYSQL=127.0.0.1:33188 DATAMAN_PERCONA=mysql://root:dataman-root@127.0.0.1:33188/?ssl-mode=disabled DATAMAN_PG=127.0.0.1:9 DATAMAN_MSSQL=127.0.0.1:9 DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MYSQL=127.0.0.1:33188 DATAMAN_AU_MYSQL_PASSWORD=dataman-root
+      dataman.tests: *flavor-tests
+  # vttestserver (amd64 only): vtgate's MySQL port is its --port + 3. It takes any password.
+  vitess:
+    image: vitess/vttestserver:mysql80
+    platform: linux/amd64
+    command: /vt/bin/vttestserver --port=33574 --mysql_bind_host=0.0.0.0 --keyspaces=dataman --num_shards=1 --schema_dir=/schema
+    volumes: ["../vitess/unsharded:/schema:ro"]
+    ports: ["127.0.0.1:33197:33577"]
+    healthcheck:
+      test: mysql -h 127.0.0.1 -P 33577 -u root -e 'SELECT 1'
+      interval: 3s
+      retries: 100
+    labels:
+      dataman.url: mysql://root:x@127.0.0.1:33197/dataman?ssl-mode=disabled
+      dataman.expect: Vitess
+      dataman.env: DATAMAN_VITESS=127.0.0.1:33197 DATAMAN_VITESS_SHARDED=127.0.0.1:9
+      # Not live_versions: its databases are keyspaces, and with more than one vtgate takes no
+      # unqualified view DDL, which live_vitess runs here (the sharded one runs both).
+      dataman.tests: live_vitess
+  vitess-sharded:
+    image: vitess/vttestserver:mysql80
+    platform: linux/amd64
+    command: /vt/bin/vttestserver --port=33574 --mysql_bind_host=0.0.0.0 --keyspaces=dataman --num_shards=2 --schema_dir=/schema
+    volumes: ["../vitess/sharded:/schema:ro"]
+    ports: ["127.0.0.1:33198:33577"]
+    healthcheck:
+      test: mysql -h 127.0.0.1 -P 33577 -u root -e 'SELECT 1'
+      interval: 3s
+      retries: 100
+    labels:
+      dataman.url: mysql://root:x@127.0.0.1:33198/dataman?ssl-mode=disabled
+      dataman.expect: Vitess
+      dataman.env: DATAMAN_VITESS=127.0.0.1:9 DATAMAN_VITESS_SHARDED=127.0.0.1:33198
+      dataman.tests: live_versions live_vitess

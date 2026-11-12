@@ -63,6 +63,9 @@ pub struct FlavorSpec {
     pub ignores: &'static [&'static str],
     /// Why Dataman makes no agent login on it, where its engine's would not work there.
     pub no_agent_login: Option<&'static str>,
+    /// The oldest release of its engine it may run that Dataman reads, where not the engine's
+    /// floor (`EngineSpec::floor`).
+    pub floor: Option<(u32, u32)>,
 }
 
 impl FlavorSpec {
@@ -94,7 +97,7 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true, defaults_as_sql: false, targets: &[], ignores: &[], no_agent_login: None }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true, defaults_as_sql: false, targets: &[], ignores: &[], no_agent_login: None, floor: None }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
@@ -112,9 +115,11 @@ pub static FLAVORS: [FlavorSpec; 11] = [
         ..row(Flavor::Timescale, Engine::Postgres, "timescaledb", "TimescaleDB", "timescaledb timescale tigerdata tiger", clue("timescaledb", "", true))
     },
     // Its JDBC smart driver's scheme. DDL and TRUNCATE in a transaction block commit on their
-    // own, ROLLBACK or not (unless `yb_ddl_transaction_block_enabled`, off by default).
+    // own, ROLLBACK or not (unless `yb_ddl_transaction_block_enabled`, off by default). Before
+    // 2025.1 it runs PostgreSQL 11.2, and those lines (2.20, 2024.x) are still supported.
     FlavorSpec {
         aliases: &["yugabyte"],
+        floor: Some((11, 2)),
         transactional_ddl: false,
         logo: Some("logos/yugabytedb.svg"),
         default_port: Some(5433),
@@ -293,6 +298,20 @@ impl ServerInfo {
         }
     }
 
+    /// Why Dataman does not read this server: its release is older than its flavor's floor, or
+    /// else its engine's. A server that did not say its release is read.
+    pub fn below_floor(&self) -> Option<String> {
+        let (fmaj, fmin) = self.flavor.spec().and_then(|f| f.floor).or(self.engine.spec().floor)?;
+        let (maj, min, _) = self.release;
+        if maj == 0 || (maj, min) >= (fmaj, fmin) {
+            return None;
+        }
+        let engine = self.engine.label();
+        let floor = if fmin == 0 { fmaj.to_string() } else { format!("{fmaj}.{fmin}") };
+        let runs = if self.flavor.is_standard() { String::new() } else { format!("{} runs ", self.flavor.label(self.engine)) };
+        Some(format!("{runs}{engine} {maj}.{min}, older than Dataman supports ({engine} {floor} or later)"))
+    }
+
     pub fn major(&self) -> u32 {
         if self.release.0 > 0 {
             return self.release.0;
@@ -328,6 +347,23 @@ mod tests {
         assert_eq!(info.major(), 17);
         info.version = "something else".into();
         assert_eq!(info.major(), 0);
+    }
+
+    #[test]
+    fn floors() {
+        let pg = |raw: &str| ServerInfo::of(Engine::Postgres, Flavor::Standard, format!("PostgreSQL {raw}"), raw);
+        assert_eq!(pg("11.22").below_floor().as_deref(), Some("PostgreSQL 11.22, older than Dataman supports (PostgreSQL 12 or later)"));
+        assert_eq!(pg("12.0").below_floor(), None);
+        assert_eq!(pg("8.0.2").below_floor().as_deref(), Some("PostgreSQL 8.0, older than Dataman supports (PostgreSQL 12 or later)"));
+        let yb = ServerInfo::of(Engine::Postgres, Flavor::Yugabyte, "YugabyteDB 2.20.1.0 (PostgreSQL 11.2)".into(), "11.2-YB-2.20.1.0-b0");
+        assert_eq!(yb.below_floor(), None, "YugabyteDB's own floor");
+        let yb = ServerInfo::of(Engine::Postgres, Flavor::Yugabyte, "YugabyteDB 2.0.0.0 (PostgreSQL 11.0)".into(), "11.0-YB-2.0.0.0-b0");
+        assert_eq!(yb.below_floor().as_deref(), Some("YugabyteDB runs PostgreSQL 11.0, older than Dataman supports (PostgreSQL 11.2 or later)"));
+        let ch = |raw: &str| ServerInfo::of(Engine::ClickHouse, Flavor::Standard, raw.into(), raw);
+        assert_eq!(ch("23.3.22.3").below_floor().as_deref(), Some("ClickHouse 23.3, older than Dataman supports (ClickHouse 23.8 or later)"));
+        assert_eq!((ch("23.8.16.40").below_floor(), ch("24.3.1").below_floor()), (None, None));
+        assert_eq!(ServerInfo::of(Engine::Postgres, Flavor::Standard, "CockroachDB CCL v23.1".into(), "").below_floor(), None, "no release read");
+        assert_eq!(ServerInfo::of(Engine::MySql, Flavor::Standard, "5.1.73".into(), "5.1.73").below_floor(), None);
     }
 
     #[test]

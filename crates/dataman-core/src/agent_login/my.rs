@@ -401,14 +401,27 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
     } else if !create_user {
         p.lacks.push(format!("{login} can't create users: it needs CREATE USER and GRANT OPTION"));
     }
-    if !mariadb && major < 8 {
+    if let Some(why) = too_old(mariadb, &version) {
         p.can_create = false;
-        p.lacks.push("MySQL 8.0 or later is needed (user attributes and caching_sha2_password)".into());
+        p.lacks.push(why.into());
     }
     p.checks.push((p.can_create, if p.can_create { format!("{login} can create users") } else { format!("{login} can't create users") }));
     p.checks.push((tls, if tls { "TLS on".into() } else { "TLS off".into() }));
     p.exists = exists(db, user, conn, mariadb).await?;
     Ok(p)
+}
+
+/// The oldest release whose syntax the login's steps use. MySQL: `ATTRIBUTE` and
+/// `information_schema.USER_ATTRIBUTES` (8.0.21), which mark the login as Dataman's; on 8.0.0 to
+/// 8.0.20 the CREATE USER fails halfway through the steps. MariaDB: a database's `COMMENT`
+/// (10.5), which marks Dataman's database there.
+pub(super) fn too_old(mariadb: bool, version: &str) -> Option<&'static str> {
+    let (floor, why) = if mariadb {
+        ((10, 5, 0), "MariaDB 10.5 or later is needed (database comments mark Dataman's)")
+    } else {
+        ((8, 0, 21), "MySQL 8.0.21 or later is needed (user attributes mark the login as Dataman's)")
+    };
+    (crate::server::parse_release(version) < floor).then_some(why)
 }
 
 pub(crate) async fn exists(db: &Db, user: &str, conn: &str, mariadb: bool) -> Result<Option<bool>> {
@@ -468,10 +481,13 @@ pub(crate) async fn inventory(db: &Db, login: &str) -> Result<Inventory> {
         let o = out.objects.last_mut().expect("pushed");
         o.columns.push(Col { name: col, generated: extra.to_ascii_uppercase().contains("GENERATED") });
     }
-    // Roles MySQL gives every account (the agent may SET ROLE them).
-    if let Ok(r) = text_rows(db, "SELECT @@global.mandatory_roles").await {
-        let roles = r.first().and_then(|x| x[0].clone()).unwrap_or_default();
-        out.open_roles = roles.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
+    // Roles MySQL gives every account. Neither variable is on MariaDB or MySQL 5.7, the second
+    // only from MySQL 9: what the server doesn't list it doesn't have.
+    for r in text_rows(db, "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('mandatory_roles', 'activate_mandatory_roles')").await? {
+        match (s(&r[0]).as_str(), s(&r[1])) {
+            ("mandatory_roles", roles) => out.open_roles = roles.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect(),
+            (_, on) => out.open_roles_active = on.eq_ignore_ascii_case("ON"),
+        }
     }
     Ok(out)
 }

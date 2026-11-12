@@ -258,7 +258,12 @@ pub(crate) async fn probe(c: &Client, user: &str, conn: &str) -> Result<Probe> {
     } else {
         call(c, "POST", "/_security/user/_has_privileges", Some(&json!({ "cluster": ["manage_security"] }))).await.map(|v| v["has_all_requested"] == json!(true)).unwrap_or(false)
     };
-    p.can_create = can;
+    // Measured: 7.10's change password API takes no `password_hash`, and Dataman never sends a
+    // password itself.
+    if !os && crate::server::parse_release(&c.version) < (7, 17, 0) {
+        p.lacks.push("Elasticsearch 7.17 or later is needed (Dataman sets passwords as hashes)".into());
+    }
+    p.can_create = can && p.lacks.is_empty();
     if !can {
         p.lacks.push(format!("{} can't manage security: it needs {}", p.login, if os { "the security REST API (all_access or security_rest_api_access)" } else { "the manage_security cluster privilege" }));
     }

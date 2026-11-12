@@ -135,8 +135,9 @@ pub(crate) async fn version(c: &Client) -> Result<(crate::server::Flavor, String
 
 fn identify(build_info: &Document) -> (crate::server::Flavor, String, String) {
     let release = build_info.get_str("version").unwrap_or("");
-    // A flavor's own release is the `version` of its own key (FerretDB's `ferretdb.version`).
-    let fact = |k: &str| build_info.get_document(k).ok()?.get_str("version").ok();
+    // A flavor's own release is the `version` of its own key (FerretDB 2's `ferretdb.version`),
+    // or its key's `…Version` (FerretDB 1's `ferretdbVersion`).
+    let fact = |k: &str| build_info.get_document(k).and_then(|d| d.get_str("version")).or_else(|_| build_info.get_str(format!("{k}Version"))).ok();
     let (flavor, label) = crate::server::detect(crate::config::Engine::MongoDb, release, fact).unwrap_or_else(|| (Default::default(), format!("MongoDB {release}").trim().to_string()));
     (flavor, label, release.to_string())
 }
@@ -155,7 +156,14 @@ pub(crate) fn message(e: &anyhow::Error) -> String {
                     let first = message.split(", Topology:").next().unwrap_or(message);
                     format!("cannot reach the server: {first}")
                 }
-                _ => e.to_string(),
+                // The server's words for each document it refused (`E11000 duplicate key …`),
+                // not the driver's debug print of them.
+                ErrorKind::InsertMany(m) if m.write_errors.as_ref().is_some_and(|w| !w.is_empty()) || m.write_concern_error.is_some() => {
+                    let refused = m.write_errors.iter().flatten().map(|w| w.message.as_str());
+                    refused.chain(m.write_concern_error.iter().map(|w| w.message.as_str())).collect::<Vec<_>>().join("; ")
+                }
+                // The kind says what went wrong; the error around it adds the driver's labels.
+                k => k.to_string(),
             };
         }
     }
@@ -716,4 +724,18 @@ pub(crate) async fn sample_fields(c: &Client, db: &str, coll: &str, n: i64) -> R
     }
     seen.sort_by(|a, b| (a.0 != "_id", std::cmp::Reverse(a.1), &a.0).cmp(&(b.0 != "_id", std::cmp::Reverse(b.1), &b.0)));
     Ok(seen.into_iter().map(|(p, _, t)| (p, t)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::Flavor;
+
+    /// buildInfo as each server answers it (trimmed to what is read).
+    #[test]
+    fn build_info_tells_the_server() {
+        assert_eq!(identify(&doc! { "version": "7.0.77", "ferretdb": { "version": "v2.7.0" } }), (Flavor::FerretDb, "FerretDB 2.7.0 (MongoDB 7.0.77)".into(), "7.0.77".into()));
+        assert_eq!(identify(&doc! { "version": "7.0.42", "ferretdbVersion": "v1.24.2" }), (Flavor::FerretDb, "FerretDB 1.24.2 (MongoDB 7.0.42)".into(), "7.0.42".into()));
+        assert_eq!(identify(&doc! { "version": "5.0.33", "modules": [] }), (Flavor::Standard, "MongoDB 5.0.33".into(), "5.0.33".into()));
+    }
 }

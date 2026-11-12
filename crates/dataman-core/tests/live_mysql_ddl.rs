@@ -18,20 +18,31 @@ fn ddl_round_trips() {
     exec_quiet(&e, &c0, &["DROP DATABASE IF EXISTS dataman_sw6", "DROP DATABASE IF EXISTS dataman_sw6b", "CREATE DATABASE dataman_sw6", "CREATE DATABASE dataman_sw6b"]);
     let Some(c) = mysql_on(&e, mysql_profile("dataman_sw6")) else { return };
     let s = c.session(None);
+    // What the server's CREATE TABLE takes: expression defaults from MySQL 8.0.13 (MariaDB 10.2),
+    // functional indexes and a column's SRID from MySQL 8.0.13 (MariaDB has neither).
+    let maria = c.info.is_mariadb();
+    let expr_default = maria || c.info.release >= (8, 0, 13);
+    let modern = !maria && c.info.release >= (8, 0, 13);
+    let gen_t = format!(
+        "CREATE TABLE gen (id INT PRIMARY KEY, w INT, h INT, area INT AS (w * h) STORED, vol INT GENERATED ALWAYS AS (w + h) VIRTUAL, \
+            doc JSON, dk VARCHAR(20) AS (JSON_UNQUOTE(JSON_EXTRACT(doc, '$.k'))) VIRTUAL, \
+            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, \
+            d2 DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3), {}\
+            st ENUM('a''b','c,d','e') NOT NULL DEFAULT 'c,d', flags SET('x','y') DEFAULT 'x,y', \
+            note TEXT COMMENT 'it''s a \"note\"; ok', num DECIMAL(10,2) UNSIGNED ZEROFILL, \
+            CONSTRAINT chk_w CHECK (w >= 0), INDEX ix_desc (w DESC, h), {}\
+            FULLTEXT KEY ft_note (note)) COMMENT='table; comment' ROW_FORMAT=DYNAMIC",
+        if expr_default { "e INT DEFAULT (w + 1), " } else { "" },
+        if modern { "INDEX ix_fn ((w + h)), INDEX ix_json ((CAST(doc->'$.k' AS CHAR(10)) COLLATE utf8mb4_bin)), " } else { "" },
+    );
+    let sp = format!("CREATE TABLE sp (id INT PRIMARY KEY, g GEOMETRY NOT NULL{}, p POINT, SPATIAL INDEX sx (g))", if modern { " SRID 0" } else { "" });
     let tables = [
         "CREATE TABLE `we``ird name` (`id col` INT NOT NULL, `sel;ect` VARCHAR(10) DEFAULT 'it''s', PRIMARY KEY (`id col`))",
         "CREATE TABLE parent (a INT NOT NULL, b VARCHAR(20) NOT NULL, PRIMARY KEY (a, b), UNIQUE KEY uq_b (b), KEY ix_pre (b(5)))",
         "CREATE TABLE child (id INT AUTO_INCREMENT PRIMARY KEY, pa INT NOT NULL, pb VARCHAR(20) NOT NULL, \
             CONSTRAINT fk_child FOREIGN KEY (pa, pb) REFERENCES parent (a, b) ON DELETE RESTRICT ON UPDATE CASCADE) ENGINE=InnoDB",
-        "CREATE TABLE gen (id INT PRIMARY KEY, w INT, h INT, area INT AS (w * h) STORED, vol INT GENERATED ALWAYS AS (w + h) VIRTUAL, \
-            doc JSON, dk VARCHAR(20) AS (JSON_UNQUOTE(JSON_EXTRACT(doc, '$.k'))) VIRTUAL, \
-            created TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, \
-            d2 DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3), e INT DEFAULT (w + 1), \
-            st ENUM('a''b','c,d','e') NOT NULL DEFAULT 'c,d', flags SET('x','y') DEFAULT 'x,y', \
-            note TEXT COMMENT 'it''s a \"note\"; ok', num DECIMAL(10,2) UNSIGNED ZEROFILL, \
-            CONSTRAINT chk_w CHECK (w >= 0), INDEX ix_desc (w DESC, h), INDEX ix_fn ((w + h)), INDEX ix_json ((CAST(doc->'$.k' AS CHAR(10)) COLLATE utf8mb4_bin)), \
-            FULLTEXT KEY ft_note (note)) COMMENT='table; comment' ROW_FORMAT=DYNAMIC",
-        "CREATE TABLE sp (id INT PRIMARY KEY, g GEOMETRY NOT NULL SRID 0, p POINT, SPATIAL INDEX sx (g))",
+        gen_t.as_str(),
+        sp.as_str(),
         "CREATE TABLE nokey (a INT, b VARCHAR(10), c TEXT)",
         "CREATE TABLE part (id INT NOT NULL, d DATE NOT NULL, PRIMARY KEY (id, d)) PARTITION BY RANGE (YEAR(d)) (PARTITION p0 VALUES LESS THAN (2020), PARTITION p1 VALUES LESS THAN MAXVALUE)",
         "CREATE VIEW v_gen AS SELECT id, area FROM gen WHERE w > 1",

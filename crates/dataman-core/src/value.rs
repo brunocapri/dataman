@@ -644,11 +644,15 @@ pub fn format_timestamptz(micros: i64, out: &mut String) {
     }
 }
 
+/// As the server writes a zone (`EncodeTimezone`): the seconds too when there are any, which
+/// local mean times before standard zones have (`-03:06:28`, São Paulo until 1914).
 fn format_offset(secs: i32, out: &mut String) {
     let sign = if secs < 0 { '-' } else { '+' };
     let s = secs.unsigned_abs();
     let _ = write!(out, "{sign}{:02}", s / 3600);
-    if !s.is_multiple_of(3600) {
+    if !s.is_multiple_of(60) {
+        let _ = write!(out, ":{:02}:{:02}", (s / 60) % 60, s % 60);
+    } else if !s.is_multiple_of(3600) {
         let _ = write!(out, ":{:02}", (s / 60) % 60);
     }
 }
@@ -663,7 +667,14 @@ pub fn format_interval(months: i32, days: i32, micros: i64, out: &mut String) {
     }
     let mut parts: Vec<String> = Vec::new();
     let (y, m) = (months / 12, months % 12);
-    let unit = |n: i64, s: &str, p: &str| format!("{n} {}", if n == 1 { s } else { p });
+    // As the server writes it (`EncodeInterval`): a field after a negative one carries its sign,
+    // `-1 years +2 mons`, `-2 days +03:04:05`.
+    let mut after_negative = false;
+    let mut unit = |n: i64, s: &str, p: &str| {
+        let plus = if after_negative && n > 0 { "+" } else { "" };
+        after_negative = n < 0;
+        format!("{plus}{n} {}", if n == 1 { s } else { p })
+    };
     if y != 0 {
         parts.push(unit(y as i64, "year", "years"));
     }
@@ -680,6 +691,8 @@ pub fn format_interval(months: i32, days: i32, micros: i64, out: &mut String) {
         let mut t = String::new();
         if neg {
             t.push('-');
+        } else if after_negative {
+            t.push('+');
         }
         let _ = write!(t, "{:02}:{:02}:{:02}", secs / 3600, (secs / 60) % 60, secs % 60);
         frac((a % 1_000_000) as u32, &mut t);
@@ -804,6 +817,18 @@ mod tests {
     }
 
     #[test]
+    fn offsets_like_postgres() {
+        let s = |secs| {
+            let mut o = String::new();
+            format_offset(secs, &mut o);
+            o
+        };
+        assert_eq!((s(0), s(-10_800), s(19_800), s(20_700)), ("+00".into(), "-03".into(), "+05:30".into(), "+05:45".into()));
+        assert_eq!(s(-(3 * 3600 + 6 * 60 + 28)), "-03:06:28");
+        assert_eq!(s(3600 + 7), "+01:00:07");
+    }
+
+    #[test]
     fn interval_words() {
         let s = |m, d, us| {
             let mut o = String::new();
@@ -816,6 +841,11 @@ mod tests {
         assert_eq!(s(14, 2, 3_723_000_000), "1 year 2 mons 2 days 01:02:03");
         assert_eq!(s(i32::MAX, i32::MAX, i64::MAX), "infinity");
         assert_eq!(s(i32::MIN, i32::MIN, i64::MIN), "-infinity");
+        // What follows a negative field carries its sign, as in the server's own text.
+        assert_eq!(s(12, -2, 11_045_678_000), "1 year -2 days +03:04:05.678");
+        assert_eq!(s(-10, 3, -1_000_000), "-10 mons +3 days -00:00:01");
+        assert_eq!(s(-12, 0, 0), "-1 years");
+        assert_eq!(s(-11, 1, 0), "-11 mons +1 day");
     }
 
     #[test]
