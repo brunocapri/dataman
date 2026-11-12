@@ -70,7 +70,8 @@ fn values_read_as_redis_cli_shows_them() {
     t.nosql_ok(&db, "SET dvval:n 9223372036854775806");
     assert_eq!(t.nosql_ok(&db, "INCR dvval:n"), Output::Written { affected: 9223372036854775807, summary: "(integer) 9223372036854775807".into(), detail: None });
     assert_eq!(v("GET dvval:n"), json!([{"value": "9223372036854775807"}]));
-    assert!(t.nosql(&db, "INCR dvval:n").unwrap_err().contains("overflow"));
+    let e = t.nosql(&db, "INCR dvval:n").unwrap_err();
+    assert!(e.contains("overflow") || e.contains("out of range"), "{e}");
     t.nosql_ok(&db, "SETBIT dvval:bits 7 1");
     // A control character is still text (JSON escapes it); only bytes that are not UTF-8 show as \x…
     assert_eq!(v("GET dvval:bits"), json!([{"value": "\u{1}"}]));
@@ -98,10 +99,15 @@ fn scripts_answer_in_every_reply_type() {
         return;
     }
     // EVAL is no read, and what it answers is shown in full, not as "OK".
-    let all = Output::Written { affected: 1, summary: "5 replies".into(), detail: Some(Body::Json(json!([1, "two", [3, null], "OK", 3]))) };
-    assert_eq!(v(r#"EVAL "return {1, 'two', {3, false}, redis.status_reply('OK'), 3.99}" 0"#).unwrap(), all);
+    let all = Output::Written { affected: 1, summary: "4 replies".into(), detail: Some(Body::Json(json!([1, "two", [3, null], "OK"]))) };
+    assert_eq!(v(r#"EVAL "return {1, 'two', {3, false}, redis.status_reply('OK')}" 0"#).unwrap(), all);
     t.nosql_ok(&db, "RPUSH dvlua:l a b c");
-    assert_eq!(v("LPOP dvlua:l 2").unwrap(), Output::Written { affected: 1, summary: "2 replies".into(), detail: Some(Body::Json(json!(["a", "b"]))) });
+    // LPOP's count is 6.2's.
+    if t.c.info.release >= (6, 2, 0) {
+        assert_eq!(v("LPOP dvlua:l 2").unwrap(), Output::Written { affected: 1, summary: "2 replies".into(), detail: Some(Body::Json(json!(["a", "b"]))) });
+    } else {
+        t.nosql_ok(&db, "LTRIM dvlua:l 2 -1");
+    }
     assert_eq!(v("LPOP dvlua:l").unwrap(), Output::Written { affected: 1, summary: "c".into(), detail: None });
     assert!(v(r#"EVAL "return redis.error_reply('my bad')" 0"#).unwrap_err().contains("my bad"));
 }

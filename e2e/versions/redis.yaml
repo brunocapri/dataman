@@ -1,7 +1,9 @@
 # Redis' older releases and the servers that speak its protocol: see scripts/versions.sh. 6.0 is
 # below the floor (6.2); the agent login needs Redis 7, so before it only the refusal is tested
-# (tests/versions/redis.rs), not live_agent_login. The other engines' addresses point nowhere,
-# so the shared suites skip them instead of reaching the e2e servers.
+# (tests/versions/redis.rs), not live_agent_login. Dragonfly and Garnet without the battery:
+# it expects Redis' own commands (Dragonfly has no OBJECT and has JSON, Garnet has no streams).
+# The other engines' addresses point nowhere, so the shared suites skip them instead of reaching
+# the e2e servers.
 name: dataman-versions
 
 x-redis: &redis
@@ -109,7 +111,7 @@ services:
       dataman.url: redis://:dataman@127.0.0.1:6390/9
       dataman.expect: Dragonfly
       dataman.env: DATAMAN_REDIS=127.0.0.1:6390 DATAMAN_DRAGONFLY=redis://:dataman@127.0.0.1:6390/0 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
-      dataman.tests: live_versions live_redis live_nosql_battery live_flavors
+      dataman.tests: live_versions live_redis live_flavors
 
   keydb:
     image: eqalpha/keydb:latest
@@ -136,4 +138,4 @@ services:
       dataman.url: redis://:dataman@127.0.0.1:6392/0
       dataman.expect: Garnet
       dataman.env: DATAMAN_REDIS=127.0.0.1:6392 DATAMAN_GARNET=redis://:dataman@127.0.0.1:6392/0 DATAMAN_MONGO=127.0.0.1:1 DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1
-      dataman.tests: live_versions live_redis live_nosql_battery live_flavors
+      dataman.tests: live_versions live_redis live_flavors
