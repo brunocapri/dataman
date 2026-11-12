@@ -67,6 +67,9 @@ pub(crate) enum ChError {
     RowTooLong,
     #[error("the answer is larger than {} MiB, and this one is read whole: it was stopped", TEXT_ROWS_BYTES / MIB)]
     AnswerTooLong,
+    /// Its release is older than the engine's floor (`ServerInfo::below_floor`).
+    #[error("{0}")]
+    BelowFloor(String),
 }
 
 /// `Code: 62. DB::Exception: Syntax error: failed at position 1 (SELEC): …. (SYNTAX_ERROR) (version …)`
@@ -213,8 +216,15 @@ async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&s
     auth.set_sensitive(true);
     let database = database.filter(|d| !d.is_empty()).or(Some(p.database.as_str()).filter(|d| !d.is_empty())).map(str::to_string);
     let mut c = Client { http, base, auth, database: Mutex::new(database), session: None, read_only: false, locked: true, current: Mutex::new(None), tls_active: tls };
-    // A login that is read-only already refuses to have the setting named: it is asked first.
-    let locked = c.text_rows("SELECT getSetting('readonly')").await?.first().and_then(|r| r.first().cloned().flatten()).is_some_and(|v| v != "0");
+    // A login that is read-only already refuses to have the setting named: it is asked first,
+    // with the release, before any request names a setting a server below the floor lacks
+    // (`http_write_exception_in_output_format`): there the release is the answer.
+    let row = c.text_rows("SELECT getSetting('readonly'), version()").await?.into_iter().next().unwrap_or_default();
+    let version = row.get(1).cloned().flatten().unwrap_or_default();
+    if let Some(why) = ServerInfo::of(Engine::ClickHouse, Flavor::Standard, String::new(), &version).below_floor() {
+        return Err(ChError::BelowFloor(why));
+    }
+    let locked = row.first().cloned().flatten().is_some_and(|v| v != "0");
     c.locked = locked;
     c.read_only = p.read_only && !locked;
     if session {
