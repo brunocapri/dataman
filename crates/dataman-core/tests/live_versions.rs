@@ -4,6 +4,7 @@
 //! `DATAMAN_VERSIONS_EXPECT` (what its version starts with). Without the URL every test returns.
 //! With it, a server that does not answer, or is not the one expected, fails the run: a matrix
 //! that reached nothing must never pass. Each module tests one engine and returns on the others.
+//! A server below its engine's floor (`DATAMAN_VERSIONS_REFUSED=1`) is only checked to be refused.
 
 mod common;
 #[path = "versions/ch.rs"]
@@ -43,6 +44,10 @@ fn reach() -> Option<Target> {
         eprintln!("skipping: DATAMAN_VERSIONS_URL is not set");
         return None;
     };
+    if std::env::var_os("DATAMAN_VERSIONS_REFUSED").is_some() {
+        eprintln!("skipping: the server is below its engine's floor");
+        return None;
+    }
     let (p, pw) = dataman_core::connstr::parse_profile(&url).unwrap_or_else(|| panic!("{url} does not read as a connection string"));
     let e = env();
     let c = e.core.block_on(e.core.connect(p.clone(), pw)).unwrap_or_else(|err| panic!("cannot reach {}: {err:#}", p.summary()));
@@ -94,4 +99,17 @@ impl Target {
 fn the_server_is_the_one_asked_for() {
     let Some(t) = reach() else { return };
     assert!(t.c.info.major() > 0, "{}: no release read", t.c.info.version);
+}
+
+#[test]
+fn below_the_floor_is_refused_by_name() {
+    let (Ok(url), Some(_)) = (std::env::var("DATAMAN_VERSIONS_URL"), std::env::var_os("DATAMAN_VERSIONS_REFUSED")) else { return };
+    let want = std::env::var("DATAMAN_VERSIONS_EXPECT").expect("DATAMAN_VERSIONS_EXPECT: the release the refusal names");
+    let (p, pw) = dataman_core::connstr::parse_profile(&url).unwrap_or_else(|| panic!("{url} does not read as a connection string"));
+    let e = env();
+    let err = match e.core.block_on(e.core.connect(p, pw)) {
+        Ok(c) => panic!("{} was read", c.info.version),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(err.contains(&want) && err.contains("older than Dataman supports"), "{err}");
 }

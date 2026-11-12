@@ -47,6 +47,9 @@ pub struct EngineSpec {
     /// A statement can reach another database of the server by name: a name of at least this many
     /// parts starts with one (`db.t`, SQL Server's `db.dbo.t`). None: only the current database.
     pub db_in_name: Option<u8>,
+    /// The oldest release (major, minor) whose catalog Dataman reads: an older server is refused
+    /// on connect, with its release named, rather than half-read later. None: any.
+    pub floor: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +112,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: SERVER,
         strict_tls: false,
         db_in_name: None,
+        floor: Some((12, 0)),
     },
     EngineSpec {
         engine: Engine::MySql,
@@ -135,6 +139,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { scheme: "mysql", ..SERVER },
         strict_tls: false,
         db_in_name: Some(2),
+        floor: None,
     },
     EngineSpec {
         engine: Engine::SqlServer,
@@ -161,6 +166,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { scheme: "sqlserver", ..SERVER },
         strict_tls: false,
         db_in_name: Some(3),
+        floor: None,
     },
     EngineSpec {
         engine: Engine::MongoDb,
@@ -187,6 +193,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { user_required: false, database_placeholder: "test", options: true, scheme: "mongodb", ..SERVER },
         strict_tls: false,
         db_in_name: None,
+        floor: None,
     },
     EngineSpec {
         engine: Engine::Elasticsearch,
@@ -213,6 +220,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { user_required: false, database: false, database_placeholder: "", scheme: "https", ..SERVER },
         strict_tls: false,
         db_in_name: None,
+        floor: None,
     },
     EngineSpec {
         engine: Engine::OpenSearch,
@@ -239,6 +247,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { user_required: false, database: false, database_placeholder: "", scheme: "https", ..SERVER },
         strict_tls: false,
         db_in_name: None,
+        floor: None,
     },
     EngineSpec {
         engine: Engine::Redis,
@@ -265,6 +274,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { user_required: false, database_placeholder: "0", database_label: "DB", scheme: "redis", ..SERVER },
         strict_tls: false,
         db_in_name: None,
+        floor: None,
     },
     EngineSpec {
         engine: Engine::Sqlite,
@@ -291,6 +301,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: FILE,
         strict_tls: false,
         db_in_name: None,
+        floor: None,
     },
     EngineSpec {
         engine: Engine::DuckDb,
@@ -317,6 +328,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: FILE,
         strict_tls: false,
         db_in_name: Some(2),
+        floor: None,
     },
     EngineSpec {
         engine: Engine::ClickHouse,
@@ -343,6 +355,7 @@ pub static SPECS: [EngineSpec; 10] = [
         form: Form { database_placeholder: "default", scheme: "clickhouse", http_url: true, tls_port: Some(8443), ..SERVER },
         strict_tls: true,
         db_in_name: Some(2),
+        floor: Some((23, 8)),
     },
 ];
 

@@ -534,14 +534,20 @@ pub(crate) async fn session(
     }
 }
 
+/// What the server is; one older than its engine's floor is refused here, so that neither a
+/// connection nor its test reaches a catalog Dataman does not read.
 pub(crate) async fn server_info(db: &Db) -> Result<ServerInfo> {
-    match db {
+    let info = match db {
         Db::Pg(c) => pg::server_info(c).await,
         Db::My(c) => my::server_info(c).await,
         Db::Ms(c) => ms::server_info(c).await,
         Db::Lite(c) => lite::server_info(c).await,
         Db::Duck(c) => duck::server_info(c).await,
         Db::Ch(c) => ch::server_info(c).await,
+    }?;
+    match info.below_floor() {
+        Some(why) => Err(anyhow!("{why}")),
+        None => Ok(info),
     }
 }
 

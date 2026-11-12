@@ -293,6 +293,20 @@ impl ServerInfo {
         }
     }
 
+    /// Why Dataman does not read this server: its release is older than its engine's floor. A
+    /// server that did not say its release is read.
+    pub fn below_floor(&self) -> Option<String> {
+        let (fmaj, fmin) = self.engine.spec().floor?;
+        let (maj, min, _) = self.release;
+        if maj == 0 || (maj, min) >= (fmaj, fmin) {
+            return None;
+        }
+        let engine = self.engine.label();
+        let floor = if fmin == 0 { fmaj.to_string() } else { format!("{fmaj}.{fmin}") };
+        let runs = if self.flavor.is_standard() { String::new() } else { format!("{} runs ", self.flavor.label(self.engine)) };
+        Some(format!("{runs}{engine} {maj}.{min}, older than Dataman supports ({engine} {floor} or later)"))
+    }
+
     pub fn major(&self) -> u32 {
         if self.release.0 > 0 {
             return self.release.0;
@@ -328,6 +342,21 @@ mod tests {
         assert_eq!(info.major(), 17);
         info.version = "something else".into();
         assert_eq!(info.major(), 0);
+    }
+
+    #[test]
+    fn floors() {
+        let pg = |raw: &str| ServerInfo::of(Engine::Postgres, Flavor::Standard, format!("PostgreSQL {raw}"), raw);
+        assert_eq!(pg("11.22").below_floor().as_deref(), Some("PostgreSQL 11.22, older than Dataman supports (PostgreSQL 12 or later)"));
+        assert_eq!(pg("12.0").below_floor(), None);
+        assert_eq!(pg("8.0.2").below_floor().as_deref(), Some("PostgreSQL 8.0, older than Dataman supports (PostgreSQL 12 or later)"));
+        let yb = ServerInfo::of(Engine::Postgres, Flavor::Yugabyte, "YugabyteDB 2.20.1.0 (PostgreSQL 11.2)".into(), "11.2-YB-2.20.1.0-b0");
+        assert_eq!(yb.below_floor().as_deref(), Some("YugabyteDB runs PostgreSQL 11.2, older than Dataman supports (PostgreSQL 12 or later)"));
+        let ch = |raw: &str| ServerInfo::of(Engine::ClickHouse, Flavor::Standard, raw.into(), raw);
+        assert_eq!(ch("23.3.22.3").below_floor().as_deref(), Some("ClickHouse 23.3, older than Dataman supports (ClickHouse 23.8 or later)"));
+        assert_eq!((ch("23.8.16.40").below_floor(), ch("24.3.1").below_floor()), (None, None));
+        assert_eq!(ServerInfo::of(Engine::Postgres, Flavor::Standard, "CockroachDB CCL v23.1".into(), "").below_floor(), None, "no release read");
+        assert_eq!(ServerInfo::of(Engine::MySql, Flavor::Standard, "5.1.73".into(), "5.1.73").below_floor(), None);
     }
 
     #[test]
