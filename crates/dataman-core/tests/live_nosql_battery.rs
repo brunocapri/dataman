@@ -213,8 +213,11 @@ fn mongodb_battery() {
     b.expect("$facet $bucket $bucketAuto $count", "db.people.aggregate([{$facet: {byAge: [{$bucket: {groupBy: '$age', boundaries: [0, 20, 30, 40, 60], default: 'other', output: {n: {$sum: 1}}}}], auto: [{$bucketAuto: {groupBy: '$balance', buckets: 4}}], total: [{$count: 'n'}], cities: [{$sortByCount: '$address.city'}]}}])", |o| { n_docs(o, 1)?; text_has(o, "byAge") });
     b.expect("$unwind arrays + $group $addToSet", "db.people.aggregate([{$unwind: '$skills'}, {$group: {_id: '$skills', people: {$addToSet: '$name'}, n: {$sum: 1}}}, {$sort: {n: -1}}])", |o| n_docs(o, 4));
     b.expect("$geoNear", "db.places.aggregate([{$geoNear: {near: {type: 'Point', coordinates: [-9.14, 38.71]}, distanceField: 'dist', spherical: true}}, {$project: {name: 1, km: {$round: [{$divide: ['$dist', 1000]}, 1]}}}])", |o| n_docs(o, 5));
-    b.expect("$setWindowFields", "db.orders.aggregate([{$setWindowFields: {partitionBy: '$status', sortBy: {created: 1}, output: {running: {$sum: '$qty', window: {documents: ['unbounded', 'current']}}}}}, {$limit: 3}])", |o| n_docs(o, 3));
-    b.expect("$dateTrunc $dateDiff", "db.orders.aggregate([{$project: {week: {$dateTrunc: {date: '$created', unit: 'week'}}, age: {$dateDiff: {startDate: '$created', endDate: ISODate('2025-01-01'), unit: 'day'}}}}, {$limit: 2}])", |o| n_docs(o, 2));
+    // 5.0's: before it the server says it does not know them (tests/versions/mongo.rs).
+    if b.c.info.release >= (5, 0, 0) {
+        b.expect("$setWindowFields", "db.orders.aggregate([{$setWindowFields: {partitionBy: '$status', sortBy: {created: 1}, output: {running: {$sum: '$qty', window: {documents: ['unbounded', 'current']}}}}}, {$limit: 3}])", |o| n_docs(o, 3));
+        b.expect("$dateTrunc $dateDiff", "db.orders.aggregate([{$project: {week: {$dateTrunc: {date: '$created', unit: 'week'}}, age: {$dateDiff: {startDate: '$created', endDate: ISODate('2025-01-01'), unit: 'day'}}}}, {$limit: 2}])", |o| n_docs(o, 2));
+    }
     b.expect("$replaceRoot $mergeObjects", "db.people.aggregate([{$replaceRoot: {newRoot: {$mergeObjects: ['$address', {who: '$name'}]}}}, {$limit: 2}])", |o| n_docs(o, 2));
     b.expect("$unionWith", "db.places.aggregate([{$project: {name: 1}}, {$unionWith: {coll: 'people', pipeline: [{$project: {name: 1}}, {$limit: 2}]}}])", |o| n_docs(o, 7));
     b.expect("aggregate with options", "db.orders.aggregate([{$sort: {total: -1}}, {$limit: 1}], {allowDiskUse: true})", |o| n_docs(o, 1));
@@ -256,7 +259,9 @@ fn mongodb_battery() {
     b.ok("createCollection capped", "db.createCollection('capped', {capped: true, size: 100000})");
     b.ok("createView", "db.createView('paid_orders', 'orders', [{$match: {status: 'paid'}}])");
     b.expect("a view's documents", "db.paid_orders.find().limit(3)", |o| n_docs(o, 3));
-    b.ok("time series", "db.createCollection('ticks', {timeseries: {timeField: 't', metaField: 'sym'}})");
+    if b.c.info.release >= (5, 0, 0) {
+        b.ok("time series", "db.createCollection('ticks', {timeseries: {timeField: 't', metaField: 'sym'}})");
+    }
     b.ok("time series insert", "db.ticks.insertOne({t: new Date(), sym: 'ACME', px: 1.5})");
 
     b.yes("const + new Date + Date.UTC", "const since = new Date(Date.UTC(2024, 5, 1))\ndb.orders.countDocuments({created: {$gte: since}}) === db.orders.countDocuments({created: {$gte: ISODate('2024-06-01')}})");
