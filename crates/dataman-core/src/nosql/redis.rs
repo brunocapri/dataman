@@ -269,22 +269,21 @@ const KINDS: &[(&str, &str, Option<&str>)] = &[
     ("TDIS-TYPE", "TDIGEST.INFO {k}", None),
 ];
 
+fn kind_row(kind: &str) -> Option<&'static (&'static str, &'static str, Option<&'static str>)> {
+    // No type known yet (the tree not read): a string's.
+    let kind = if kind.is_empty() { "string" } else { kind };
+    KINDS.iter().find(|(t, ..)| *t == kind)
+}
+
 /// The read that shows a key: by its type's row, else (a type Dataman does not know) its type.
 pub fn view_command(key: &str, kind: &str) -> String {
     let k = key_arg(key);
-    match KINDS.iter().find(|(t, ..)| *t == kind) {
-        Some((_, view, _)) => view.replace("{k}", &k),
-        None if kind.is_empty() => format!("GET {k}"),
-        None => format!("TYPE {k}"),
-    }
+    kind_row(kind).map_or_else(|| format!("TYPE {k}"), |(_, view, _)| view.replace("{k}", &k))
 }
 
 pub fn len_command(key: &str, kind: &str) -> String {
     let k = key_arg(key);
-    match KINDS.iter().find(|(t, ..)| *t == kind).and_then(|(.., len)| *len) {
-        Some(len) => len.replace("{k}", &k),
-        None => format!("TYPE {k}"),
-    }
+    kind_row(kind).and_then(|(.., len)| *len).map_or_else(|| format!("TYPE {k}"), |len| len.replace("{k}", &k))
 }
 
 #[cfg(test)]
@@ -318,6 +317,7 @@ mod tests {
         assert_eq!((key_name(b"\xff\x00"), key_name(b"\"q\"")), (r#""\xff\x00""#.to_string(), r#""\"q\"""#.to_string()));
         assert_eq!(view_command("m", "SomeModule-T"), "TYPE m");
         assert_eq!(len_command("ts", "TSDB-TYPE"), "TYPE ts");
+        assert_eq!((view_command("k", ""), len_command("k", "")), ("GET k".to_string(), "STRLEN k".to_string()));
     }
 
     #[test]

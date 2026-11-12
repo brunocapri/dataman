@@ -136,7 +136,7 @@ fn the_agent_login_needs_redis_7() {
     let p = t.c.profile.clone();
     let probe = t.e.core.block_on(live::probe(&t.c, &p));
     if let Some(why) = t.c.info.flavor.spec().and_then(|f| f.no_agent_login) {
-        let e = format!("{:#}", probe.err().expect("no probe"));
+        let e = format!("{:#}", probe.expect_err("no probe"));
         assert!(e.contains(why), "{e}");
         return;
     }
