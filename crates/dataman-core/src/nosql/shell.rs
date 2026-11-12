@@ -44,6 +44,16 @@ pub fn parse(text: &str) -> Result<Val, ParseError> {
 pub(crate) struct Parser<'a> {
     src: &'a str,
     pos: usize,
+    /// The objects and arrays the value is in.
+    depth: usize,
+}
+
+/// How deep a value nests: MongoDB's own limit (`maxBSONDepth`), which it keeps documents and
+/// commands under. Far deeper, parsing it runs out of the thread's stack and the app aborts.
+pub(crate) const MAX_DEPTH: usize = 200;
+
+pub(crate) fn too_deep() -> String {
+    format!("nested more than {MAX_DEPTH} levels deep")
 }
 
 pub(crate) fn is_ident_start(c: char) -> bool {
@@ -56,7 +66,7 @@ pub(crate) fn is_ident_char(c: char) -> bool {
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(src: &'a str) -> Self {
-        Parser { src, pos: 0 }
+        Parser { src, pos: 0, depth: 0 }
     }
 
     pub(crate) fn pos(&self) -> usize {
@@ -211,13 +221,15 @@ impl<'a> Parser<'a> {
         self.skip_ws();
         let Some(c) = self.peek() else { return Err(self.error("expected a value")) };
         match c {
-            '{' => {
+            '{' | '[' => {
+                if self.depth == MAX_DEPTH {
+                    return Err(self.error(too_deep()));
+                }
+                self.depth += 1;
                 self.bump();
-                self.object()
-            }
-            '[' => {
-                self.bump();
-                Ok(Val::Arr(self.list(']')?))
+                let v = if c == '{' { self.object()? } else { Val::Arr(self.list(']')?) };
+                self.depth -= 1;
+                Ok(v)
             }
             '"' | '\'' => Ok(Val::Str(self.string()?)),
             '/' => self.regex(),
@@ -572,8 +584,18 @@ fn call_to_bson(name: &str, args: &[Val]) -> Result<Bson, String> {
 }
 
 pub(crate) fn parse_date(s: &str) -> Option<bson::DateTime> {
-    use chrono::{DateTime, NaiveDate, NaiveDateTime};
+    use chrono::{DateTime, Datelike as _, NaiveDate, NaiveDateTime};
     let s = s.trim();
+    // JavaScript's six-digit year with its sign (`+010000-01-01T…`, `-000001-…`), as `date_text`
+    // writes it: the rest read on a year of four digits, then the year set.
+    if let Some(sign @ ('+' | '-')) = s.chars().next()
+        && let Some(digits) = s.get(1..7).filter(|d| d.bytes().all(|b| b.is_ascii_digit()))
+    {
+        let year = digits.parse::<i32>().ok()? * if sign == '-' { -1 } else { 1 };
+        let rest = parse_date(&format!("2000{}", &s[7..]))?;
+        let t = DateTime::from_timestamp_millis(rest.timestamp_millis())?.with_year(year)?;
+        return Some(bson::DateTime::from_millis(t.timestamp_millis()));
+    }
     if let Ok(d) = DateTime::parse_from_rfc3339(s) {
         return Some(bson::DateTime::from_millis(d.timestamp_millis()));
     }
@@ -644,23 +666,58 @@ pub fn quote(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""))
 }
 
+/// As JavaScript writes a number (`1e+300`, not 300 digits), and always with a `.` or an exponent:
+/// read back, a whole double must stay a double.
 fn float_text(f: f64) -> String {
     if f.is_nan() {
         "NaN".into()
     } else if f.is_infinite() {
         if f > 0. { "Infinity".into() } else { "-Infinity".into() }
-    } else if f.fract() == 0. && f.abs() < 1e16 {
+    } else if f != 0. && !(1e-6..1e21).contains(&f.abs()) {
+        let e = format!("{f:e}");
+        match e.split_once('e') {
+            Some((m, x)) if !x.starts_with('-') => format!("{m}e+{x}"),
+            _ => e,
+        }
+    } else if f.fract() == 0. {
         format!("{f:.1}")
     } else {
         f.to_string()
     }
 }
 
-pub fn date_text(d: &bson::DateTime) -> String {
-    match chrono::DateTime::from_timestamp_millis(d.timestamp_millis()) {
-        Some(t) => t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-        None => d.timestamp_millis().to_string(),
+/// As JavaScript's `toISOString`: a year past 9999 or before 0 as six digits with its sign
+/// (`+010000-01-01T…`), which `parse_date` reads. None past what a calendar date can hold.
+pub fn date_text(d: &bson::DateTime) -> Option<String> {
+    use chrono::Datelike as _;
+    let t = chrono::DateTime::from_timestamp_millis(d.timestamp_millis())?;
+    let rest = t.format("-%m-%dT%H:%M:%S%.3fZ");
+    Some(match t.year() {
+        y @ 0..=9999 => format!("{y:04}{rest}"),
+        y => format!("{}{:06}{rest}", if y < 0 { '-' } else { '+' }, y.unsigned_abs()),
+    })
+}
+
+/// Whether `/pattern/` reads back as this pattern: the shell's literal ends at a `/` outside a
+/// class and cannot hold a line break.
+fn regex_literal_ok(pattern: &str) -> bool {
+    let mut class = false;
+    let mut c = pattern.chars();
+    while let Some(ch) = c.next() {
+        match ch {
+            '\\' => {
+                if matches!(c.next(), None | Some('\n')) {
+                    return false;
+                }
+            }
+            '\n' => return false,
+            '[' => class = true,
+            ']' => class = false,
+            '/' if !class => return false,
+            _ => {}
+        }
     }
+    true
 }
 
 pub fn scalar_text(b: &Bson) -> String {
@@ -672,7 +729,8 @@ pub fn scalar_text(b: &Bson) -> String {
         Bson::Boolean(v) => v.to_string(),
         Bson::Null => "null".into(),
         Bson::Undefined => "undefined".into(),
-        Bson::RegularExpression(r) => format!("/{}/{}", r.pattern, r.options),
+        Bson::RegularExpression(r) if regex_literal_ok(&r.pattern) => format!("/{}/{}", r.pattern, r.options),
+        Bson::RegularExpression(r) => format!("RegExp({}, {})", quote(&r.pattern), quote(&r.options)),
         Bson::JavaScriptCode(c) => format!("Code({})", quote(c)),
         Bson::JavaScriptCodeWithScope(c) => format!("Code({})", quote(&c.code)),
         Bson::Int32(n) => n.to_string(),
@@ -684,7 +742,10 @@ pub fn scalar_text(b: &Bson) -> String {
         }
         Bson::Binary(bin) => format!("BinData({}, \"{}\")", u8::from(bin.subtype), data_encoding::BASE64.encode(&bin.bytes)),
         Bson::ObjectId(o) => format!("ObjectId(\"{o}\")"),
-        Bson::DateTime(d) => format!("ISODate(\"{}\")", date_text(d)),
+        Bson::DateTime(d) => match date_text(d) {
+            Some(t) => format!("ISODate(\"{t}\")"),
+            None => format!("ISODate({})", d.timestamp_millis()),
+        },
         Bson::Symbol(s) => quote(s),
         Bson::Decimal128(d) => format!("NumberDecimal(\"{d}\")"),
         Bson::MaxKey => "MaxKey()".into(),
@@ -768,6 +829,26 @@ fn write_bson(out: &mut String, b: &Bson, level: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document's editor shows `scalar_text` and saves what it reads back: every value must
+    /// come back as itself, of the same type.
+    #[test]
+    fn what_is_shown_reads_back_as_itself() {
+        let date = |ms: i64| Bson::DateTime(bson::DateTime::from_millis(ms));
+        let re = |p: &str, o: &str| Bson::RegularExpression(bson::Regex { pattern: p.into(), options: o.into() });
+        for b in [
+            Bson::Double(1e300), Bson::Double(-5e-324), Bson::Double(1e17), Bson::Double(123456789012345680000.0), Bson::Double(1.5e-7), Bson::Double(0.1), Bson::Double(-0.0),
+            date(-1), date(-62135596800000), date(253402300800000), date(-62198755200000), date(8_640_000_000_000_000), date(i64::MIN), date(i64::MAX),
+            re("a/b", ""), re("a\\/b", "i"), re("[/]x", ""), re("line\nbreak", "m"), re("trailing\\", ""),
+            Bson::Int64(i64::MIN), Bson::Int32(i32::MIN),
+        ] {
+            let shown = scalar_text(&b);
+            let back = parse(&shown).map_err(|e| e.message).and_then(|v| to_bson(&v));
+            assert_eq!(back.map(Bson::into_canonical_extjson), Ok(b.clone().into_canonical_extjson()), "{b:?} shown as {shown}");
+        }
+        assert_eq!(scalar_text(&Bson::Double(1e300)), "1e+300", "as JavaScript writes it, not 300 digits");
+        assert_eq!(scalar_text(&date(253402300800000)), "ISODate(\"+010000-01-01T00:00:00.000Z\")", "as JavaScript's toISOString");
+    }
 
     #[test]
     fn reads_what_people_type_in_a_shell() {

@@ -139,7 +139,7 @@ fn wire(b: &console::Body) -> Option<Wire> {
 }
 
 pub(crate) async fn indices(c: &Client) -> Result<Vec<Item>> {
-    let v = c.call("GET", "/_cat/indices?format=json&bytes=b&h=index,docs.count,store.size&s=index", None).await?;
+    let v = c.call("GET", "/_cat/indices?format=json&bytes=b&h=index,store.size&s=index", None).await?;
     let num = |x: &Value| x.as_str().and_then(|s| s.parse::<u64>().ok()).or(x.as_u64());
     let mut items: Vec<Item> = v
         .as_array()
@@ -147,18 +147,34 @@ pub(crate) async fn indices(c: &Client) -> Result<Vec<Item>> {
             a.iter()
                 .filter_map(|r| {
                     let name = r["index"].as_str()?.to_string();
-                    Some(Item { name, kind: ItemKind::Collection, count: num(&r["docs.count"]), size: num(&r["store.size"]), note: None })
+                    Some(Item { name, kind: ItemKind::Collection, count: None, size: num(&r["store.size"]), note: None })
                 })
                 .collect()
         })
         .unwrap_or_default();
     items.sort_by(|a, b| (a.name.starts_with('.'), &a.name).cmp(&(b.name.starts_with('.'), &b.name)));
+    // `_cat/indices`' docs.count counts each nested object as a document of its own: the counts
+    // are a search's, every index's in one request. One the server will not count (closed, not
+    // the login's to read) has none.
+    if !items.is_empty() {
+        let lines = items.iter().flat_map(|i| [json!({ "index": i.name }), json!({ "size": 0, "track_total_hits": true })]).collect();
+        match c.call("POST", "/_msearch", Some(Wire::Lines(lines))).await {
+            Ok(r) => {
+                for (i, r) in items.iter_mut().zip(r["responses"].as_array().into_iter().flatten()) {
+                    i.count = r["hits"]["total"]["value"].as_u64();
+                }
+            }
+            Err(e) => log::info!("indices listed without their counts: {e:#}"),
+        }
+    }
     Ok(items)
 }
 
 pub(crate) async fn fields(c: &Client, index: &str) -> Result<Vec<(String, Vec<&'static str>)>> {
     let v = c.call("GET", &format!("/{}/_mapping", enc(index)), None).await?;
     let mut out: Vec<(String, Vec<&'static str>)> = Vec::new();
+    // An object's `properties`, and a field's multi-fields (`name.raw` in its `fields`): each is a
+    // field a query can name.
     fn walk(prefix: &str, props: &serde_json::Map<String, Value>, out: &mut Vec<(String, Vec<&'static str>)>) {
         for (k, p) in props {
             let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
@@ -169,14 +185,15 @@ pub(crate) async fn fields(c: &Client, index: &str) -> Result<Vec<(String, Vec<&
             if !out.iter().any(|(x, _)| *x == path) {
                 out.push((path.clone(), vec![t]));
             }
-            if let Some(sub) = p["properties"].as_object() {
+            for sub in [&p["properties"], &p["fields"]].into_iter().filter_map(Value::as_object) {
                 walk(&path, sub, out);
             }
         }
     }
+    // Runtime fields (Elasticsearch 7.11) are searched as the mapped ones are.
     for (_, m) in v.as_object().into_iter().flatten() {
-        if let Some(props) = m["mappings"]["properties"].as_object() {
-            walk("", props, &mut out);
+        for fields in [&m["mappings"]["properties"], &m["mappings"]["runtime"]].into_iter().filter_map(Value::as_object) {
+            walk("", fields, &mut out);
         }
     }
     out.insert(0, ("_id".into(), vec!["keyword"]));
@@ -261,6 +278,7 @@ async fn search(c: &Client, req: &Request, page: Page) -> Result<Output> {
     let v = c.call(if req.method == "GET" { "POST" } else { &req.method }, &req.path, Some(Wire::Json(Value::Object(body)))).await?;
     let hits = v["hits"]["hits"].as_array().cloned().unwrap_or_default();
     let total = v["hits"]["total"]["value"].as_u64().or(v["hits"]["total"].as_u64());
+    // `gte`: the server stopped counting there (10,000 by default), so that is no total.
     let exact = v["hits"]["total"]["relation"].as_str() != Some("gte");
     let n = hits.len() as u64;
     let window_end = from + size.unwrap_or(u64::MAX);
@@ -287,7 +305,7 @@ async fn search(c: &Client, req: &Request, page: Page) -> Result<Output> {
         })
         .collect();
     let source = (!partial).then(|| Source::Search { index: req.index().filter(|i| !i.contains(['*', ','])).unwrap_or("").to_string() });
-    Ok(Output::Docs(Docs { docs, source, total: total.map(|t| t.min(window_end.saturating_sub(from))), skip: page.skip, more }))
+    Ok(Output::Docs(Docs { docs, source, total: total.filter(|_| exact).map(|t| t.min(window_end.saturating_sub(from))), skip: page.skip, more }))
 }
 
 fn aggregations_first(v: Value) -> Value {

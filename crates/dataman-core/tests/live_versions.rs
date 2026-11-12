@@ -25,6 +25,7 @@ mod redis;
 mod search;
 
 use common::*;
+use dataman_core::nosql::{Output, Page, Ran};
 use dataman_core::result::ErrorInfo;
 use dataman_core::{Engine, ResultSet};
 
@@ -92,6 +93,21 @@ impl Target {
         let rows = self.rows(sql);
         assert_eq!(rows.len(), 1, "{sql}: {rows:?}");
         rows[0][0].clone()
+    }
+
+    /// A MongoDB, search or Redis statement on `db` (a database, a Redis database's number, ""
+    /// for search), one page of its result: what ran, or the message Dataman shows.
+    pub fn nosql_page(&self, db: &str, text: &str, page: Page) -> Result<Ran, String> {
+        let r = self.c.run_nosql(db, text, page);
+        self.e.core.block_on(async { tokio::time::timeout(Duration::from_secs(120), r).await.expect("timeout") }).map_err(|e| format!("{e:#}"))
+    }
+
+    pub fn nosql(&self, db: &str, text: &str) -> Result<Output, String> {
+        self.nosql_page(db, text, Page::default()).map(|r| r.output)
+    }
+
+    pub fn nosql_ok(&self, db: &str, text: &str) -> Output {
+        self.nosql(db, text).unwrap_or_else(|e| panic!("{text}: {e}"))
     }
 }
 

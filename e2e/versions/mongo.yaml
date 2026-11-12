@@ -1,0 +1,99 @@
+# MongoDB's older releases and the servers that speak its protocol: see scripts/versions.sh.
+# 4.4 is below the floor (the Rust driver 3 takes 4.2 and later; Dataman, 5.0): it must fail
+# clean or work, never show garbage. The ES/OpenSearch/Redis addresses point nowhere, so the
+# shared suites skip those engines instead of reaching the e2e servers.
+name: dataman-versions
+
+x-mongo: &mongo
+  command: --wiredTigerCacheSizeGB 0.25
+  environment:
+    MONGO_INITDB_ROOT_USERNAME: root
+    MONGO_INITDB_ROOT_PASSWORD: dataman
+  tmpfs: [/data/db, /data/configdb]
+  healthcheck:
+    # 4.4 and 5.0 have the old `mongo` shell; 6.0 and later only mongosh.
+    test: (command -v mongosh >/dev/null && mongosh --quiet -u root -p dataman --eval 'db.runCommand({ping:1}).ok') || mongo --quiet -u root -p dataman --eval 'db.runCommand({ping:1}).ok'
+    interval: 2s
+    retries: 60
+
+x-tests: &tests live_versions live_mongo live_nosql_battery live_flavors live_agent_login
+
+services:
+  mongo-4-4:
+    <<: *mongo
+    image: mongo:4.4
+    ports: ["127.0.0.1:27044:27017"]
+    labels:
+      dataman.url: mongodb://root:dataman@127.0.0.1:27044/dataman_versions
+      dataman.expect: MongoDB 4.4.
+      dataman.env: DATAMAN_MONGO=127.0.0.1:27044 DATAMAN_MONGODB=mongodb://root:dataman@127.0.0.1:27044/dataman_flavor DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MONGO=127.0.0.1:27044 DATAMAN_AU_MONGO_PASSWORD=dataman DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_REDIS=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_REDIS=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  mongo-5:
+    <<: *mongo
+    image: mongo:5.0
+    ports: ["127.0.0.1:27050:27017"]
+    labels:
+      dataman.url: mongodb://root:dataman@127.0.0.1:27050/dataman_versions
+      dataman.expect: MongoDB 5.0.
+      dataman.env: DATAMAN_MONGO=127.0.0.1:27050 DATAMAN_MONGODB=mongodb://root:dataman@127.0.0.1:27050/dataman_flavor DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MONGO=127.0.0.1:27050 DATAMAN_AU_MONGO_PASSWORD=dataman DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_REDIS=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_REDIS=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  mongo-6:
+    <<: *mongo
+    image: mongo:6.0
+    ports: ["127.0.0.1:27060:27017"]
+    labels:
+      dataman.url: mongodb://root:dataman@127.0.0.1:27060/dataman_versions
+      dataman.expect: MongoDB 6.0.
+      dataman.env: DATAMAN_MONGO=127.0.0.1:27060 DATAMAN_MONGODB=mongodb://root:dataman@127.0.0.1:27060/dataman_flavor DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MONGO=127.0.0.1:27060 DATAMAN_AU_MONGO_PASSWORD=dataman DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_REDIS=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_REDIS=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  mongo-7:
+    <<: *mongo
+    image: mongo:7.0
+    ports: ["127.0.0.1:27070:27017"]
+    labels:
+      dataman.url: mongodb://root:dataman@127.0.0.1:27070/dataman_versions
+      dataman.expect: MongoDB 7.0.
+      dataman.env: DATAMAN_MONGO=127.0.0.1:27070 DATAMAN_MONGODB=mongodb://root:dataman@127.0.0.1:27070/dataman_flavor DATAMAN_AGENT_LOGIN_LIVE=1 DATAMAN_AU_MONGO=127.0.0.1:27070 DATAMAN_AU_MONGO_PASSWORD=dataman DATAMAN_ES=127.0.0.1:1 DATAMAN_OPENSEARCH=127.0.0.1:1 DATAMAN_REDIS=127.0.0.1:1 DATAMAN_AU_PG=127.0.0.1:1 DATAMAN_AU_MYSQL=127.0.0.1:1 DATAMAN_AU_MSSQL=127.0.0.1:1 DATAMAN_AU_REDIS=127.0.0.1:1 DATAMAN_AU_ES=127.0.0.1:1 DATAMAN_AU_OS=127.0.0.1:1
+      dataman.tests: *tests
+
+  # FerretDB 1 on SQLite (no users: SCRAM is refused, no login is taken), 2 on PostgreSQL with DocumentDB (the
+  # all-in-one image; its PostgreSQL login is its MongoDB one). Not live_mongo and the battery:
+  # they are MongoDB's own (its label, explain's shape, what FerretDB lacks and Dataman refuses).
+  ferretdb-1:
+    image: ghcr.io/ferretdb/ferretdb:1.24.2
+    environment:
+      FERRETDB_HANDLER: sqlite
+      FERRETDB_TELEMETRY: disable
+    # It runs as 1000, and a tmpfs is root's.
+    tmpfs: ["/state:uid=1000,gid=1000"]
+    ports: ["127.0.0.1:27080:27017"]
+    healthcheck:
+      test: [CMD, /ferretdb, ping]
+      interval: 2s
+      retries: 60
+    labels:
+      dataman.url: mongodb://127.0.0.1:27080/dataman_versions
+      dataman.expect: FerretDB 1.
+      dataman.env: DATAMAN_MONGO=127.0.0.1:27080
+      dataman.tests: live_versions
+
+  ferretdb-2:
+    image: ghcr.io/ferretdb/ferretdb-eval:2.7.0
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: dataman
+      FERRETDB_TELEMETRY: disable
+    tmpfs: [/var/lib/postgresql/data, /state]
+    ports: ["127.0.0.1:27081:27017"]
+    healthcheck:
+      test: [CMD, /usr/local/bin/ferretdb, ping]
+      interval: 2s
+      retries: 90
+    labels:
+      dataman.url: mongodb://root:dataman@127.0.0.1:27081/dataman_versions
+      dataman.expect: FerretDB 2.
+      dataman.env: DATAMAN_FERRETDB=mongodb://root:dataman@127.0.0.1:27081/dataman_flavor
+      dataman.tests: live_versions live_flavors

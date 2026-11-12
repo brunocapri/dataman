@@ -312,12 +312,16 @@ const KEYS_LISTED: usize = 2000;
 pub(crate) async fn keys(c: &Client, db: &str) -> Result<Vec<Item>> {
     let db = db_of(db, c)?;
     let mut cursor = "0".to_string();
-    let mut keys: Vec<String> = Vec::new();
+    // As their bytes: a key that is not text is still its own key (read as text, two would be one).
+    let mut keys: Vec<Vec<u8>> = Vec::new();
     loop {
         let r = c.call(db, &["SCAN", cursor.as_str(), "COUNT", "1000"]).await?.items();
         let mut it = r.into_iter();
         cursor = it.next().and_then(|r| r.text()).unwrap_or_else(|| "0".into());
-        keys.extend(it.next().map(Reply::items).unwrap_or_default().iter().filter_map(Reply::text));
+        keys.extend(it.next().map(Reply::items).unwrap_or_default().into_iter().filter_map(|k| match k {
+            Reply::Bulk(Some(b)) => Some(b),
+            _ => None,
+        }));
         if cursor == "0" || keys.len() >= KEYS_LISTED {
             break;
         }
@@ -325,23 +329,24 @@ pub(crate) async fn keys(c: &Client, db: &str) -> Result<Vec<Item>> {
     keys.sort();
     keys.dedup();
     keys.truncate(KEYS_LISTED);
-    let types = c.pipeline(db, keys.iter().map(|k| vec![b"TYPE".to_vec(), k.as_bytes().to_vec()]).collect()).await?;
+    let types = c.pipeline(db, keys.iter().map(|k| vec![b"TYPE".to_vec(), k.clone()]).collect()).await?;
     Ok(keys
-        .into_iter()
+        .iter()
         .zip(types)
-        .map(|(name, t)| Item { name, kind: ItemKind::Collection, count: None, size: None, note: t.text() })
+        .map(|(key, t)| Item { name: cmd::key_name(key), kind: ItemKind::Collection, count: None, size: None, note: t.text() })
         .collect())
 }
 
-fn view_of(args: &[String]) -> Option<(&'static str, String)> {
+/// The type a command shows whole, read as entries (its key is `raw[1]`).
+fn view_of(args: &[String]) -> Option<&'static str> {
     let up: Vec<String> = args.iter().map(|a| a.to_ascii_uppercase()).collect();
-    let key = args.get(1)?.clone();
+    args.get(1)?;
     Some(match (up[0].as_str(), args.len()) {
-        ("HGETALL", 2) => ("hash", key),
-        ("SMEMBERS", 2) => ("set", key),
-        ("GET", 2) => ("string", key),
-        ("LRANGE", 4) if args[2] == "0" && args[3] == "-1" => ("list", key),
-        ("ZRANGE", 5) if args[2] == "0" && args[3] == "-1" && up[4] == "WITHSCORES" => ("zset", key),
+        ("HGETALL", 2) => "hash",
+        ("SMEMBERS", 2) => "set",
+        ("GET", 2) => "string",
+        ("LRANGE", 4) if args[2] == "0" && args[3] == "-1" => "list",
+        ("ZRANGE", 5) if args[2] == "0" && args[3] == "-1" && up[4] == "WITHSCORES" => "zset",
         _ => return None,
     })
 }
@@ -356,8 +361,8 @@ pub(crate) async fn run(c: &Client, db: &str, args: &[String], raw: &[Vec<u8>], 
         return Ok(Output::Use(n.clone()));
     }
     let dbn = db_of(db, c)?;
-    if let Some((kind, key)) = view_of(args) {
-        return view(c, dbn, db, kind, &key, page).await;
+    if let Some(kind) = view_of(args) {
+        return view(c, dbn, db, kind, &raw[1], page).await;
     }
     let r = c.call(dbn, raw).await?;
     if cmd::class(args).is_write() {
@@ -366,12 +371,15 @@ pub(crate) async fn run(c: &Client, db: &str, args: &[String], raw: &[Vec<u8>], 
             Reply::Bulk(None) | Reply::Array(None) => 0,
             _ => 1,
         };
-        let summary = match &r {
-            Reply::Int(n) => format!("(integer) {n}"),
-            Reply::Bulk(None) => "(nil)".into(),
-            other => other.text().unwrap_or_else(|| "OK".into()),
+        // As redis-cli shows it; a reply of many (a script's, SPOP's with a count) in full.
+        let (summary, detail) = match &r {
+            Reply::Int(n) => (format!("(integer) {n}"), None),
+            Reply::Bulk(None) | Reply::Array(None) => ("(nil)".into(), None),
+            Reply::Array(Some(a)) => (format!("{} replies", a.len()), Some(Body::Json(r.json()))),
+            Reply::Simple(s) | Reply::Error(s) => (s.clone(), None),
+            Reply::Bulk(Some(b)) => (cmd::escape_bytes(b), None),
         };
-        return Ok(Output::Written { affected, summary, detail: None });
+        return Ok(Output::Written { affected, summary, detail });
     }
     Ok(Output::Value(Body::Json(r.json())))
 }
@@ -380,27 +388,29 @@ fn entry(id: Value, fields: Value) -> Doc {
     Doc { id: Some(Body::Json(id)), index: None, body: Body::Json(fields) }
 }
 
-async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Page) -> Result<Output> {
+async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &[u8], page: Page) -> Result<Output> {
     let (skip, limit) = (page.skip as i64, page.limit as i64);
-    let t = c.call(db, &["TYPE", key]).await?.text().unwrap_or_default();
+    let shown = cmd::escape_bytes(key);
+    let t = c.call(db, &[b"TYPE".as_slice(), key]).await?.text().unwrap_or_default();
     if t == "none" {
         return Ok(Output::Value(Body::Json(if kind == "string" { Value::Null } else { json!([]) })));
     }
     if t != kind {
-        bail!("{key:?} is a {t}, not a {kind}");
+        bail!("{shown:?} is a {t}, not a {kind}");
     }
-    let mut source = Some(Source::Redis { db: dbname.to_string(), key: key.to_string(), kind: kind.to_string() });
+    // An entry is saved back by its key's name, which a key that is not text has none of.
+    let mut source = std::str::from_utf8(key).ok().map(|k| Source::Redis { db: dbname.to_string(), key: k.to_string(), kind: kind.to_string() });
     let (docs, total): (Vec<Doc>, u64) = match kind {
         "string" => {
-            let r = c.call(db, &["GET", key]).await?;
+            let r = c.call(db, &[b"GET".as_slice(), key]).await?;
             if r.binary() {
                 source = None;
             }
-            (vec![entry(json!(key), json!({ "value": r.json() }))], 1)
+            (vec![entry(json!(shown), json!({ "value": r.json() }))], 1)
         }
         "list" => {
-            let total = c.call(db, &["LLEN", key]).await?.json().as_u64().unwrap_or(0);
-            let r = c.call(db, &["LRANGE", key, &skip.to_string(), &(skip + limit - 1).to_string()]).await?;
+            let total = c.call(db, &[b"LLEN".as_slice(), key]).await?.json().as_u64().unwrap_or(0);
+            let r = c.call(db, &[b"LRANGE".as_slice(), key, skip.to_string().as_bytes(), (skip + limit - 1).to_string().as_bytes()]).await?;
             if r.binary() {
                 source = None;
             }
@@ -409,8 +419,8 @@ async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Pa
             (docs, total)
         }
         "zset" => {
-            let total = c.call(db, &["ZCARD", key]).await?.json().as_u64().unwrap_or(0);
-            let r = c.call(db, &["ZRANGE", key, &skip.to_string(), &(skip + limit - 1).to_string(), "WITHSCORES"]).await?;
+            let total = c.call(db, &[b"ZCARD".as_slice(), key]).await?.json().as_u64().unwrap_or(0);
+            let r = c.call(db, &[b"ZRANGE".as_slice(), key, skip.to_string().as_bytes(), (skip + limit - 1).to_string().as_bytes(), b"WITHSCORES"]).await?;
             if r.binary() {
                 source = None;
             }
@@ -427,12 +437,12 @@ async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Pa
         }
         "hash" | "set" => {
             let (count_cmd, scan_cmd) = if kind == "hash" { ("HLEN", "HSCAN") } else { ("SCARD", "SSCAN") };
-            let total = c.call(db, &[count_cmd, key]).await?.json().as_u64().unwrap_or(0);
+            let total = c.call(db, &[count_cmd.as_bytes(), key]).await?.json().as_u64().unwrap_or(0);
             let want = (skip + limit) as usize;
             let mut cursor = "0".to_string();
             let mut got: Vec<Reply> = Vec::new();
             loop {
-                let r = c.call(db, &[scan_cmd, key, cursor.as_str(), "COUNT", "500"]).await?.items();
+                let r = c.call(db, &[scan_cmd.as_bytes(), key, cursor.as_bytes(), b"COUNT", b"500"]).await?.items();
                 let mut it = r.into_iter();
                 cursor = it.next().and_then(|r| r.text()).unwrap_or_else(|| "0".into());
                 got.extend(it.next().map(Reply::items).unwrap_or_default());
@@ -558,11 +568,11 @@ mod tests {
     #[test]
     fn whole_values_are_views() {
         let v = |s: &str| view_of(&cmd::parse(s).unwrap());
-        assert_eq!(v("HGETALL user:1"), Some(("hash", "user:1".into())));
-        assert_eq!(v("lrange q 0 -1"), Some(("list", "q".into())));
+        assert_eq!(v("HGETALL user:1"), Some("hash"));
+        assert_eq!(v("lrange q 0 -1"), Some("list"));
         assert_eq!(v("LRANGE q 0 10"), None);
-        assert_eq!(v("ZRANGE z 0 -1 withscores"), Some(("zset", "z".into())));
-        assert_eq!(v("GET \"a b\""), Some(("string", "a b".into())));
+        assert_eq!(v("ZRANGE z 0 -1 withscores"), Some("zset"));
+        assert_eq!(v("GET \"a b\""), Some("string"));
         assert_eq!(v("GET a b"), None);
         assert_eq!(affects(&cmd::parse("DEL a b c").unwrap()), Some(3));
         assert_eq!(affects(&cmd::parse("GET a").unwrap()), None);

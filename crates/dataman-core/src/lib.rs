@@ -310,8 +310,11 @@ impl Core {
         if let Err(e) = dirs.ensure_private() {
             log::warn!("{}: {e}", dirs.config.display());
         }
+        // The drivers recurse once per level of a value they serialize: a MongoDB document as
+        // deep as the server takes (200 levels) overflows the default 2 MiB, which aborts the app.
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .thread_stack_size(8 << 20)
             .thread_name("dataman-core")
             .enable_all()
             .build()?;
