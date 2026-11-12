@@ -1,0 +1,23 @@
+# PostgreSQL's older releases and the servers that speak its protocol: see scripts/versions.sh.
+name: dataman-versions
+
+x-pg: &pg
+  environment:
+    POSTGRES_PASSWORD: dataman
+    POSTGRES_DB: dataman
+  tmpfs: [/var/lib/postgresql/data]
+  healthcheck:
+    test: pg_isready -U postgres -d dataman
+    interval: 2s
+    retries: 60
+
+services:
+  pg-12:
+    <<: *pg
+    image: postgres:12
+    ports: ["127.0.0.1:54112:5432"]
+    labels:
+      dataman.url: postgres://postgres:dataman@127.0.0.1:54112/dataman?sslmode=disable
+      dataman.expect: PostgreSQL 12.
+      dataman.env: DATAMAN_PG=127.0.0.1:54112
+      dataman.tests: live_versions live_pg_sweep live_ddl live_explain live_activity live_objects live_estimate live_agent_guard
