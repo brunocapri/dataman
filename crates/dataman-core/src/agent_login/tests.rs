@@ -239,6 +239,16 @@ fn hostile_names_are_quoted_everywhere() {
     assert_eq!(redis::key_pattern("user:[1]?\\*"), "user:\\[1\\]\\?\\\\*");
 }
 
+/// SERVERPROPERTY('ProductVersion') as each answers it.
+#[test]
+fn sql_server_releases_too_old_for_the_steps() {
+    assert!(ms::too_old(false, "12.0.6024.0").is_some(), "2014");
+    assert_eq!(ms::too_old(false, "13.0.1601.5"), None);
+    assert_eq!(ms::too_old(false, "14.0.3515.1"), None);
+    assert_eq!(ms::too_old(false, "17.0.1000.7"), None);
+    assert_eq!(ms::too_old(true, "12.0.2000.8"), None, "Azure SQL Database");
+}
+
 /// What `VERSION()` answers on each: below the floor the probe refuses before a step runs.
 #[test]
 fn mysql_releases_too_old_for_the_steps() {
