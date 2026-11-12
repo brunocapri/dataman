@@ -101,6 +101,11 @@ pub fn pg_plan_rows(json: &str) -> Option<u64> {
 
 pub fn mysql_plan_rows(json: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    // `explain_json_format_version = 2` (MySQL 9's default): the root's own estimate.
+    if let Some(root) = v.get("query_plan") {
+        let rows = root.get("estimated_rows")?.as_f64()?;
+        return (rows >= 0.).then_some(rows.round() as u64);
+    }
     let mut node = v.get("query_block")?;
     for _ in 0..8 {
         if let Some(t) = node.get("table") {
@@ -137,6 +142,9 @@ mod tests {
     fn plans() {
         assert_eq!(pg_plan_rows(r#"[{"Plan": {"Node Type": "Seq Scan", "Plan Rows": 30000, "Plan Width": 8}}]"#), Some(30000));
         assert_eq!(pg_plan_rows("[]"), None);
+        // MySQL 9.7, as it answers by default.
+        let v2 = r#"{"query": "/* select#1 */ select `x`.`t`.`a` AS `a` from `x`.`t`", "query_plan": {"operation": "Table scan on t", "table_name": "t", "access_type": "table", "schema_name": "x", "used_columns": ["a"], "estimated_rows": 3.0, "estimated_total_cost": 0.55}, "query_type": "select", "json_schema_version": "2.0"}"#;
+        assert_eq!(mysql_plan_rows(v2), Some(3));
         let my = r#"{"query_block": {"select_id": 1, "cost_info": {"query_cost": "1.0"}, "table": {"table_name": "customer", "rows_examined_per_scan": 5, "rows_produced_per_join": 5}}}"#;
         assert_eq!(mysql_plan_rows(my), Some(5));
         let join = r#"{"query_block": {"ordering_operation": {"nested_loop": [{"table": {"rows_produced_per_join": 5}}, {"table": {"rows_examined_per_scan": 2, "rows_produced_per_join": 12.5}}]}}}"#;
