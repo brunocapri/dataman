@@ -315,6 +315,8 @@ pub struct Inventory {
     pub open: Vec<Open>,
     /// Roles every account gets (MySQL's `mandatory_roles`), the agent login's too.
     pub open_roles: Vec<String>,
+    /// And has them on from its login (`activate_mandatory_roles`, on by default from MySQL 9).
+    pub open_roles_active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,7 +355,11 @@ pub fn exposed(spec: &Spec, inv: &Inventory, revoke: &dyn Fn(&Open, &[String]) -
     if !inv.open_roles.is_empty() {
         out.push(NotGranted {
             object: format!("roles {}", inv.open_roles.join(", ")),
-            reason: "every account gets them (mandatory_roles) and may turn them on (SET ROLE)".into(),
+            reason: if inv.open_roles_active {
+                "every account gets them (mandatory_roles), turned on at login (activate_mandatory_roles)".into()
+            } else {
+                "every account gets them (mandatory_roles) and may turn them on (SET ROLE)".into()
+            },
             sql: vec!["SET PERSIST mandatory_roles = '';".into()],
         });
     }

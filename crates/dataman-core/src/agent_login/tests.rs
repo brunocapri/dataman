@@ -622,7 +622,11 @@ fn what_every_login_reads_is_said_not_claimed() {
     let mut minv = inv_sql("shop");
     minv.open_roles = vec!["`app_read`@`%`".into()];
     let plan = my::create_plan(&compile(&guarded(Engine::MySql), "", &opts()), &minv, &probe_sql(), "pw", false);
-    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read")), "{:?}", plan.exposed);
+    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read") && e.reason.contains("SET ROLE")), "{:?}", plan.exposed);
+    // MySQL 9 turns them on at login.
+    minv.open_roles_active = true;
+    let plan = my::create_plan(&compile(&guarded(Engine::MySql), "", &opts()), &minv, &probe_sql(), "pw", false);
+    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read") && e.reason.contains("turned on at login")), "{:?}", plan.exposed);
 }
 
 #[test]

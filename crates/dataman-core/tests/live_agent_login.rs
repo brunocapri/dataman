@@ -1017,6 +1017,7 @@ fn mysql_redteam() {
     // then find the hidden table read, as the review warned.
     let active = !maria && ok(&e, &rs, "SHOW GLOBAL VARIABLES LIKE 'activate_mandatory_roles'").first().is_some_and(|r| r[1].as_deref() == Some("ON"));
     if active {
+        assert!(rv.plan.exposed.iter().any(|x| x.object.contains("au_reader") && x.reason.contains("turned on at login")), "{:?}", rv.plan.exposed);
         let checks = e.core.block_on(live::verify(&agent, &rv.spec, &rv.inventory, &rv.probe)).unwrap();
         let bad: Vec<_> = checks.iter().filter(|c| !c.ok).map(|c| (c.what.as_str(), c.on.as_str())).collect();
         assert_eq!(bad, [("Can't read hidden tables", "au_rt.secrets")], "{checks:?}");

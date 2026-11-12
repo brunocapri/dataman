@@ -481,10 +481,13 @@ pub(crate) async fn inventory(db: &Db, login: &str) -> Result<Inventory> {
         let o = out.objects.last_mut().expect("pushed");
         o.columns.push(Col { name: col, generated: extra.to_ascii_uppercase().contains("GENERATED") });
     }
-    // Roles MySQL gives every account (the agent may SET ROLE them).
-    if let Ok(r) = text_rows(db, "SELECT @@global.mandatory_roles").await {
-        let roles = r.first().and_then(|x| x[0].clone()).unwrap_or_default();
-        out.open_roles = roles.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
+    // Roles MySQL gives every account. Neither variable is on MariaDB or MySQL 5.7, the second
+    // only from MySQL 9: what the server doesn't list it doesn't have.
+    for r in text_rows(db, "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('mandatory_roles', 'activate_mandatory_roles')").await? {
+        match (s(&r[0]).as_str(), s(&r[1])) {
+            ("mandatory_roles", roles) => out.open_roles = roles.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect(),
+            (_, on) => out.open_roles_active = on.eq_ignore_ascii_case("ON"),
+        }
     }
     Ok(out)
 }
