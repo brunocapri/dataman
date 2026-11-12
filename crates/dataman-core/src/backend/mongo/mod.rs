@@ -155,7 +155,14 @@ pub(crate) fn message(e: &anyhow::Error) -> String {
                     let first = message.split(", Topology:").next().unwrap_or(message);
                     format!("cannot reach the server: {first}")
                 }
-                _ => e.to_string(),
+                // The server's words for each document it refused (`E11000 duplicate key …`),
+                // not the driver's debug print of them.
+                ErrorKind::InsertMany(m) if m.write_errors.as_ref().is_some_and(|w| !w.is_empty()) || m.write_concern_error.is_some() => {
+                    let refused = m.write_errors.iter().flatten().map(|w| w.message.as_str());
+                    refused.chain(m.write_concern_error.iter().map(|w| w.message.as_str())).collect::<Vec<_>>().join("; ")
+                }
+                // The kind says what went wrong; the error around it adds the driver's labels.
+                k => k.to_string(),
             };
         }
     }
