@@ -6,12 +6,16 @@ use super::*;
 use dataman_core::nosql::bson::Bson;
 use dataman_core::nosql::{Body, ItemKind, Source};
 
-const DB: &str = "dataman_versions";
-
-/// The server, on an empty `DB`.
-fn mongo() -> Option<Target> {
+/// The server, on an empty database of the test's own (the tests run at once). FerretDB 1 (past
+/// its end of life) is only told apart: it refuses dotted keys and drops the connection on a
+/// document of odd values, its own failures.
+fn mongo(db: &str) -> Option<Target> {
     let t = target(Engine::MongoDb)?;
-    t.nosql_ok(DB, "db.dropDatabase()");
+    if t.c.info.version.starts_with("FerretDB 1.") {
+        eprintln!("skipping: {}", t.c.info.version);
+        return None;
+    }
+    t.nosql_ok(db, "db.dropDatabase()");
     Some(t)
 }
 
@@ -43,7 +47,7 @@ fn shown(o: &Output) -> String {
 /// What each release added to aggregation: (the release, its stage or operator, the pipeline on
 /// `n`, what Dataman shows). Before its release the server must say which one it does not know.
 const STAGES: &[((u32, u32), &str, &str, &str)] = &[
-    ((3, 4), "$bucketAuto", "[{$facet: {b: [{$bucketAuto: {groupBy: '$v', buckets: 2}}], n: [{$count: 'n'}]}}]", r#"[{"b":[{"_id":{"min":1,"max":5},"count":2},{"_id":{"min":5,"max":10},"count":2}],"n":[{"n":4}]}]"#),
+    ((3, 4), "$bucketAuto", "[{$facet: {b: [{$bucketAuto: {groupBy: '$v', buckets: 2}}, {$sort: {'_id.min': 1}}], n: [{$count: 'n'}]}}]", r#"[{"b":[{"_id":{"min":1,"max":5},"count":2},{"_id":{"min":5,"max":10},"count":2}],"n":[{"n":4}]}]"#),
     ((3, 6), "$lookup", "[{$match: {_id: 1}}, {$lookup: {from: 'n', let: {g: '$g'}, pipeline: [{$match: {$expr: {$eq: ['$g', '$$g']}}}, {$sort: {_id: 1}}, {$project: {_id: 1}}], as: 'same'}}, {$project: {same: 1}}]", r#"[{"_id":1,"same":[{"_id":1},{"_id":2}]}]"#),
     ((3, 4), "$graphLookup", "[{$match: {_id: 4}}, {$graphLookup: {from: 'n', startWith: '$up', connectFromField: 'up', connectToField: '_id', as: 'chain'}}, {$project: {n: {$size: '$chain'}}}]", r#"[{"_id":4,"n":3}]"#),
     ((5, 0), "$setWindowFields", "[{$setWindowFields: {partitionBy: '$g', sortBy: {at: 1}, output: {run: {$sum: '$v', window: {documents: ['unbounded', 'current']}}}}}, {$sort: {_id: 1}}, {$project: {run: 1}}]", r#"[{"_id":1,"run":1},{"_id":2,"run":6},{"_id":3,"run":3},{"_id":4,"run":13}]"#),
@@ -58,7 +62,8 @@ const STAGES: &[((u32, u32), &str, &str, &str)] = &[
 
 #[test]
 fn each_release_stages_answer_or_fail_clean() {
-    let Some(t) = mongo() else { return };
+    const DB: &str = "dataman_v_stages";
+    let Some(t) = mongo(DB) else { return };
     // A field named `$p` is stored from 5.0 on.
     let dollar = if since(&t, (5, 0)) { ", $p: 'price'" } else { "" };
     t.nosql_ok(DB, &format!("db.n.insertMany([{{_id: 1, g: 'a', v: 1, at: ISODate('2024-01-01'), 'a.b': 'dotted'{dollar}}}, {{_id: 2, g: 'a', v: 5, at: ISODate('2024-01-03'), up: 1}}, {{_id: 3, g: 'b', v: 3, at: ISODate('2024-01-04'), up: 2}}, {{_id: 4, g: 'b', v: 10, at: ISODate('2024-01-07'), up: 3}}])"));
@@ -96,7 +101,8 @@ const ODD: &str = r#"{
 
 #[test]
 fn odd_values_show_as_written_and_save_back_unchanged() {
-    let Some(t) = mongo() else { return };
+    const DB: &str = "dataman_v_odd";
+    let Some(t) = mongo(DB) else { return };
     t.nosql_ok(DB, &format!("db.odd.insertOne({ODD})"));
     let read = || docs(t.nosql_ok(DB, "db.odd.find({_id: 'odd'})")).docs.remove(0);
     let doc = read();
@@ -124,7 +130,8 @@ fn odd_values_show_as_written_and_save_back_unchanged() {
 /// The limits are the server's, said in its words: nothing is cut or shown half.
 #[test]
 fn deep_wide_and_huge_documents() {
-    let Some(t) = mongo() else { return };
+    const DB: &str = "dataman_v_deep";
+    let Some(t) = mongo(DB) else { return };
     let deep = |n: usize| format!("{}1{}", "{a: ".repeat(n), "}".repeat(n));
     t.nosql_ok(DB, &format!("db.deep.insertOne({{_id: 1, d: {}}})", deep(150)));
     let d = docs(t.nosql_ok(DB, "db.deep.find()")).docs.remove(0);
@@ -161,11 +168,12 @@ fn deep_wide_and_huge_documents() {
 /// A refused write says what the server said, not the driver's dump of its reply.
 #[test]
 fn refusals_in_the_servers_words() {
-    let Some(t) = mongo() else { return };
+    const DB: &str = "dataman_v_refusals";
+    let Some(t) = mongo(DB) else { return };
     t.nosql_ok(DB, "db.dup.insertOne({_id: 1})");
     for text in ["db.dup.insertOne({_id: 1})", "db.dup.insertMany([{_id: 2}, {_id: 1}, {_id: 3}])"] {
         let e = t.nosql(DB, text).unwrap_err();
-        assert!(e.contains("E11000 duplicate key") && !e.contains("Kind:") && !e.contains("IndexedWriteError"), "{text}: {e}");
+        assert!(e.to_lowercase().contains("duplicate key") && !e.contains("Kind:") && !e.contains("IndexedWriteError"), "{text}: {e}");
     }
     let e = t.nosql(DB, "db.dup.aggregate([{$group: {_id: '$x', n: {$bogus: 1}}}])").unwrap_err();
     assert!(e.contains("$bogus") && !e.contains("Kind:"), "{e}");
@@ -173,7 +181,8 @@ fn refusals_in_the_servers_words() {
 
 #[test]
 fn pages_of_a_find_and_an_aggregation() {
-    let Some(t) = mongo() else { return };
+    const DB: &str = "dataman_v_pages";
+    let Some(t) = mongo(DB) else { return };
     t.nosql_ok(DB, &format!("db.p.insertMany([{}])", (0..130).map(|i| format!("{{_id: {i}}}")).collect::<Vec<_>>().join(",")));
     let page = |text: &str, skip: u64| docs(t.nosql_page(DB, text, Page { skip, limit: 50 }).unwrap_or_else(|e| panic!("{text}: {e}")).output);
     let ids = |d: &dataman_core::nosql::Docs| d.docs.iter().map(|d| d.body.text().split_whitespace().collect::<String>()).collect::<Vec<_>>();
@@ -187,11 +196,15 @@ fn pages_of_a_find_and_an_aggregation() {
 
 #[test]
 fn the_tree_tells_what_each_collection_is() {
-    let Some(t) = mongo() else { return };
+    const DB: &str = "dataman_v_tree";
+    let Some(t) = mongo(DB) else { return };
     t.nosql_ok(DB, "db.plain.insertMany([{a: 1}, {a: 2}, {a: 3}])");
-    t.nosql_ok(DB, "db.createView('plain_view', 'plain', [{$match: {a: {$gt: 1}}}])");
-    let mut want = vec![("plain", ItemKind::Collection, Some(3)), ("plain_view", ItemKind::View, None)];
+    let mut want = vec![("plain", ItemKind::Collection, Some(3))];
+    // FerretDB makes none of these (Dataman refuses them there: `FlavorSpec::ignores`).
     if is_mongodb(&t) {
+        t.nosql_ok(DB, "db.createView('plain_view', 'plain', [{$match: {a: {$gt: 1}}}])");
+        assert_eq!(docs(t.nosql_ok(DB, "db.plain_view.find()")).docs.len(), 2);
+        want.push(("plain_view", ItemKind::View, None));
         t.nosql_ok(DB, "db.createCollection('capped', {capped: true, size: 4096, max: 2})");
         t.nosql_ok(DB, "db.capped.insertMany([{i: 1}, {i: 2}, {i: 3}])");
         want.push(("capped", ItemKind::Collection, Some(2)));
@@ -206,6 +219,4 @@ fn the_tree_tells_what_each_collection_is() {
         let i = items.iter().find(|i| i.name == name).unwrap_or_else(|| panic!("{name} not in {items:?}"));
         assert_eq!((i.kind, i.count), (kind, count), "{name}: {i:?}");
     }
-    let view = docs(t.nosql_ok(DB, "db.plain_view.find()"));
-    assert_eq!(view.docs.len(), 2);
 }

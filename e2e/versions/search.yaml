@@ -13,7 +13,8 @@ x-es: &es
     xpack.license.self_generated.type: trial
     ELASTIC_PASSWORD: dataman
     ES_JAVA_OPTS: -Xms512m -Xmx512m
-  tmpfs: [/usr/share/elasticsearch/data]
+  # It runs as 1000, and a tmpfs is root's.
+  tmpfs: ["/usr/share/elasticsearch/data:uid=1000,gid=0"]
   healthcheck:
     test: curl -fsu elastic:dataman 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s'
     interval: 3s
@@ -25,7 +26,7 @@ x-os: &os
     DISABLE_SECURITY_PLUGIN: "true"
     DISABLE_INSTALL_DEMO_CONFIG: "true"
     OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
-  tmpfs: [/usr/share/opensearch/data]
+  tmpfs: ["/usr/share/opensearch/data:uid=1000,gid=1000"]
   healthcheck:
     test: curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s'
     interval: 3s
