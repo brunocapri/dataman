@@ -505,7 +505,11 @@ fn redis_battery() {
     b.ok("zset", "ZADD board 10 ada 20 grace 15 alan 5 linus");
     b.expect("ZRANGEBYSCORE", "ZRANGEBYSCORE board 10 20 WITHSCORES", |o| text_has(o, "grace"));
     b.expect("ZREVRANGE", "ZREVRANGE board 0 1 WITHSCORES", |o| text_has(o, "grace"));
-    b.expect("ZRANGE BYSCORE REV LIMIT", "ZRANGE board +inf -inf BYSCORE REV LIMIT 0 2", |o| text_has(o, "grace"));
+    // 6.2's (ZRANGE BYSCORE, GEOSEARCH, COPY): before it the server says it does not know them.
+    let since_6_2 = b.c.info.release >= (6, 2, 0);
+    if since_6_2 {
+        b.expect("ZRANGE BYSCORE REV LIMIT", "ZRANGE board +inf -inf BYSCORE REV LIMIT 0 2", |o| text_has(o, "grace"));
+    }
     b.expect("ZRANK", "ZRANK board alan", |o| text_has(o, "2"));
     b.expect("ZINCRBY", "ZINCRBY board 100 linus", |o| text_has(o, "105"));
     b.expect("XADD", "XADD events * type login user 1", |o| text_has(o, "-"));
@@ -516,7 +520,9 @@ fn redis_battery() {
     b.ok("XGROUP", "XGROUP CREATE events g1 0");
     b.ok("XINFO GROUPS", "XINFO GROUPS events");
     b.ok("GEOADD", "GEOADD places -9.2160 38.6916 belem -9.1366 38.7075 comercio -8.6146 41.1456 clerigos");
-    b.expect("GEOSEARCH", "GEOSEARCH places FROMLONLAT -9.14 38.71 BYRADIUS 20 km ASC WITHDIST", |o| { text_has(o, "comercio")?; text_has(o, "belem") });
+    if since_6_2 {
+        b.expect("GEOSEARCH", "GEOSEARCH places FROMLONLAT -9.14 38.71 BYRADIUS 20 km ASC WITHDIST", |o| { text_has(o, "comercio")?; text_has(o, "belem") });
+    }
     b.expect("GEODIST", "GEODIST places belem clerigos km", |o| text_has(o, "27"));
     b.ok("GEOPOS", "GEOPOS places belem");
     b.ok("GEOHASH", "GEOHASH places belem");
@@ -541,14 +547,19 @@ fn redis_battery() {
     b.ok("lowercase", "hgetall huge");
     b.ok("EXPIRE", "EXPIRE big 100");
     b.ok("RENAME", "RENAME big big2");
-    b.ok("COPY", "COPY counter counter2");
+    if since_6_2 {
+        b.ok("COPY", "COPY counter counter2");
+    }
     b.expect("DEL several", "DEL a b c", |o| text_has(o, "3"));
     b.expect("the explorer lists keys with types", "SCAN 0", |_| Ok(()));
     let keys = b.e.core.block_on(b.c.nosql_tree(Some("10"))).unwrap_or_default();
     if !keys.iter().any(|k| k.name == "events" && k.note.as_deref() == Some("stream")) {
         b.failures.push(format!("the stream is not listed: {} keys", keys.len()));
     }
-    b.refused("JSON without the module", "JSON.GET doc", "unknown command");
+    // Redis Open Source 8 carries the JSON module.
+    if b.c.info.major() < 8 {
+        b.refused("JSON without the module", "JSON.GET doc", "unknown command");
+    }
     b.refused("blocking", "BLPOP q 1", "not supported");
     b.refused("MULTI", "MULTI", "not supported");
     b.refused("SUBSCRIBE", "SUBSCRIBE ch", "not supported");

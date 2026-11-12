@@ -470,7 +470,7 @@ pub fn count_statement(engine: Engine, collection: &str) -> String {
     match engine {
         Engine::MongoDb => open_statement(engine, collection).replace(".find({})", ".countDocuments({})"),
         Engine::Elasticsearch | Engine::OpenSearch => format!("GET /{collection}/_count"),
-        Engine::Redis => format!("TYPE {}", redis::quote(collection)),
+        Engine::Redis => format!("TYPE {}", redis::key_arg(collection)),
         _ => String::new(),
     }
 }

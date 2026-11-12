@@ -11,7 +11,11 @@ const READS: &[&str] = &[
     "ZREVRANK", "ZCARD", "ZCOUNT", "ZLEXCOUNT", "ZSCAN", "ZRANDMEMBER", "XRANGE", "XREVRANGE", "XLEN", "XINFO", "PING",
     "ECHO", "TIME", "INFO", "LASTSAVE", "ROLE", "OBJECT", "MEMORY", "DUMP", "BITCOUNT", "BITPOS", "GETBIT", "PFCOUNT",
     "GEOPOS", "GEODIST", "GEOHASH", "GEOSEARCH", "GEORADIUS_RO", "SLOWLOG", "LOLWUT", "COMMAND", "SELECT", "JSON.GET",
-    "JSON.TYPE", "JSON.MGET", "JSON.OBJKEYS", "JSON.STRLEN", "JSON.ARRLEN", "FT.SEARCH", "FT.INFO", "FT._LIST",
+    "JSON.TYPE", "JSON.MGET", "JSON.OBJKEYS", "JSON.OBJLEN", "JSON.STRLEN", "JSON.ARRLEN", "JSON.ARRINDEX", "JSON.RESP",
+    "FT.SEARCH", "FT.AGGREGATE", "FT.INFO", "FT.EXPLAIN", "FT._LIST", "TS.GET", "TS.MGET", "TS.RANGE", "TS.REVRANGE",
+    "TS.MRANGE", "TS.MREVRANGE", "TS.INFO", "TS.QUERYINDEX", "BF.EXISTS", "BF.MEXISTS", "BF.INFO", "BF.CARD", "CF.EXISTS",
+    "CF.MEXISTS", "CF.COUNT", "CF.INFO", "TOPK.QUERY", "TOPK.LIST", "TOPK.INFO", "CMS.QUERY", "CMS.INFO", "TDIGEST.INFO",
+    "TDIGEST.QUANTILE", "TDIGEST.CDF", "TDIGEST.MIN", "TDIGEST.MAX",
 ];
 
 const SAFE_WRITES: &[&str] = &[
@@ -21,7 +25,9 @@ const SAFE_WRITES: &[&str] = &[
     "RPUSHX", "LPOP", "RPOP", "LSET", "LREM", "LINSERT", "LTRIM", "LMOVE", "RPOPLPUSH", "SADD", "SREM", "SPOP", "SMOVE",
     "SINTERSTORE", "SUNIONSTORE", "SDIFFSTORE", "ZADD", "ZREM", "ZINCRBY", "ZPOPMIN", "ZPOPMAX", "ZREMRANGEBYRANK",
     "ZREMRANGEBYSCORE", "ZREMRANGEBYLEX", "ZRANGESTORE", "XADD", "XDEL", "XTRIM", "SETBIT", "PFADD", "PFMERGE", "GEOADD",
-    "JSON.SET", "JSON.DEL", "JSON.ARRAPPEND", "JSON.NUMINCRBY", "PUBLISH",
+    "JSON.SET", "JSON.DEL", "JSON.ARRAPPEND", "JSON.NUMINCRBY", "JSON.MERGE", "TS.CREATE", "TS.ADD", "TS.MADD", "TS.INCRBY",
+    "TS.DECRBY", "BF.ADD", "BF.MADD", "BF.INSERT", "CF.ADD", "CF.ADDNX", "CF.DEL", "TOPK.ADD", "CMS.INCRBY", "TDIGEST.ADD",
+    "PUBLISH",
 ];
 
 const REFUSED: &[&str] = &[
@@ -230,28 +236,54 @@ pub fn quote(arg: &str) -> String {
     s
 }
 
+/// A key as the tree names it: its text, or, when its bytes are not text (or its text starts
+/// with a quote), the quoted argument redis-cli shows (`"bin\xffkey"`), which `key_arg` keeps.
+pub fn key_name(key: &[u8]) -> String {
+    match std::str::from_utf8(key) {
+        Ok(s) if !s.starts_with('"') => s.to_string(),
+        Ok(s) => quote(s),
+        Err(_) => format!("\"{}\"", escape_bytes(key)),
+    }
+}
+
+/// A key named as `key_name` names it, as a command's argument.
+pub fn key_arg(name: &str) -> String {
+    if name.starts_with('"') { name.to_string() } else { quote(name) }
+}
+
+/// What opens a key of each type (as `TYPE` names it), and what counts its entries: the type's
+/// own read, so a module's type (Redis 8 carries JSON, TimeSeries and Bloom) is not read with GET.
+const KINDS: &[(&str, &str, Option<&str>)] = &[
+    ("string", "GET {k}", Some("STRLEN {k}")),
+    ("hash", "HGETALL {k}", Some("HLEN {k}")),
+    ("list", "LRANGE {k} 0 -1", Some("LLEN {k}")),
+    ("set", "SMEMBERS {k}", Some("SCARD {k}")),
+    ("zset", "ZRANGE {k} 0 -1 WITHSCORES", Some("ZCARD {k}")),
+    ("stream", "XRANGE {k} - + COUNT 100", Some("XLEN {k}")),
+    ("ReJSON-RL", "JSON.GET {k}", None),
+    ("TSDB-TYPE", "TS.RANGE {k} - +", None),
+    ("MBbloom--", "BF.INFO {k}", Some("BF.CARD {k}")),
+    ("MBbloomCF", "CF.INFO {k}", None),
+    ("TopK-TYPE", "TOPK.LIST {k} WITHCOUNT", None),
+    ("CMSk-TYPE", "CMS.INFO {k}", None),
+    ("TDIS-TYPE", "TDIGEST.INFO {k}", None),
+];
+
+/// The read that shows a key: by its type's row, else (a type Dataman does not know) its type.
 pub fn view_command(key: &str, kind: &str) -> String {
-    let k = quote(key);
-    match kind {
-        "hash" => format!("HGETALL {k}"),
-        "list" => format!("LRANGE {k} 0 -1"),
-        "set" => format!("SMEMBERS {k}"),
-        "zset" => format!("ZRANGE {k} 0 -1 WITHSCORES"),
-        "stream" => format!("XRANGE {k} - + COUNT 100"),
-        "ReJSON-RL" => format!("JSON.GET {k}"),
-        _ => format!("GET {k}"),
+    let k = key_arg(key);
+    match KINDS.iter().find(|(t, ..)| *t == kind) {
+        Some((_, view, _)) => view.replace("{k}", &k),
+        None if kind.is_empty() => format!("GET {k}"),
+        None => format!("TYPE {k}"),
     }
 }
 
 pub fn len_command(key: &str, kind: &str) -> String {
-    let k = quote(key);
-    match kind {
-        "hash" => format!("HLEN {k}"),
-        "list" => format!("LLEN {k}"),
-        "set" => format!("SCARD {k}"),
-        "zset" => format!("ZCARD {k}"),
-        "stream" => format!("XLEN {k}"),
-        _ => format!("STRLEN {k}"),
+    let k = key_arg(key);
+    match KINDS.iter().find(|(t, ..)| *t == kind).and_then(|(.., len)| *len) {
+        Some(len) => len.replace("{k}", &k),
+        None => format!("TYPE {k}"),
     }
 }
 
@@ -277,6 +309,15 @@ mod tests {
         assert_eq!(quote("a b\"c"), "\"a b\\\"c\"");
         assert_eq!(parse(&format!("SET {} x", quote("a b\"c"))).unwrap()[1], "a b\"c");
         assert_eq!(view_command("user:1", "zset"), "ZRANGE user:1 0 -1 WITHSCORES");
+        // Keys whose bytes are not text, or whose text is quoted, name themselves quoted and open
+        // as that same key; a type Dataman does not know is shown, not read with GET.
+        for key in [&b"bin\xffkey"[..], b"\"quoted\"", b"a\\b", b"plain"] {
+            let open = parse_bytes(&view_command(&key_name(key), "ReJSON-RL")).unwrap();
+            assert_eq!(open, [b"JSON.GET".to_vec(), key.to_vec()], "{}", key_name(key));
+        }
+        assert_eq!((key_name(b"\xff\x00"), key_name(b"\"q\"")), (r#""\xff\x00""#.to_string(), r#""\"q\"""#.to_string()));
+        assert_eq!(view_command("m", "SomeModule-T"), "TYPE m");
+        assert_eq!(len_command("ts", "TSDB-TYPE"), "TYPE ts");
     }
 
     #[test]
