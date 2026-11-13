@@ -598,7 +598,7 @@ Updates are signed with ed25519 and checked before they install, and a downgrade
 
 ## Build from source
 
-You need Rust 1.99 or newer. On Linux, you also need the GPUI dependencies: `clang`, `lld`, `cmake`, `pkg-config`, the libxkbcommon, Wayland, X11/xcb, fontconfig and freetype headers, and a Secret Service such as gnome-keyring for saved passwords.
+You need [rustup](https://rustup.rs): the first build installs the Rust version in `rust-toolchain.toml`. On Linux, you also need the GPUI dependencies: `clang`, `lld`, `cmake`, `pkg-config`, the libxkbcommon, Wayland, X11/xcb, fontconfig and freetype headers, and a Secret Service such as gnome-keyring for saved passwords.
 
 ```bash
 git clone https://github.com/brunocapri/dataman

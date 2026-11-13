@@ -21,7 +21,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.99.0"
 
 jobs:
   test:
@@ -30,8 +29,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Rust ${{ env.RUST_TOOLCHAIN }}
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - name: Rust, from rust-toolchain.toml
+        run: rustup set profile minimal && rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: macos-aarch64
@@ -50,7 +49,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-aarch64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-aarch64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: The DuckDB engine
         run: scripts/duckdb-engine.sh
         env:

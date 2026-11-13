@@ -28,13 +28,15 @@ dist="${DATAMAN_DIST:-$root/dist}/linux"
 if [ "$(uname)" != Linux ]; then
   command -v docker > /dev/null || die "not on Linux, and no docker to build in"
   image="${DATAMAN_LINUX_IMAGE:-}"
+  rust="$(sed -nE 's/^channel = "([^"]+)"/\1/p' "$root/rust-toolchain.toml")"
+  [ -n "$rust" ] || die "no channel in rust-toolchain.toml"
   mkdir -p "$dist"
   for arch in "${archs[@]}"; do
     platform="linux/$([ "$arch" = x86_64 ] && echo amd64 || echo arm64)"
     img="$image"
     if [ -z "$img" ]; then
-      img="dataman-linux-build:$arch"
-      docker build --platform "$platform" -t "$img" -f "$root/packaging/linux/Dockerfile" "$root/packaging/linux" > /dev/null
+      img="dataman-linux-build:$arch-$rust"
+      docker build --platform "$platform" -t "$img" --build-arg RUST_TOOLCHAIN="$rust" -f "$root/packaging/linux/Dockerfile" "$root/packaging/linux" > /dev/null
     fi
     echo "==> $arch in $img"
     docker run --rm --platform "$platform" \

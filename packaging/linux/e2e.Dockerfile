@@ -1,5 +1,6 @@
 # The Linux CI's test machine (.github/workflows/linux.yml) for scripts/linux/e2e.sh: Ubuntu 22.04,
-# the workflow's packages, its Rust, and docker with compose (the host's daemon, by socket).
+# the workflow's packages, rust-toolchain.toml's Rust, and docker with compose (the host's
+# daemon, by socket).
 FROM docker:29-cli AS docker
 FROM docker/compose-bin:v2.29.7 AS compose
 FROM ubuntu:22.04

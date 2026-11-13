@@ -1,0 +1,4 @@
+# The Rust every build uses: rustup reads this file from the repository and engines/duckdb,
+# CI installs it, and the Linux Dockerfiles take its channel. Bumping Rust is this line.
+[toolchain]
+channel = "1.99.0"
