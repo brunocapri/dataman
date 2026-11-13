@@ -21,7 +21,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.99.0"
   # The zed checkout (GPUI) has paths longer than MAX_PATH.
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
@@ -39,10 +38,11 @@ jobs:
           git config --global core.longpaths true
           tzutil /s "UTC"
       - uses: actions/checkout@v4
-      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+      - name: Rust, from rust-toolchain.toml
         run: |
-          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
-          rustup default $env:RUST_TOOLCHAIN
+          rustup set profile minimal
+          rustup toolchain install
+          rustc --version
       # cache.yml saves this cache on main; here it is only read (a tag's or a PR's cache is
       # theirs alone, and would only crowd the repository's 10 GB out).
       - uses: Swatinem/rust-cache@v2
@@ -54,7 +54,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: Check (no new warnings)
         shell: bash
         run: |
@@ -155,10 +155,11 @@ jobs:
           git config --global core.longpaths true
           tzutil /s "UTC"
       - uses: actions/checkout@v4
-      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+      - name: Rust, from rust-toolchain.toml
         run: |
-          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
-          rustup default $env:RUST_TOOLCHAIN
+          rustup set profile minimal
+          rustup toolchain install
+          rustc --version
       # cache.yml saves this cache on main; here it is only read (a tag's or a PR's cache is
       # theirs alone, and would only crowd the repository's 10 GB out).
       - uses: Swatinem/rust-cache@v2
@@ -170,7 +171,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/duckdb
-          key: duckdb-${{ runner.os }}-x86_64-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+          key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: Package (.zip and installer)
         run: scripts\windows\package.ps1
         env:

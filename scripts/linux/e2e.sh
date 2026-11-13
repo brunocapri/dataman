@@ -16,10 +16,10 @@ die() { echo "linux/e2e: $*" >&2; exit 1; }
 command -v docker > /dev/null || die "no docker"
 arch=x86_64
 case "$(uname -m)" in arm64|aarch64) arch=aarch64 ;; esac
-# The workflow's Rust and packages, read from it so the two stay one.
-rust="$(sed -nE 's/^  RUST_TOOLCHAIN: "([^"]+)"/\1/p' "$wf" | head -1)"
+# The repository's Rust and the workflow's packages, read from them so the two stay one.
+rust="$(sed -nE 's/^channel = "([^"]+)"/\1/p' "$root/rust-toolchain.toml")"
 deps="$(awk '/^  DEPS: >-/ {f = 1; next} f && /^    / {print; next} f {exit}' "$wf" | xargs)"
-[ -n "$rust" ] && [ -n "$deps" ] || die "no RUST_TOOLCHAIN or DEPS in $wf"
+[ -n "$rust" ] && [ -n "$deps" ] || die "no channel in rust-toolchain.toml or no DEPS in $wf"
 img="dataman-linux-e2e:$arch-$rust"
 docker build -q -t "$img" --build-arg RUST_TOOLCHAIN="$rust" --build-arg DEPS="$deps" \
   -f "$root/packaging/linux/e2e.Dockerfile" "$root/packaging/linux" > /dev/null
