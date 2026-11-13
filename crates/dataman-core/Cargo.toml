@@ -33,9 +33,11 @@ log = "0.4"
 socket2 = "0.6"
 regex = "1"
 unicode-normalization = "0.1"
-parquet = { version = "=58.4.0", default-features = false, features = ["arrow", "snap"] }
-arrow-array = "=58.4.0"
-arrow-schema = "=58.4.0"
+# Exact, and moved together: duckdb also depends on arrow 58, so arrow-data and the other arrow
+# crates reach the tree through both; one pin keeps a single arrow version in Cargo.lock.
+parquet = { version = "=58.4.1", default-features = false, features = ["arrow", "snap"] }
+arrow-array = "=58.4.1"
+arrow-schema = "=58.4.1"
 # `ring` instead of the default aws-lc-rs.
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa"] }
 hmac = "0.13"
