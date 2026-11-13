@@ -1,0 +1,58 @@
+# Update proposals: one grouped pull request a week for Cargo, one for the GitHub Actions. Every pull
+# request runs the full Linux, macOS and Windows suites, so nothing here opens one per crate.
+# Advisories are deny.toml's job (.github/workflows/deps.yml), not this file's.
+version: 2
+updates:
+  # The root workspace only. engines/duckdb has one direct dependency, libduckdb-sys, and it is
+  # pinned below; deps.yml still checks that lockfile.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 1
+    # A release younger than a week is not proposed: time for a bad publish to be yanked.
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      # Only if security updates are ever turned on in the repository settings.
+      cargo-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      # Breaking releases are bumped by hand, not inside the weekly group.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      # GPUI's API is not stable: pinned to the commit of a Zed release tag, bumped by hand.
+      - dependency-name: gpui
+      - dependency-name: gpui_platform
+      # [patch.crates-io] git revision: the one Zed's own workspace uses, moves with GPUI.
+      - dependency-name: async-task
+      # [patch.crates-io] path patches to vendor/, Dataman's changes on top of 0.7.18 and 0.13.0:
+      # upgrading means applying them again (see the notes in Cargo.toml).
+      - dependency-name: tokio-postgres
+      - dependency-name: tiberius
+      # =1.10506.1 in dataman-core must match libduckdb-sys in engines/duckdb, and a bump also
+      # needs `scripts/duckdb-engine.sh --api`.
+      - dependency-name: duckdb
+      - dependency-name: libduckdb-sys
+      # =58.4.0, pinned together in dataman-core; the reason for the exact pin is not written down.
+      - dependency-name: parquet
+      - dependency-name: arrow-array
+      - dependency-name: arrow-schema
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 1
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

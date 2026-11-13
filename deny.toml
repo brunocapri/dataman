@@ -1,0 +1,104 @@
+# cargo-deny: advisories, yanked crates, licences and sources, for the root workspace and for
+# engines/duckdb (its own workspace and lockfile). `.github/workflows/deps.yml` runs it on both.
+# Every exception below is one entry with its reason; when a bump fixes one, drop the entry with it.
+# An entry nothing matches any more shows up as an `advisory-not-detected` warning.
+
+[graph]
+# Every platform and every feature, the test-only ones included (`checks`, `screenshots`): a
+# crate that reaches only the Windows or Linux build still ships in that build.
+all-features = true
+
+[advisories]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = [
+    # SSH tunnels (russh)
+    { id = "RUSTSEC-2023-0071", reason = "rsa (Marvin timing attack): russh 0.64 and 0.65 both pin rsa =0.10.0-rc.18, so no russh release takes the fixed 0.10.0, and users connect with RSA keys (russh's `rsa` feature)" },
+    { id = "RUSTSEC-2026-0495", reason = "russh: the agent *server* signs confirm-constrained keys without asking; Dataman only uses the agent client (ssh/mod.rs). Fixed in russh 0.65, a breaking bump" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.7.5, through rsa: fixed in 0.7.6, which `cargo update -p crypto-bigint` reaches; drop with that bump" },
+    { id = "RUSTSEC-2026-0385", reason = "ctutils 0.4.3, through the RustCrypto stack: fixed in 0.4.4, which `cargo update -p ctutils` reaches; drop with that bump" },
+    { crate = "crypto-bigint@0.7.5", reason = "yanked; `cargo update -p crypto-bigint` reaches 0.7.11; drop with that bump" },
+    # Parquet export and import, held at =58.4.0 in dataman-core
+    { id = "RUSTSEC-2026-0442", reason = "arrow-data 58.4.0 (RunEndEncoded validation): fixed in 58.4.1, held back by the =58.4.0 pin on parquet and arrow-*" },
+    { id = "RUSTSEC-2026-0435", reason = "thrift 0.17 through parquet 58.4.0: parquet 58.4.1 moves to thrift 0.23, held back by the =58.4.0 pin" },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained and has no successor release; build-time proc macro, through parquet, pulp and GPUI's metal" },
+    # SQLite
+    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.38 bundles a SQLite with CVE-2026-119375: the fix (0.39) needs rusqlite 0.41, a breaking bump" },
+    # MCP server
+    { id = "RUSTSEC-2026-0457", reason = "rmcp: the OAuth client, a feature dataman-mcp does not build (server + transport-io only); `cargo update -p rmcp` reaches 3.10.0" },
+    { id = "RUSTSEC-2026-0461", reason = "rmcp: the Streamable HTTP server transport, not built (stdio only); `cargo update -p rmcp` reaches 3.10.0" },
+    { id = "RUSTSEC-2026-0462", reason = "rmcp: the Streamable HTTP clients, not built (stdio only); `cargo update -p rmcp` reaches 3.10.0" },
+    # TLS
+    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki 0.103.15: fixed in 0.103.16, which `cargo update -p rustls-webpki` reaches; drop with that bump" },
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 1.0.9, through mongodb: fixed in 1.0.10, which `cargo update -p webpki-roots` reaches; drop with that bump" },
+    # Runtime and OS
+    { id = "RUSTSEC-2026-0386", reason = "tokio 1.53.2 (AsyncFd I/O safety): fixed in 1.53.3, which `cargo update -p tokio` reaches; drop with that bump" },
+    { id = "RUSTSEC-2026-0486", reason = "rustix 1.1.5 (xattr with an empty buffer): fixed in 1.1.6, which `cargo update -p rustix@1.1.5` reaches; drop with that bump" },
+    { crate = "async-executor@1.14.0", reason = "yanked, through GPUI's Linux platform and zbus; `cargo update -p async-executor` reaches 1.14.1; drop with that bump" },
+    # Unmaintained, no successor release; they come with the GPUI pin and with zbus (oo7, the Linux Secret Service)
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, no successor release; through GPUI's text stack (pinned with GPUI)" },
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained, no successor release; through GPUI's usvg (pinned with GPUI)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained, no successor release; through zbus (oo7 for the Linux Secret Service, GPUI's Linux platform)" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained, no successor release; through zbus (oo7 for the Linux Secret Service, GPUI's Linux platform)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained, no successor release; through zbus (oo7 for the Linux Secret Service, GPUI's Linux platform)" },
+]
+
+[licenses]
+# The permissive licences the tree uses today. A crate offering a choice (`MIT OR Apache-2.0`,
+# r-efi's `... OR LGPL-2.1-or-later`, self_cell's `Apache-2.0 OR GPL-2.0-only`) passes on any
+# allowed option. Copyleft is never allowed wholesale: each MPL-2.0 crate is an exception below.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.8
+exceptions = [
+    # MPL-2.0 is file-level copyleft: using these unmodified keeps Dataman's own code MIT.
+    # cbindgen: build tool only (GPUI's macOS platform build script); nothing of it ships.
+    { crate = "cbindgen", allow = ["MPL-2.0"] },
+    # dwrote: DirectWrite bindings for GPUI's Windows text, through zed-font-kit; used unmodified.
+    { crate = "dwrote", allow = ["MPL-2.0"] },
+    # option-ext: through dirs-sys (config and data directories); used unmodified.
+    { crate = "option-ext", allow = ["MPL-2.0"] },
+]
+
+[licenses.private]
+# The workspace's own crates (publish = false) are MIT; they are checked like any other.
+ignore = false
+
+[bans]
+# ~218 crates appear in more than one version, mostly through GPUI: denying duplicates would only
+# be a wall of exceptions.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    # GPUI, pinned to the commit of a Zed release tag (Cargo.toml), and the forks it builds with.
+    "https://github.com/zed-industries/zed",
+    "https://github.com/zed-industries/font-kit",
+    "https://github.com/zed-industries/wasm_thread",
+    "https://github.com/zed-industries/xim-rs.git",
+    "https://github.com/proptest-rs/proptest",
+    # The [patch.crates-io] revision Zed's own workspace uses.
+    "https://github.com/smol-rs/async-task.git",
+]

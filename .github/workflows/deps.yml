@@ -1,0 +1,53 @@
+name: Dependencies
+
+# cargo-deny (deny.toml) on both lockfiles: advisories, yanked crates, licences and sources. A pull
+# request that changes a manifest, a lockfile or the policy runs it; the daily run catches a new
+# advisory against a lockfile nobody touched. No build: cargo-deny reads `cargo metadata`, and the
+# advisory database is fetched fresh on every run, so there is nothing to cache.
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/deps.yml"
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deps-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bumped by hand: the version and the checksum of its x86_64 musl build, from the release page.
+  DENY_VERSION: "0.20.2"
+  DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+
+jobs:
+  deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-deny
+        run: |
+          name="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
+          curl -fsSL -o deny.tar.gz "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$name.tar.gz"
+          echo "$DENY_SHA256  deny.tar.gz" | sha256sum -c -
+          tar -xzf deny.tar.gz -C "$RUNNER_TEMP" --strip-components=1 "$name/cargo-deny"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: The workspace
+        run: cargo-deny --locked check
+      # Its own workspace and lockfile, under the same policy. Most of deny.toml's entries are about
+      # the app's tree, so the "never matched" warnings are turned off here, and only here.
+      - name: The DuckDB engine (engines/duckdb)
+        if: ${{ !cancelled() }}
+        run: >-
+          cargo-deny --locked --manifest-path engines/duckdb/Cargo.toml --config deny.toml check
+          -A advisory-not-detected -A yanked-not-detected -A license-not-encountered
+          -A license-exception-not-encountered -A unmatched-source
