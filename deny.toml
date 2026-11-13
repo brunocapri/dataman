@@ -18,8 +18,6 @@ ignore = [
     { id = "RUSTSEC-2026-0495", reason = "russh: the agent *server* signs confirm-constrained keys without asking; Dataman only uses the agent client (ssh/mod.rs). Fixed in russh 0.65, a breaking bump" },
     # Parquet export and import
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained and has no successor release; build-time proc macro, through parquet, pulp and GPUI's metal" },
-    # SQLite
-    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.38 bundles a SQLite with CVE-2026-119375: the fix (0.39) needs rusqlite 0.41, a breaking bump" },
     # Unmaintained, no successor release; they come with the GPUI pin and with zbus (oo7, the Linux Secret Service)
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained, no successor release; through GPUI's text stack (pinned with GPUI)" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz is unmaintained, no successor release; through GPUI's usvg (pinned with GPUI)" },

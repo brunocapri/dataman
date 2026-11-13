@@ -60,7 +60,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots-no-provider", "http2"] }
 boa_engine = { version = "0.22", default-features = false }
 # File databases, compiled in (no system library). No `load_extension`: SQL can't load code.
-rusqlite = { version = "0.40", optional = true, features = ["bundled", "column_decltype", "column_metadata", "hooks", "limits"] }
+rusqlite = { version = "0.41", optional = true, features = ["bundled", "column_decltype", "column_metadata", "hooks", "limits"] }
 # rusqlite's own (its statement batches iterate with it).
 fallible-iterator-03 = { package = "fallible-iterator", version = "0.3", optional = true }
 # DuckDB's C API through a table of pointers, as a loadable extension takes it: the engine itself
