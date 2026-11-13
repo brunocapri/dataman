@@ -37,7 +37,7 @@ jobs:
       - run: |
           git config --global core.longpaths true
           tzutil /s "UTC"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust, from rust-toolchain.toml
         run: |
           rustup set profile minimal
@@ -51,7 +51,7 @@ jobs:
           save-if: false
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -135,7 +135,7 @@ jobs:
           $env:DATAMAN_E2E_PG_PORT = "5432"
           cargo run --release -p xtask -- e2e --no-compose --no-build --needs pg
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-x86_64
@@ -154,7 +154,7 @@ jobs:
       - run: |
           git config --global core.longpaths true
           tzutil /s "UTC"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust, from rust-toolchain.toml
         run: |
           rustup set profile minimal
@@ -168,7 +168,7 @@ jobs:
           save-if: false
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -190,13 +190,13 @@ jobs:
           if (Test-Path "$dir\dataman.exe") { throw "the uninstaller left dataman.exe" }
       - name: MCP over stdio
         run: scripts\windows\mcp-smoke.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: screenshots-x86_64
           path: dist/windows/screenshots/
           if-no-files-found: ignore
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dataman-windows-x86_64
           path: |

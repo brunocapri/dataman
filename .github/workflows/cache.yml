@@ -55,7 +55,7 @@ jobs:
         xvfb xauth x11-utils dbus-x11 gnome-keyring libsecret-tools postgresql-client
         dpkg-dev file
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust, from rust-toolchain.toml
@@ -66,7 +66,7 @@ jobs:
           shared-key: linux-x86_64
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -92,7 +92,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust, from rust-toolchain.toml
         run: rustup set profile minimal && rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
@@ -101,7 +101,7 @@ jobs:
           shared-key: macos-aarch64
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-aarch64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -131,7 +131,7 @@ jobs:
         shell: pwsh
     steps:
       - run: git config --global core.longpaths true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust, from rust-toolchain.toml
         run: |
           rustup set profile minimal
@@ -143,7 +143,7 @@ jobs:
           shared-key: windows-x86_64
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}

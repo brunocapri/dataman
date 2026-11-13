@@ -28,7 +28,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust, from rust-toolchain.toml
         run: rustup set profile minimal && rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
@@ -46,7 +46,7 @@ jobs:
           [ "$n" -le 2 ]
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-aarch64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -97,7 +97,7 @@ jobs:
           PGPASSWORD=dataman "$pgbin/createdb" -h 127.0.0.1 -U postgres dataman
           DATAMAN_E2E_PSQL="$pgbin/psql" DATAMAN_E2E_PG_PORT=5432 \
             cargo run --release -p xtask -- e2e --no-compose --needs pg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-macos-aarch64
