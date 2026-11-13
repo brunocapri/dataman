@@ -1,0 +1,460 @@
+diff --git a/src/bind.rs b/src/bind.rs
+index 06cd14d..a756478 100644
+--- a/src/bind.rs
++++ b/src/bind.rs
+@@ -3,7 +3,6 @@ use crate::codec::FrontendMessage;
+ use crate::connection::RequestMessages;
+ use crate::types::BorrowToSql;
+ use crate::{Error, Portal, Statement, query};
+-use postgres_protocol::message::backend::Message;
+ use postgres_protocol::message::frontend;
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicUsize, Ordering};
+@@ -29,10 +28,7 @@ where
+ 
+     let mut responses = client.send(RequestMessages::Single(FrontendMessage::Raw(buf)))?;
+ 
+-    match responses.next().await? {
+-        Message::BindComplete => {}
+-        _ => return Err(Error::unexpected_message()),
+-    }
++    query::bind_complete(&mut responses).await?;
+ 
+     Ok(Portal::new(client, name, statement))
+ }
+diff --git a/src/cancel_query_raw.rs b/src/cancel_query_raw.rs
+index dd5d7df..42d7ea6 100644
+--- a/src/cancel_query_raw.rs
++++ b/src/cancel_query_raw.rs
+@@ -3,7 +3,7 @@ use crate::tls::TlsConnect;
+ use crate::{Error, connect_tls};
+ use bytes::BytesMut;
+ use postgres_protocol::message::frontend;
+-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
++use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+ 
+ pub async fn cancel_query_raw<S, T>(
+     stream: S,
+@@ -25,7 +25,19 @@ where
+ 
+     stream.write_all(&buf).await.map_err(Error::io)?;
+     stream.flush().await.map_err(Error::io)?;
+-    stream.shutdown().await.map_err(Error::io)?;
++    // Dataman: wait for the other end to close, as libpq does. A pooler forwards the request
++    // on a server connection of its own and drops it if the client hangs up first (PgBouncer
++    // 1.18 does).
++    // Over TLS a server may close without close_notify: that is the close too.
++    let mut rest = [0u8; 64];
++    loop {
++        match stream.read(&mut rest).await {
++            Ok(0) => break,
++            Ok(_) => {}
++            Err(e) if matches!(e.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset) => break,
++            Err(e) => return Err(Error::io(e)),
++        }
++    }
+ 
+     Ok(())
+ }
+diff --git a/src/client.rs b/src/client.rs
+index 6d3b03d..e47bd3b 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -29,7 +29,8 @@ use std::fmt;
+ use std::future;
+ #[cfg(feature = "runtime")]
+ use std::net::IpAddr;
+-#[cfg(feature = "runtime")]
++// Dataman: only Unix sockets use it (upstream warns on Windows; a path dependency is not capped).
++#[cfg(all(feature = "runtime", unix))]
+ use std::path::PathBuf;
+ use std::pin::pin;
+ use std::sync::Arc;
+@@ -64,23 +65,10 @@ impl Responses {
+     }
+ }
+ 
+-/// A cache of type info and prepared statements for fetching type info
+-/// (corresponding to the queries in the [prepare](prepare) module).
++/// Types already looked up (Dataman: the lookups themselves are unnamed statements, so no
++/// statement is kept for them).
+ #[derive(Default)]
+ struct CachedTypeInfo {
+-    /// A statement for basic information for a type from its
+-    /// OID. Corresponds to [TYPEINFO_QUERY](prepare::TYPEINFO_QUERY) (or its
+-    /// fallback).
+-    typeinfo: Option<Statement>,
+-    /// A statement for getting information for a composite type from its OID.
+-    /// Corresponds to [TYPEINFO_QUERY](prepare::TYPEINFO_COMPOSITE_QUERY).
+-    typeinfo_composite: Option<Statement>,
+-    /// A statement for getting information for a composite type from its OID.
+-    /// Corresponds to [TYPEINFO_QUERY](prepare::TYPEINFO_COMPOSITE_QUERY) (or
+-    /// its fallback).
+-    typeinfo_enum: Option<Statement>,
+-
+-    /// Cache of types already looked up.
+     types: HashMap<Oid, Type>,
+ }
+ 
+@@ -90,6 +78,9 @@ pub struct InnerClient {
+ 
+     /// A buffer to use when writing out postgres commands.
+     buffer: Mutex<BytesMut>,
++
++    /// Dataman: `describe` keeps nothing on the server (see `Client::keep_statements`).
++    unnamed: std::sync::atomic::AtomicBool,
+ }
+ 
+ impl InnerClient {
+@@ -106,30 +97,6 @@ impl InnerClient {
+         })
+     }
+ 
+-    pub fn typeinfo(&self) -> Option<Statement> {
+-        self.cached_typeinfo.lock().typeinfo.clone()
+-    }
+-
+-    pub fn set_typeinfo(&self, statement: &Statement) {
+-        self.cached_typeinfo.lock().typeinfo = Some(statement.clone());
+-    }
+-
+-    pub fn typeinfo_composite(&self) -> Option<Statement> {
+-        self.cached_typeinfo.lock().typeinfo_composite.clone()
+-    }
+-
+-    pub fn set_typeinfo_composite(&self, statement: &Statement) {
+-        self.cached_typeinfo.lock().typeinfo_composite = Some(statement.clone());
+-    }
+-
+-    pub fn typeinfo_enum(&self) -> Option<Statement> {
+-        self.cached_typeinfo.lock().typeinfo_enum.clone()
+-    }
+-
+-    pub fn set_typeinfo_enum(&self, statement: &Statement) {
+-        self.cached_typeinfo.lock().typeinfo_enum = Some(statement.clone());
+-    }
+-
+     pub fn type_(&self, oid: Oid) -> Option<Type> {
+         self.cached_typeinfo.lock().types.get(&oid).cloned()
+     }
+@@ -201,6 +168,7 @@ impl Client {
+                 sender,
+                 cached_typeinfo: Default::default(),
+                 buffer: Default::default(),
++                unnamed: Default::default(),
+             }),
+             #[cfg(feature = "runtime")]
+             socket_config: None,
+@@ -228,6 +196,35 @@ impl Client {
+         self.prepare_typed(query, &[]).await
+     }
+ 
++    /// Dataman: the statement to run once, as `prepare` gives it while the server keeps statements
++    /// (`keep_statements`); otherwise with nothing kept on the server: parsed again (unnamed)
++    /// with each use, in the same batch as its bind.
++    pub async fn describe(&self, query: &str) -> Result<Statement, Error> {
++        if self.inner.unnamed.load(std::sync::atomic::Ordering::Relaxed) {
++            prepare::describe(&self.inner, query).await
++        } else {
++            self.prepare(query).await
++        }
++    }
++
++    /// Dataman: whether the server connection keeps what this client prepares until the next
++    /// Sync and beyond (true, the default). A pooler that gives each Sync to whichever server
++    /// connection is free does not: there `describe` keeps nothing, at the cost of parsing each
++    /// statement twice.
++    pub fn keep_statements(&self, keep: bool) {
++        self.inner.unnamed.store(!keep, std::sync::atomic::Ordering::Relaxed);
++    }
++
++    /// Dataman: what `keep_statements` was told last.
++    pub fn keeps_statements(&self) -> bool {
++        !self.inner.unnamed.load(std::sync::atomic::Ordering::Relaxed)
++    }
++
++    /// Dataman: the process ID the server (or a pooler in front of it) gave in BackendKeyData.
++    pub fn backend_key_pid(&self) -> i32 {
++        self.process_id
++    }
++
+     /// Like `prepare`, but allows the types of query parameters to be explicitly specified.
+     ///
+     /// The list of types may be smaller than the number of parameters - the types of the remaining parameters will be
+diff --git a/src/copy_in.rs b/src/copy_in.rs
+index 19b82a0..4c81335 100644
+--- a/src/copy_in.rs
++++ b/src/copy_in.rs
+@@ -205,10 +205,7 @@ where
+         .await
+         .map_err(|_| Error::closed())?;
+ 
+-    match responses.next().await? {
+-        Message::BindComplete => {}
+-        _ => return Err(Error::unexpected_message()),
+-    }
++    query::bind_complete(&mut responses).await?;
+ 
+     match responses.next().await? {
+         Message::CopyInResponse(_) => {}
+diff --git a/src/copy_out.rs b/src/copy_out.rs
+index 03b2ead..3f6b2c4 100644
+--- a/src/copy_out.rs
++++ b/src/copy_out.rs
+@@ -21,10 +21,7 @@ pub async fn copy_out(client: &InnerClient, statement: Statement) -> Result<Copy
+ async fn start(client: &InnerClient, buf: Bytes) -> Result<Responses, Error> {
+     let mut responses = client.send(RequestMessages::Single(FrontendMessage::Raw(buf)))?;
+ 
+-    match responses.next().await? {
+-        Message::BindComplete => {}
+-        _ => return Err(Error::unexpected_message()),
+-    }
++    query::bind_complete(&mut responses).await?;
+ 
+     match responses.next().await? {
+         Message::CopyOutResponse(_) => {}
+diff --git a/src/prepare.rs b/src/prepare.rs
+index 8484fa3..24b700e 100644
+--- a/src/prepare.rs
++++ b/src/prepare.rs
+@@ -4,7 +4,7 @@ use crate::connection::RequestMessages;
+ use crate::error::SqlState;
+ use crate::types::{Field, Kind, Oid, Type};
+ use crate::{Column, Error, Statement};
+-use crate::{query, slice_iter};
++use crate::query;
+ use bytes::Bytes;
+ use fallible_iterator::FallibleIterator;
+ use futures_util::TryStreamExt;
+@@ -64,7 +64,26 @@ pub async fn prepare(
+     types: &[Type],
+ ) -> Result<Statement, Error> {
+     let name = format!("s{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+-    let buf = encode(client, &name, query, types)?;
++    let (parameters, columns) = describe_as(client, &name, query, types).await?;
++    Ok(Statement::new(client, name, parameters, columns))
++}
++
++/// Dataman: what the unnamed statement takes and returns, without keeping it. A pooler that
++/// hands each Sync to whichever server connection is free (PgBouncer and Supavisor in transaction
++/// mode) has no named statement to bind later; the statement this returns is parsed again with
++/// each bind, in the same batch.
++pub async fn describe(client: &Arc<InnerClient>, query: &str) -> Result<Statement, Error> {
++    let (parameters, columns) = describe_as(client, "", query, &[]).await?;
++    Ok(Statement::described(query, parameters, columns))
++}
++
++async fn describe_as(
++    client: &Arc<InnerClient>,
++    name: &str,
++    query: &str,
++    types: &[Type],
++) -> Result<(Vec<Type>, Vec<Column>), Error> {
++    let buf = encode(client, name, query, types)?;
+     let mut responses = client.send(RequestMessages::Single(FrontendMessage::Raw(buf)))?;
+ 
+     match responses.next().await? {
+@@ -106,15 +125,7 @@ pub async fn prepare(
+         }
+     }
+ 
+-    Ok(Statement::new(client, name, parameters, columns))
+-}
+-
+-fn prepare_rec<'a>(
+-    client: &'a Arc<InnerClient>,
+-    query: &'a str,
+-    types: &'a [Type],
+-) -> Pin<Box<dyn Future<Output = Result<Statement, Error>> + 'a + Send>> {
+-    Box::pin(prepare(client, query, types))
++    Ok((parameters, columns))
+ }
+ 
+ fn encode(client: &InnerClient, name: &str, query: &str, types: &[Type]) -> Result<Bytes, Error> {
+@@ -141,9 +152,13 @@ pub(crate) async fn get_type(client: &Arc<InnerClient>, oid: Oid) -> Result<Type
+         return Ok(type_);
+     }
+ 
+-    let stmt = typeinfo_statement(client).await?;
+-
+-    let mut rows = pin!(query::query(client, stmt, slice_iter(&[&oid])).await?);
++    let rows = match typeinfo_rows(client, TYPEINFO_QUERY, oid).await {
++        Err(ref e) if e.code() == Some(&SqlState::UNDEFINED_TABLE) => {
++            typeinfo_rows(client, TYPEINFO_FALLBACK_QUERY, oid).await?
++        }
++        r => r?,
++    };
++    let mut rows = pin!(rows);
+ 
+     let row = match rows.try_next().await? {
+         Some(row) => row,
+@@ -192,54 +207,29 @@ fn get_type_rec<'a>(
+     Box::pin(get_type(client, oid))
+ }
+ 
+-async fn typeinfo_statement(client: &Arc<InnerClient>) -> Result<Statement, Error> {
+-    if let Some(stmt) = client.typeinfo() {
+-        return Ok(stmt);
+-    }
+-
+-    let stmt = match prepare_rec(client, TYPEINFO_QUERY, &[]).await {
+-        Ok(stmt) => stmt,
+-        Err(ref e) if e.code() == Some(&SqlState::UNDEFINED_TABLE) => {
+-            prepare_rec(client, TYPEINFO_FALLBACK_QUERY, &[]).await?
+-        }
+-        Err(e) => return Err(e),
+-    };
+-
+-    client.set_typeinfo(&stmt);
+-    Ok(stmt)
++/// Dataman: a lookup by OID as the unnamed statement, parsed, bound and run in one batch.
++fn typeinfo_rows<'a>(
++    client: &'a Arc<InnerClient>,
++    sql: &'static str,
++    oid: Oid,
++) -> Pin<Box<dyn Future<Output = Result<crate::RowStream, Error>> + Send + 'a>> {
++    Box::pin(query::query_typed(client, sql, [(oid, Type::OID)]))
+ }
+ 
+ async fn get_enum_variants(client: &Arc<InnerClient>, oid: Oid) -> Result<Vec<String>, Error> {
+-    let stmt = typeinfo_enum_statement(client).await?;
+-
+-    query::query(client, stmt, slice_iter(&[&oid]))
+-        .await?
+-        .and_then(|row| async move { row.try_get(0) })
+-        .try_collect()
+-        .await
+-}
+-
+-async fn typeinfo_enum_statement(client: &Arc<InnerClient>) -> Result<Statement, Error> {
+-    if let Some(stmt) = client.typeinfo_enum() {
+-        return Ok(stmt);
+-    }
+-
+-    let stmt = match prepare_rec(client, TYPEINFO_ENUM_QUERY, &[]).await {
+-        Ok(stmt) => stmt,
++    let rows = match typeinfo_rows(client, TYPEINFO_ENUM_QUERY, oid).await {
+         Err(ref e) if e.code() == Some(&SqlState::UNDEFINED_COLUMN) => {
+-            prepare_rec(client, TYPEINFO_ENUM_FALLBACK_QUERY, &[]).await?
++            typeinfo_rows(client, TYPEINFO_ENUM_FALLBACK_QUERY, oid).await?
+         }
+-        Err(e) => return Err(e),
++        r => r?,
+     };
+-
+-    client.set_typeinfo_enum(&stmt);
+-    Ok(stmt)
++    rows.and_then(|row| async move { row.try_get(0) })
++        .try_collect()
++        .await
+ }
+ 
+ async fn get_composite_fields(client: &Arc<InnerClient>, oid: Oid) -> Result<Vec<Field>, Error> {
+-    let stmt = typeinfo_composite_statement(client).await?;
+-
+-    let rows = query::query(client, stmt, slice_iter(&[&oid]))
++    let rows = typeinfo_rows(client, TYPEINFO_COMPOSITE_QUERY, oid)
+         .await?
+         .try_collect::<Vec<_>>()
+         .await?;
+@@ -254,14 +244,3 @@ async fn get_composite_fields(client: &Arc<InnerClient>, oid: Oid) -> Result<Vec
+ 
+     Ok(fields)
+ }
+-
+-async fn typeinfo_composite_statement(client: &Arc<InnerClient>) -> Result<Statement, Error> {
+-    if let Some(stmt) = client.typeinfo_composite() {
+-        return Ok(stmt);
+-    }
+-
+-    let stmt = prepare_rec(client, TYPEINFO_COMPOSITE_QUERY, &[]).await?;
+-
+-    client.set_typeinfo_composite(&stmt);
+-    Ok(stmt)
+-}
+diff --git a/src/query.rs b/src/query.rs
+index a9dfda7..d684047 100644
+--- a/src/query.rs
++++ b/src/query.rs
+@@ -244,13 +244,19 @@ where
+ 
+ async fn start(client: &InnerClient, buf: Bytes) -> Result<Responses, Error> {
+     let mut responses = client.send(RequestMessages::Single(FrontendMessage::Raw(buf)))?;
++    bind_complete(&mut responses).await?;
++    Ok(responses)
++}
+ 
+-    match responses.next().await? {
+-        Message::BindComplete => {}
+-        _ => return Err(Error::unexpected_message()),
++/// Dataman: a described statement's bind is answered by ParseComplete first.
++pub(crate) async fn bind_complete(responses: &mut Responses) -> Result<(), Error> {
++    loop {
++        match responses.next().await? {
++            Message::ParseComplete => {}
++            Message::BindComplete => return Ok(()),
++            _ => return Err(Error::unexpected_message()),
++        }
+     }
+-
+-    Ok(responses)
+ }
+ 
+ pub fn encode<P, I>(client: &InnerClient, statement: &Statement, params: I) -> Result<Bytes, Error>
+@@ -282,6 +288,10 @@ where
+     if params.len() != statement.params().len() {
+         return Err(Error::parameters(params.len(), statement.params().len()));
+     }
++    if let Some(query) = statement.query() {
++        frontend::parse("", query, statement.params().iter().map(Type::oid), buf)
++            .map_err(Error::encode)?;
++    }
+ 
+     encode_bind_raw(
+         statement.name(),
+diff --git a/src/statement.rs b/src/statement.rs
+index d825d6a..1790f13 100644
+--- a/src/statement.rs
++++ b/src/statement.rs
+@@ -10,6 +10,9 @@ struct StatementInner {
+     name: String,
+     params: Vec<Type>,
+     columns: Vec<Column>,
++    /// Dataman: the text of a statement from `Client::describe`, parsed again (unnamed) in the
++    /// same message batch as every bind, so nothing of it outlives a Sync on the server.
++    query: Option<String>,
+ }
+ 
+ impl Drop for StatementInner {
+@@ -47,15 +50,31 @@ impl Statement {
+             name,
+             params,
+             columns,
++            query: None,
+         }))
+     }
+ 
++    pub(crate) fn described(query: &str, params: Vec<Type>, columns: Vec<Column>) -> Statement {
++        Statement(Arc::new(StatementInner {
++            client: Weak::new(),
++            name: String::new(),
++            params,
++            columns,
++            query: Some(query.to_string()),
++        }))
++    }
++
++    pub(crate) fn query(&self) -> Option<&str> {
++        self.0.query.as_deref()
++    }
++
+     pub(crate) fn unnamed(params: Vec<Type>, columns: Vec<Column>) -> Statement {
+         Statement(Arc::new(StatementInner {
+             client: Weak::new(),
+             name: String::new(),
+             params,
+             columns,
++            query: None,
+         }))
+     }
+ 
