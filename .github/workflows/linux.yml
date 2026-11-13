@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust, from rust-toolchain.toml
@@ -56,7 +56,7 @@ jobs:
           [ "$n" -le 2 ]
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -83,7 +83,7 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1600x1000x24" \
             cargo run --release -p xtask -- e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-x86_64
@@ -94,7 +94,7 @@ jobs:
     name: package (x86_64)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: System packages
         run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust, from rust-toolchain.toml
@@ -106,7 +106,7 @@ jobs:
           save-if: false
       - name: The DuckDB engine, cached
         id: duckdb
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: target/duckdb
           key: duckdb-${{ runner.os }}-x86_64-${{ hashFiles('rust-toolchain.toml', 'engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
@@ -120,7 +120,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 "$img" --version
           APPIMAGE_EXTRACT_AND_RUN=1 "$img" --mcp --version
           sudo apt-get install -y ./dist/linux/*.deb && dataman --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dataman-linux-x86_64
           path: dist/linux/
