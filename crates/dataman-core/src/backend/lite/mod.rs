@@ -51,7 +51,7 @@ pub(crate) enum Agent {
 /// defensive mode keeps `writable_schema` and the like from corrupting the file. What the rules
 /// keep from agents SQLite does not read for them either: a trigger their write fires, or a view,
 /// reads neither hidden nor masked columns (the statement itself was narrowed before).
-fn harden(db: &rusqlite::Connection, agent: Agent, kept: Option<Kept>) -> Result<()> {
+fn harden(db: &mut rusqlite::Connection, agent: Agent, kept: Option<Kept>) -> Result<()> {
     use rusqlite::config::DbConfig;
     use rusqlite::limits::Limit;
     db.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
@@ -141,7 +141,7 @@ fn open_file(path: &Path, how: Open) -> Result<rusqlite::Connection> {
     }
     // No URI filenames: a path is a path.
     let flags = if how.read_only { OpenFlags::SQLITE_OPEN_READ_ONLY } else { OpenFlags::SQLITE_OPEN_READ_WRITE } | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let db = rusqlite::Connection::open_with_flags(path, flags).with_context(|| format!("opening {}", path.display()))?;
+    let mut db = rusqlite::Connection::open_with_flags(path, flags).with_context(|| format!("opening {}", path.display()))?;
     db.busy_timeout(BUSY_TIMEOUT)?;
     // Per connection, and what users expect of their schema's REFERENCES.
     db.pragma_update(None, "foreign_keys", true)?;
@@ -150,7 +150,7 @@ fn open_file(path: &Path, how: Open) -> Result<rusqlite::Connection> {
         db.pragma_update(None, "query_only", true)?;
     }
     if let Some(agent) = how.agent {
-        harden(&db, agent, how.kept)?;
+        harden(&mut db, agent, how.kept)?;
     }
     // SQLite opens lazily: a file that is not a database fails here, not on the first query.
     db.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())).with_context(|| format!("{} is not a SQLite database", path.display()))?;
@@ -333,7 +333,7 @@ fn kind_of_val(v: &Val) -> Kind {
 fn columns_of(stmt: &rusqlite::Statement<'_>, first: Option<&[Val]>) -> Columns {
     let mut infos = Vec::new();
     let mut origins = Vec::new();
-    for (i, (c, m)) in stmt.columns().iter().zip(stmt.columns_with_metadata()).enumerate() {
+    for (i, (c, m)) in stmt.columns().zip(stmt.columns_with_metadata()).enumerate() {
         let decl = c.decl_type().unwrap_or("").to_string();
         let kind = match (decl.is_empty(), first.and_then(|f| f.get(i))) {
             (true, Some(v)) => kind_of_val(v),
@@ -601,6 +601,39 @@ mod tests {
             }
         });
         assert!(!other.exists());
+    }
+
+    /// Each of `harden`'s controls on its own, under the authorizer that would otherwise refuse
+    /// these statements first: a rusqlite or SQLite upgrade must keep every one in effect.
+    #[test]
+    fn agents_connections_keep_each_control() {
+        use rusqlite::config::DbConfig;
+        use rusqlite::limits::Limit;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1); CREATE VIEW v AS SELECT name FROM pragma_table_info('t')").unwrap();
+        drop(db);
+
+        let ro = open_file(&path, Open { read_only: true, agent: Some(Agent::Read), kept: None }).unwrap();
+        assert!(ro.is_readonly("main").unwrap(), "opened with SQLITE_OPEN_READ_ONLY");
+        let rw = open_file(&path, Open { read_only: false, agent: Some(Agent::Write), kept: None }).unwrap();
+        assert!(!rw.is_readonly("main").unwrap());
+        for mut db in [ro, rw] {
+            assert_eq!(db.limit(Limit::SQLITE_LIMIT_ATTACHED).unwrap(), 0);
+            assert!(db.db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE).unwrap());
+            assert!(!db.db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA).unwrap());
+            let denied = db.execute_batch("CREATE VIRTUAL TABLE x USING fts5(a)");
+            assert!(denied.is_err_and(|e| e.to_string().contains("not authorized")), "the authorizer is installed");
+            db.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>).unwrap();
+            // Defensive: writable_schema is accepted but the schema still cannot be written.
+            db.execute_batch("PRAGMA writable_schema = ON").unwrap();
+            let r = db.execute("UPDATE sqlite_schema SET sql = sql WHERE name = 't'", []);
+            assert!(r.as_ref().is_err_and(|e| e.to_string().contains("may not be modified")), "defensive mode: {r:?}");
+            // Untrusted schema: a view in the file may not read a virtual table not marked innocuous.
+            let r = db.query_row("SELECT name FROM v", [], |_| Ok(()));
+            assert!(r.as_ref().is_err_and(|e| e.to_string().contains("unsafe use of virtual table")), "trusted_schema off: {r:?}");
+        }
     }
 
     #[test]
