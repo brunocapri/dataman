@@ -1,0 +1,21 @@
+name: Vendor
+
+# vendor/<crate> must be exactly its crates.io release plus vendor/<crate>.patch (scripts/vendor.sh).
+on:
+  push:
+    branches: [main]
+    paths: ["vendor/**", scripts/vendor.sh, .github/workflows/vendor.yml]
+  pull_request:
+    paths: ["vendor/**", scripts/vendor.sh, .github/workflows/vendor.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/vendor.sh check
