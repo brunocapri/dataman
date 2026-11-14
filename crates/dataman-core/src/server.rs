@@ -1,4 +1,4 @@
-use crate::config::Engine;
+use crate::config::{Engine, SslMode};
 
 /// Which build of the engine answers (MySQL or MariaDB on the MySQL protocol, SQL Server or
 /// Azure SQL on TDS). Every one but `Standard` has its row in `FLAVORS`.
@@ -66,6 +66,9 @@ pub struct FlavorSpec {
     /// The oldest release of its engine it may run that Dataman reads, where not the engine's
     /// floor (`EngineSpec::floor`).
     pub floor: Option<(u32, u32)>,
+    /// What other clients call it (`EngineSpec::clients`): a connection they made to it is one
+    /// of its engine's, with this flavor.
+    pub clients: crate::engine::Clients,
 }
 
 impl FlavorSpec {
@@ -97,14 +100,22 @@ const fn clue(fact: &'static str, holds: &'static str, own_release: bool) -> Opt
 }
 
 const fn row(flavor: Flavor, engine: Engine, slug: &'static str, label: &'static str, search: &'static str, clue: Option<Clue>) -> FlavorSpec {
-    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true, defaults_as_sql: false, targets: &[], ignores: &[], no_agent_login: None, floor: None }
+    FlavorSpec { flavor, engine, slug, aliases: &[], label, search, logo: None, clue, default_port: None, system_schemas: &[], schemes: &[], read_only_held: true, transactional_ddl: true, defaults_as_sql: false, targets: &[], ignores: &[], no_agent_login: None, floor: None, clients: crate::engine::NO_CLIENTS }
 }
 
 /// In `Flavor`'s declaration order, `Standard` left out: `Flavor::spec` indexes it. Checked in
 /// order: the first whose clue the report holds names the server.
 pub static FLAVORS: [FlavorSpec; 11] = [
     // MariaDB 10.2.7 and later quote a default in its catalog.
-    FlavorSpec { aliases: &["maria"], logo: Some("logos/mariadb.svg"), schemes: &[("mariadb", "mysql")], defaults_as_sql: true, ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false)) },
+    FlavorSpec {
+        aliases: &["maria"],
+        logo: Some("logos/mariadb.svg"),
+        schemes: &[("mariadb", "mysql")],
+        defaults_as_sql: true,
+        // DBeaver files its MariaDB driver under the MySQL provider.
+        clients: crate::engine::Clients { dbeaver: &["mariadb"], tableplus: &["MariaDB"], tableplus_tls: &[SslMode::Prefer, SslMode::Require, SslMode::VerifyFull] },
+        ..row(Flavor::MariaDb, Engine::MySql, "mariadb", "MariaDB", "mariadb maria", clue("", "MariaDB", false))
+    },
     FlavorSpec { aliases: &["azuresql", "azure"], ..row(Flavor::Azure, Engine::SqlServer, "azure-sql", "Azure SQL", "", None) },
     // valkey-py's own schemes.
     FlavorSpec { logo: Some("logos/valkey.svg"), schemes: &[("valkey", "redis"), ("valkeys", "rediss")], ..row(Flavor::Valkey, Engine::Redis, "valkey", "Valkey", "valkey", clue("valkey_version", "", true)) },

@@ -502,7 +502,7 @@ async fn clipboard_and_import(ws: &Entity<Workspace>, r: &mut Report, cx: &mut A
         key(cx, "space");
         key(cx, "cmd-enter");
     }
-    pause(cx, 200).await;
+    until(cx, 5, |cx| cx.update(|_, cx| ws.read(cx).import.is_none()).unwrap_or(false)).await;
     let made = core(ws, cx).config.connections().into_iter().find(|p| p.name == "e2e-service");
     let up = match &made {
         Some(p) => {
