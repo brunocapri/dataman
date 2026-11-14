@@ -1,0 +1,179 @@
+{
+	"folders": {},
+	"connections": {
+		"postgres-jdbc-18c8d1b2a3f-6e5e3c0f1a1d2b3c": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "Orders (prod)",
+			"save-password": true,
+			"show-system-objects": true,
+			"read-only": false,
+			"configuration": {
+				"host": "db.internal",
+				"port": "5433",
+				"database": "orders",
+				"url": "jdbc:postgresql://db.internal:5433/orders",
+				"configurationType": "MANUAL",
+				"home": "/opt/homebrew/bin",
+				"type": "prod",
+				"provider-properties": {
+					"@dbeaver-show-non-default-db@": "false"
+				},
+				"auth-model": "native",
+				"handlers": {
+					"postgre_ssl": {
+						"type": "CONFIG",
+						"enabled": true,
+						"save-password": false,
+						"properties": {
+							"sslMode": "verify-ca",
+							"sslFactory": "org.postgresql.ssl.DefaultJavaSSLFactory"
+						}
+					},
+					"ssh_tunnel": {
+						"type": "TUNNEL",
+						"enabled": true,
+						"save-password": true,
+						"properties": {
+							"host": "bastion.example.com",
+							"port": 2222,
+							"authType": "PUBLIC_KEY",
+							"keyPath": "~/.ssh/id_ed25519",
+							"implementation": "sshj",
+							"bypassHostVerification": false
+						}
+					}
+				}
+			}
+		},
+		"mariaDB-18c8d1c0f21-2a1b7f3e9d0c4e55": {
+			"provider": "mysql",
+			"driver": "mariaDB",
+			"name": "Shop",
+			"save-password": false,
+			"configuration": {
+				"host": "shop.example.com",
+				"port": "3306",
+				"database": "shop",
+				"url": "jdbc:mariadb://shop.example.com:3306/shop",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"auth-model": "native",
+				"handlers": {
+					"mysql_ssl": {
+						"type": "CONFIG",
+						"enabled": true,
+						"properties": {
+							"ssl.require": "true",
+							"ssl.verify.server": "false",
+							"ssl.client.cert": "/Users/me/certs/client.pem",
+							"ssl.client.key": "/Users/me/certs/client.key"
+						}
+					}
+				}
+			}
+		},
+		"sqlite_jdbc-18c8d1c7a99-0f3c2b1a5e6d7c88": {
+			"provider": "sqlite",
+			"driver": "sqlite_jdbc",
+			"name": "Local lite",
+			"save-password": false,
+			"configuration": {
+				"database": "/Users/me/data/app.sqlite",
+				"url": "jdbc:sqlite:/Users/me/data/app.sqlite",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"auth-model": "native"
+			}
+		},
+		"postgres-jdbc-18c8d1d03b4-5d4c3b2a1f0e9d77": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "By URL",
+			"save-password": true,
+			"configuration": {
+				"url": "jdbc:postgresql://pg.example.com:6432/analytics",
+				"configurationType": "URL",
+				"type": "test",
+				"auth-model": "native"
+			}
+		},
+		"microsoft-18c8d1d9e7c-1c2d3e4f5a6b7c99": {
+			"provider": "sqlserver",
+			"driver": "microsoft",
+			"name": "Warehouse",
+			"save-password": true,
+			"configuration": {
+				"host": "wh.example.com",
+				"port": "1433",
+				"database": "dw",
+				"url": "jdbc:sqlserver://wh.example.com:1433;databaseName=dw",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"properties": {
+					"encrypt": "true",
+					"trustServerCertificate": "true"
+				},
+				"auth-model": "sqlserver_database"
+			}
+		},
+		"oracle_thin-18c8d1e2b55-7a6b5c4d3e2f1a00": {
+			"provider": "oracle",
+			"driver": "oracle_thin",
+			"name": "Oracle HR",
+			"save-password": true,
+			"configuration": {
+				"host": "ora.example.com",
+				"port": "1521",
+				"database": "ORCL",
+				"url": "jdbc:oracle:thin:@//ora.example.com:1521/ORCL",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"auth-model": "oracle_native"
+			}
+		},
+		"postgres-jdbc-18c8d1eb0a1-3f2e1d0c9b8a7f11": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "Behind two hops",
+			"save-password": true,
+			"configuration": {
+				"host": "10.0.3.7",
+				"port": "5432",
+				"database": "postgres",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"auth-model": "native",
+				"handlers": {
+					"ssh_tunnel": {
+						"type": "TUNNEL",
+						"enabled": true,
+						"properties": {
+							"host": "jump1.example.com",
+							"port": 22,
+							"authType": "AGENT",
+							"jumpServer.count": 1,
+							"jumpServer0.host": "jump0.example.com"
+						}
+					}
+				}
+			}
+		},
+		"postgres-jdbc-18c8d1f3c9e-6b5a4f3e2d1c0b22": {
+			"provider": "postgresql",
+			"driver": "postgres-jdbc",
+			"name": "No host",
+			"save-password": false,
+			"configuration": {
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"auth-model": "native"
+			}
+		}
+	},
+	"connection-types": {
+		"dev": { "name": "Development", "color": "255,255,255", "auto-commit": true, "confirm-execute": false },
+		"test": { "name": "Test", "color": "196,255,181", "auto-commit": true, "confirm-execute": false },
+		"prod": { "name": "Production", "color": "247,159,129", "auto-commit": false, "confirm-execute": true }
+	}
+}

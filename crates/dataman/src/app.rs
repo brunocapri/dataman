@@ -1610,10 +1610,14 @@ impl Workspace {
         let store = self.store.clone();
         let v = cx.new(|cx| crate::import_ui::ImportView::new(store, window, cx));
         cx.subscribe_in(&v, window, |w, _, ev: &crate::import_ui::ImportEvent, window, cx| {
-            if let crate::import_ui::ImportEvent::Imported(ids) = ev
-                && let Some(first) = ids.first()
-            {
-                w.current_conn = Some(first.clone());
+            if let crate::import_ui::ImportEvent::Imported(ids, unread) = ev {
+                if let Some(first) = ids.first() {
+                    w.current_conn = Some(first.clone());
+                }
+                if let Some((_, why)) = unread.first() {
+                    let names: Vec<&str> = unread.iter().map(|(n, _)| n.as_str()).collect();
+                    w.notice_err(format!("Imported without a password: {} ({why})", names.join(", ")), cx);
+                }
             }
             w.import = None;
             w.give_focus_back(crate::app::Modal::Sheet, window, cx);
@@ -1672,6 +1676,7 @@ impl Workspace {
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
             WelcomeEvent::OpenDatabase => self.open_database_file(window, cx),
             WelcomeEvent::OpenProject => self.open_project(window, cx),
+            WelcomeEvent::Import => self.open_import(window, cx),
             WelcomeEvent::Open(id) => self.open_from_welcome(id, window, cx),
         }
     }

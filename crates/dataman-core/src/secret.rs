@@ -39,6 +39,21 @@ fn vault() -> &'static vault::Vault<vault::mac::Keychain> {
     })
 }
 
+/// Another app's own Keychain item (TablePlus keeps its passwords so): macOS asks the user to
+/// allow Dataman to read it, and this waits for the answer.
+#[cfg(target_os = "macos")]
+pub fn foreign(service: &str, account: &str) -> Result<Option<String>> {
+    use vault::Raw as _;
+    let Some(bytes) = vault::mac::Keychain.read(service, account)? else { return Ok(None) };
+    Ok(Some(String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("its password is not text"))?))
+}
+
+/// Only macOS' Keychain holds other apps' passwords Dataman imports.
+#[cfg(not(target_os = "macos"))]
+pub fn foreign(_: &str, _: &str) -> Result<Option<String>> {
+    Err(anyhow::anyhow!("no Keychain on this system"))
+}
+
 #[cfg(target_os = "macos")]
 impl SecretStore for Keychain {
     fn get(&self, id: &str) -> Result<Option<String>> {

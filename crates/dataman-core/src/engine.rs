@@ -3,6 +3,7 @@
 //! it. A new engine is one more entry here.
 
 use crate::backend::Caps;
+use crate::config::SslMode::{self, Disable, Prefer, Require, VerifyFull};
 use crate::config::{Engine, Family};
 use crate::sql::Dialect;
 
@@ -50,7 +51,24 @@ pub struct EngineSpec {
     /// The oldest release (major, minor) whose catalog Dataman reads: an older server is refused
     /// on connect, with its release named, rather than half-read later. None: any.
     pub floor: Option<(u32, u32)>,
+    pub clients: Clients,
 }
+
+/// What other clients call the engine, for importing the connections they saved (`conn_import`).
+/// Compared without regard to case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clients {
+    /// DBeaver's ids in `data-sources.json`: a provider, or a driver (those under its `generic`
+    /// provider).
+    pub dbeaver: &'static [&'static str],
+    /// TablePlus' `Driver` in `Connections.plist`.
+    pub tableplus: &'static [&'static str],
+    /// TablePlus' `tLSMode` indexes its own list of modes for the driver: this one, with
+    /// verify-ca as verify-full. Empty: its mode is not known, and the engine's default applies.
+    pub tableplus_tls: &'static [SslMode],
+}
+
+pub const NO_CLIENTS: Clients = Clients { dbeaver: &[], tableplus: &[], tableplus_tls: &[] };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Form {
@@ -113,6 +131,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: Some((12, 0)),
+        clients: Clients { dbeaver: &["postgresql"], tableplus: &["PostgreSQL"], tableplus_tls: &[Prefer, Disable, Require, Prefer, VerifyFull, VerifyFull] },
     },
     EngineSpec {
         engine: Engine::MySql,
@@ -140,6 +159,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: Some(2),
         floor: None,
+        clients: Clients { dbeaver: &["mysql"], tableplus: &["MySQL"], tableplus_tls: &[Prefer, Disable, Require, VerifyFull, VerifyFull] },
     },
     EngineSpec {
         engine: Engine::SqlServer,
@@ -167,6 +187,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: Some(3),
         floor: None,
+        clients: Clients { dbeaver: &["sqlserver", "mssql"], tableplus: &["SQLServer", "SQL Server", "Microsoft SQL Server"], tableplus_tls: &[] },
     },
     EngineSpec {
         engine: Engine::MongoDb,
@@ -194,6 +215,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: None,
+        clients: Clients { dbeaver: &["mongodb"], tableplus: &["Mongo", "MongoDB"], tableplus_tls: &[Disable, VerifyFull, Require] },
     },
     EngineSpec {
         engine: Engine::Elasticsearch,
@@ -221,6 +243,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: None,
+        clients: NO_CLIENTS,
     },
     EngineSpec {
         engine: Engine::OpenSearch,
@@ -248,6 +271,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: None,
+        clients: NO_CLIENTS,
     },
     EngineSpec {
         engine: Engine::Redis,
@@ -275,6 +299,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: None,
+        clients: Clients { dbeaver: &["redis"], tableplus: &["Redis"], tableplus_tls: &[] },
     },
     EngineSpec {
         engine: Engine::Sqlite,
@@ -302,6 +327,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: None,
+        clients: Clients { dbeaver: &["sqlite", "sqlite_jdbc"], tableplus: &["SQLite"], tableplus_tls: &[] },
     },
     EngineSpec {
         engine: Engine::DuckDb,
@@ -329,6 +355,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: Some(2),
         floor: None,
+        clients: Clients { dbeaver: &["duckdb", "duckdb_jdbc"], tableplus: &["DuckDB"], tableplus_tls: &[] },
     },
     EngineSpec {
         engine: Engine::ClickHouse,
@@ -356,6 +383,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: true,
         db_in_name: Some(2),
         floor: Some((23, 8)),
+        clients: Clients { dbeaver: &["clickhouse", "com_clickhouse", "yandex_clickhouse"], tableplus: &["ClickHouse"], tableplus_tls: &[] },
     },
 ];
 

@@ -15,6 +15,7 @@ pub mod config;
 pub mod conn;
 pub mod crash;
 pub mod connstr;
+pub mod conn_import;
 pub mod dataview;
 pub mod ddl;
 pub mod edit;
@@ -75,6 +76,7 @@ use parking_lot::Mutex;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::oneshot;
 
+pub use conn_import::{ImportSource, Importable};
 pub use backend::{Caps, ConnectError, needs_password, server_error, server_error_class};
 pub use backend::duck::EXTERNAL_ACCESS as DUCKDB_EXTERNAL_ACCESS;
 pub use config::{Auth, AuthKind, ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host, is_loopback_host};
@@ -275,29 +277,9 @@ async fn open_tunnel(p: &ConnectionProfile, ssh_secret: Option<String>, app_know
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImportSource {
-    Service,
-    Pgpass,
-}
-
-#[derive(Clone)]
-pub struct Importable {
-    pub source: ImportSource,
-    pub profile: ConnectionProfile,
-    pub password: Option<String>,
-    pub exists: bool,
-}
-
 /// Shows that a secret is there, never the secret (Debug reaches logs and panics).
 pub(crate) fn secret_shown(s: &Option<String>) -> Option<&'static str> {
     s.as_ref().map(|_| mask::MASK)
-}
-
-impl std::fmt::Debug for Importable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Importable").field("source", &self.source).field("profile", &self.profile).field("password", &secret_shown(&self.password)).field("exists", &self.exists).finish()
-    }
 }
 
 impl Core {
@@ -486,56 +468,32 @@ impl Core {
 
     pub fn importable(&self) -> Task<Vec<Importable>> {
         let saved = self.config.connections();
-        let pgpass = self.pgpass.clone();
-        spawn(&self.handle(), async move { Ok(importable(&saved, pgpass.as_deref())) })
+        let places = conn_import::Places::here(self.pgpass.clone());
+        spawn(&self.handle(), async move { Ok(conn_import::importable(&saved, &places)) })
+    }
+
+    /// Reads the passwords the picked connections keep in another app's Keychain items (and
+    /// what could not be read: the connection's name, and why). Off the UI thread: macOS waits
+    /// for the user to allow each item.
+    pub fn read_keychain(&self, mut items: Vec<Importable>) -> Task<(Vec<Importable>, Vec<(String, String)>)> {
+        spawn(&self.handle(), async move {
+            Ok(tokio::task::spawn_blocking(move || {
+                let unread = conn_import::read_keychain(&mut items, secret::foreign);
+                (items, unread)
+            })
+            .await?)
+        })
     }
 
     pub fn import(&self, items: Vec<Importable>) -> Result<Vec<String>> {
         let mut ids = Vec::new();
-        for mut it in items {
-            it.profile.save_password = it.password.is_some();
+        for mut it in items.into_iter().filter(Importable::pickable) {
+            it.profile.save_password = it.password.is_some() || it.ssh_password.is_some();
             ids.push(it.profile.id.clone());
-            self.save_connection(it.profile, it.password.as_deref(), None)?;
+            self.save_connection(it.profile, it.password.as_deref(), it.ssh_password.as_deref())?;
         }
         Ok(ids)
     }
-}
-
-fn same_target(a: &ConnectionProfile, b: &ConnectionProfile) -> bool {
-    (&a.host, a.port, &a.user, &a.database) == (&b.host, b.port, &b.user, &b.database)
-}
-
-fn importable(saved: &[ConnectionProfile], pgpass_file: Option<&std::path::Path>) -> Vec<Importable> {
-    let mut out: Vec<Importable> = Vec::new();
-    for s in pgservice::all() {
-        let password = s.spec.password.clone();
-        let (mut profile, _) = connstr::ConnSpec { service: Some(s.name.clone()), ..s.spec }.into_profile();
-        profile.name = s.name;
-        out.push(Importable { source: ImportSource::Service, profile, password, exists: false });
-    }
-    if let Some(f) = pgpass_file
-        && let Ok(entries) = pgpass::read(f)
-    {
-        for e in entries {
-            if e.host == "*" {
-                continue;
-            }
-            let mut p = ConnectionProfile::new("");
-            p.host = e.host.clone();
-            p.port = e.port.parse().unwrap_or(Engine::Postgres.default_port());
-            p.user = if e.user == "*" { connstr::local_user() } else { e.user.clone() };
-            p.database = if e.database == "*" { "postgres".into() } else { e.database.clone() };
-            p.name = if e.database == "*" { format!("{}@{}", p.user, p.host) } else { format!("{}@{}", p.database, p.host) };
-            if out.iter().any(|o| same_target(&o.profile, &p)) {
-                continue;
-            }
-            out.push(Importable { source: ImportSource::Pgpass, profile: p, password: None, exists: false });
-        }
-    }
-    for it in &mut out {
-        it.exists = saved.iter().any(|s| same_target(s, &it.profile));
-    }
-    out
 }
 
 #[cfg(test)]
@@ -564,9 +522,28 @@ mod tests {
 
         let mut saved = p.clone();
         saved.database = "app".into();
-        let items = importable(&[saved], Some(&pass));
+        let places = conn_import::Places { pgpass: Some(pass), services: false, dbeaver: vec![], tableplus: vec![] };
+        let items = conn_import::importable(&[saved], &places);
         let names: Vec<(&str, bool)> = items.iter().filter(|i| i.source == ImportSource::Pgpass).map(|i| (i.profile.name.as_str(), i.exists)).collect();
         assert_eq!(names, vec![("app@db.example", true), ("me@local", false)]);
+    }
+
+    #[test]
+    fn an_import_keeps_its_passwords_in_the_keychain_and_takes_no_refused_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(MemorySecrets::default());
+        let core = Core::new(Dirs::at(dir.path().join("cfg")), secrets.clone()).unwrap();
+        let mut p = ConnectionProfile::new("orders");
+        p.ssh = Some(SshSettings { host: "bastion".into(), auth: SshAuth::Password, ..Default::default() });
+        let it = Importable { ssh_password: Some("ssh-pw".into()), ..Importable::new(ImportSource::DBeaver, p.clone(), Some("db-pw".into())) };
+        let mut refused = Importable::new(ImportSource::DBeaver, ConnectionProfile::new("oracle"), None);
+        refused.refused = Some("oracle is not an engine Dataman connects to".into());
+        let ids = core.import(vec![it, refused]).unwrap();
+        assert_eq!(ids, [p.id.clone()]);
+        assert_eq!(core.config.connections().iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["orders"]);
+        assert_eq!((secrets.get(&p.id).unwrap().as_deref(), secrets.get(&p.ssh_secret_id()).unwrap().as_deref()), (Some("db-pw"), Some("ssh-pw")));
+        let text = std::fs::read_to_string(core.dirs.connections_file()).unwrap();
+        assert!(!text.contains("db-pw") && !text.contains("ssh-pw"), "{text}");
     }
 
     #[test]
