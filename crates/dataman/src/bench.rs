@@ -208,7 +208,8 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 
 /// A tab's statement from run to its last row, one after another on one session: what each
 /// costs on the wire (describe, then bind and execute) and on the server. `DATAMAN_BENCH_PG`
-/// picks the server (a pooler's port measures through it); `DATAMAN_BENCH_N` how many of each.
+/// picks the server (a pooler's port measures through it); `DATAMAN_BENCH_N` how many of each,
+/// `DATAMAN_BENCH_IDLE_N` how many after a pause.
 fn statements(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     let (prof, pw) = bench_profile(None);
     let id = prof.id.clone();
@@ -241,6 +242,20 @@ fn statements(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 }
                 lines.push(Stats(times).line(name));
             }
+            // What a person running statements by hand pays: each after a pause, when the socket
+            // is asked whether it still answers before the statement goes out (`link::CHECK_AFTER`).
+            let idle_n: usize = std::env::var("DATAMAN_BENCH_IDLE_N").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+            let mut times = Vec::with_capacity(idle_n);
+            for _ in 0..idle_n {
+                std::thread::sleep(dataman_core::link::CHECK_AFTER + Duration::from_millis(100));
+                let t0 = Instant::now();
+                let rs = s.execute("SELECT 1");
+                rs.fetch_all();
+                handle.block_on(rs.wait_finished());
+                assert_eq!(rs.phase(), Phase::Done, "{:?}", rs.status().error);
+                times.push(t0.elapsed());
+            }
+            lines.push(Stats(times).line("one-row-after-idle"));
             for l in lines {
                 println!("{l}");
             }
