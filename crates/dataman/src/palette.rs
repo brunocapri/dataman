@@ -993,7 +993,10 @@ impl Workspace {
         }));
         for p in &store.profiles {
             let state = store.states.get(&p.id);
+            let link = store.link(&p.id);
             let (sub, connected) = match state {
+                Some(ConnState::Connecting | ConnState::Connected(_)) if link == dataman_core::Link::Waking => ("waking…".to_string(), matches!(state, Some(ConnState::Connected(_)))),
+                Some(ConnState::Connected(_)) if link == dataman_core::Link::Lost => ("disconnected".to_string(), true),
                 Some(ConnState::Connected(c)) => (format!("connected · {} · {}", c.database(), c.info.short_version()), true),
                 Some(ConnState::Connecting) => ("connecting…".to_string(), false),
                 Some(ConnState::Failed { .. }) => ("failed".to_string(), false),

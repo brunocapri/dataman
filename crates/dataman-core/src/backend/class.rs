@@ -84,7 +84,9 @@ fn ms(code: &str) -> ErrorClass {
         "245" | "8114" | "241" | "242" | "8115" | "8152" | "2628" | "220" | "232" | "8134" | "248" | "295" => Data,
         "102" | "156" | "170" | "105" => Syntax,
         "208" | "207" | "2812" | "911" | "4121" => Undefined,
-        "40613" | "10054" | "10060" => Connection,
+        // Azure SQL: the database is paused or moving. The login ran nothing and started the resume.
+        "40613" => Waking,
+        "10054" | "10060" => Connection,
         _ => Other,
     }
 }

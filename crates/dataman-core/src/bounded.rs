@@ -216,6 +216,21 @@ pub(crate) fn used_database(sql: &str, d: Dialect) -> Option<String> {
     used
 }
 
+/// What a statement leaves on its session for later ones (a setting, a `USE`, a temporary table,
+/// by the kinds that make them): gone with the connection, so a new one is not the same session.
+pub(crate) fn leaves_session_state(sql: &str, d: Dialect) -> bool {
+    statement_ranges(sql, d).into_iter().any(|r| {
+        let s = &sql[r];
+        let f = guard::classify_in(s, d);
+        let temp = || {
+            f.target.as_deref().is_some_and(|t| t.rsplit('.').next().is_some_and(|n| n.trim_start_matches('[').starts_with('#')))
+                || crate::sql::tokenize_in(s, d).iter().filter(|t| !t.kind.is_trivia()).take(4).any(|t| matches!(t.text(s).to_ascii_uppercase().as_str(), "TEMP" | "TEMPORARY"))
+        };
+        let verb = f.verb.split(' ').next().unwrap_or_default();
+        matches!(verb, "SET" | "RESET" | "USE" | "PREPARE" | "DECLARE" | "LISTEN" | "LOAD") || (matches!(f.effect, guard::Effect::Ddl | guard::Effect::Write) && temp())
+    })
+}
+
 /// T-SQL needs no `;` between its statements.
 fn statement_ranges(sql: &str, d: Dialect) -> Vec<std::ops::Range<usize>> {
     if d == Dialect::TSql { guard::tsql_statements(sql) } else { crate::sql::split_in(sql, d).into_iter().map(|s| s.range).collect() }
@@ -336,7 +351,8 @@ pub(crate) async fn strings_as_written(d: &Dedicated) -> anyhow::Result<()> {
 
 const GRACE: Duration = Duration::from_millis(500);
 const POOL_SIZE: usize = 2;
-pub(crate) type Pool = Mutex<Vec<Dedicated>>;
+/// With when each last came back.
+pub(crate) type Pool = Mutex<Vec<(Dedicated, std::time::Instant)>>;
 
 impl Connection {
     /// Whether a name in a statement is a read-only database. A database the user set counts by
@@ -417,8 +433,9 @@ impl Connection {
         loop {
             let d = pool.lock().pop();
             match d {
-                Some(d) if !d.db().is_closed() => return Ok(d),
-                Some(_) => continue,
+                Some((d, _)) if d.db().is_closed() => self.link.lost(),
+                Some((d, back)) if back.elapsed() < crate::link::CHECK_AFTER || d.db().answers().await => return Ok(d),
+                Some(_) => self.link.lost(),
                 None => break,
             }
         }
@@ -453,12 +470,13 @@ impl Connection {
 
     pub(crate) fn agent_give(&self, db: &str, ro: bool, d: Dedicated) {
         if d.db().is_closed() {
+            self.link.lost();
             return;
         }
         let pool = self.agent_pool(db, ro);
         let mut g = pool.lock();
         if g.len() < POOL_SIZE {
-            g.push(d);
+            g.push((d, std::time::Instant::now()));
         }
     }
 
@@ -1297,6 +1315,28 @@ fn cut(s: &str, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_a_new_session_would_not_have() {
+        for (d, sql) in [
+            (Dialect::Postgres, "SET search_path = x"),
+            (Dialect::Postgres, "CREATE TEMP TABLE x (a int)"),
+            (Dialect::Postgres, "SELECT 1; SET ROLE r"),
+            (Dialect::Postgres, "PREPARE p AS SELECT 1"),
+            (Dialect::Postgres, "DECLARE c CURSOR WITH HOLD FOR SELECT 1"),
+            (Dialect::MySql, "USE shop"),
+            (Dialect::MySql, "SET @a = 1"),
+            (Dialect::MySql, "CREATE TEMPORARY TABLE x (a int)"),
+            (Dialect::TSql, "SET LANGUAGE Deutsch"),
+            (Dialect::TSql, "CREATE TABLE #t (a int)"),
+            (Dialect::TSql, "SELECT 1 AS a INTO #t"),
+        ] {
+            assert!(leaves_session_state(sql, d), "{d:?}: {sql}");
+        }
+        for (d, sql) in [(Dialect::Postgres, "CREATE TABLE t (a int)"), (Dialect::Postgres, "INSERT INTO t VALUES (1)"), (Dialect::MySql, "SELECT 1"), (Dialect::TSql, "UPDATE t SET a = 1 WHERE a = 2"), (Dialect::TSql, "DROP TABLE IF EXISTS t"), (Dialect::TSql, "IF 1 = 1 SELECT 1")] {
+            assert!(!leaves_session_state(sql, d), "{d:?}: {sql}");
+        }
+    }
 
     #[test]
     fn use_is_followed() {

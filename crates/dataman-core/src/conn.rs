@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -10,6 +10,7 @@ use tokio::runtime::Handle;
 use crate::backend::{self, Caps, Canceller, Db, Dedicated, Ran};
 use crate::config::{ConnectionProfile, Engine};
 use crate::history::{History, HistoryEntry, Outcome};
+use crate::link::{CHECK_AFTER, Link, LinkState, through_wake};
 use crate::result::{ErrorInfo, Phase, ResultSet};
 use crate::schema::SchemaCache;
 use crate::server::ServerInfo;
@@ -29,7 +30,7 @@ pub struct Connection {
     history: Arc<History>,
     /// A catalog connection per database, each behind its own lock: one database slow to
     /// connect never holds up the catalog calls of another.
-    meta: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Db>>>>>,
+    meta: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Held>>>>>,
     tls_active: bool,
     tunnel: Option<Arc<crate::ssh::Tunnel>>,
     pub(crate) caches: Mutex<HashMap<(&'static str, String, String), Arc<dyn std::any::Any + Send + Sync>>>,
@@ -43,6 +44,13 @@ pub struct Connection {
     pub(crate) agent_rules: Arc<parking_lot::RwLock<crate::privacy::AgentRules>>,
     /// A pooler between Dataman and the server, as the first connection found it.
     pub pooler: Option<crate::pooler::Pooler>,
+    pub(crate) link: Arc<LinkState>,
+}
+
+/// A catalog socket, with when it was last handed out.
+struct Held {
+    db: Db,
+    used: Instant,
 }
 
 impl Connection {
@@ -52,9 +60,10 @@ impl Connection {
         cred: Cred,
         history: Arc<History>,
         tunnel: Option<Arc<crate::ssh::Tunnel>>,
+        link: Arc<LinkState>,
     ) -> Result<Arc<Connection>> {
-        let password = cred.secret(&profile).await?;
         if !profile.engine.is_sql() {
+            let password = cred.secret(&profile).await?;
             let (client, info) = crate::nosql::connect(&profile, password.as_deref(), tunnel.as_deref()).await?;
             let schema = Arc::new(SchemaCache::with_dialect(info.database.clone(), Vec::new(), profile.engine.dialect()));
             return Ok(Arc::new(Connection {
@@ -73,17 +82,22 @@ impl Connection {
                 caches: Default::default(),
                 agent_pools: Default::default(),
                 pooler: None,
+                link,
             }));
         }
-        let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&profile, e))?;
-        drop(password);
+        let d = through_wake(&link, || async {
+            let password = cred.secret(&profile).await?;
+            backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await
+        })
+        .await
+        .map_err(|e| crate::cloudauth::explain(&profile, e))?;
         let strings = crate::bounded::strings_as_written(&d).await;
         let (client, tls_active, pooler) = (d.db(), d.tls_active(), d.pooler());
         drop(d);
         let info = backend::server_info(&client).await?;
         let db = if info.database.is_empty() { profile.database.clone() } else { info.database.clone() };
         let mut meta = HashMap::new();
-        meta.insert(db.clone(), client);
+        meta.insert(db.clone(), Held { db: client, used: Instant::now() });
         let schema = Arc::new(SchemaCache::with_dialect(db, info.search_path.clone(), profile.engine.dialect()));
         note_strings(&schema, schema.default_database(), strings);
         Ok(Arc::new(Connection {
@@ -102,11 +116,29 @@ impl Connection {
             agent_pools: Default::default(),
             nosql: None,
             pooler,
+            link,
         }))
     }
 
     pub fn engine(&self) -> Engine {
         self.profile.engine
+    }
+
+    pub fn link(&self) -> Link {
+        self.link.get()
+    }
+
+    /// A catalog socket that PostgreSQL's driver saw end while it sat idle counts as a loss now,
+    /// not at its next use. Nothing goes to the server.
+    pub fn notice_closed(&self) {
+        for slot in self.meta.lock().values() {
+            if let Ok(mut held) = slot.try_lock()
+                && held.as_ref().is_some_and(|h| h.db.is_closed())
+            {
+                *held = None;
+                self.link.lost();
+            }
+        }
     }
 
     /// The rules agents run under now (an agent call reads them fresh from the saved profile).
@@ -206,15 +238,28 @@ impl Connection {
     pub(crate) async fn dedicated_read_only(&self, db: &str, read_only: bool) -> Result<Dedicated> {
         let mut p = self.profile_for(db);
         p.read_only = read_only;
-        let password = self.cred.secret(&p).await?;
-        backend::dedicated(&p, password.as_deref(), Some(db), self.tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&p, e))
+        through_wake(&self.link, || self.dial(&p, db)).await.map_err(|e| crate::cloudauth::explain(&p, e))
     }
 
     pub(crate) async fn dedicated(&self, database: Option<&str>) -> Result<Dedicated> {
         let db = database.unwrap_or(self.database());
         let p = self.profile_for(db);
-        let password = self.cred.secret(&p).await?;
-        backend::dedicated(&p, password.as_deref(), Some(db), self.tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&p, e))
+        through_wake(&self.link, || self.dial(&p, db)).await.map_err(|e| crate::cloudauth::explain(&p, e))
+    }
+
+    /// One login and no waiting, for what runs on its own while the user types: an answer that
+    /// the database is waking is that check's failure, and a later one tries again.
+    pub(crate) async fn dedicated_once(&self, database: Option<&str>) -> Result<Dedicated> {
+        let db = database.unwrap_or(self.database());
+        let p = self.profile_for(db);
+        let d = self.dial(&p, db).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
+        self.link.up();
+        Ok(d)
+    }
+
+    async fn dial(&self, p: &ConnectionProfile, db: &str) -> Result<Dedicated> {
+        let password = self.cred.secret(p).await?;
+        backend::dedicated(p, password.as_deref(), Some(db), self.tunnel.as_deref()).await
     }
 
     pub fn handle(&self) -> &Handle {
@@ -228,10 +273,14 @@ impl Connection {
     pub(crate) async fn meta(&self, db: &str) -> Result<Db> {
         let slot = self.meta.lock().entry(db.to_string()).or_default().clone();
         let mut g = slot.lock().await;
-        if let Some(c) = g.as_ref()
-            && !c.is_closed()
-        {
-            return Ok(c.clone());
+        if let Some(h) = g.as_mut() {
+            let alive = !h.db.is_closed() && (h.used.elapsed() < CHECK_AFTER || h.db.answers().await);
+            if alive {
+                h.used = Instant::now();
+                return Ok(h.db.clone());
+            }
+            *g = None;
+            self.link.lost();
         }
         let d = self.dedicated(Some(db)).await?;
         note_strings(&self.schema, db, crate::bounded::strings_as_written(&d).await);
@@ -240,7 +289,7 @@ impl Connection {
             let sp = backend::search_path(&client, &self.info.user).await;
             self.schema.set_search_path(db, sp);
         }
-        *g = Some(client.clone());
+        *g = Some(Held { db: client.clone(), used: Instant::now() });
         Ok(client)
     }
 
@@ -277,10 +326,12 @@ impl Connection {
             cancel: Mutex::new(None),
             current: Mutex::new(None),
             queue: Arc::new(tokio::sync::Mutex::new(())),
-            tx: Arc::new(TxWatch::default()),
+            tx: Arc::new(TxWatch::linked(self.link.clone())),
             ro_applied: Mutex::new(None),
             used: Mutex::new(None),
             agent_run: Mutex::new(None),
+            active: Mutex::new(Instant::now()),
+            stateful: AtomicBool::new(false),
         })
     }
 }
@@ -314,6 +365,24 @@ pub struct Session {
     used: Mutex<Option<String>>,
     /// The agent's own connection while one of its reads runs (what a cancel reaches).
     agent_run: Mutex<Option<Arc<Dedicated>>>,
+    /// When its socket last carried something.
+    active: Mutex<Instant>,
+    /// Its socket holds settings or temporary tables that a new one would not.
+    stateful: AtomicBool,
+}
+
+/// A statement goes out at most once. A socket that sat idle is asked first (`Db::answers`): one
+/// that fails never carried the statement, which then runs on a new socket, unless that socket
+/// would not be the same session (a transaction, settings, temporary tables), when the person is
+/// told and nothing runs. What fails after the send is reported, read or write alike: a read may
+/// call something that writes, and only the server knows how far it got.
+fn lost_text(sent: bool, tx: bool) -> String {
+    match (sent, tx) {
+        (true, true) => "Connection lost during this statement, with a transaction open: the server rolls back what was not committed.".into(),
+        (true, false) => "Connection lost during this statement: it may have run. Check before running it again.".into(),
+        (false, true) => "Connection lost with a transaction open: the server rolled it back. This statement did not run.".into(),
+        (false, false) => "Connection lost, and this session's settings and temporary tables with it. This statement did not run.".into(),
+    }
 }
 
 impl Drop for Session {
@@ -436,6 +505,9 @@ impl Session {
                 rs.stop_fetching();
             }
             let _turn = this.queue.clone().lock_owned().await;
+            if this.tx.take_lost() {
+                anyhow::bail!("Connection lost: the server rolled the transaction back.");
+            }
             let before = this.tx().status;
             if !before.is_open() {
                 return Ok(TxEnd::NoTransaction);
@@ -449,6 +521,15 @@ impl Session {
                 this.tx.settled(SETTLE).await;
             }
             this.record_text(sql, started.elapsed(), r.as_ref().err().map(|e| e.to_string()));
+            if r.is_err() && (client.is_closed() || this.tx.gone()) {
+                this.tx.take_lost();
+                this.stateful.store(false, AtomicOrdering::Release);
+                this.conn.link.lost();
+                if !commit {
+                    return Ok(TxEnd::RolledBack);
+                }
+                anyhow::bail!("Connection lost during the commit: check whether it went through.");
+            }
             r.map_err(|e| anyhow::anyhow!(e.to_string()))?;
             Ok(if commit && before == TxStatus::Open { TxEnd::Committed } else { TxEnd::RolledBack })
         })
@@ -481,27 +562,47 @@ impl Session {
 
     async fn client(&self) -> Result<Db> {
         let mut g = self.client.lock().await;
-        if let Some(c) = g.as_ref()
-            && !c.is_closed()
-        {
-            // Read-only is how it was opened: a change of mind reopens it (between transactions
-            // only).
-            let stale = self.conn.caps().read_only_on_connect
-                && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database))
-                && !self.tx.get().status.is_open();
-            if !stale {
-                return Ok(c.clone());
+        if let Some(c) = g.as_ref() {
+            // Nothing asks inside a transaction: a new socket could not carry on with it, so the
+            // statement goes out and what happens to it is reported.
+            let open = self.tx.get().status.is_open();
+            let idle = self.active.lock().elapsed() >= CHECK_AFTER;
+            let alive = !c.is_closed() && !self.tx.gone() && (open || !idle || c.answers().await);
+            if alive {
+                if idle && !open {
+                    self.conn.link.up();
+                }
+                // Read-only is how it was opened: a change of mind reopens it (between
+                // transactions only).
+                let stale = self.conn.caps().read_only_on_connect && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database)) && !open;
+                if !stale {
+                    *self.active.lock() = Instant::now();
+                    return Ok(c.clone());
+                }
+            } else {
+                *g = None;
+                self.conn.link.lost();
+                // A new socket would not be the same session. `closed` also notes a transaction
+                // the driver had not seen go with the socket.
+                self.tx.closed();
+                let tx = self.tx.take_lost();
+                if self.stateful.swap(false, AtomicOrdering::AcqRel) || tx {
+                    anyhow::bail!(lost_text(false, tx));
+                }
             }
         }
         self.tx.closed();
-        // What the user sends next was meant for that transaction: it fails once, said why, and
-        // the statement after it runs on a new connection.
         if self.tx.take_lost() {
-            anyhow::bail!("the connection to the server was lost with a transaction open, and the server rolled it back: this statement did not run");
+            anyhow::bail!(lost_text(false, true));
         }
         let p = self.conn.profile_for(&self.database);
-        let password = self.conn.cred.secret(&p).await?;
-        let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx, self.conn.pooler).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
+        let (client, cancel) = through_wake(&self.conn.link, || async {
+            let password = self.conn.cred.secret(&p).await?;
+            backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx, self.conn.pooler).await
+        })
+        .await
+        .map_err(|e| crate::cloudauth::explain(&p, e))?;
+        *self.active.lock() = Instant::now();
         *self.cancel.lock() = Some(cancel);
         *self.ro_applied.lock() = Some(self.conn.read_only_for(&self.database));
         *self.used.lock() = None;
@@ -564,8 +665,19 @@ impl Session {
     /// read-only file, and none of the tab's transaction. The tab only shows it.
     async fn run(&self, rs: &Arc<ResultSet>) {
         let agent = rs.agent().is_some() && rs.read_only.load(AtomicOrdering::Acquire);
+        // A dial may wait out a waking database: a stop does not wait with it.
+        let mut demand = rs.demand();
+        let stopped = async move {
+            if demand.wait_for(|d| d.abort).await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
         if !agent {
-            let client = self.client().await;
+            let client = tokio::select! {
+                biased;
+                _ = stopped => return self.never_ran(rs),
+                c = self.client() => c,
+            };
             return self.run_on(client, rs, false).await;
         }
         if let Some(r) = self.conn.unheld_read_refusal(&rs.sql) {
@@ -573,7 +685,12 @@ impl Session {
         }
         let d = self.conn.dialect();
         let ro = self.conn.read_only_for(&self.database) || d == Dialect::Sqlite || !d.has_transactions();
-        let client = match self.conn.agent_take(&self.database, ro).await {
+        let taken = tokio::select! {
+            biased;
+            _ = stopped => return self.never_ran(rs),
+            d = self.conn.agent_take(&self.database, ro) => d,
+        };
+        let client = match taken {
             Ok(d) => {
                 let d = Arc::new(d);
                 let c = d.db();
@@ -590,6 +707,14 @@ impl Session {
         }
     }
 
+    fn never_ran(&self, rs: &ResultSet) {
+        rs.update_status(|s| {
+            s.phase = Some(Phase::Cancelled);
+            s.elapsed = Some(Duration::ZERO);
+        });
+        self.record(rs, Duration::ZERO);
+    }
+
     async fn run_on(&self, client: Result<Db>, rs: &Arc<ResultSet>, agent: bool) {
         let client = match client {
             Ok(c) => c,
@@ -603,15 +728,8 @@ impl Session {
             }
         };
         let aborted = || rs.demand().borrow().abort;
-        let never_ran = |rs: &ResultSet| {
-            rs.update_status(|s| {
-                s.phase = Some(Phase::Cancelled);
-                s.elapsed = Some(Duration::ZERO);
-            });
-            self.record(rs, Duration::ZERO);
-        };
         if aborted() {
-            return never_ran(rs);
+            return self.never_ran(rs);
         }
         let want_read_only = !agent && self.read_only_wanted(&rs.sql);
         if !agent {
@@ -782,7 +900,7 @@ impl Session {
                 if settle && !agent {
                     self.tx.settled(SETTLE).await;
                 }
-                return never_ran(rs);
+                return self.never_ran(rs);
             }
             r => r,
         };
@@ -806,7 +924,7 @@ impl Session {
         // Undone before anyone sees the end: the transaction state is back to what it was.
         end_rollback(&client, dialect, wrap).await;
         let aborted = *rs.demand().borrow();
-        let (phase, affected, error) = match r {
+        let (phase, affected, mut error) = match r {
             Ran::Done(affected) => (if aborted.abort && !rs.status().partial { Phase::Cancelled } else { Phase::Done }, affected, None),
             Ran::Cancelled | Ran::NeverRan { .. } => (Phase::Cancelled, None, None),
             Ran::Failed(info) => (Phase::Failed, None, Some(info)),
@@ -832,6 +950,22 @@ impl Session {
             self.tx.settled(SETTLE).await;
             // Counted before the final phase is published: whoever sees it sees the count too.
             self.tx.statement(facts.tx.is_none());
+            *self.active.lock() = Instant::now();
+            if crate::bounded::leaves_session_state(&rs.sql, dialect) {
+                self.stateful.store(true, AtomicOrdering::Release);
+            }
+        }
+        if client.is_closed() || (!agent && self.tx.gone()) {
+            self.conn.link.lost();
+            // A statement that ended well leaves what went with its socket for the next one to tell.
+            if let Some(e) = error.as_mut() {
+                let tx = !agent && self.tx.take_lost();
+                self.stateful.store(false, AtomicOrdering::Release);
+                let raw = std::mem::replace(e, ErrorInfo { message: lost_text(true, tx), ..Default::default() });
+                e.detail = Some(raw.message);
+            }
+        } else {
+            self.conn.link.up();
         }
         // History first: whoever sees the final phase also finds the statement recorded.
         self.record_as(rs, elapsed, Some(phase), affected.or(rs.status().affected), error.clone());

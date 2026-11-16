@@ -27,8 +27,8 @@ pub(crate) type MsError = tiberius::error::Error;
 const IN_FLIGHT: usize = 1024;
 /// How long a host may take to answer at all: one that does not is down.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long the whole connection may take: a paused Azure SQL serverless database wakes during
-/// the login, and that takes far longer than a host takes to answer.
+/// How long one login may take. Azure SQL does not hold it while a paused database wakes: it answers
+/// 40613 (measured: after 15 s), and the wake is `link::through_wake`'s to wait out.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 const CANCEL_WAIT: Duration = Duration::from_secs(5);
 
@@ -220,7 +220,26 @@ impl Client {
         *slot = None;
         self.closed.store(true, Ordering::Release);
         if let Some(w) = &self.watch {
-            w.closed();
+            w.broke();
+        }
+    }
+
+    /// In use: a reader holds it, so it is alive. Any error counts: this query cannot fail on a
+    /// good connection.
+    pub(crate) async fn answers(&self) -> bool {
+        let Ok(mut g) = self.conn.try_lock() else { return true };
+        let Some(c) = g.as_mut() else { return false };
+        match tokio::time::timeout(crate::link::CHECK_WAIT, probe(c)).await {
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                log::debug!("connection check: {e}");
+                self.lost(&mut g);
+                false
+            }
+            Err(_) => {
+                self.lost(&mut g);
+                false
+            }
         }
     }
 
