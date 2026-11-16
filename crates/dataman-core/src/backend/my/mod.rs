@@ -28,19 +28,20 @@ fn closed_error() -> MyError {
     MyError::Driver(DriverError::ConnectionClosed)
 }
 
-fn ssl_opts(p: &ConnectionProfile, mode: SslMode, via: Option<SocketAddr>) -> Option<SslOpts> {
+fn ssl_opts(p: &ConnectionProfile, mode: SslMode, via: Option<SocketAddr>) -> Result<Option<SslOpts>> {
     let mut o = match mode {
-        SslMode::Disable => return None,
+        SslMode::Disable => return Ok(None),
         SslMode::Prefer | SslMode::Require => SslOpts::default().with_danger_accept_invalid_certs(true).with_danger_skip_domain_validation(true),
         SslMode::VerifyFull => {
-            let roots = rustls_native_certs::load_native_certs().certs.into_iter().map(|c| c.as_ref().to_vec().into()).collect();
+            let mut roots: Vec<_> = rustls_native_certs::load_native_certs().certs.into_iter().map(|c| c.as_ref().to_vec().into()).collect();
+            roots.extend(super::extra_ca(p, mode)?.map(Into::into));
             SslOpts::default().with_root_certs(roots)
         }
     };
     if via.is_some() {
         o = o.with_danger_tls_hostname_override(Some(p.host.clone()));
     }
-    Some(o)
+    Ok(Some(o))
 }
 
 fn opts(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, ssl: Option<SslOpts>) -> Opts {
@@ -110,7 +111,7 @@ async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&s
     super::install_tls_provider();
     let mode = if p.is_socket() && via.is_none() { SslMode::Disable } else { p.tls_mode() };
     let plain = || opts(p, password, database, via, None);
-    let (conn, side, tls_active) = match ssl_opts(p, mode, via) {
+    let (conn, side, tls_active) = match ssl_opts(p, mode, via)? {
         None => {
             let o = plain();
             (dial(o.clone()).await?, o, false)

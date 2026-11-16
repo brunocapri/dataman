@@ -472,13 +472,15 @@ impl Core {
         spawn(&self.handle(), async move { Ok(conn_import::importable(&saved, &places)) })
     }
 
-    /// Reads the passwords the picked connections keep in another app's Keychain items (and
-    /// what could not be read: the connection's name, and why). Off the UI thread: macOS waits
-    /// for the user to allow each item.
+    /// Reads the passwords and SSH keys the picked connections keep in another app's Keychain
+    /// items (and what could not be read: the connection's name, and why); a key goes to a file
+    /// of Dataman's own, this user's only. Off the UI thread: macOS waits for the user to allow
+    /// each item.
     pub fn read_keychain(&self, mut items: Vec<Importable>) -> Task<(Vec<Importable>, Vec<(String, String)>)> {
+        let keys = self.dirs.config.join("ssh-keys");
         spawn(&self.handle(), async move {
             Ok(tokio::task::spawn_blocking(move || {
-                let unread = conn_import::read_keychain(&mut items, secret::foreign);
+                let unread = conn_import::read_keychain(&mut items, secret::foreign, &keys);
                 (items, unread)
             })
             .await?)

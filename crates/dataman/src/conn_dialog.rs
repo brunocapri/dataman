@@ -342,6 +342,8 @@ pub struct ConnDialog {
     search_len: usize,
     pick_hi: usize,
     options: Entity<TextInput>,
+    /// Verify-full's own CA certificate, beside the system's.
+    ca: Entity<TextInput>,
     file: Entity<TextInput>,
     /// Picked with New…: the file is created when the connection is tested or saved.
     create_file: bool,
@@ -487,6 +489,7 @@ impl ConnDialog {
         .detach();
         let opts: Vec<String> = profile.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let options = text_field("authSource=admin&replicaSet=rs0", &opts.join("&"), PLAIN, window, cx);
+        let ca = text_field("the system's", &profile.ca_file, PLAIN, window, cx);
         let file = text_field("~/data/app.sqlite", profile.path.as_deref().unwrap_or(""), PLAIN, window, cx);
         let file_access = profile.options.get(dataman_core::DUCKDB_EXTERNAL_ACCESS).is_none_or(|v| v != "false");
         let (tenant, aws_profile, aws_region, gcp_account) = match &profile.auth {
@@ -579,6 +582,7 @@ impl ConnDialog {
             search_len: 0,
             pick_hi: 0,
             options,
+            ca,
             file_access,
             file,
             create_file: false,
@@ -1024,6 +1028,9 @@ impl ConnDialog {
                 let opts: Vec<String> = p.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 self.options.update(cx, |t, cx| t.set_text(opts.join("&"), cx));
             }
+            if !p.ca_file.is_empty() {
+                self.ca.update(cx, |t, cx| t.set_text(p.ca_file.clone(), cx));
+            }
         }
         if said_user.is_some() {
             self.str_user = said_user;
@@ -1102,6 +1109,9 @@ impl ConnDialog {
         }
         if self.engine.spec().form.options {
             v.push(&self.options);
+        }
+        if self.sslmode == SslMode::VerifyFull {
+            v.push(&self.ca);
         }
         if self.ssh.on {
             v.extend([&self.ssh.host, &self.ssh.port, &self.ssh.user]);
@@ -1277,6 +1287,8 @@ impl ConnDialog {
             p.save_password = false;
             p.sslmode = p.tls_mode();
         }
+        // Only verify-full checks a certificate: the field is not there under the others.
+        p.ca_file = if p.sslmode == SslMode::VerifyFull { text(&self.ca) } else { String::new() };
         p.env = self.env;
         p.read_only = self.read_only;
         p.mcp = self.mcp;
@@ -2145,6 +2157,7 @@ impl ConnDialog {
                     .child(div().flex().flex_col().gap(px(6.)).child(caption(t, if self.engine.is_sql() { "SSL" } else { "TLS" })).child(ssl)),
             )
             .children(tls_note.map(|(warn, note)| ui::probe("tls-note", line(if warn { t.tx } else { t.tx3 }, note).mt(px(-6.)))))
+            .when(self.sslmode == SslMode::VerifyFull, |d| d.child(self.field(t, "CA CERTIFICATE", &self.ca, None)))
             .when(form.options, |d| d.child(self.field(t, "OPTIONS", &self.options, None)))
             .child(context)
             .when(self.ssh.on, |d| d.child(self.ssh_fields(t, cx)))

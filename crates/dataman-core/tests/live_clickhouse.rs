@@ -364,6 +364,11 @@ fn tls_is_what_the_mode_asks_for() {
     let err = e.core.block_on(e.core.connect(tls(SslMode::VerifyFull), Some(password()))).err().expect("a certificate nobody vouches for");
     assert!(format!("{err:#}").to_lowercase().contains("certificate"), "{err:#}");
     assert!(e.core.block_on(e.core.connect(tls(SslMode::Disable), Some(password()))).is_err(), "plain HTTP to a TLS port");
+    // The connection's own CA vouches for it (`DATAMAN_TLS_CA`: the service's, as live_tls takes it).
+    if let Some(ca) = std::env::var_os("DATAMAN_TLS_CA") {
+        let c = open(&e, ConnectionProfile { ca_file: ca.to_string_lossy().into(), ..tls(SslMode::VerifyFull) }, &password()).expect("a certificate its CA vouches for");
+        assert!(c.tls_in_use());
+    }
 }
 
 #[test]

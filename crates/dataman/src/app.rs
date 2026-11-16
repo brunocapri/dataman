@@ -1616,7 +1616,7 @@ impl Workspace {
                 }
                 if let Some((_, why)) = unread.first() {
                     let names: Vec<&str> = unread.iter().map(|(n, _)| n.as_str()).collect();
-                    w.notice_err(format!("Imported without a password: {} ({why})", names.join(", ")), cx);
+                    w.notice_err(format!("Imported without what the Keychain keeps for them: {} ({why})", names.join(", ")), cx);
                 }
             }
             w.import = None;

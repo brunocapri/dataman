@@ -8,7 +8,7 @@ mod tableplus;
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{ConnectionProfile, Engine, Environment, SshSettings};
+use crate::config::{ConnectionProfile, Engine, Environment, SshSettings, SslMode};
 use crate::engine::{Clients, SPECS};
 use crate::server::{FLAVORS, Flavor};
 use crate::{connstr, pgpass, pgservice};
@@ -49,12 +49,13 @@ pub struct Importable {
 }
 
 /// Another app's Keychain items: its service, and the accounts of the database's and the SSH
-/// tunnel's passwords.
+/// tunnel's passwords, and of the tunnel's private key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keychained {
     pub service: &'static str,
     pub password: Option<String>,
     pub ssh_password: Option<String>,
+    pub private_key: Option<String>,
 }
 
 impl std::fmt::Debug for Importable {
@@ -101,10 +102,14 @@ impl Places {
     }
 }
 
-/// The same server, as the same login, to the same database: one of them is enough.
+/// The same server, as the same login, to the same database: one of them is enough. Host names
+/// are the same in any case; MariaDB is MySQL's engine, so either client's copy is one.
 fn same_target(a: &ConnectionProfile, b: &ConnectionProfile) -> bool {
-    let tunnel = |s: &Option<SshSettings>| s.as_ref().map(|s| (s.host.clone(), s.port, s.user.clone()));
-    a.engine == b.engine && (&a.host, a.port, &a.user, &a.database, &a.path) == (&b.host, b.port, &b.user, &b.database, &b.path) && tunnel(&a.ssh) == tunnel(&b.ssh)
+    let tunnel = |s: &Option<SshSettings>| s.as_ref().map(|s| (s.host.to_ascii_lowercase(), s.port, s.user.clone()));
+    a.engine == b.engine
+        && a.host.eq_ignore_ascii_case(&b.host)
+        && (a.port, &a.user, &a.database, &a.path) == (b.port, &b.user, &b.database, &b.path)
+        && tunnel(&a.ssh) == tunnel(&b.ssh)
 }
 
 pub fn importable(saved: &[ConnectionProfile], places: &Places) -> Vec<Importable> {
@@ -166,11 +171,16 @@ fn port(text: &str) -> Result<Option<u16>, String> {
 }
 
 /// The profile of a server connection read from another client, with Dataman's defaults for
-/// what it left unsaid (as a connection string's).
-fn server_profile(spec: connstr::ConnSpec, name: &str, env: Environment) -> (ConnectionProfile, Option<String>) {
+/// what it left unsaid (as a connection string's). A CA certificate only verify-full checks:
+/// under another mode it is left behind, and said.
+fn server_profile(spec: connstr::ConnSpec, name: &str, env: Environment, notes: &mut Vec<String>) -> (ConnectionProfile, Option<String>) {
     let (mut p, password) = spec.into_profile();
     p.name = name.to_string();
     p.env = env;
+    if !p.ca_file.is_empty() && p.sslmode != SslMode::VerifyFull {
+        notes.push(format!("CA certificate left behind: {} checks none", p.sslmode.label()));
+        p.ca_file.clear();
+    }
     (p, password)
 }
 
@@ -188,30 +198,99 @@ fn entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(v)
 }
 
+#[derive(Clone, Copy)]
+enum Secret {
+    Password,
+    SshPassword,
+    PrivateKey,
+}
+
 /// Reads the Keychain items an import needs, for the connections picked, one by one: once the
-/// user denies one, the others are not asked for and say so too.
-pub(crate) fn read_keychain(items: &mut [Importable], read: impl Fn(&str, &str) -> anyhow::Result<Option<String>>) -> Vec<(String, String)> {
-    let mut unread = Vec::new();
+/// user denies one, the others are not asked for and say so too. A private key is written to
+/// its own file in `keys` (this user's only), which the tunnel names.
+pub(crate) fn read_keychain(items: &mut [Importable], read: impl Fn(&str, &str) -> anyhow::Result<Option<String>>, keys: &Path) -> Vec<(String, String)> {
+    let mut unread: Vec<(String, String)> = Vec::new();
     let mut denied: Option<String> = None;
     for it in items {
         let Some(k) = it.keychain.take() else { continue };
-        for (account, slot) in [(k.password, &mut it.password), (k.ssh_password, &mut it.ssh_password)] {
+        let name = it.profile.name.clone();
+        let mut missed = |why: String| {
+            if unread.last().is_none_or(|(n, _)| *n != name) {
+                unread.push((name.clone(), why));
+            }
+        };
+        for (account, secret) in [(k.password, Secret::Password), (k.ssh_password, Secret::SshPassword), (k.private_key, Secret::PrivateKey)] {
             let Some(account) = account else { continue };
             if let Some(why) = &denied {
-                unread.push((it.profile.name.clone(), why.clone()));
+                missed(why.clone());
                 continue;
             }
-            match read(k.service, &account) {
-                Ok(found) => *slot = found,
+            let found = match read(k.service, &account) {
+                Ok(found) => found,
                 Err(e) => {
-                    let why = format!("the Keychain did not give its password: {e:#}");
-                    unread.push((it.profile.name.clone(), why.clone()));
+                    let why = format!("the Keychain did not give it: {e:#}");
+                    missed(why.clone());
                     denied = Some(why);
+                    continue;
                 }
+            };
+            let taken = match (secret, found) {
+                (Secret::Password, Some(pw)) => whole_url(it, pw),
+                (Secret::SshPassword, found) => {
+                    it.ssh_password = found;
+                    Ok(())
+                }
+                (Secret::PrivateKey, Some(key)) => key_file(&key, &keys.join(&it.profile.id)).map(|f| {
+                    if let Some(ssh) = &mut it.profile.ssh {
+                        ssh.key_file = f;
+                    }
+                }),
+                (Secret::PrivateKey, None) => Err(format!("{} kept no SSH key there: ~/.ssh's keys are tried", it.source.label())),
+                (Secret::Password, None) => Ok(()),
+            };
+            if let Err(why) = taken {
+                missed(why);
             }
         }
     }
     unread
+}
+
+/// The password, or the connection's whole URL where the password goes: TablePlus keeps a
+/// pasted MongoDB string, login included, there. The URL says where; what it leaves unsaid
+/// stays as the fields had it.
+fn whole_url(it: &mut Importable, password: String) -> Result<(), String> {
+    let text = password.trim();
+    if it.profile.engine != Engine::MongoDb || !(text.starts_with("mongodb://") || text.starts_with("mongodb+srv://")) {
+        it.password = Some(password);
+        return Ok(());
+    }
+    let mut spec = connstr::parse(text).filter(|s| s.engine == Engine::MongoDb).ok_or("its saved connection string could not be read")?;
+    let old = &it.profile;
+    let some = |s: &str| Some(s.to_string()).filter(|s| !s.is_empty());
+    spec.user = spec.user.or(some(&old.user));
+    spec.database = spec.database.filter(|d| !d.is_empty()).or(some(&old.database));
+    spec.sslmode = spec.sslmode.or(Some(old.sslmode));
+    spec.ca_file = spec.ca_file.or(some(&old.ca_file));
+    let (mut p, password) = server_profile(spec, &old.name, old.env, &mut it.notes);
+    (p.id, p.ssh) = (old.id.clone(), old.ssh.clone());
+    (it.profile, it.password) = (p, password);
+    Ok(())
+}
+
+/// A private key as another app keeps it (PEM, or base64 of it), written where `path` says.
+fn key_file(stored: &str, path: &Path) -> Result<String, String> {
+    let is_key = |t: &str| t.contains("-----BEGIN") && t.contains("PRIVATE KEY-----");
+    let pem = if is_key(stored) {
+        stored.to_string()
+    } else {
+        let compact: String = stored.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        data_encoding::BASE64.decode(compact.as_bytes()).ok().and_then(|b| String::from_utf8(b).ok()).filter(|t| is_key(t)).ok_or("its SSH key is not a private key")?
+    };
+    // OpenSSH refuses a key without its last newline.
+    let pem = if pem.ends_with('\n') { pem } else { pem + "\n" };
+    crate::os::atomic_write(path, pem.as_bytes(), true).map_err(|e| format!("its SSH key could not be written to {}: {e}", path.display()))?;
+    Ok(path.display().to_string())
 }
 
 #[cfg(test)]
@@ -230,6 +309,7 @@ mod tests {
         assert_eq!(tp("SQLServer"), Some((Engine::SqlServer, Flavor::Standard)));
         assert_eq!(tp("Mongo"), Some((Engine::MongoDb, Flavor::Standard)));
         assert_eq!(tp("Cassandra"), None);
+        assert_eq!((tp("Redshift"), db("cockroachdb")), (Some((Engine::Postgres, Flavor::Standard)), Some((Engine::Postgres, Flavor::Standard))));
     }
 
     #[test]
@@ -244,6 +324,10 @@ mod tests {
         let again = importable(&[saved.clone()], &places);
         let exists: Vec<&str> = again.iter().filter(|i| i.exists).map(|i| i.profile.name.as_str()).collect();
         assert_eq!(exists, ["Orders (prod)"]);
+        // A host name in another case is the same host.
+        saved.host = saved.host.to_ascii_uppercase();
+        saved.ssh.as_mut().unwrap().host = saved.ssh.as_ref().unwrap().host.to_ascii_uppercase();
+        assert!(importable(&[saved.clone()], &places).iter().any(|i| i.exists));
         // Through another bastion it is another connection.
         saved.ssh.as_mut().unwrap().host = "other-bastion".into();
         assert!(importable(&[saved], &places).iter().all(|i| !i.exists));
@@ -256,18 +340,22 @@ mod tests {
     fn a_denied_keychain_is_asked_once_and_said_for_each() {
         let mk = |name: &str| {
             let mut it = Importable::new(ImportSource::TablePlus, ConnectionProfile::new(name), None);
-            it.keychain = Some(Keychained { service: "svc", password: Some(format!("{name}_database")), ssh_password: None });
+            it.keychain = Some(Keychained { service: "svc", password: Some(format!("{name}_database")), ssh_password: None, private_key: None });
             it
         };
         let asked = std::cell::RefCell::new(Vec::new());
         let mut items = vec![mk("a"), mk("b"), mk("c")];
-        let unread = read_keychain(&mut items, |_, account| {
-            asked.borrow_mut().push(account.to_string());
-            match account {
-                "a_database" => Ok(Some("pw-a".into())),
-                _ => Err(anyhow::anyhow!("User canceled the operation.")),
-            }
-        });
+        let unread = read_keychain(
+            &mut items,
+            |_, account| {
+                asked.borrow_mut().push(account.to_string());
+                match account {
+                    "a_database" => Ok(Some("pw-a".into())),
+                    _ => Err(anyhow::anyhow!("User canceled the operation.")),
+                }
+            },
+            Path::new("/nowhere"),
+        );
         assert_eq!(*asked.borrow(), ["a_database", "b_database"]);
         assert_eq!(items[0].password.as_deref(), Some("pw-a"));
         assert_eq!((items[1].password.as_deref(), items[2].password.as_deref()), (None, None));

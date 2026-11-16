@@ -9,6 +9,8 @@ pub struct ConnSpec {
     pub database: Option<String>,
     pub password: Option<String>,
     pub sslmode: Option<SslMode>,
+    /// libpq's `sslrootcert`, MongoDB's `tlsCAFile`.
+    pub ca_file: Option<String>,
     pub service: Option<String>,
     pub encrypt: Option<String>,
     pub trust_cert: Option<bool>,
@@ -21,7 +23,7 @@ pub struct ConnSpec {
 
 impl std::fmt::Debug for ConnSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnSpec").field("engine", &self.engine).field("host", &self.host).field("port", &self.port).field("user", &self.user).field("database", &self.database).field("password", &crate::secret_shown(&self.password)).field("sslmode", &self.sslmode).field("service", &self.service).field("encrypt", &self.encrypt).field("trust_cert", &self.trust_cert).field("options", &self.options).field("path", &self.path).field("read_only", &self.read_only).finish()
+        f.debug_struct("ConnSpec").field("engine", &self.engine).field("host", &self.host).field("port", &self.port).field("user", &self.user).field("database", &self.database).field("password", &crate::secret_shown(&self.password)).field("sslmode", &self.sslmode).field("ca_file", &self.ca_file).field("service", &self.service).field("encrypt", &self.encrypt).field("trust_cert", &self.trust_cert).field("options", &self.options).field("path", &self.path).field("read_only", &self.read_only).finish()
     }
 }
 
@@ -84,6 +86,7 @@ impl ConnSpec {
             "dbname" => self.database = Some(value.to_string()),
             "password" => self.password = Some(value.to_string()),
             "sslmode" => self.sslmode = sslmode(value),
+            "sslrootcert" if !value.trim().is_empty() => self.ca_file = Some(value.trim().to_string()),
             "ssl-mode" | "ssl_mode" | "sslMode" => self.sslmode = sslmode(&value.to_ascii_lowercase()),
             "ssl" if value == "true" || value == "1" => self.sslmode = Some(SslMode::Require),
             // mysql2's `ssl={"rejectUnauthorized":true}`, as PlanetScale shows it for Node.
@@ -148,6 +151,7 @@ impl ConnSpec {
         match key {
             "tls" | "ssl" => self.set_tls(value),
             "tlsAllowInvalidCertificates" | "tlsInsecure" if yes => self.sslmode = Some(SslMode::Require),
+            "tlsCAFile" if !value.trim().is_empty() => self.ca_file = Some(value.trim().to_string()),
             "authSource" | "replicaSet" | "authMechanism" | "directConnection" | "srv" => {
                 self.options.insert(key.to_string(), value.to_string());
             }
@@ -162,6 +166,7 @@ impl ConnSpec {
         self.database = self.database.or(other.database);
         self.password = self.password.or(other.password);
         self.sslmode = self.sslmode.or(other.sslmode);
+        self.ca_file = self.ca_file.or(other.ca_file);
         self
     }
 
@@ -175,6 +180,7 @@ impl ConnSpec {
         let mut p = ConnectionProfile::new("");
         p.engine = self.engine;
         p.options = self.options.clone();
+        p.ca_file = self.ca_file.clone().unwrap_or_default();
         p.host = self.host.unwrap_or_else(|| "localhost".into());
         p.port = self.port.unwrap_or(self.flavor.default_port(self.engine));
         p.flavor = self.flavor;
@@ -925,5 +931,15 @@ mod tests {
         let (p, _) = parse_profile("jdbc:mariadb://db/shop").unwrap();
         assert_eq!((p.engine, p.flavor, p.port), (Engine::MySql, crate::server::Flavor::MariaDb, 3306));
         assert_eq!(parse_profile("postgres://h/db").unwrap().0.flavor, crate::server::Flavor::Standard);
+    }
+
+    #[test]
+    fn a_ca_certificate_comes_and_goes_with_the_string() {
+        let (p, _) = parse_profile("postgresql://me@db.corp/app?sslmode=verify-full&sslrootcert=%2Fcerts%2Fcorp-ca.pem").unwrap();
+        assert_eq!((p.sslmode, p.ca_file.as_str()), (SslMode::VerifyFull, "/certs/corp-ca.pem"));
+        assert_eq!(parse_profile(&p.url()).unwrap().0.ca_file, p.ca_file, "read back");
+        let (m, _) = parse_profile("mongodb://db.corp/app?tls=true&tlsCAFile=%2Fcerts%2Fca.pem").unwrap();
+        assert_eq!((m.sslmode, m.ca_file.as_str()), (SslMode::VerifyFull, "/certs/ca.pem"));
+        assert_eq!(parse_profile(&m.url()).unwrap().0.ca_file, m.ca_file, "read back");
     }
 }

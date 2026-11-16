@@ -360,6 +360,10 @@ pub struct ConnectionProfile {
     pub path: Option<String>,
     #[serde(default)]
     pub sslmode: SslMode,
+    /// A CA certificate (PEM) that verify-full trusts beside the system's: a server signed by a
+    /// company's own CA. The other modes check no certificate.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ca_file: String,
     #[serde(default)]
     pub save_password: bool,
     /// Left out of the file for a password, so files of older versions load unchanged.
@@ -630,6 +634,7 @@ impl ConnectionProfile {
             database: "postgres".into(),
             path: None,
             sslmode: SslMode::Prefer,
+            ca_file: String::new(),
             save_password: false,
             auth: Auth::Password,
             color: None,
@@ -810,6 +815,9 @@ impl ConnectionProfile {
                     SslMode::Disable | SslMode::Prefer if srv => q.push("tls=false".into()),
                     _ => {}
                 }
+                if self.sslmode == SslMode::VerifyFull && !self.ca_file.is_empty() {
+                    q.push(format!("tlsCAFile={}", percent_encode(&self.ca_file)));
+                }
                 let q = if q.is_empty() { String::new() } else { format!("?{}", q.join("&")) };
                 let hostport = if srv || self.host.contains(',') { self.host.clone() } else { format!("{host}:{}", self.port) };
                 let scheme = if srv { "mongodb+srv" } else { "mongodb" };
@@ -837,7 +845,10 @@ impl ConnectionProfile {
             let db = if self.database.is_empty() { String::new() } else { format!(";database={}", self.database) };
             return format!("sqlserver://{}:{}{db};user={};{enc}", self.host, self.port, self.user);
         }
-        let options: String = self.options.iter().map(|(k, v)| format!("&{k}={}", percent_encode(v))).collect();
+        let mut options: String = self.options.iter().map(|(k, v)| format!("&{k}={}", percent_encode(v))).collect();
+        if !self.ca_file.is_empty() {
+            options.push_str(&format!("&sslrootcert={}", percent_encode(&self.ca_file)));
+        }
         format!(
             "postgresql://{user}{host}:{}/{}?sslmode={}{options}",
             self.port,

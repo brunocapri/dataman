@@ -106,19 +106,25 @@ fn connection(name: &str, row: &Dictionary) -> Result<Importable, String> {
     spec.database = spec.database.or(text(row, "DatabaseName").map(str::to_string));
     let clients = FLAVORS.iter().find(|f| f.flavor == flavor && f.engine == engine).map_or(engine.spec().clients, |f| f.clients);
     spec.sslmode = spec.sslmode.or(tls(&clients, number(row, "tLSMode"), &mut notes));
-    if row.get("TlsKeyPaths").and_then(Value::as_array).is_some_and(|a| a.iter().any(|p| p.as_string().is_some_and(|p| !p.trim().is_empty()))) {
-        notes.push("TLS certificate files left behind".into());
-    }
-    let ssh = if flag(row, "isOverSSH") { Some(tunnel(row, &mut notes)?) } else { None };
+    spec.ca_file = spec.ca_file.or(ca_file(row, &mut notes));
+    let (ssh, kept_key) = match flag(row, "isOverSSH") {
+        true => tunnel(row).map(|(s, kept)| (Some(s), kept))?,
+        false => (None, None),
+    };
     let account = |what: &str| id.map(|id| format!("{id}_{what}"));
     let keychain = Keychained {
         service: KEYCHAIN_SERVICE,
         password: account("database").filter(|_| number(row, "DatabasePasswordMode").unwrap_or(SAVED) == SAVED),
         ssh_password: account("server").filter(|_| ssh.as_ref().is_some_and(|s| s.auth == SshAuth::Password) && number(row, "ServerPasswordMode").unwrap_or(SAVED) == SAVED),
+        private_key: account("private_key_data").filter(|_| kept_key.is_some()),
     };
-    let (mut profile, password) = server_profile(spec, name, env);
+    if let Some(k) = kept_key.filter(|_| keychain.private_key.is_none()) {
+        let k = if k.is_empty() { k } else { format!(" {k}") };
+        notes.push(format!("SSH key{k} stays in TablePlus: ~/.ssh's keys are tried"));
+    }
+    let (mut profile, password) = server_profile(spec, name, env, &mut notes);
     profile.ssh = ssh;
-    let keychain = (keychain.password.is_some() || keychain.ssh_password.is_some()).then_some(keychain);
+    let keychain = (keychain.password.is_some() || keychain.ssh_password.is_some() || keychain.private_key.is_some()).then_some(keychain);
     Ok(Importable { keychain, notes, ..Importable::new(SOURCE, profile, password) })
 }
 
@@ -136,24 +142,32 @@ fn tls(clients: &Clients, mode: Option<i64>, notes: &mut Vec<String>) -> Option<
     })
 }
 
-fn tunnel(row: &Dictionary, notes: &mut Vec<String>) -> Result<SshSettings, String> {
+/// `TlsKeyPaths`: the files `TlsKeyName` names, in its order (client key, client certificate,
+/// CA by default). The CA's is kept; a client certificate is not sent, and said.
+fn ca_file(row: &Dictionary, notes: &mut Vec<String>) -> Option<String> {
+    let paths: Vec<&str> = row.get("TlsKeyPaths").and_then(Value::as_array).map(|a| a.iter().map(|p| p.as_string().map_or("", str::trim)).collect()).unwrap_or_default();
+    let ca = text(row, "TlsKeyName").and_then(|n| n.split(',').position(|n| n.trim() == "Certificate Authority")).unwrap_or(2);
+    if paths.iter().enumerate().any(|(i, p)| i != ca && !p.is_empty()) {
+        notes.push("client certificate left behind".into());
+    }
+    paths.get(ca).filter(|p| !p.is_empty()).map(|p| p.to_string())
+}
+
+/// The tunnel, and the name of a key TablePlus keeps for itself (a bare name, not a path).
+fn tunnel(row: &Dictionary) -> Result<(SshSettings, Option<String>), String> {
     let host = text(row, "ServerAddress").ok_or("its SSH tunnel names no host")?;
-    let (auth, key_file) = if flag(row, "isUsePrivateKey") {
-        // A path is a key on disk; a bare name is a key TablePlus keeps for itself.
+    let (auth, key_file, kept) = if flag(row, "isUsePrivateKey") {
         match text(row, "ServerPrivateKeyName") {
-            Some(k) if k.starts_with('/') || k.starts_with('~') => (SshAuth::Key, k.to_string()),
-            Some(k) => {
-                notes.push(format!("SSH key {k} stays in TablePlus: ~/.ssh's keys are tried"));
-                (SshAuth::Key, String::new())
-            }
-            None => (SshAuth::Key, String::new()),
+            Some(k) if k.starts_with('/') || k.starts_with('~') => (SshAuth::Key, k.to_string(), None),
+            k => (SshAuth::Key, String::new(), Some(k.unwrap_or("").to_string())),
         }
     } else if number(row, "ServerPasswordMode") == Some(NO_PASSWORD) {
-        (SshAuth::Agent, String::new())
+        (SshAuth::Agent, String::new(), None)
     } else {
-        (SshAuth::Password, String::new())
+        (SshAuth::Password, String::new(), None)
     };
-    Ok(SshSettings { host: host.to_string(), port: port_of(row, "ServerPort")?, user: text(row, "ServerUser").unwrap_or("").to_string(), auth, key_file })
+    let ssh = SshSettings { host: host.to_string(), port: port_of(row, "ServerPort")?, user: text(row, "ServerUser").unwrap_or("").to_string(), auth, key_file };
+    Ok((ssh, kept))
 }
 
 #[cfg(test)]
@@ -204,8 +218,66 @@ mod tests {
         let odd = by(&items, "Odd TLS");
         assert_eq!(odd.profile.sslmode, SslMode::VerifyFull);
         assert!(odd.notes.iter().any(|n| n.contains("TLS mode 9")), "{:?}", odd.notes);
+        let loose = by(&items, "CA under require");
+        assert_eq!((loose.profile.sslmode, loose.profile.ca_file.as_str()), (SslMode::Require, ""));
+        assert_eq!(loose.notes, ["CA certificate left behind: require checks none"]);
+    }
+
+    #[test]
+    fn a_ca_certificate_and_servers_that_speak_postgres() {
+        let items = found();
+        let v = by(&items, "Verified");
+        assert_eq!((v.profile.sslmode, v.profile.ca_file.as_str()), (SslMode::VerifyFull, "/certs/pay-ca.pem"));
+        assert!(v.notes.is_empty(), "{:?}", v.notes);
+        // MongoDB names its files in another order.
+        let m = by(&items, "Mongo string");
+        assert_eq!((m.profile.sslmode, m.profile.ca_file.as_str()), (SslMode::VerifyFull, "/c/mongo-ca.pem"));
+        assert_eq!(m.notes, ["client certificate left behind"]);
+        let w = by(&items, "Warehouse");
+        assert_eq!((w.profile.engine, w.profile.port, w.profile.sslmode, w.profile.env), (Engine::Postgres, 5439, SslMode::Require, Environment::Production));
+    }
+
+    #[test]
+    fn what_the_keychain_keeps_comes_in_on_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut items: Vec<Importable> = found().into_iter().filter(|i| ["Mongo string", "Key in TablePlus"].contains(&i.profile.name.as_str())).collect();
         let kept = by(&items, "Key in TablePlus");
-        assert!(kept.notes.iter().any(|n| n.contains("stays in TablePlus")), "{:?}", kept.notes);
+        assert!(kept.notes.is_empty(), "read on import, not left behind: {:?}", kept.notes);
+        assert_eq!(kept.keychain.as_ref().unwrap().private_key.as_deref(), Some("FEDCBA98-7654-3210-FEDC-BA9876543210_private_key_data"));
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----";
+        let unread = super::super::read_keychain(
+            &mut items,
+            |_, account| {
+                Ok(Some(match account {
+                    "D0D0D0D0-1234-5678-9ABC-DEF012345678_database" => "mongodb://app:s3cret@m1.internal:27018,m2.internal:27018/orders?authSource=admin&replicaSet=rs0".into(),
+                    "FEDCBA98-7654-3210-FEDC-BA9876543210_private_key_data" => data_encoding::BASE64.encode(pem.as_bytes()),
+                    other => format!("pw-{other}"),
+                }))
+            },
+            dir.path(),
+        );
+        assert!(unread.is_empty(), "{unread:?}");
+        // The string saved as the password says where, and with what login.
+        let m = by(&items, "Mongo string");
+        assert_eq!((m.profile.host.as_str(), m.profile.port, m.profile.user.as_str(), m.profile.database.as_str()), ("m1.internal:27018,m2.internal:27018", 27017, "app", "orders"));
+        assert_eq!((m.password.as_deref(), m.profile.options.get("replicaSet").map(String::as_str)), (Some("s3cret"), Some("rs0")));
+        assert_eq!((m.profile.sslmode, m.profile.env), (SslMode::VerifyFull, Environment::Staging), "TLS the string does not name stays the row's");
+        assert_eq!(m.profile.ssh.as_ref().map(|s| s.host.as_str()), Some("jump.example.com"));
+        let k = by(&items, "Key in TablePlus");
+        let file = &k.profile.ssh.as_ref().unwrap().key_file;
+        assert_eq!(std::fs::read_to_string(file).unwrap(), format!("{pem}\n"));
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(file).unwrap().permissions()) & 0o777, 0o600);
+        assert_eq!(k.password.as_deref(), Some("pw-FEDCBA98-7654-3210-FEDC-BA9876543210_database"));
+    }
+
+    #[test]
+    fn a_kept_key_that_is_no_key_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut items: Vec<Importable> = found().into_iter().filter(|i| i.profile.name == "Key in TablePlus").collect();
+        let unread = super::super::read_keychain(&mut items, |_, a| Ok(a.ends_with("_private_key_data").then(|| "not a key".to_string())), dir.path());
+        assert_eq!(unread, [("Key in TablePlus".to_string(), "its SSH key is not a private key".to_string())]);
+        assert_eq!(items[0].profile.ssh.as_ref().unwrap().key_file, "");
     }
 
     #[test]

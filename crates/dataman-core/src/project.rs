@@ -169,7 +169,7 @@ impl ProjectFile {
         // What is shown is what is dialled: no control, bidi or zero-width character.
         for p in &f.connections {
             let ssh = p.ssh.iter().flat_map(|s| [&s.host, &s.user, &s.key_file]);
-            let fields = [&p.name, &p.host, &p.user, &p.database].into_iter().chain(p.path.as_ref()).chain(ssh).chain(p.options.iter().flat_map(|(k, v)| [k, v]));
+            let fields = [&p.name, &p.host, &p.user, &p.database, &p.ca_file].into_iter().chain(p.path.as_ref()).chain(ssh).chain(p.options.iter().flat_map(|(k, v)| [k, v]));
             for v in fields {
                 anyhow::ensure!(!v.chars().any(invisible), "the connection {} holds a control or invisible character ({v:?})", p.id);
             }
@@ -372,11 +372,11 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
     p
 }
 
-/// What reaches a server, and with what: a change sends this person's password elsewhere, or
-/// a cloud token (one of a bearer kind is good for every database of theirs) where none went.
+/// What reaches a server, and with what: a change sends this person's password elsewhere (a CA
+/// of its own vouches for any server), or a cloud token (one of a bearer kind is good for every database of theirs) where none went.
 pub(crate) fn target(p: &ConnectionProfile) -> impl PartialEq + '_ {
     let options: Vec<(&String, &String)> = p.options.iter().filter(|(k, _)| !secret_option(k)).collect();
-    (p.engine, p.host.to_ascii_lowercase(), p.port, &p.user, &p.ssh, options, p.auth.kind())
+    (p.engine, p.host.to_ascii_lowercase(), p.port, &p.user, &p.ssh, &p.ca_file, options, p.auth.kind())
 }
 
 /// To another server, tunnel or option, or to a database file outside the folder.
@@ -511,6 +511,7 @@ pub(crate) fn address_changes(old: &ConnectionProfile, next: &ConnectionProfile)
     push("SSH", ssh_text(old), ssh_text(next));
     push("Sign-in", old.auth.shared().describe(), sign_in_text(next));
     push("File", old.path.clone().unwrap_or_default(), next.path.clone().unwrap_or_default());
+    push("CA certificate", old.ca_file.clone(), next.ca_file.clone());
     let keys: BTreeSet<&String> = old.options.keys().chain(next.options.keys()).filter(|k| !secret_option(k)).collect();
     for k in keys {
         let v = |p: &ConnectionProfile| p.options.get(k).cloned().unwrap_or_else(|| "—".into());

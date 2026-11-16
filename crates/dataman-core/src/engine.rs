@@ -59,7 +59,7 @@ pub struct EngineSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clients {
     /// DBeaver's ids in `data-sources.json`: a provider, or a driver (those under its `generic`
-    /// provider).
+    /// provider). Servers that speak the engine's protocol under their own name are the engine's.
     pub dbeaver: &'static [&'static str],
     /// TablePlus' `Driver` in `Connections.plist`.
     pub tableplus: &'static [&'static str],
@@ -131,7 +131,7 @@ pub static SPECS: [EngineSpec; 10] = [
         strict_tls: false,
         db_in_name: None,
         floor: Some((12, 0)),
-        clients: Clients { dbeaver: &["postgresql"], tableplus: &["PostgreSQL"], tableplus_tls: &[Prefer, Disable, Require, Prefer, VerifyFull, VerifyFull] },
+        clients: Clients { dbeaver: &["postgresql", "cockroachdb", "greenplum", "redshift"], tableplus: &["PostgreSQL", "Cockroach", "Greenplum", "Redshift"], tableplus_tls: &[Prefer, Disable, Require, Prefer, VerifyFull, VerifyFull] },
     },
     EngineSpec {
         engine: Engine::MySql,

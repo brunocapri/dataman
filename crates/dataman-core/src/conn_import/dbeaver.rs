@@ -174,38 +174,64 @@ fn connection(name: &str, conn: &Value, creds: Option<&Value>) -> Result<Importa
     }
     let handlers = cfg.get("handlers").and_then(Value::as_object);
     let props = cfg.get("properties").and_then(Value::as_object);
-    if let Some(mode) = tls(engine, handlers, props, &mut notes) {
-        spec.sslmode = Some(mode);
-    }
+    let (mode, ca) = tls(engine, handlers, props, &mut notes);
+    spec.sslmode = mode.or(spec.sslmode);
+    spec.ca_file = ca.or(spec.ca_file);
     if engine == Engine::SqlServer {
         for key in ["encrypt", "trustServerCertificate"] {
             if let Some(v) = prop(props, key) {
                 spec.set_mssql(&key.to_ascii_lowercase(), &v);
             }
         }
+        // Microsoft's driver (10.2 on) encrypts and checks the certificate unless told not to;
+        // jTDS does neither.
+        if spec.sslmode.is_none() && spec.encrypt.is_none() && !driver.to_ascii_lowercase().contains("jtds") {
+            spec.encrypt = Some("true".into());
+        }
     }
     let ssh_handler = handlers.and_then(|h| h.get("ssh_tunnel")).filter(|h| enabled(h));
     let ssh_login = creds.and_then(|c| c.get("network/ssh_tunnel"));
     let ssh = ssh_handler.map(|h| tunnel(h, ssh_login)).transpose()?;
-    let (mut profile, password) = server_profile(spec, name, env);
+    let (mut profile, password) = server_profile(spec, name, env, &mut notes);
     let ssh_password = ssh.as_ref().and(ssh_login.and_then(|l| text(l, "password")).map(str::to_string));
     profile.ssh = ssh;
     Ok(Importable { ssh_password, notes, ..Importable::new(SOURCE, profile, password) })
 }
 
+/// The driver properties about TLS this reads; any other is said, as it may ask for more than
+/// the mode the connection comes in with.
+fn tls_props_read(engine: Engine) -> &'static [&'static str] {
+    match engine {
+        Engine::ClickHouse => &["ssl", "sslmode", "sslrootcert"],
+        Engine::SqlServer => &["sslmode", "sslrootcert", "encrypt", "trustservercertificate"],
+        _ => &["sslmode", "sslrootcert"],
+    }
+}
+
 /// The SSL tab (a handler named `*_ssl`, ClickHouse's `clickhouse-ssl`), else the driver's
-/// `sslmode`. MySQL's tab says only whether TLS is required and whether the certificate is
-/// checked. None: nothing says, and the engine's default applies.
-fn tls(engine: Engine, handlers: Option<&Map<String, Value>>, props: Option<&Map<String, Value>>, notes: &mut Vec<String>) -> Option<crate::config::SslMode> {
-    use crate::config::SslMode;
+/// `sslmode`, and the CA certificate either names. MySQL's tab says only whether TLS is
+/// required and whether the certificate is checked. No mode: nothing says, and the engine's
+/// default applies.
+fn tls(engine: Engine, handlers: Option<&Map<String, Value>>, props: Option<&Map<String, Value>>, notes: &mut Vec<String>) -> (Option<crate::config::SslMode>, Option<String>) {
     let tab = handlers.and_then(|h| h.iter().find(|(id, h)| (id.ends_with("_ssl") || id.ends_with("-ssl")) && enabled(h))).map(|(_, h)| h.get("properties").and_then(Value::as_object));
     let tab_prop = |k: &str| tab.and_then(|p| prop(p, k));
     if tab_prop("ssl.client.cert").is_some() || tab_prop("ssl.client.key").is_some() {
         notes.push("client certificate left behind".into());
     }
-    if tab_prop("ssl.ca.cert").is_some() || prop(props, "sslrootcert").is_some() {
-        notes.push("CA certificate left behind: the system's are trusted".into());
+    let read = tls_props_read(engine);
+    for key in props.into_iter().flat_map(|p| p.keys()) {
+        let k = key.to_ascii_lowercase();
+        if ["ssl", "tls", "encrypt", "certificate"].iter().any(|w| k.contains(w)) && !read.contains(&k.as_str()) {
+            notes.push(format!("driver property {key} left behind"));
+        }
     }
+    let ca = tab_prop("ssl.ca.cert").or_else(|| prop(props, "sslrootcert"));
+    (tls_mode(engine, tab, props, notes), ca)
+}
+
+fn tls_mode(engine: Engine, tab: Option<Option<&Map<String, Value>>>, props: Option<&Map<String, Value>>, notes: &mut Vec<String>) -> Option<crate::config::SslMode> {
+    use crate::config::SslMode;
+    let tab_prop = |k: &str| tab.and_then(|p| prop(p, k));
     let mut named = |mode: String| {
         connstr::sslmode(&mode.to_ascii_lowercase().replace('_', "-")).unwrap_or_else(|| {
             notes.push(format!("SSL mode {mode} read as verify-full"));
@@ -285,6 +311,7 @@ mod tests {
         let ssh = p.ssh.as_ref().unwrap();
         assert_eq!((ssh.host.as_str(), ssh.port, ssh.user.as_str(), ssh.auth, ssh.key_file.as_str()), ("bastion.example.com", Some(2222), "deploy", SshAuth::Key, "~/.ssh/id_ed25519"));
         assert_eq!(it.ssh_password.as_deref(), Some("key-passphrase"));
+        assert_eq!(p.ca_file, "/Users/me/certs/root-ca.pem");
         assert!(it.refused.is_none() && it.notes.is_empty(), "{it:?}");
     }
 
@@ -311,6 +338,22 @@ mod tests {
         assert!(by(&items, "No host").refused.as_deref().unwrap().contains("no host"));
         let shop = by(&items, "Shop");
         assert!(shop.notes.iter().any(|n| n.contains("client certificate")), "{:?}", shop.notes);
+        assert!(shop.notes.iter().any(|n| n == "CA certificate left behind: require checks none"), "{:?}", shop.notes);
+        assert_eq!(shop.profile.ca_file, "");
+        let reports = by(&items, "Reports");
+        assert_eq!(reports.notes[1..], ["driver property useSSL left behind", "driver property requireSSL left behind"]);
+    }
+
+    #[test]
+    fn sql_server_checks_the_certificate_unless_told_not_to() {
+        let items = found();
+        // Microsoft's driver checks it when nothing says; trustServerCertificate does not.
+        assert_eq!(by(&items, "Ledger").profile.sslmode, SslMode::VerifyFull);
+        assert_eq!(by(&items, "Warehouse").profile.sslmode, SslMode::Require);
+        // jTDS checks nothing unasked, and its `ssl` is not read.
+        let old = by(&items, "Old ledger");
+        assert_ne!(old.profile.sslmode, SslMode::VerifyFull);
+        assert_eq!(old.notes[1..], ["driver property ssl left behind"]);
     }
 
     #[test]

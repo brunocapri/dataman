@@ -27,7 +27,8 @@
 						"save-password": false,
 						"properties": {
 							"sslMode": "verify-ca",
-							"sslFactory": "org.postgresql.ssl.DefaultJavaSSLFactory"
+							"sslFactory": "org.postgresql.ssl.DefaultJavaSSLFactory",
+							"ssl.ca.cert": "/Users/me/certs/root-ca.pem"
 						}
 					},
 					"ssh_tunnel": {
@@ -67,7 +68,8 @@
 							"ssl.require": "true",
 							"ssl.verify.server": "false",
 							"ssl.client.cert": "/Users/me/certs/client.pem",
-							"ssl.client.key": "/Users/me/certs/client.key"
+							"ssl.client.key": "/Users/me/certs/client.key",
+							"ssl.ca.cert": "/Users/me/certs/ca.pem"
 						}
 					}
 				}
@@ -169,11 +171,75 @@
 				"type": "dev",
 				"auth-model": "native"
 			}
+		},
+		"microsoft-18c8d1f4c11-0b1c2d3e4f5a6b22": {
+			"provider": "sqlserver",
+			"driver": "microsoft",
+			"name": "Ledger",
+			"save-password": false,
+			"configuration": {
+				"host": "ledger.example.com",
+				"port": "1433",
+				"database": "ledger",
+				"configurationType": "MANUAL",
+				"type": "prod",
+				"auth-model": "sqlserver_database"
+			}
+		},
+		"jtds_sqlserver-18c8d1f9d22-9a8b7c6d5e4f3a33": {
+			"provider": "sqlserver",
+			"driver": "jtds_sqlserver",
+			"name": "Old ledger",
+			"save-password": false,
+			"configuration": {
+				"host": "old-ledger.example.com",
+				"port": "1433",
+				"database": "ledger",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"properties": {
+					"ssl": "require"
+				},
+				"auth-model": "sqlserver_database"
+			}
+		},
+		"mysql8-18c8d1fe133-1f2e3d4c5b6a7944": {
+			"provider": "mysql",
+			"driver": "mysql8",
+			"name": "Reports",
+			"save-password": false,
+			"configuration": {
+				"host": "Reports.Example.com",
+				"port": "3306",
+				"database": "reports",
+				"configurationType": "MANUAL",
+				"type": "dev",
+				"properties": {
+					"useSSL": "true",
+					"requireSSL": "true"
+				},
+				"auth-model": "native"
+			}
 		}
 	},
 	"connection-types": {
-		"dev": { "name": "Development", "color": "255,255,255", "auto-commit": true, "confirm-execute": false },
-		"test": { "name": "Test", "color": "196,255,181", "auto-commit": true, "confirm-execute": false },
-		"prod": { "name": "Production", "color": "247,159,129", "auto-commit": false, "confirm-execute": true }
+		"dev": {
+			"name": "Development",
+			"color": "255,255,255",
+			"auto-commit": true,
+			"confirm-execute": false
+		},
+		"test": {
+			"name": "Test",
+			"color": "196,255,181",
+			"auto-commit": true,
+			"confirm-execute": false
+		},
+		"prod": {
+			"name": "Production",
+			"color": "247,159,129",
+			"auto-commit": false,
+			"confirm-execute": true
+		}
 	}
 }
