@@ -1065,7 +1065,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Close editor group", "with its tabs (asks first)", "", Box::new(crate::split::CloseGroup), Workspace),
         c("New connection…", "", "⌘N", Box::new(NewConnection), Workspace),
         c("New connection from clipboard", "postgres:// URL or key=value", "", Box::new(NewConnectionFromClipboard), Workspace),
-        c("Import connections…", "pg_service.conf, .pgpass", "", Box::new(ImportConnections), Workspace),
+        c("Import connections…", "DBeaver, TablePlus, pg_service.conf, .pgpass", "", Box::new(ImportConnections), Workspace),
         c("Edit connection…", "the explorer's selected connection", "⌘I", Box::new(EditConnection), Workspace),
         c("Duplicate connection…", "the explorer's connection, as a new one", "", Box::new(crate::row_actions::DuplicateConnection), Workspace),
         c("Copy connection string", "postgresql://user@host:port/db, never the password", "", Box::new(crate::row_actions::CopyConnectionString), Workspace),

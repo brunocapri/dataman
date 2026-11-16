@@ -173,13 +173,21 @@ fn demo_importable() -> Vec<dataman_core::Importable> {
     let mk = |name: &str, host: &str, port: u16, user: &str, db: &str, source, exists| {
         let mut p = dataman_core::ConnectionProfile::new(name);
         (p.host, p.port, p.user, p.database) = (host.into(), port, user.into(), db.into());
-        dataman_core::Importable { source, profile: p, password: None, exists }
+        dataman_core::Importable { exists, ..dataman_core::Importable::new(source, p, None) }
     };
-    use dataman_core::ImportSource::{Pgpass, Service};
+    use dataman_core::ImportSource::{DBeaver, Pgpass, Service, TablePlus};
+    let mut shop = mk("Shop", "shop.example.com", 3306, "shop", "shop", DBeaver, false);
+    shop.notes.push("client certificate left behind".into());
+    let mut oracle = mk("Oracle HR", "", 0, "", "", DBeaver, false);
+    oracle.refused = Some("oracle is not an engine Dataman connects to".into());
     vec![
         mk("local", "127.0.0.1", 55432, "postgres", "dataman", Service, true),
         mk("prod", "db.prod.internal", 6543, "app", "app", Service, false),
         mk("analytics", "warehouse.internal", 5432, "bruno", "events", Service, false),
+        mk("Orders (prod)", "db.internal", 5433, "app", "orders", DBeaver, false),
+        shop,
+        oracle,
+        mk("Billing", "billing.internal", 5432, "billing", "billing", TablePlus, false),
         mk("app@staging.internal", "staging.internal", 5432, "app", "app", Pgpass, false),
         mk("bruno@localhost", "localhost", 5432, "bruno", "postgres", Pgpass, false),
     ]

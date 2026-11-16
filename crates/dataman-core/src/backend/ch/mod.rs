@@ -143,7 +143,7 @@ pub(crate) struct Client {
 
 pub(crate) type Canceller = Arc<Client>;
 
-fn builder(mode: SslMode) -> reqwest::ClientBuilder {
+fn builder(p: &ConnectionProfile, mode: SslMode) -> Result<reqwest::ClientBuilder, ChError> {
     // A proxy in the environment would take the password, and leave the SSH tunnel; a redirect is
     // no answer a database gives, and would carry the statement somewhere else.
     let b = reqwest::Client::builder()
@@ -153,7 +153,10 @@ fn builder(mode: SslMode) -> reqwest::ClientBuilder {
         .user_agent("Dataman")
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none());
-    if matches!(mode, SslMode::Prefer | SslMode::Require) { b.danger_accept_invalid_certs(true) } else { b }
+    if matches!(mode, SslMode::Prefer | SslMode::Require) {
+        return Ok(b.danger_accept_invalid_certs(true));
+    }
+    super::search::with_ca(b, p, mode).map_err(|e| ChError::Transport(format!("{e:#}")))
 }
 
 /// Through a tunnel the name is still the server's, for its certificate; the port in the URL is
@@ -209,7 +212,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, datab
 
 async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<std::net::SocketAddr>, session: bool, tls: bool) -> Result<Arc<Client>, ChError> {
     let mode = if tls { p.tls_mode() } else { SslMode::Disable };
-    let (base, b) = base_url(p, tls, via, builder(mode));
+    let (base, b) = base_url(p, tls, via, builder(p, mode)?);
     let http = b.build().map_err(|e| transport(&base, e))?;
     let raw = format!("{}:{}", p.user, password.unwrap_or(""));
     let mut auth = HeaderValue::from_str(&format!("Basic {}", data_encoding::BASE64.encode(raw.as_bytes()))).map_err(|e| ChError::Transport(e.to_string()))?;

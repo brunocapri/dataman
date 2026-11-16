@@ -57,7 +57,7 @@ fn levels(mode: SslMode) -> &'static [EncryptionLevel] {
 
 /// Through a tunnel the TCP connection goes to the tunnel, while TLS still names (and checks)
 /// the profile's host.
-fn config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, level: EncryptionLevel) -> Config {
+fn config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, level: EncryptionLevel) -> Result<Config> {
     let (host, instance) = split_instance(&p.host);
     let mut c = Config::new();
     c.host(host);
@@ -74,6 +74,8 @@ fn config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>,
     c.encryption(level);
     if p.tls_mode() != SslMode::VerifyFull {
         c.trust_cert();
+    } else if let Some(ca) = super::extra_ca(p, SslMode::VerifyFull)? {
+        c.trust_cert_ca_bundle(ca);
     }
     // `ApplicationIntent=ReadOnly`: routed to a readable secondary where there is one; only for
     // a connection with no writable database (per database, the client-side refusal is all
@@ -81,7 +83,7 @@ fn config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>,
     c.readonly(p.read_only_everywhere());
     c.command_timeout(None);
     c.handshake_timeout(Some(LOGIN_TIMEOUT));
-    c
+    Ok(c)
 }
 
 async fn dial(c: Config, via: Option<SocketAddr>, named: bool) -> Result<TClient> {
@@ -134,7 +136,7 @@ async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&s
     let mut last = None;
     let mut found = None;
     for &level in levels(p.tls_mode()) {
-        match dial(config(p, password, database, level), via, named).await {
+        match dial(config(p, password, database, level)?, via, named).await {
             Ok(c) => {
                 found = Some((c, level != EncryptionLevel::Off));
                 break;

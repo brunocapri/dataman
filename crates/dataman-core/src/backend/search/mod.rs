@@ -48,6 +48,13 @@ fn error_message(v: &Value, text: &str) -> String {
     }
 }
 
+/// An HTTP client that also trusts the connection's own CA, verified (`extra_ca`).
+pub(crate) fn with_ca(b: reqwest::ClientBuilder, p: &ConnectionProfile, mode: SslMode) -> Result<reqwest::ClientBuilder> {
+    let Some(pem) = super::extra_ca(p, mode)? else { return Ok(b) };
+    let certs = reqwest::Certificate::from_pem_bundle(&pem).context("the CA certificate")?;
+    Ok(certs.into_iter().fold(b, reqwest::ClientBuilder::add_root_certificate))
+}
+
 pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunnel: Option<&Tunnel>) -> Result<Client> {
     let tls = matches!(p.sslmode, SslMode::Require | SslMode::VerifyFull);
     let scheme = if tls { "https" } else { "http" };
@@ -56,6 +63,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     if p.sslmode == SslMode::Require {
         b = b.danger_accept_invalid_certs(true);
     }
+    b = with_ca(b, p, p.sslmode)?;
     let base = match tunnel {
         Some(t) if p.host.parse::<std::net::IpAddr>().is_err() => {
             b = b.resolve(&p.host, t.local_addr());

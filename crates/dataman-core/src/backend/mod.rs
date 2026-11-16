@@ -19,6 +19,22 @@ pub(crate) mod pg;
 pub(crate) mod redis;
 pub(crate) mod search;
 
+/// The CA certificate (PEM) a verify-full connection trusts, read from its file. One that does
+/// not read, or holds no certificate, fails the connection rather than check against less than
+/// was asked for.
+pub(crate) fn extra_ca(p: &ConnectionProfile, mode: crate::config::SslMode) -> Result<Option<Vec<u8>>> {
+    use anyhow::Context as _;
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    if mode != crate::config::SslMode::VerifyFull || p.ca_file.trim().is_empty() {
+        return Ok(None);
+    }
+    let path = crate::config::expand_home(&p.ca_file);
+    let pem = std::fs::read(&path).with_context(|| format!("reading the CA certificate {}", path.display()))?;
+    let certs = CertificateDer::pem_slice_iter(&pem).collect::<Result<Vec<_>, _>>().with_context(|| format!("reading the CA certificate {}", path.display()))?;
+    anyhow::ensure!(!certs.is_empty(), "the CA certificate {} holds no PEM certificate", path.display());
+    Ok(Some(pem))
+}
+
 /// Linux connects a socket to itself when nothing listens on a local port inside the ephemeral
 /// range: the connect takes that very port as its own and succeeds (a TCP simultaneous open),
 /// then the client waits for a server that is not there.
@@ -881,5 +897,22 @@ mod tests {
         assert!(needs_password(&reply("WRONGPASS invalid username-password pair or user is disabled.")));
         assert!(!needs_password(&reply("WRONGTYPE Operation against a key holding the wrong kind of value")));
         assert_eq!(server_error_class(&reply("NOPERM this user has no permissions")), Some(crate::result::ErrorClass::Permission));
+    }
+
+    #[test]
+    fn a_ca_certificate_that_does_not_read_fails_the_connection() {
+        use crate::config::SslMode;
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = ConnectionProfile::new("x");
+        p.ca_file = dir.path().join("ca.pem").display().to_string();
+        assert!(extra_ca(&p, SslMode::Require).unwrap().is_none(), "require checks no certificate");
+        let missing = extra_ca(&p, SslMode::VerifyFull).unwrap_err();
+        assert!(format!("{missing:#}").contains("reading the CA certificate"), "{missing:#}");
+        std::fs::write(&p.ca_file, "not a certificate").unwrap();
+        assert!(format!("{:#}", extra_ca(&p, SslMode::VerifyFull).unwrap_err()).contains("holds no PEM certificate"));
+        std::fs::write(&p.ca_file, include_str!("../certs/supabase-root-2021.crt")).unwrap();
+        assert!(extra_ca(&p, SslMode::VerifyFull).unwrap().is_some());
+        let cfg = crate::backend::pg::rustls_config(SslMode::VerifyFull, "db.corp", extra_ca(&p, SslMode::VerifyFull).unwrap().as_deref());
+        assert!(cfg.unwrap().is_some());
     }
 }

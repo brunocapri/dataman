@@ -1,11 +1,11 @@
-// pgpass passwords stay in the file (looked up on connect); a service's own password goes
-// to the Keychain.
+// pgpass passwords stay in the file (looked up on connect); a service's own password, and
+// DBeaver's and TablePlus', go to the Keychain.
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Window, actions, div, prelude::*,
 };
 use crate::theme::px;
-use dataman_core::{ImportSource, Importable};
+use dataman_core::Importable;
 
 use crate::conns::ConnStore;
 use crate::theme::ActiveTheme;
@@ -27,7 +27,9 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum ImportEvent {
     Close,
-    Imported(Vec<String>),
+    /// The connections saved, and the passwords another app's Keychain did not give (the
+    /// connection's name, and why).
+    Imported(Vec<String>, Vec<(String, String)>),
 }
 
 pub struct ImportView {
@@ -37,6 +39,8 @@ pub struct ImportView {
     picked: Vec<bool>,
     hi: usize,
     error: Option<String>,
+    /// Reading another app's Keychain: macOS is asking the user.
+    busy: bool,
 }
 
 impl EventEmitter<ImportEvent> for ImportView {}
@@ -64,23 +68,23 @@ impl ImportView {
             });
         })
         .detach();
-        ImportView { store, focus, items: None, picked: vec![], hi: 0, error: None }
+        ImportView { store, focus, items: None, picked: vec![], hi: 0, error: None, busy: false }
     }
 
     pub fn set_items(&mut self, items: Vec<Importable>) {
         self.picked = vec![false; items.len()];
-        self.hi = items.iter().position(|i| !i.exists).unwrap_or(0);
+        self.hi = items.iter().position(Importable::pickable).unwrap_or(0);
         self.items = Some(items);
     }
 
     #[cfg(feature = "checks")]
     pub fn demo_items(&self) -> Option<Vec<(String, dataman_core::ImportSource, bool, bool)>> {
-        Some(self.items.as_ref()?.iter().zip(&self.picked).map(|(i, p)| (i.profile.name.clone(), i.source, i.exists, *p)).collect())
+        Some(self.items.as_ref()?.iter().zip(&self.picked).map(|(i, p)| (i.profile.name.clone(), i.source, !i.pickable(), *p)).collect())
     }
 
     pub fn pick(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(items) = &self.items else { return };
-        if items.get(ix).is_some_and(|i| !i.exists) {
+        if items.get(ix).is_some_and(Importable::pickable) {
             self.picked[ix] = !self.picked[ix];
         }
         self.hi = ix;
@@ -103,20 +107,30 @@ impl ImportView {
     fn confirm(&mut self, cx: &mut Context<Self>) {
         let Some(items) = &self.items else { return };
         let chosen: Vec<Importable> = items.iter().zip(&self.picked).filter(|(_, p)| **p).map(|(i, _)| i.clone()).collect();
-        if chosen.is_empty() {
+        if chosen.is_empty() || self.busy {
             return;
         }
+        self.busy = true;
+        self.error = None;
         let core = self.store.read(cx).core.clone();
-        match core.import(chosen) {
-            Ok(ids) => {
-                self.store.update(cx, |s, cx| s.reload(cx));
-                cx.emit(ImportEvent::Imported(ids));
-            }
-            Err(e) => {
-                self.error = Some(format!("{e:#}"));
+        let read = core.read_keychain(chosen);
+        cx.spawn(async move |this, cx| {
+            let r = read.await;
+            // The sheet closed meanwhile: nothing was picked any more.
+            let _ = this.update(cx, |v, cx| {
+                v.busy = false;
+                match r.and_then(|(items, unread)| Ok((core.import(items)?, unread))) {
+                    Ok((ids, unread)) => {
+                        v.store.update(cx, |s, cx| s.reload(cx));
+                        cx.emit(ImportEvent::Imported(ids, unread));
+                    }
+                    Err(e) => v.error = Some(format!("{e:#}")),
+                }
                 cx.notify();
-            }
-        }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }
 
@@ -147,10 +161,12 @@ impl Render for ImportView {
                     let hi = i == self.hi;
                     let p = &it.profile;
                     let hov = t.hov;
+                    let notes = (!it.notes.is_empty()).then(|| it.notes.join(" · "));
                     div()
                         .id(("import-row", i))
                         .mx(px(8.))
-                        .h(px(30.))
+                        .min_h(px(30.))
+                        .py(px(5.))
                         .px(px(10.))
                         .flex()
                         .flex_row()
@@ -158,8 +174,8 @@ impl Render for ImportView {
                         .gap(px(10.))
                         .map(|d| ui::selectable(d, &t, hi, true))
                         .when(!hi, |d| d.hover(move |s| s.bg(hov)))
-                        .when(it.exists, |d| d.opacity(0.5))
-                        .cursor_pointer()
+                        .when(!it.pickable(), |d| d.opacity(0.5))
+                        .when(it.pickable(), |d| d.cursor_pointer())
                         .on_click(cx.listener(move |v, _, _, cx| v.pick(i, cx)))
                         .child(ui::checkbox(&t, on))
                         .child(div().flex_none().max_w(px(200.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
@@ -167,17 +183,12 @@ impl Render for ImportView {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .text_color(t.tx3)
-                                .child(p.summary()),
+                                .flex()
+                                .flex_col()
+                                .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(it.refused.clone().unwrap_or_else(|| p.summary())))
+                                .children(notes.map(|n| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx4).child(n))),
                         )
-                        .child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx4).child(match (it.exists, it.source) {
-                            (true, _) => "saved",
-                            (_, ImportSource::Service) => "service",
-                            (_, ImportSource::Pgpass) => "pgpass",
-                        }))
+                        .child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx4).child(if it.exists { "saved" } else { it.source.label() }))
                 }))
                 .into_any_element(),
         };

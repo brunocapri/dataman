@@ -28,6 +28,8 @@ pub enum WelcomeEvent {
     OpenFile,
     OpenDatabase,
     OpenProject,
+    /// DBeaver's, TablePlus' and libpq's connections, to pick from.
+    Import,
     /// A connection under FROM YOUR AGENT, picked.
     Open(String),
 }
@@ -36,18 +38,20 @@ pub enum WelcomeEvent {
 pub const PROMPT: &str = "Set up Dataman for this project.";
 
 /// Each way by hand: its glyph, its label, its key.
-const ITEMS: [(&str, &str, &str); 6] = [
+const ITEMS: [(&str, &str, &str); 7] = [
     ("+", "New connection", "⌘N"),
     ("⎘", "Paste a connection URL", "⌘V"),
     ("→", "Connect to localhost:5432", "⌘L"),
+    ("↓", "Import from DBeaver or TablePlus", ""),
     ("↗", "Open a .sql file", "⌘O"),
     ("↗", "Open a database file", ""),
     ("▢", "Open a project folder", ""),
 ];
 
 const LOCALHOST: usize = 2;
+const IMPORT: usize = 3;
 /// Shown while projects are on (Settings › Project).
-const PROJECT: usize = 5;
+const PROJECT: usize = 6;
 
 fn item_shown(i: usize, projects: bool) -> bool {
     i != PROJECT || projects
@@ -245,8 +249,9 @@ impl Welcome {
                 p.user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
                 cx.emit(WelcomeEvent::Prefill(p, None, None));
             }
-            Sel::Item(3) => cx.emit(WelcomeEvent::OpenFile),
-            Sel::Item(4) => cx.emit(WelcomeEvent::OpenDatabase),
+            Sel::Item(IMPORT) => cx.emit(WelcomeEvent::Import),
+            Sel::Item(4) => cx.emit(WelcomeEvent::OpenFile),
+            Sel::Item(5) => cx.emit(WelcomeEvent::OpenDatabase),
             Sel::Item(_) => cx.emit(WelcomeEvent::OpenProject),
         }
         cx.notify();

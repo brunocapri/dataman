@@ -71,19 +71,16 @@ mod no_verify {
     }
 }
 
-fn tls_for(mode: SslMode, host: &str) -> Result<Tls> {
-    Ok(match rustls_config_for(mode, host)? {
+fn tls_for(p: &ConnectionProfile, mode: SslMode) -> Result<Tls> {
+    Ok(match rustls_config(mode, &p.host, super::extra_ca(p, mode)?.as_deref())? {
         None => Tls::None,
         Some(cfg) => Tls::Rustls(tokio_postgres_rustls::MakeRustlsConnect::new(cfg)),
     })
 }
 
-pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig>> {
-    rustls_config_for(mode, "")
-}
-
-/// Verified, a cloud's own CA (`config::CLOUD_TLS`) is trusted for its hosts too.
-fn rustls_config_for(mode: SslMode, host: &str) -> Result<Option<rustls::ClientConfig>> {
+/// Verified, a cloud's own CA (`config::CLOUD_TLS`) is trusted for its hosts too, and the
+/// connection's own CA (`extra_ca`) for it.
+pub(crate) fn rustls_config(mode: SslMode, host: &str, ca: Option<&[u8]>) -> Result<Option<rustls::ClientConfig>> {
     if mode == SslMode::Disable {
         return Ok(None);
     }
@@ -95,11 +92,14 @@ fn rustls_config_for(mode: SslMode, host: &str) -> Result<Option<rustls::ClientC
         for c in found.certs {
             let _ = roots.add(c);
         }
+        use rustls::pki_types::pem::PemObject;
         if let Some(cloud) = crate::config::cloud_tls(host) {
-            use rustls::pki_types::pem::PemObject;
             for c in rustls::pki_types::CertificateDer::pem_slice_iter(cloud.roots.as_bytes()) {
                 roots.add(c.context("a cloud's CA certificate")?).context("a cloud's CA certificate")?;
             }
+        }
+        for c in ca.map(rustls::pki_types::CertificateDer::pem_slice_iter).into_iter().flatten() {
+            roots.add(c.context("the CA certificate")?).context("the CA certificate")?;
         }
         builder.with_root_certificates(roots).with_no_client_auth()
     } else {
@@ -253,7 +253,7 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
     let (cfg, sslmode) = pg_config(p, password, database, via);
     let reach = Reach::of(p, via);
     let socket = reach.open().await.context("error connecting to server")?;
-    let tls = tls_for(sslmode, &p.host)?;
+    let tls = tls_for(p, sslmode)?;
     let (tx, notifications) = tokio::sync::mpsc::unbounded_channel();
     let used = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mark = Arc::new(Mutex::new(None));
@@ -466,7 +466,7 @@ async fn connect_session(
     let reach = Reach::of(p, via);
     let socket = reach.open().await.context("error connecting to server")?;
     let stream = Sniff::new(socket, watch.clone());
-    let tls = tls_for(sslmode, &p.host)?;
+    let tls = tls_for(p, sslmode)?;
     let mark = Arc::new(Mutex::new(None));
     let client = match &tls {
         Tls::None => {

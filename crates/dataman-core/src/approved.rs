@@ -427,13 +427,14 @@ mod tests {
             ConnectionProfile { host: "db.attacker.example".into(), ..conn("a") },
             ConnectionProfile { port: 6543, ..conn("a") },
             ConnectionProfile { options: [("sslrootcert".to_string(), "/tmp/x".to_string())].into(), ..conn("a") },
+            ConnectionProfile { ca_file: "/tmp/attacker-ca.pem".into(), ..conn("a") },
         ] {
             m.outside().upsert(moved).unwrap();
             let d = m.dataman();
             let h = d.held();
             assert!(h.len() == 1 && h[0].moved, "{h:?}");
             let a = d.get("a").unwrap();
-            assert_eq!((a.host.as_str(), a.port, a.options.len()), ("db.example.com", 5432, 0), "the password only goes where it was approved");
+            assert_eq!((a.host.as_str(), a.port, a.options.len(), a.ca_file.as_str()), ("db.example.com", 5432, 0, ""), "the password only goes where it was approved");
         }
         // Nor what no line names (a secret option): taken unseen, it could reach anything.
         m.outside().upsert(ConnectionProfile { options: [("password".to_string(), "x".to_string())].into(), ..conn("a") }).unwrap();

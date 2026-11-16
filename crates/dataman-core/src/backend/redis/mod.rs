@@ -193,7 +193,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     if addrs.is_empty() {
         bail!("{} has no address", p.host);
     }
-    let tls = match crate::backend::pg::rustls_config(p.sslmode)? {
+    let tls = match crate::backend::pg::rustls_config(p.sslmode, "", super::extra_ca(p, p.sslmode)?.as_deref())? {
         Some(cfg) if p.sslmode != SslMode::Prefer => {
             let name = rustls::pki_types::ServerName::try_from(p.host.clone()).map_err(|_| anyhow!("{} is not a TLS server name", p.host))?;
             Some((Arc::new(cfg), name))

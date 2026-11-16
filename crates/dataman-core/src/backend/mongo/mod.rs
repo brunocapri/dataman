@@ -102,7 +102,14 @@ pub(crate) async fn options(p: &ConnectionProfile, password: Option<&str>, tunne
             t.allow_invalid_certificates = Some(true);
             Some(Tls::Enabled(t))
         }
-        SslMode::VerifyFull => Some(Tls::Enabled(TlsOptions::default())),
+        // The driver trusts the CA file alone, not beside the system's.
+        SslMode::VerifyFull => {
+            let mut t = TlsOptions::default();
+            if super::extra_ca(p, SslMode::VerifyFull)?.is_some() {
+                t.ca_file_path = Some(crate::config::expand_home(&p.ca_file));
+            }
+            Some(Tls::Enabled(t))
+        }
     };
     o.app_name = Some("Dataman".into());
     o.server_selection_timeout = Some(SELECT_TIMEOUT);
