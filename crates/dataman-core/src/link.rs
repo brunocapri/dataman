@@ -16,7 +16,7 @@ use tokio::time::Instant;
 pub const CHECK_AFTER: Duration = Duration::from_secs(2);
 /// A socket that takes longer than this to answer the check counts as gone: a laptop that slept
 /// or a network that changed sends no reset, and the statement would hang for minutes instead.
-pub(crate) const CHECK_WAIT: Duration = Duration::from_secs(10);
+pub const CHECK_WAIT: Duration = Duration::from_secs(10);
 
 /// Pause between logins while a database wakes (Microsoft asks for at least 5 s).
 pub const WAKE_PAUSE: Duration = Duration::from_secs(5);

@@ -1,13 +1,19 @@
-//! A connection whose sockets the server closed (`KILL`, `pg_terminate_backend`): what runs next
+//! A connection whose sockets the server closed (`KILL`, `pg_terminate_backend`) or the network
+//! dropped, and a database that pauses and wakes (`gate`, `fake_mssql`): what runs next
 //! reconnects, never sends a statement twice, and says so when a session's state went with it.
 
 mod common;
+#[path = "common/fake_mssql.rs"]
+mod fake_mssql;
+#[path = "common/gate.rs"]
+mod gate;
 
 use common::*;
 use dataman_core::bounded::{Limits, Mode};
 use dataman_core::config::Engine;
-use dataman_core::link::CHECK_AFTER;
-use dataman_core::{Link, ResultSet, Session, TxStatus};
+use dataman_core::link::{CHECK_AFTER, CHECK_WAIT, WAKE_PAUSE};
+use dataman_core::{Link, LinkState, ResultSet, Session, TxStatus};
+use gate::{Door, Gate};
 
 struct Case {
     engine: Engine,
@@ -119,6 +125,61 @@ impl Case {
     fn begin(&self) -> &'static str {
         if self.engine == Engine::SqlServer { "BEGIN TRANSACTION" } else { "BEGIN" }
     }
+
+    /// A gate in front of this case's server, and the profile that reaches the database through it.
+    fn gate(&self) -> (Gate, ConnectionProfile, String) {
+        let p = self.conn.profile.clone();
+        let gate = Gate::new((p.host.clone(), p.port));
+        let pw = match self.engine {
+            Engine::Postgres => pg_password(),
+            Engine::MySql => mysql_password(),
+            _ => mssql_password(),
+        };
+        let through = ConnectionProfile { host: "127.0.0.1".into(), port: gate.port, ..p };
+        (gate, through, pw)
+    }
+
+    fn gated(&self, e: &Env) -> (Gate, Arc<Connection>) {
+        let (gate, p, pw) = self.gate();
+        let c = e.core.block_on(e.core.connect(p, Some(pw))).unwrap();
+        (gate, c)
+    }
+
+    /// What a login meets while the database wakes. Azure SQL refuses it with 40613, which starts
+    /// the resume. Aurora Serverless v2 holds it until the instance has resumed: about 15 s, 30 s or
+    /// more after a day paused. Neon's proxy holds it while a compute starts. 20 s is past the old
+    /// 10 s limit.
+    fn waking(&self) -> Door {
+        match self.engine {
+            Engine::SqlServer => Door::Answer { left: 2, with: fake_mssql::paused },
+            _ => Door::Hold(Duration::from_secs(20)),
+        }
+    }
+}
+
+/// The states `link` went through while `f` ran, looked at every 10 ms.
+fn watching<T>(link: impl Fn() -> Link + Sync, f: impl FnOnce() -> T) -> (T, Vec<Link>) {
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|sc| {
+        let seen = sc.spawn(|| {
+            let mut seen = Vec::new();
+            loop {
+                // Read before the state: the last look comes after `f` returned.
+                let last = done.load(std::sync::atomic::Ordering::Acquire);
+                let now = link();
+                if seen.last() != Some(&now) {
+                    seen.push(now);
+                }
+                if last {
+                    return seen;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let out = f();
+        done.store(true, std::sync::atomic::Ordering::Release);
+        (out, seen.join().unwrap())
+    })
 }
 
 fn idle() {
@@ -266,18 +327,95 @@ fn the_catalog_and_agents_reconnect_on_their_own() {
     }
 }
 
+/// Typing in a SQL Server tab checks the SQL on a socket of its own. With the database gone, that
+/// check logs in to nothing: a login would wake a paused database and keep it billing.
 #[test]
-fn sql_server_parse_checks_stay_quiet_while_the_connection_is_lost() {
+fn typing_does_not_wake_a_paused_database() {
     let e = env();
     for c in cases(&e, "parse").into_iter().filter(|c| c.engine == Engine::SqlServer) {
-        let check = |sql: &str| e.core.block_on(c.conn.parse_check(&c.db, sql.into())).unwrap();
+        let (gate, conn) = c.gated(&e);
+        let check = |sql: &str| e.core.block_on(conn.parse_check(&c.db, sql.into())).unwrap();
         assert_eq!(check("SELECT FROM").len(), 1);
-        c.kill_all(&e);
+        gate.close_all();
+        gate.set(Door::Answer { left: usize::MAX, with: fake_mssql::paused });
+        let dials = gate.dials();
         assert!(check("SELECT FROM").is_empty(), "the dead socket gives no bogus error");
-        assert_eq!(c.conn.link(), Link::Lost);
-        assert!(check("SELECT FROM").is_empty(), "and no login while lost");
-        let s = c.conn.session(None);
+        assert_eq!(conn.link(), Link::Lost);
+        assert!(check("SELECT FROM").is_empty());
+        assert!(check("SELECT 1 FROM").is_empty());
+        assert_eq!(gate.dials(), dials, "no login while it sleeps");
+        gate.set(Door::Open);
+        let s = conn.session(None);
         ok(&e, &s, "SELECT 1");
         assert_eq!(check("SELECT FROM").len(), 1, "back once a statement reconnected");
+    }
+}
+
+/// Connecting to a paused database: the login waits out the wake (Azure: retried every
+/// `WAKE_PAUSE` while it answers 40613, shown as waking; Aurora, Neon: held), then connects.
+#[test]
+fn a_paused_database_wakes_on_connect() {
+    let e = env();
+    for c in cases(&e, "connect") {
+        let (gate, p, pw) = c.gate();
+        gate.set(c.waking());
+        let link = Arc::new(LinkState::default());
+        let started = Instant::now();
+        let (r, seen) = watching(|| link.get(), || e.core.block_on(e.core.connect_telling(p, Some(pw), link.clone()).0));
+        let conn = r.unwrap_or_else(|err| panic!("{:?}: {err:#}", c.engine));
+        let took = started.elapsed();
+        if c.engine == Engine::SqlServer {
+            assert_eq!(gate.dials(), 3, "two refused, then the login that got in");
+            assert_eq!(seen, [Link::Up, Link::Waking, Link::Up]);
+            assert!(took >= WAKE_PAUSE * 2, "{took:?}");
+        } else {
+            assert_eq!(gate.dials(), 1);
+            assert!(took >= Duration::from_secs(20), "{:?}: {took:?}", c.engine);
+        }
+        assert_eq!(conn.link(), Link::Up);
+        ok(&e, &conn.session(None), "SELECT 1");
+    }
+}
+
+/// A tab left open while the database paused: its sockets were ended, and the login after them
+/// meets a database waking. The statement waits it out and runs once, with no broken pipe.
+#[test]
+fn a_tab_left_open_through_a_pause_runs_once_the_database_wakes() {
+    let e = env();
+    for c in cases(&e, "pause") {
+        let (gate, conn) = c.gated(&e);
+        let s = conn.session(None);
+        c.table(&e, &s);
+        gate.close_all();
+        gate.set(c.waking());
+        idle();
+        let (rs, seen) = watching(|| conn.link(), || run(&e, &s, "INSERT INTO t VALUES (1)"));
+        assert_eq!(rs.phase(), Phase::Done, "{:?}: {:?}", c.engine, rs.status().error);
+        assert_eq!(c.count(&e), "1", "{:?}", c.engine);
+        if c.engine == Engine::SqlServer {
+            assert!(seen.contains(&Link::Waking), "{seen:?}");
+        }
+        assert_eq!(conn.link(), Link::Up);
+    }
+}
+
+/// The way to the server dropped without a word (a laptop that slept, a NAT that forgot the flow,
+/// a frozen host): the check before the statement gives up on the old socket after `CHECK_WAIT`,
+/// and the statement runs once on a new one instead of hanging on the old.
+#[test]
+fn a_silently_dropped_socket_is_found_before_the_statement_goes_out() {
+    let e = env();
+    for c in cases(&e, "dropped") {
+        let (gate, conn) = c.gated(&e);
+        let s = conn.session(None);
+        c.table(&e, &s);
+        gate.drop_all();
+        idle();
+        let started = Instant::now();
+        ok(&e, &s, "INSERT INTO t VALUES (1)");
+        let took = started.elapsed();
+        assert!(took >= CHECK_WAIT && took < CHECK_WAIT + Duration::from_secs(5), "{:?}: {took:?}", c.engine);
+        assert_eq!(c.count(&e), "1", "{:?}", c.engine);
+        assert_eq!(conn.link(), Link::Up);
     }
 }

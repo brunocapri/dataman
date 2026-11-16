@@ -216,7 +216,6 @@ pub(crate) fn used_database(sql: &str, d: Dialect) -> Option<String> {
     used
 }
 
-/// T-SQL needs no `;` between its statements.
 /// What a statement leaves on its session for later ones (a setting, a `USE`, a temporary table,
 /// by the kinds that make them): gone with the connection, so a new one is not the same session.
 pub(crate) fn leaves_session_state(sql: &str, d: Dialect) -> bool {
@@ -232,6 +231,7 @@ pub(crate) fn leaves_session_state(sql: &str, d: Dialect) -> bool {
     })
 }
 
+/// T-SQL needs no `;` between its statements.
 fn statement_ranges(sql: &str, d: Dialect) -> Vec<std::ops::Range<usize>> {
     if d == Dialect::TSql { guard::tsql_statements(sql) } else { crate::sql::split_in(sql, d).into_iter().map(|s| s.range).collect() }
 }
